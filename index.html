@@ -2231,7 +2231,7 @@
 
   const saldosIniciais = {
     'Asaas Alessandro': 0, 'Asaas Grazielly': 0, 'Asaas Líder': 0,
-    'Bradesco Alessandro': 20000, 'Sicoob Líder': 6500
+    'Bradesco Alessandro': 0, 'Sicoob Líder': 0
   };
 
   // Categorias e Subcategorias (editáveis via Configurações)
@@ -3337,9 +3337,13 @@ ${JSON.stringify(metricas, null, 2)}`
     const pagos = cur.filter(b => b.status === 'PAGO');
     const pagosVal = pagos.reduce((s,b) => s + b.valor, 0);
     const hoje = new Date().toISOString().slice(0,10);
-    const pendentes = cur.filter(b => (b.status === 'PENDENTE' || b.status === 'A_VENCER') && b.vencimento >= hoje);
+    
+    // A RECEBER = PENDENTE ou A_VENCER (independente da data - o usuário controla quando marcar como ATRASADO)
+    const pendentes = cur.filter(b => b.status === 'PENDENTE' || b.status === 'A_VENCER');
     const pendentesVal = pendentes.reduce((s,b) => s + b.valor, 0);
-    const atrasados = cur.filter(b => b.status === 'ATRASADO' || ((b.status === 'PENDENTE' || b.status === 'A_VENCER') && b.vencimento < hoje));
+    
+    // ATRASO = só quando o status é explicitamente ATRASADO (marcado pelo usuário)
+    const atrasados = cur.filter(b => b.status === 'ATRASADO');
     const atrasadosVal = atrasados.reduce((s,b) => s + b.valor, 0);
     
     // Despesas do mês
@@ -3554,13 +3558,13 @@ ${JSON.stringify(metricas, null, 2)}`
       titulo = '✓ Recebimentos do mês';
       subtitulo = `${meses[mesAtual]} · ${anoAtual} — Já recebidos`;
     } else if (tipo === 'pendentes') {
-      lista = cur.filter(b => (b.status === 'PENDENTE' || b.status === 'A_VENCER') && b.vencimento >= hoje);
+      lista = cur.filter(b => b.status === 'PENDENTE' || b.status === 'A_VENCER');
       titulo = '⏳ A receber';
       subtitulo = `${meses[mesAtual]} · ${anoAtual} — Aguardando pagamento`;
     } else if (tipo === 'atrasados') {
-      lista = cur.filter(b => b.status === 'ATRASADO' || ((b.status === 'PENDENTE' || b.status === 'A_VENCER') && b.vencimento < hoje));
+      lista = cur.filter(b => b.status === 'ATRASADO');
       titulo = '⚠ Pagamentos em atraso';
-      subtitulo = `${meses[mesAtual]} · ${anoAtual} — Vencidos não pagos`;
+      subtitulo = `${meses[mesAtual]} · ${anoAtual} — Marcados como atrasados`;
     } else if (tipo === 'agendadas' || tipo === 'vencidas') {
       isDespesa = true;
       const despesasMes = transactions.filter(t => {
@@ -3617,17 +3621,28 @@ ${JSON.stringify(metricas, null, 2)}`
       `).join('');
     } else {
       document.getElementById('receivablesList').innerHTML = lista.map(b => {
-        const diasAtraso = tipo === 'atrasados' ? Math.floor((new Date(hoje) - new Date(b.vencimento)) / (1000 * 60 * 60 * 24)) : 0;
-        const metaText = tipo === 'atrasados' && diasAtraso > 0 
-          ? `📅 Venceu em ${formatDateBR(b.vencimento)} · <span style="color:var(--vermelho);font-weight:700">${diasAtraso} dia${diasAtraso !== 1 ? 's' : ''} de atraso</span>`
-          : `📅 Vence em ${formatDateBR(b.vencimento)} · 📞 ${b.telefone || '—'}`;
-        return `<div class="quick-billing-item">
+        const diasVenc = Math.floor((new Date(hoje) - new Date(b.vencimento)) / (1000 * 60 * 60 * 24));
+        let metaText = `📅 Vence em ${formatDateBR(b.vencimento)} · 📞 ${b.telefone || '—'}`;
+        
+        if (tipo === 'pendentes' && diasVenc > 0) {
+          metaText = `📅 Venceu em ${formatDateBR(b.vencimento)} · <span style="color:var(--amarelo);font-weight:700">${diasVenc} dia${diasVenc !== 1 ? 's' : ''} após vencimento</span>`;
+        } else if (tipo === 'atrasados') {
+          metaText = `📅 Venceu em ${formatDateBR(b.vencimento)} · <span style="color:var(--vermelho);font-weight:700">${diasVenc > 0 ? diasVenc + ' dia' + (diasVenc !== 1 ? 's' : '') + ' de atraso' : 'marcado como atrasado'}</span>`;
+        }
+        
+        const btns = tipo === 'pendentes' 
+          ? `<button class="quick-pay-btn" onclick="quickMarkPaidRefresh(${b.id},'pendentes')">✓ Pago</button>
+             <button class="quick-pay-btn" style="background:var(--vermelho)" onclick="quickMarkAtrasadoRefresh(${b.id},'pendentes')">⚠ Atraso</button>`
+          : `<button class="quick-pay-btn" onclick="quickMarkPaidRefresh(${b.id},'atrasados')">✓ Pago</button>
+             <button class="quick-pay-btn" style="background:var(--amarelo);color:#92400e" onclick="quickMarkPendenteRefresh(${b.id},'atrasados')">↩ Pendente</button>`;
+        
+        return `<div class="quick-billing-item" style="grid-template-columns:1fr auto auto auto">
           <div class="quick-billing-info">
             <div class="quick-billing-name">${b.cliente}</div>
             <div class="quick-billing-meta">${metaText}</div>
           </div>
           <div class="quick-billing-value">${formatBRL(b.valor)}</div>
-          <button class="quick-pay-btn" onclick="quickMarkPaid(${b.id})">✓ Marcar Pago</button>
+          ${btns}
         </div>`;
       }).join('');
     }
@@ -3639,6 +3654,31 @@ ${JSON.stringify(metricas, null, 2)}`
   function markScheduledPaidAndRefresh(id, tipo) {
     markScheduledPaid(id);
     setTimeout(() => openReceivablesModal(tipo), 100);
+  }
+
+  function quickMarkPaidRefresh(billingId, tipoModal) {
+    quickMarkPaid(billingId);
+    setTimeout(() => openReceivablesModal(tipoModal), 100);
+  }
+
+  function quickMarkAtrasadoRefresh(billingId, tipoModal) {
+    const b = billings.find(x => x.id === billingId);
+    if (!b) return;
+    b.status = 'ATRASADO';
+    saveBillings();
+    showToast(`⚠ ${b.cliente} marcado como atrasado`);
+    renderAll();
+    setTimeout(() => openReceivablesModal(tipoModal), 100);
+  }
+
+  function quickMarkPendenteRefresh(billingId, tipoModal) {
+    const b = billings.find(x => x.id === billingId);
+    if (!b) return;
+    b.status = 'PENDENTE';
+    saveBillings();
+    showToast(`↩ ${b.cliente} voltou para pendente`);
+    renderAll();
+    setTimeout(() => openReceivablesModal(tipoModal), 100);
   }
 
   function closeReceivables() { document.getElementById('receivablesOverlay').classList.remove('active'); }
