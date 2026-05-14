@@ -577,6 +577,16 @@
   .tx-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; font-weight: bold; }
   .tx-info { flex: 1; min-width: 0; }
   .tx-title { font-size: 13px; font-weight: 600; color: var(--azul); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tx-selo {
+    display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 7px;
+    border-radius: 10px; margin-left: 6px; vertical-align: middle;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .selo-recebido { background: #dcfce7; color: var(--verde-escuro); }
+  .selo-areceber { background: var(--amarelo-claro); color: #92400e; }
+  .selo-pago { background: #dbeafe; color: #1e40af; }
+  .selo-apagar { background: var(--amarelo-claro); color: #92400e; }
+  .selo-vencida { background: var(--vermelho-claro); color: var(--vermelho); }
   .tx-meta { font-size: 11px; color: var(--cinza-texto); margin-top: 1px; }
   .tx-value { font-size: 13px; font-weight: 700; }
   .tx-positive { color: var(--verde-escuro); }
@@ -2154,6 +2164,33 @@
             </div>
           </div>
 
+          <!-- INTEGRAÇÃO ASAAS (preparada para o futuro) -->
+          <div class="settings-card" style="margin-top:14px;border:2px dashed var(--cinza-borda)">
+            <div class="settings-card-title" style="margin-bottom:8px">🏦 Integração Asaas <span style="font-size:10px;background:var(--amarelo-claro);color:#92400e;padding:2px 8px;border-radius:10px;vertical-align:middle">EM BREVE</span></div>
+            <div class="settings-card-subtitle" style="margin-bottom:16px">
+              Sincronização automática com o Asaas: importar cobranças e pagamentos, criar cobranças pelo painel, vincular clientes.
+            </div>
+            
+            <div style="padding:14px;background:var(--vermelho-claro);border-radius:10px;font-size:12px;color:var(--vermelho);line-height:1.6;margin-bottom:14px">
+              <strong>⚠️ Por que ainda não está ativo:</strong><br>
+              A chave de API do Asaas é <strong>secreta</strong> — ela dá acesso total à sua conta financeira. Por segurança, ela NÃO pode ficar no navegador (qualquer um veria). A integração exige um <strong>servidor backend</strong> que guarda a chave protegida.
+            </div>
+            
+            <div style="padding:14px;background:var(--cinza-claro);border-radius:10px;font-size:12px;color:var(--azul);line-height:1.6">
+              <strong>📋 O que será possível quando ativar:</strong><br>
+              • Importar automaticamente cobranças e pagamentos do Asaas<br>
+              • Criar cobranças no Asaas direto pelo painel<br>
+              • Vincular pagamentos aos clientes já cadastrados<br>
+              • Atualizar saldos automaticamente quando um cliente paga<br>
+              <br>
+              <strong>🔧 Próximo passo:</strong> migrar o painel para uma arquitetura com backend (servidor). Os arquivos técnicos de orientação estão prontos para quando você decidir avançar.
+            </div>
+            
+            <button class="secondary-btn" style="width:100%;margin-top:14px;opacity:0.6;cursor:not-allowed" disabled>
+              🔒 Disponível após migração para backend
+            </button>
+          </div>
+
           <div class="settings-card" style="margin-top:14px">
             <div class="settings-card-title" style="margin-bottom:8px">📱 Instalar como App</div>
             <div class="settings-card-subtitle" style="margin-bottom:14px">
@@ -2350,6 +2387,13 @@
 
     <div id="formReceita">
       <div class="form-group">
+        <label class="form-label">Status do recebimento</label>
+        <div class="status-toggle">
+          <button type="button" class="active" id="statusRecebido" onclick="setReceitaStatus('recebido')">✓ Já recebi</button>
+          <button type="button" id="statusAReceber" onclick="setReceitaStatus('a_receber')">⏳ A receber</button>
+        </div>
+      </div>
+      <div class="form-group">
         <label class="form-label">Tipo de receita</label>
         <select class="form-select" id="receitaTipo" onchange="toggleReceitaTipo()">
           <option value="comissao">Comissão mensal</option>
@@ -2377,7 +2421,7 @@
         </div>
       </div>
       <div class="form-group">
-        <label class="form-label">Conta de recebimento</label>
+        <label class="form-label" id="receitaContaLabel">Conta de recebimento</label>
         <select class="form-select" id="receitaConta">
           <option>Asaas Alessandro</option>
           <option>Asaas Grazielly</option>
@@ -2387,7 +2431,7 @@
         </select>
       </div>
       <div class="form-group">
-        <label class="form-label">Data</label>
+        <label class="form-label" id="receitaDataLabel">Data</label>
         <input type="date" class="form-input" id="receitaData">
       </div>
     </div>
@@ -2877,6 +2921,69 @@
 
   /* ==================== ESTADO E DADOS ==================== */
   
+  // Gerador de IDs ÚNICOS (sempre inteiro, nunca decimal — evita bugs de precisão)
+  let _idCounter = 0;
+  function gerarId() {
+    // Combina timestamp em ms com um contador incremental para garantir unicidade
+    _idCounter = (_idCounter + 1) % 1000;
+    return Date.now() * 1000 + _idCounter;
+  }
+  
+  // Migração: converte IDs decimais antigos para inteiros únicos
+  function migrarIdsDecimais() {
+    let migrou = false;
+    const usados = new Set();
+    
+    function fixId(item) {
+      if (item.id == null) {
+        item.id = gerarId();
+        migrou = true;
+      } else if (typeof item.id === 'number' && !Number.isInteger(item.id)) {
+        // ID decimal: converte pra inteiro único
+        item.id = gerarId();
+        migrou = true;
+      } else {
+        // Garante que é número inteiro
+        const intId = parseInt(item.id);
+        if (String(intId) !== String(item.id)) {
+          item.id = gerarId();
+          migrou = true;
+        } else {
+          item.id = intId;
+        }
+      }
+      // Garante unicidade
+      while (usados.has(item.id)) {
+        item.id = gerarId();
+        migrou = true;
+      }
+      usados.add(item.id);
+    }
+    
+    (transactions || []).forEach(fixId);
+    (billings || []).forEach(fixId);
+    (marketingEntries || []).forEach(fixId);
+    (marketingCriativos || []).forEach(fixId);
+    
+    // Corrige também referências billing_id e criativoId
+    (transactions || []).forEach(t => {
+      if (t.billing_id != null && typeof t.billing_id === 'number' && !Number.isInteger(t.billing_id)) {
+        // referência quebrada — não tem como recuperar, limpa
+        t.billing_id = null;
+        migrou = true;
+      }
+    });
+    
+    if (migrou) {
+      console.log('IDs decimais migrados para inteiros únicos');
+      localStorage.setItem('lider_tx_v5', JSON.stringify(transactions));
+      localStorage.setItem('lider_billings_v3', JSON.stringify(billings));
+      localStorage.setItem('lider_marketing_v1', JSON.stringify(marketingEntries));
+      localStorage.setItem('lider_criativos_v1', JSON.stringify(marketingCriativos));
+    }
+    return migrou;
+  }
+  
   // Lançamentos financeiros - começa vazio (limpo para uso real)
   let transactions = JSON.parse(localStorage.getItem('lider_tx_v5') || 'null');
   if (!transactions) {
@@ -3324,6 +3431,7 @@
         }
         document.getElementById('receitaConta').value = tx.conta;
         document.getElementById('receitaData').value = tx.data;
+        setReceitaStatus(tx.status === 'a_receber' ? 'a_receber' : 'recebido');
       } else {
         updateCategorias();
         document.getElementById('despesaCategoria').value = tx.categoria;
@@ -3347,6 +3455,7 @@
       document.getElementById('receitaData').value = hoje;
       document.getElementById('despesaData').value = hoje;
       setDespesaStatus('paga');
+      setReceitaStatus('recebido');
       setType(tipo);
     }
   }
@@ -3374,6 +3483,15 @@
     // Atualiza labels
     document.getElementById('despesaContaLabel').textContent = status === 'agendada' ? 'Conta que será debitada' : 'Pago de qual conta?';
     document.getElementById('despesaDataLabel').textContent = status === 'agendada' ? 'Data de vencimento' : 'Data do pagamento';
+  }
+  
+  let currentReceitaStatus = 'recebido';
+  function setReceitaStatus(status) {
+    currentReceitaStatus = status;
+    document.getElementById('statusRecebido').classList.toggle('active', status === 'recebido');
+    document.getElementById('statusAReceber').classList.toggle('active', status === 'a_receber');
+    document.getElementById('receitaContaLabel').textContent = status === 'a_receber' ? 'Conta que vai receber' : 'Conta de recebimento';
+    document.getElementById('receitaDataLabel').textContent = status === 'a_receber' ? 'Data prevista' : 'Data do recebimento';
   }
   function updateCategorias() {
     const cat = document.getElementById('despesaCategoria');
@@ -3439,16 +3557,18 @@
       const conta = document.getElementById('receitaConta').value;
       const data = document.getElementById('receitaData').value;
       if (!data) { showToast('Informe a data', true); return; }
+      // Status da receita (recebido / a_receber)
+      const statusReceita = currentReceitaStatus;
       if (subtipo === 'comissao') {
         const valor = parseMoney(document.getElementById('receitaComissaoValor').value);
         if (valor <= 0) { showToast('Informe um valor válido', true); return; }
-        tx = { tipo:'receita', subtipo:'comissao', valor, conta, data, titulo:'Comissão mensal' };
+        tx = { tipo:'receita', subtipo:'comissao', valor, conta, data, titulo:'Comissão mensal', status: statusReceita };
       } else {
         const cliente = document.getElementById('receitaClienteNome').value.trim();
         const servico = document.getElementById('receitaServico').value.trim();
         const valor = parseMoney(document.getElementById('receitaServicoValor').value);
         if (!cliente || !servico || valor <= 0) { showToast('Preencha todos os campos', true); return; }
-        tx = { tipo:'receita', subtipo:'servico', cliente, servico, valor, conta, data, titulo:`Serviço — ${cliente}` };
+        tx = { tipo:'receita', subtipo:'servico', cliente, servico, valor, conta, data, titulo:`Serviço — ${cliente}`, status: statusReceita };
       }
     } else {
       const categoria = document.getElementById('despesaCategoria').value;
@@ -3472,7 +3592,7 @@
       transactions[idx] = { ...transactions[idx], ...tx };
       showToast('Lançamento atualizado');
     } else {
-      tx.id = Date.now();
+      tx.id = gerarId();
       transactions.unshift(tx);
       showToast('Lançamento salvo');
     }
@@ -3501,7 +3621,7 @@
   }
   // Despesa "efetivada" = sem status ou status 'paga'. Despesa 'agendada' não afeta saldo.
   function isEfetivada(t) {
-    if (t.tipo === 'receita') return true;
+    if (t.tipo === 'receita') return t.status !== 'a_receber';
     return !t.status || t.status === 'paga';
   }
   function isAgendada(t) {
@@ -3532,7 +3652,7 @@
 
   function renderHome() {
     const monthTx = getMonthTransactions(mesAtual, anoAtual);
-    const receitas = monthTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const receitas = monthTx.filter(t => t.tipo === 'receita' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     document.getElementById('homeBalance').textContent = formatBRL(receitas - despesas);
     document.getElementById('homeIn').textContent = formatBRL(receitas);
@@ -3566,7 +3686,7 @@
 
     // Coleta dados reais para basear a análise
     const monthTx = getMonthTransactions(mesAtual, anoAtual);
-    const receitas = monthTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const receitas = monthTx.filter(t => t.tipo === 'receita' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const saldoMes = receitas - despesas;
     const ativos = new Set(billings.filter(b => b.status !== 'CANCELADO').map(b => b.cliente)).size;
@@ -3714,7 +3834,7 @@
     let mesesFechados = 0;
     for (let m = 0; m < 12; m++) {
       const txs = getMonthTransactions(m, ano);
-      const r = txs.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+      const r = txs.filter(t => t.tipo === 'receita' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       const d = txs.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       const tem = (r > 0 || d > 0);
       dadosMensais.push({ mes: m, receitas: r, despesas: d, tem });
@@ -3805,7 +3925,7 @@
   
   function calcMetricasParaIA() {
     const monthTx = getMonthTransactions(mesAtual, anoAtual);
-    const receitas = monthTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const receitas = monthTx.filter(t => t.tipo === 'receita' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const margem = receitas > 0 ? ((receitas - despesas) / receitas * 100) : 0;
     
@@ -3813,7 +3933,7 @@
     let pMes = mesAtual - 1, pAno = anoAtual;
     if (pMes < 0) { pMes = 11; pAno--; }
     const prevTx = getMonthTransactions(pMes, pAno);
-    const prevReceitas = prevTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const prevReceitas = prevTx.filter(t => t.tipo === 'receita' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const varReceitas = prevReceitas > 0 ? ((receitas - prevReceitas) / prevReceitas * 100) : 0;
     
     // Comercial
@@ -3975,7 +4095,7 @@
       let m = mesAtual - i, a = anoAtual;
       if (m < 0) { m += 12; a--; }
       const tx = getMonthTransactions(m, a);
-      const r = tx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+      const r = tx.filter(t => t.tipo === 'receita' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       const d = tx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       const per = `${a}-${String(m+1).padStart(2,'0')}`;
       const cobMes = billings.filter(b => b.periodo === per);
@@ -4735,7 +4855,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function renderFinancial() {
     document.getElementById('monthLabel').textContent = `${meses[mesAtual]} · ${anoAtual}`;
     const monthTx = getMonthTransactions(mesAtual, anoAtual);
-    const receitas = monthTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const receitas = monthTx.filter(t => t.tipo === 'receita' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     
     // Agendadas (futuras e vencidas) do mês atual
@@ -4982,7 +5102,7 @@ ${JSON.stringify(metricas, null, 2)}`
       const conta = inp.dataset.conta;
       // Cria lançamento de ajuste
       transactions.unshift({
-        id: Date.now() + Math.random(),
+        id: gerarId(),
         tipo: diff > 0 ? 'receita' : 'despesa',
         subtipo: diff > 0 ? 'comissao' : undefined,
         categoria: diff < 0 ? 'outros' : undefined,
@@ -5036,7 +5156,7 @@ ${JSON.stringify(metricas, null, 2)}`
       const dia = Math.min(d.diaVenc, lastDay);
       const dataVenc = `${anoAtual}-${String(mesAtual+1).padStart(2,'0')}-${String(dia).padStart(2,'0')}`;
       transactions.unshift({
-        id: Date.now() + Math.random(),
+        id: gerarId(),
         tipo: 'despesa',
         categoria: d.categoria,
         subcategoria: d.subcategoria,
@@ -5231,7 +5351,7 @@ ${JSON.stringify(metricas, null, 2)}`
     b.status = 'PAGO';
     // Cria lançamento no financeiro na conta escolhida
     const tx = {
-      id: Date.now() + Math.random(),
+      id: gerarId(),
       tipo: 'receita', subtipo: 'servico',
       cliente: b.cliente, servico: 'Cobrança mensal',
       valor: b.valor, conta: conta,
@@ -5253,9 +5373,33 @@ ${JSON.stringify(metricas, null, 2)}`
     const isIn = t.tipo === 'receita';
     const [y,m,d] = t.data.split('-');
     const meta = isIn ? `${t.conta} · ${d}/${m}` : `${ {fixos:'Fixos',funcionarios:'Funcionários',outros:'Outros'}[t.categoria] } · ${t.conta} · ${d}/${m}`;
+    
+    // Selo de status
+    let selo = '';
+    if (isIn) {
+      // Receita: "Recebido" ou "A receber"
+      if (t.status === 'a_receber') {
+        selo = '<span class="tx-selo selo-areceber">A receber</span>';
+      } else {
+        selo = '<span class="tx-selo selo-recebido">Recebido</span>';
+      }
+    } else {
+      // Despesa: "Pago", "A pagar" ou "Vencida"
+      if (isVencida(t)) {
+        selo = '<span class="tx-selo selo-vencida">Vencida</span>';
+      } else if (isAgendada(t)) {
+        selo = '<span class="tx-selo selo-apagar">A pagar</span>';
+      } else {
+        selo = '<span class="tx-selo selo-pago">Pago</span>';
+      }
+    }
+    
     return `<div class="tx-item" onclick="openModal('${t.tipo}', ${t.id})">
       <div class="tx-icon ${isIn ? 'ic-in' : 'ic-out'}">${isIn ? '↑' : '↓'}</div>
-      <div class="tx-info"><div class="tx-title">${t.titulo}</div><div class="tx-meta">${meta}</div></div>
+      <div class="tx-info">
+        <div class="tx-title">${t.titulo} ${selo}</div>
+        <div class="tx-meta">${meta}</div>
+      </div>
       <div class="tx-value ${isIn ? 'tx-positive' : 'tx-negative'}">${isIn ? '+ ' : '- '}${formatBRL(t.valor)}</div>
     </div>`;
   }
@@ -5268,8 +5412,8 @@ ${JSON.stringify(metricas, null, 2)}`
     let totalIn = 0, totalOut = 0;
     for (let m = 0; m < 12; m++) {
       const txs = getMonthTransactions(m, annualYear);
-      const r = txs.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
-      const d = txs.filter(t => t.tipo === 'despesa').reduce((s,t) => s + t.valor, 0);
+      const r = txs.filter(t => t.tipo === 'receita' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+      const d = txs.filter(t => t.tipo === 'despesa' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       monthlyData.push({ mes: m, receitas: r, despesas: d });
       totalIn += r; totalOut += d;
     }
@@ -5558,7 +5702,7 @@ ${JSON.stringify(metricas, null, 2)}`
       const periodo = `${anoIdx}-${String(mesIdx+1).padStart(2,'0')}`;
       
       billings.push({
-        id: Date.now() + Math.random() + i,
+        id: gerarId(),
         periodo,
         cliente: nome.toUpperCase(),
         cpf_cnpj: cpf,
@@ -5882,7 +6026,7 @@ ${JSON.stringify(metricas, null, 2)}`
         // Mantém status atual mas atualiza valor/vencimento/dados
         billings[idx] = { ...billings[idx], ...n, status: billings[idx].status };
       } else {
-        billings.push({ id: Date.now() + Math.random(), periodo: p.periodo, ...n });
+        billings.push({ id: gerarId(), periodo: p.periodo, ...n });
       }
     });
     
@@ -6738,7 +6882,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (inv === 0 && conv === 0) { showToast('Informe ao menos investimento ou conversas', true); return; }
     
     const entry = {
-      id: editingMktEntry || (Date.now() + Math.random()),
+      id: editingMktEntry || (gerarId()),
       dataIni, dataFim,
       plataforma: _mktPlat,
       investimento: inv,
@@ -6813,7 +6957,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!nome) { showToast('Informe o nome do criativo', true); return; }
     
     const c = {
-      id: editingCriativo || (Date.now() + Math.random()),
+      id: editingCriativo || (gerarId()),
       nome,
       tipo: document.getElementById('criativoTipo').value,
       plataforma: _criativoPlat,
@@ -6899,7 +7043,7 @@ ${JSON.stringify(metricas, null, 2)}`
           if (inv === 0 && conv === 0) continue;
           
           novosLancamentos.push({
-            id: Date.now() + Math.random() + i,
+            id: gerarId(),
             dataIni, dataFim,
             plataforma: 'ambos',
             investimento: inv, alcance: alc, impressoes: imp, conversas: conv,
@@ -6947,6 +7091,8 @@ ${JSON.stringify(metricas, null, 2)}`
     try {
       const trimmed = history.slice(-30);
       localStorage.setItem(CONSULTOR_HISTORY_KEYS[tipo], JSON.stringify(trimmed));
+      // Sincroniza com a nuvem
+      LiderSync.schedulePush('chat_' + tipo, () => LiderSync.pushAppData('chat_' + tipo, trimmed));
     } catch(e) { console.error(e); }
   }
   
@@ -7600,7 +7746,19 @@ Agora responda à pergunta do Alessandro com base nesses dados REAIS. Cite NOMES
     const r5 = await LiderSync.pushAppData('categorias', categorias);
     const r6 = await LiderSync.pushAppData('settings', settings);
     
-    if (r1 && r2 && r3 && r4 && r5 && r6) {
+    // Envia históricos dos chats das IAs
+    let chatsOk = true;
+    for (const tipo of ['financeiro', 'comercial', 'marketing']) {
+      try {
+        const chatData = JSON.parse(localStorage.getItem(CONSULTOR_HISTORY_KEYS[tipo]) || '[]');
+        if (chatData.length > 0) {
+          const ok = await LiderSync.pushAppData('chat_' + tipo, chatData);
+          if (!ok) chatsOk = false;
+        }
+      } catch(e) { chatsOk = false; }
+    }
+    
+    if (r1 && r2 && r3 && r4 && r5 && r6 && chatsOk) {
       showToast('✓ Todos os dados enviados para a nuvem!');
       LiderSync.updateStatusBadge('synced');
     } else {
@@ -7635,7 +7793,16 @@ Agora responda à pergunta do Alessandro com base nesses dados REAIS. Cite NOMES
         settings = { ...settings, ...cloudData.appData.settings };
         localStorage.setItem('lider_settings_v1', JSON.stringify(settings));
       }
+      // Históricos dos chats das IAs
+      ['financeiro', 'comercial', 'marketing'].forEach(tipo => {
+        const chatData = cloudData.appData['chat_' + tipo];
+        if (Array.isArray(chatData)) {
+          localStorage.setItem(CONSULTOR_HISTORY_KEYS[tipo], JSON.stringify(chatData));
+        }
+      });
     }
+    // Garante IDs íntegros após baixar da nuvem
+    migrarIdsDecimais();
     renderAll();
     updateCategorias();
   }
@@ -7780,6 +7947,9 @@ Agora responda à pergunta do Alessandro com base nesses dados REAIS. Cite NOMES
     if (e.target.id === 'consultorInput') autoResizeChat();
   });
   document.getElementById('senha').addEventListener('keypress', e => { if (e.key === 'Enter') entrar(); });
+  
+  // Migra IDs decimais antigos ANTES de qualquer renderização
+  migrarIdsDecimais();
   
   updateCategorias();
   renderSidebars('homeScreen');
