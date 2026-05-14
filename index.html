@@ -3512,6 +3512,10 @@
     const hoje = new Date().toISOString().slice(0,10);
     return t.data < hoje;
   }
+  // Ajustes de balanço NÃO devem contar como receita/despesa real
+  function isAjusteBalanco(t) {
+    return (t.titulo || '').includes('Ajuste de balanço');
+  }
   function calcSaldoConta(conta) {
     // Se houve ajuste manual, parte dele e soma só as transações posteriores
     const ajuste = settings.saldosManuais && settings.saldosManuais[conta];
@@ -3528,8 +3532,8 @@
 
   function renderHome() {
     const monthTx = getMonthTransactions(mesAtual, anoAtual);
-    const receitas = monthTx.filter(t => t.tipo === 'receita').reduce((s,t) => s + t.valor, 0);
-    const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t)).reduce((s,t) => s + t.valor, 0);
+    const receitas = monthTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     document.getElementById('homeBalance').textContent = formatBRL(receitas - despesas);
     document.getElementById('homeIn').textContent = formatBRL(receitas);
     document.getElementById('homeOut').textContent = formatBRL(despesas);
@@ -3562,8 +3566,8 @@
 
     // Coleta dados reais para basear a análise
     const monthTx = getMonthTransactions(mesAtual, anoAtual);
-    const receitas = monthTx.filter(t => t.tipo === 'receita').reduce((s,t) => s + t.valor, 0);
-    const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t)).reduce((s,t) => s + t.valor, 0);
+    const receitas = monthTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const saldoMes = receitas - despesas;
     const ativos = new Set(billings.filter(b => b.status !== 'CANCELADO').map(b => b.cliente)).size;
     
@@ -3627,7 +3631,7 @@
     if (tipo === 'financeiro') {
       // Análise de despesas
       const despPorCat = {};
-      monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t)).forEach(t => {
+      monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).forEach(t => {
         const lbl = categorias[t.categoria]?.label || t.categoria;
         despPorCat[lbl] = (despPorCat[lbl] || 0) + t.valor;
       });
@@ -3636,7 +3640,7 @@
       
       // Mês anterior pra comparar
       const prevTx = getMonthTransactions(pMes, pAno);
-      const prevDesp = prevTx.filter(t => t.tipo === 'despesa' && isEfetivada(t)).reduce((s,t) => s + t.valor, 0);
+      const prevDesp = prevTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       const variacao = prevDesp > 0 ? ((totalDesp - prevDesp) / prevDesp * 100) : 0;
       
       const agendadas = transactions.filter(t => isAgendada(t) && t.data.startsWith(period));
@@ -3710,8 +3714,8 @@
     let mesesFechados = 0;
     for (let m = 0; m < 12; m++) {
       const txs = getMonthTransactions(m, ano);
-      const r = txs.filter(t => t.tipo === 'receita').reduce((s,t) => s + t.valor, 0);
-      const d = txs.filter(t => t.tipo === 'despesa' && isEfetivada(t)).reduce((s,t) => s + t.valor, 0);
+      const r = txs.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+      const d = txs.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       const tem = (r > 0 || d > 0);
       dadosMensais.push({ mes: m, receitas: r, despesas: d, tem });
       // Considera "fechado" se for antes do mesAtual e tem dados
@@ -3801,15 +3805,15 @@
   
   function calcMetricasParaIA() {
     const monthTx = getMonthTransactions(mesAtual, anoAtual);
-    const receitas = monthTx.filter(t => t.tipo === 'receita').reduce((s,t) => s + t.valor, 0);
-    const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t)).reduce((s,t) => s + t.valor, 0);
+    const receitas = monthTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const margem = receitas > 0 ? ((receitas - despesas) / receitas * 100) : 0;
     
     // Mês anterior
     let pMes = mesAtual - 1, pAno = anoAtual;
     if (pMes < 0) { pMes = 11; pAno--; }
     const prevTx = getMonthTransactions(pMes, pAno);
-    const prevReceitas = prevTx.filter(t => t.tipo === 'receita').reduce((s,t) => s + t.valor, 0);
+    const prevReceitas = prevTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     const varReceitas = prevReceitas > 0 ? ((receitas - prevReceitas) / prevReceitas * 100) : 0;
     
     // Comercial
@@ -3826,7 +3830,7 @@
     
     // Despesas por categoria
     const despesasCategoria = {};
-    monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t)).forEach(t => {
+    monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).forEach(t => {
       const k = t.categoria || 'outros';
       despesasCategoria[k] = (despesasCategoria[k] || 0) + t.valor;
     });
@@ -3858,7 +3862,7 @@
     
     // TODAS as receitas do mês com TODOS os detalhes
     const todasReceitasMes = monthTx
-      .filter(t => t.tipo === 'receita')
+      .filter(t => t.tipo === 'receita' && !isAjusteBalanco(t))
       .sort((a,b) => b.valor - a.valor)
       .map(t => ({
         id: t.id,
@@ -3971,8 +3975,8 @@
       let m = mesAtual - i, a = anoAtual;
       if (m < 0) { m += 12; a--; }
       const tx = getMonthTransactions(m, a);
-      const r = tx.filter(t => t.tipo === 'receita').reduce((s,t) => s + t.valor, 0);
-      const d = tx.filter(t => t.tipo === 'despesa' && isEfetivada(t)).reduce((s,t) => s + t.valor, 0);
+      const r = tx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+      const d = tx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       const per = `${a}-${String(m+1).padStart(2,'0')}`;
       const cobMes = billings.filter(b => b.periodo === per);
       historico3meses.push({
@@ -4731,8 +4735,8 @@ ${JSON.stringify(metricas, null, 2)}`
   function renderFinancial() {
     document.getElementById('monthLabel').textContent = `${meses[mesAtual]} · ${anoAtual}`;
     const monthTx = getMonthTransactions(mesAtual, anoAtual);
-    const receitas = monthTx.filter(t => t.tipo === 'receita').reduce((s,t) => s + t.valor, 0);
-    const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t)).reduce((s,t) => s + t.valor, 0);
+    const receitas = monthTx.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
+    const despesas = monthTx.filter(t => t.tipo === 'despesa' && isEfetivada(t) && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
     
     // Agendadas (futuras e vencidas) do mês atual
     const periodo = `${anoAtual}-${String(mesAtual+1).padStart(2,'0')}`;
@@ -5264,7 +5268,7 @@ ${JSON.stringify(metricas, null, 2)}`
     let totalIn = 0, totalOut = 0;
     for (let m = 0; m < 12; m++) {
       const txs = getMonthTransactions(m, annualYear);
-      const r = txs.filter(t => t.tipo === 'receita').reduce((s,t) => s + t.valor, 0);
+      const r = txs.filter(t => t.tipo === 'receita' && !isAjusteBalanco(t)).reduce((s,t) => s + t.valor, 0);
       const d = txs.filter(t => t.tipo === 'despesa').reduce((s,t) => s + t.valor, 0);
       monthlyData.push({ mes: m, receitas: r, despesas: d });
       totalIn += r; totalOut += d;
