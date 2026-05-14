@@ -15,6 +15,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.0/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.2/dist/umd/supabase.min.js"></script>
 <style>
   :root {
     --azul: #1e2a47;
@@ -560,6 +561,13 @@
 
   .transactions-card { background: white; border-radius: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); overflow: hidden; }
   .transactions-header { padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--cinza-claro); }
+  .sort-toggle-btn {
+    background: var(--cinza-claro); border: 1.5px solid var(--cinza-borda);
+    color: var(--azul); padding: 6px 12px; border-radius: 8px;
+    font-size: 11px; font-weight: 700; cursor: pointer;
+    transition: all 0.15s; white-space: nowrap;
+  }
+  .sort-toggle-btn:hover { background: var(--azul); color: white; border-color: var(--azul); }
   .transactions-header h3 { font-size: 14px; font-weight: 700; color: var(--azul); }
   .see-all { font-size: 12px; color: var(--verde-escuro); font-weight: 600; cursor: pointer; background: none; border: none; }
 
@@ -1088,6 +1096,19 @@
 
   /* Ícone configurações na top bar */
   .top-actions { display: flex; align-items: center; gap: 8px; }
+  .sync-badge {
+    font-size: 10px; font-weight: 700; padding: 5px 10px; border-radius: 20px;
+    cursor: pointer; white-space: nowrap; transition: all 0.15s; user-select: none;
+    border: 1.5px solid transparent;
+  }
+  .sync-badge.synced { background: #dcfce7; color: var(--verde-escuro); }
+  .sync-badge.syncing { background: var(--amarelo-claro); color: #92400e; }
+  .sync-badge.offline { background: var(--cinza-claro); color: var(--cinza-texto); }
+  .sync-badge.error { background: var(--vermelho-claro); color: var(--vermelho); }
+  .sync-badge:hover { opacity: 0.8; transform: scale(1.03); }
+  @media (max-width: 768px) {
+    .sync-badge { font-size: 9px; padding: 4px 8px; }
+  }
   .icon-action {
     width: 36px; height: 36px; border-radius: 10px;
     background: var(--cinza-claro); border: none; cursor: pointer;
@@ -1314,6 +1335,7 @@
           <div class="top-logo-text">Líder Commerce</div>
         </div>
         <div class="top-actions">
+          <span class="sync-badge offline" onclick="goToSyncSettings()" title="Status da sincronização">📴 Local</span>
           <button class="icon-action" onclick="goTo('settingsScreen')" title="Configurações"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
           <div class="user-avatar" onclick="sair()">A</div>
         </div>
@@ -1648,6 +1670,9 @@
         <div class="transactions-card">
           <div class="transactions-header">
             <h3 id="filterCount">0 movimentações</h3>
+            <button class="sort-toggle-btn" id="sortToggleBtn" onclick="toggleTxSort()" title="Alternar ordenação">
+              <span id="sortToggleLabel">Mais recentes ↓</span>
+            </button>
           </div>
           <div id="allTxList"></div>
         </div>
@@ -2052,10 +2077,53 @@
 
         <!-- Tab: Backup -->
         <div class="settings-panel" id="panel-backup">
-          <div class="settings-card">
-            <div class="settings-card-title" style="margin-bottom:8px">💾 Backup dos dados</div>
+          <!-- Sincronização na Nuvem -->
+          <div class="settings-card" style="border:2px solid var(--azul)">
+            <div class="settings-card-title" style="margin-bottom:8px">☁️ Sincronização na Nuvem (Supabase)</div>
             <div class="settings-card-subtitle" style="margin-bottom:16px">
-              Como seus dados ficam salvos apenas no navegador deste dispositivo, é <strong>fundamental fazer backup regularmente</strong>. Suba o arquivo .json no Google Drive para ter segurança.
+              Conecte ao Supabase para sincronizar seus dados entre <strong>PC e celular automaticamente</strong>. Faça um lançamento na rua pelo celular e ele aparece no PC.
+            </div>
+            
+            <div id="syncStatusBox" class="info-box" style="margin-bottom:14px;font-size:13px"></div>
+            
+            <div class="form-group">
+              <label class="form-label">Project URL</label>
+              <input type="text" class="form-input" id="supabaseUrl" placeholder="https://xxxxx.supabase.co">
+              <div class="settings-help">Encontre em: Supabase → Settings → API → Project URL</div>
+            </div>
+            
+            <div class="form-group">
+              <label class="form-label">Chave anônima (anon public)</label>
+              <input type="password" class="form-input" id="supabaseKey" placeholder="eyJhbGc...">
+              <div class="settings-help">
+                Supabase → Settings → API → Project API keys → <strong>anon public</strong>
+                · <a href="#" onclick="event.preventDefault();toggleSupabaseKey()" style="color:var(--azul-info)">👁 Mostrar/ocultar</a>
+              </div>
+            </div>
+            
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="secondary-btn" style="flex:1;min-width:130px" onclick="testarSupabase()">🧪 Testar conexão</button>
+              <button class="primary-btn" style="flex:1;min-width:130px" onclick="conectarSupabase()">☁️ Conectar e sincronizar</button>
+            </div>
+            
+            <div id="syncActionsBox" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--cinza-borda)">
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="secondary-btn" style="flex:1;min-width:130px" onclick="forcarPushSupabase()">⬆️ Enviar dados locais</button>
+                <button class="secondary-btn" style="flex:1;min-width:130px" onclick="forcarPullSupabase()">⬇️ Baixar dados da nuvem</button>
+              </div>
+              <button class="secondary-btn" style="width:100%;margin-top:8px;border-color:var(--vermelho);color:var(--vermelho)" onclick="desconectarSupabase()">🔌 Desconectar nuvem</button>
+            </div>
+            
+            <div style="margin-top:14px;padding:12px;background:var(--cinza-claro);border-radius:10px;font-size:11px;color:var(--cinza-texto);line-height:1.5">
+              <strong style="color:var(--azul)">🔒 Sobre segurança:</strong><br>
+              A URL e a chave anônima ficam salvas neste navegador. A chave anônima é feita para uso público e é protegida pelas regras do banco (RLS). Para revogar acesso, troque as chaves no painel do Supabase.
+            </div>
+          </div>
+
+          <div class="settings-card" style="margin-top:14px">
+            <div class="settings-card-title" style="margin-bottom:8px">💾 Backup manual (.json)</div>
+            <div class="settings-card-subtitle" style="margin-bottom:16px">
+              Mesmo com a nuvem, é bom ter um backup manual de tempos em tempos. Baixe o arquivo .json e guarde no Google Drive.
             </div>
 
             <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:20px">
@@ -2553,7 +2621,260 @@
   </div>
 </div>
 
+<!-- ===== MODAL ESCOLHER CONTA AO RECEBER ===== -->
+<div class="modal-overlay" id="recebimentoContaOverlay" onclick="closeRecebimentoContaIfOverlay(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeRecebimentoConta()" aria-label="Fechar">✕</button>
+    <div class="modal-title">💰 Confirmar recebimento</div>
+    <div class="modal-subtitle" id="recebimentoContaSubtitle">—</div>
+    <div class="form-group">
+      <label class="form-label">Em qual conta o pagamento caiu?</label>
+      <select class="form-select" id="recebimentoContaSelect"></select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Data do recebimento</label>
+      <input type="date" class="form-input" id="recebimentoContaData">
+    </div>
+    <button class="primary-btn" onclick="confirmarRecebimentoConta()">Confirmar recebimento</button>
+  </div>
+</div>
+
 <script>
+  /* ==================== SINCRONIZAÇÃO SUPABASE ==================== */
+  /*
+   * Estratégia: cache local (localStorage) para velocidade + sync com Supabase.
+   * - Ao abrir: carrega do Supabase (se configurado), senão usa cache local
+   * - Ao salvar: grava no cache local imediato + envia pro Supabase em background
+   * - Indicador visual mostra status da sincronização
+   */
+  const LiderSync = {
+    client: null,
+    enabled: false,
+    syncing: false,
+    lastError: null,
+    
+    // Configuração salva localmente (URL e key são "públicas" por design)
+    getConfig() {
+      try {
+        return JSON.parse(localStorage.getItem('lider_supabase_config') || 'null');
+      } catch(e) { return null; }
+    },
+    saveConfig(url, anonKey) {
+      localStorage.setItem('lider_supabase_config', JSON.stringify({ url, anonKey }));
+    },
+    clearConfig() {
+      localStorage.removeItem('lider_supabase_config');
+    },
+    
+    // Inicializa o cliente Supabase
+    init() {
+      const cfg = this.getConfig();
+      if (!cfg || !cfg.url || !cfg.anonKey) {
+        this.enabled = false;
+        return false;
+      }
+      try {
+        if (!window.supabase || !window.supabase.createClient) {
+          console.warn('SDK Supabase não carregou');
+          this.enabled = false;
+          return false;
+        }
+        this.client = window.supabase.createClient(cfg.url, cfg.anonKey);
+        this.enabled = true;
+        return true;
+      } catch(e) {
+        console.error('Erro ao inicializar Supabase:', e);
+        this.enabled = false;
+        this.lastError = e.message;
+        return false;
+      }
+    },
+    
+    updateStatusBadge(status) {
+      // status: 'syncing' | 'synced' | 'offline' | 'error'
+      const badges = document.querySelectorAll('.sync-badge');
+      badges.forEach(b => {
+        b.className = 'sync-badge ' + status;
+        const labels = {
+          syncing: '🔄 Sincronizando...',
+          synced: '☁️ Sincronizado',
+          offline: '📴 Local (sem nuvem)',
+          error: '⚠️ Erro de sync'
+        };
+        b.textContent = labels[status] || '';
+      });
+    },
+    
+    // Testa conexão
+    async testConnection(url, anonKey) {
+      try {
+        const testClient = window.supabase.createClient(url, anonKey);
+        const { error } = await testClient.from('app_data').select('chave').limit(1);
+        if (error) throw new Error(error.message);
+        return { ok: true };
+      } catch(e) {
+        return { ok: false, error: e.message };
+      }
+    },
+    
+    // === CARREGAR TUDO DO SUPABASE ===
+    async pullAll() {
+      if (!this.enabled || !this.client) return null;
+      this.syncing = true;
+      this.updateStatusBadge('syncing');
+      try {
+        const [tx, bi, me, mc, ad] = await Promise.all([
+          this.client.from('transactions').select('*'),
+          this.client.from('billings').select('*'),
+          this.client.from('marketing_entries').select('*'),
+          this.client.from('marketing_criativos').select('*'),
+          this.client.from('app_data').select('*')
+        ]);
+        
+        if (tx.error || bi.error || me.error || mc.error || ad.error) {
+          throw new Error((tx.error || bi.error || me.error || mc.error || ad.error).message);
+        }
+        
+        // Converte de volta pro formato do app
+        const result = {
+          transactions: (tx.data || []).map(r => this._fromDbTx(r)),
+          billings: (bi.data || []).map(r => this._fromDbBilling(r)),
+          marketingEntries: (me.data || []).map(r => this._fromDbMktEntry(r)),
+          marketingCriativos: (mc.data || []).map(r => this._fromDbCriativo(r)),
+          appData: {}
+        };
+        (ad.data || []).forEach(r => { result.appData[r.chave] = r.valor; });
+        
+        this.syncing = false;
+        this.lastError = null;
+        this.updateStatusBadge('synced');
+        return result;
+      } catch(e) {
+        console.error('Erro pullAll:', e);
+        this.syncing = false;
+        this.lastError = e.message;
+        this.updateStatusBadge('error');
+        return null;
+      }
+    },
+    
+    // === MAPEAMENTO app <-> banco ===
+    _toDbTx(t) {
+      return {
+        id: String(t.id), tipo: t.tipo, subtipo: t.subtipo || null,
+        categoria: t.categoria || null, subcategoria: t.subcategoria || null,
+        descricao: t.descricao || null, cliente: t.cliente || null, servico: t.servico || null,
+        valor: t.valor || 0, conta: t.conta || null, data: t.data,
+        titulo: t.titulo || null, status: t.status || null, billing_id: t.billing_id ? String(t.billing_id) : null
+      };
+    },
+    _fromDbTx(r) {
+      return {
+        id: r.id, tipo: r.tipo, subtipo: r.subtipo, categoria: r.categoria,
+        subcategoria: r.subcategoria, descricao: r.descricao, cliente: r.cliente,
+        servico: r.servico, valor: Number(r.valor), conta: r.conta, data: r.data,
+        titulo: r.titulo, status: r.status, billing_id: r.billing_id
+      };
+    },
+    _toDbBilling(b) {
+      return {
+        id: String(b.id), periodo: b.periodo, cliente: b.cliente,
+        cpf_cnpj: b.cpf_cnpj || b.cpfCnpj || null, telefone: b.telefone || null,
+        forma: b.forma || 'BOLETO', valor: b.valor || 0, vencimento: b.vencimento || null,
+        emissao: b.emissao || null, status: b.status || 'PENDENTE', cod_ext: b.cod_ext || null,
+        num_doc: b.num_doc ? String(b.num_doc) : null, multa: b.multa || 0, juros: b.juros || 0,
+        recorrente: !!b.recorrente, via_marketing: !!b.viaMarketing
+      };
+    },
+    _fromDbBilling(r) {
+      return {
+        id: r.id, periodo: r.periodo, cliente: r.cliente, cpf_cnpj: r.cpf_cnpj,
+        cpfCnpj: r.cpf_cnpj, telefone: r.telefone, forma: r.forma, valor: Number(r.valor),
+        vencimento: r.vencimento, emissao: r.emissao, status: r.status, cod_ext: r.cod_ext,
+        num_doc: r.num_doc, multa: Number(r.multa), juros: Number(r.juros),
+        recorrente: r.recorrente, viaMarketing: r.via_marketing
+      };
+    },
+    _toDbMktEntry(e) {
+      return {
+        id: String(e.id), data_ini: e.dataIni || null, data_fim: e.dataFim || null,
+        plataforma: e.plataforma || null, investimento: e.investimento || 0,
+        alcance: e.alcance || 0, impressoes: e.impressoes || 0, conversas: e.conversas || 0,
+        criativo_id: e.criativoId ? String(e.criativoId) : null, obs: e.obs || null
+      };
+    },
+    _fromDbMktEntry(r) {
+      return {
+        id: r.id, dataIni: r.data_ini, dataFim: r.data_fim, plataforma: r.plataforma,
+        investimento: Number(r.investimento), alcance: r.alcance, impressoes: r.impressoes,
+        conversas: r.conversas, criativoId: r.criativo_id, obs: r.obs
+      };
+    },
+    _toDbCriativo(c) {
+      return {
+        id: String(c.id), nome: c.nome, tipo: c.tipo || null, plataforma: c.plataforma || null,
+        status: c.status || 'ativo', descricao: c.descricao || null
+      };
+    },
+    _fromDbCriativo(r) {
+      return {
+        id: r.id, nome: r.nome, tipo: r.tipo, plataforma: r.plataforma,
+        status: r.status, descricao: r.descricao
+      };
+    },
+    
+    // === PUSH (envia tudo pro Supabase) ===
+    async pushTable(tableName, rows, mapper) {
+      if (!this.enabled || !this.client) return false;
+      try {
+        // Estratégia simples e robusta: apaga tudo e reinsere
+        // (volume de dados é pequeno: centenas de registros no máximo)
+        await this.client.from(tableName).delete().neq('id', '___never___');
+        if (rows.length > 0) {
+          const mapped = rows.map(mapper);
+          // Insere em lotes de 500
+          for (let i = 0; i < mapped.length; i += 500) {
+            const batch = mapped.slice(i, i + 500);
+            const { error } = await this.client.from(tableName).insert(batch);
+            if (error) throw new Error(error.message);
+          }
+        }
+        return true;
+      } catch(e) {
+        console.error(`Erro pushTable ${tableName}:`, e);
+        this.lastError = e.message;
+        return false;
+      }
+    },
+    
+    async pushAppData(chave, valor) {
+      if (!this.enabled || !this.client) return false;
+      try {
+        const { error } = await this.client.from('app_data')
+          .upsert({ chave, valor, updated_at: new Date().toISOString() });
+        if (error) throw new Error(error.message);
+        return true;
+      } catch(e) {
+        console.error('Erro pushAppData:', e);
+        this.lastError = e.message;
+        return false;
+      }
+    },
+    
+    // Debounce de push pra não floodar o Supabase
+    _pushTimers: {},
+    schedulePush(what, fn) {
+      if (this._pushTimers[what]) clearTimeout(this._pushTimers[what]);
+      this._pushTimers[what] = setTimeout(async () => {
+        if (!this.enabled) return;
+        this.updateStatusBadge('syncing');
+        await fn();
+        this.updateStatusBadge(this.lastError ? 'error' : 'synced');
+      }, 1200);
+    }
+  };
+
   /* ==================== ESTADO E DADOS ==================== */
   
   // Lançamentos financeiros - começa vazio (limpo para uso real)
@@ -2677,7 +2998,10 @@
     marketingEntries = [];
     localStorage.setItem('lider_marketing_v1', JSON.stringify(marketingEntries));
   }
-  function saveMarketing() { localStorage.setItem('lider_marketing_v1', JSON.stringify(marketingEntries)); }
+  function saveMarketing() {
+    localStorage.setItem('lider_marketing_v1', JSON.stringify(marketingEntries));
+    LiderSync.schedulePush('marketing', () => LiderSync.pushTable('marketing_entries', marketingEntries, LiderSync._toDbMktEntry.bind(LiderSync)));
+  }
   
   // Marketing - criativos (anúncios separados pra rastrear performance)
   let marketingCriativos = JSON.parse(localStorage.getItem('lider_criativos_v1') || 'null');
@@ -2685,7 +3009,10 @@
     marketingCriativos = [];
     localStorage.setItem('lider_criativos_v1', JSON.stringify(marketingCriativos));
   }
-  function saveCriativos() { localStorage.setItem('lider_criativos_v1', JSON.stringify(marketingCriativos)); }
+  function saveCriativos() {
+    localStorage.setItem('lider_criativos_v1', JSON.stringify(marketingCriativos));
+    LiderSync.schedulePush('criativos', () => LiderSync.pushTable('marketing_criativos', marketingCriativos, LiderSync._toDbCriativo.bind(LiderSync)));
+  }
 
   // Função antiga mantida (só usada se quiser restaurar dados teste manualmente)
   function generateInitialBillings() {
@@ -2800,7 +3127,10 @@
     outros: { label: 'Outros', subs: ['Empréstimos', 'Cartão de Crédito', 'Campanhas', 'Sistemas', 'Mercado'] }
   };
   let categorias = JSON.parse(localStorage.getItem('lider_cats_v1') || 'null') || JSON.parse(JSON.stringify(subcategoriasDefault));
-  function saveCats() { localStorage.setItem('lider_cats_v1', JSON.stringify(categorias)); }
+  function saveCats() {
+    localStorage.setItem('lider_cats_v1', JSON.stringify(categorias));
+    LiderSync.schedulePush('cats', () => LiderSync.pushAppData('categorias', categorias));
+  }
 
   // Configurações gerais (meta de clientes etc)
   let settings = JSON.parse(localStorage.getItem('lider_settings_v1') || 'null') || {
@@ -2841,7 +3171,10 @@
     settings.despesasModelo = JSON.parse(JSON.stringify(DESPESAS_MODELO_PADRAO));
   }
   if (!settings.saldosManuais) settings.saldosManuais = {};
-  function saveSettings() { localStorage.setItem('lider_settings_v1', JSON.stringify(settings)); }
+  function saveSettings() {
+    localStorage.setItem('lider_settings_v1', JSON.stringify(settings));
+    LiderSync.schedulePush('settings', () => LiderSync.pushAppData('settings', settings));
+  }
 
   // Compat: subcategorias legado ainda usado em algumas funções
   function getSubsObj() {
@@ -2869,8 +3202,14 @@
   ];
 
   /* ==================== UTILS ==================== */
-  function saveTx() { localStorage.setItem('lider_tx_v5', JSON.stringify(transactions)); }
-  function saveBillings() { localStorage.setItem('lider_billings_v3', JSON.stringify(billings)); }
+  function saveTx() {
+    localStorage.setItem('lider_tx_v5', JSON.stringify(transactions));
+    LiderSync.schedulePush('tx', () => LiderSync.pushTable('transactions', transactions, LiderSync._toDbTx.bind(LiderSync)));
+  }
+  function saveBillings() {
+    localStorage.setItem('lider_billings_v3', JSON.stringify(billings));
+    LiderSync.schedulePush('billings', () => LiderSync.pushTable('billings', billings, LiderSync._toDbBilling.bind(LiderSync)));
+  }
   function formatBRL(v) { return 'R$ ' + (v||0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function formatBRLCompact(v) {
     v = v || 0;
@@ -4821,8 +5160,7 @@ ${JSON.stringify(metricas, null, 2)}`
   }
 
   function quickMarkPaidRefresh(billingId, tipoModal) {
-    quickMarkPaid(billingId);
-    setTimeout(() => openReceivablesModal(tipoModal), 100);
+    quickMarkPaid(billingId, tipoModal);
   }
 
   function quickMarkAtrasadoRefresh(billingId, tipoModal) {
@@ -4848,29 +5186,63 @@ ${JSON.stringify(metricas, null, 2)}`
   function closeReceivables() { document.getElementById('receivablesOverlay').classList.remove('active'); }
   function closeReceivablesIfOverlay(e) { if (e.target.id === 'receivablesOverlay') closeReceivables(); }
 
-  function quickMarkPaid(billingId) {
+  // Guarda qual cobrança está sendo recebida e de qual modal veio
+  let _recebimentoPendente = null;
+
+  function quickMarkPaid(billingId, tipoModal) {
     const b = billings.find(x => x.id === billingId);
     if (!b) return;
+    _recebimentoPendente = { billingId, tipoModal: tipoModal || 'pendentes' };
+    
+    // Popula o select de contas
+    const contas = settings.contas || ['Asaas Alessandro','Asaas Grazielly','Asaas Líder','Bradesco Alessandro','Sicoob Líder'];
+    const sel = document.getElementById('recebimentoContaSelect');
+    sel.innerHTML = contas.map(c => `<option value="${c}">${c}</option>`).join('');
+    // Default: Asaas Líder se existir
+    if (contas.includes('Asaas Líder')) sel.value = 'Asaas Líder';
+    
+    // Data de hoje
+    document.getElementById('recebimentoContaData').value = new Date().toISOString().slice(0,10);
+    document.getElementById('recebimentoContaSubtitle').textContent = `${b.cliente} · ${formatBRL(b.valor)}`;
+    document.getElementById('recebimentoContaOverlay').classList.add('active');
+  }
+
+  function closeRecebimentoConta() {
+    document.getElementById('recebimentoContaOverlay').classList.remove('active');
+    _recebimentoPendente = null;
+  }
+  function closeRecebimentoContaIfOverlay(e) {
+    if (e.target.id === 'recebimentoContaOverlay') closeRecebimentoConta();
+  }
+
+  function confirmarRecebimentoConta() {
+    if (!_recebimentoPendente) return;
+    const b = billings.find(x => x.id === _recebimentoPendente.billingId);
+    if (!b) { closeRecebimentoConta(); return; }
+    
+    const conta = document.getElementById('recebimentoContaSelect').value;
+    const data = document.getElementById('recebimentoContaData').value || new Date().toISOString().slice(0,10);
+    const tipoModal = _recebimentoPendente.tipoModal;
+    
     b.status = 'PAGO';
-    // Cria lançamento no financeiro
+    // Cria lançamento no financeiro na conta escolhida
     const tx = {
       id: Date.now() + Math.random(),
       tipo: 'receita', subtipo: 'servico',
       cliente: b.cliente, servico: 'Cobrança mensal',
-      valor: b.valor, conta: 'Asaas Líder',
-      data: new Date().toISOString().slice(0,10),
+      valor: b.valor, conta: conta,
+      data: data,
       titulo: `Recebimento — ${b.cliente}`,
       billing_id: b.id
     };
     transactions.unshift(tx);
     saveBillings(); saveTx();
-    showToast(`✓ ${b.cliente} marcado como pago`);
+    showToast(`✓ ${b.cliente} · ${formatBRL(b.valor)} em ${conta}`);
     
-    // Re-renderiza tudo, e re-abre o modal pra atualizar a lista
+    closeRecebimentoConta();
     renderAll();
-    // Mantém o modal aberto mostrando a lista atualizada
-    const tipoAtual = document.getElementById('receivablesTitle').textContent.includes('atraso') ? 'atrasados' : 'pendentes';
-    openReceivablesModal(tipoAtual);
+    // Re-abre o modal de recebíveis atualizado
+    setTimeout(() => openReceivablesModal(tipoModal), 100);
   }
 
   function renderTxItem(t) {
@@ -4944,13 +5316,31 @@ ${JSON.stringify(metricas, null, 2)}`
   function setFilterToMonth(mes, ano) { currentMonthFilter = { mes, ano }; updateMonthFilterLabel(); renderAllTxList(); }
   function clearMonthFilter() { currentMonthFilter = null; updateMonthFilterLabel(); renderAllTxList(); }
 
+  // Ordenação: 'recentes' (data desc), 'antigas' (data asc)
+  let txSortOrder = 'recentes';
+  function toggleTxSort() {
+    txSortOrder = txSortOrder === 'recentes' ? 'antigas' : 'recentes';
+    const lbl = document.getElementById('sortToggleLabel');
+    if (lbl) lbl.textContent = txSortOrder === 'recentes' ? 'Mais recentes ↓' : 'Mais antigas ↑';
+    renderAllTxList();
+  }
+
   function renderAllTxList() {
     let f = [...transactions];
     if (currentMonthFilter) f = f.filter(t => { const [y,m] = t.data.split('-').map(Number); return y === currentMonthFilter.ano && (m-1) === currentMonthFilter.mes; });
     if (currentFilter === 'receita') f = f.filter(t => t.tipo === 'receita');
     else if (currentFilter === 'despesa') f = f.filter(t => t.tipo === 'despesa');
     else if (['fixos','funcionarios','outros'].includes(currentFilter)) f = f.filter(t => t.tipo === 'despesa' && t.categoria === currentFilter);
-    f.sort((a,b) => b.data.localeCompare(a.data));
+    
+    // Ordena por data; em caso de empate, usa o id (que tem timestamp de criação)
+    f.sort((a,b) => {
+      const cmp = a.data.localeCompare(b.data);
+      if (cmp !== 0) return txSortOrder === 'recentes' ? -cmp : cmp;
+      // Mesma data: ordena pela ordem de criação (id maior = criado depois)
+      const idCmp = (b.id || 0) - (a.id || 0);
+      return txSortOrder === 'recentes' ? idCmp : -idCmp;
+    });
+    
     document.getElementById('filterCount').textContent = `${f.length} ${f.length === 1 ? 'movimentação' : 'movimentações'}`;
     document.getElementById('allTxList').innerHTML = f.length ? f.map(renderTxItem).join('') : '<div class="empty-state">Nenhuma movimentação encontrada.</div>';
   }
@@ -5752,6 +6142,8 @@ ${JSON.stringify(metricas, null, 2)}`
     document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('panel-' + tab).classList.add('active');
+    if (tab === 'backup' && typeof renderSyncStatus === 'function') renderSyncStatus();
+    if (tab === 'ia' && typeof renderIaPanel === 'function') renderIaPanel();
   }
 
   function slugify(s) {
@@ -7065,6 +7457,215 @@ Agora responda à pergunta do Alessandro com base nesses dados REAIS. Cite NOMES
     reader.readAsText(file);
   }
 
+  /* ==================== SUPABASE — UI E AÇÕES ==================== */
+  function goToSyncSettings() {
+    goTo('settingsScreen');
+    setTimeout(() => {
+      const backupTabBtn = document.querySelector('.settings-tab[onclick*="backup"]');
+      if (backupTabBtn) backupTabBtn.click();
+    }, 100);
+  }
+  
+  function toggleSupabaseKey() {
+    const inp = document.getElementById('supabaseKey');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  }
+  
+  function renderSyncStatus() {
+    const box = document.getElementById('syncStatusBox');
+    const actionsBox = document.getElementById('syncActionsBox');
+    if (!box) return;
+    
+    const cfg = LiderSync.getConfig();
+    if (cfg && LiderSync.enabled) {
+      box.style.background = '#dcfce7';
+      box.style.color = 'var(--verde-escuro)';
+      box.innerHTML = `<strong>☁️ Nuvem conectada</strong><br>Projeto: <code>${cfg.url.replace('https://', '').replace('.supabase.co', '')}</code> · seus dados sincronizam automaticamente entre dispositivos.`;
+      if (actionsBox) actionsBox.style.display = 'block';
+      // Preenche os campos
+      document.getElementById('supabaseUrl').value = cfg.url;
+      document.getElementById('supabaseKey').value = cfg.anonKey;
+    } else if (cfg && !LiderSync.enabled) {
+      box.style.background = 'var(--amarelo-claro)';
+      box.style.color = '#92400e';
+      box.innerHTML = `<strong>⚠️ Configurado mas não conectado</strong><br>${LiderSync.lastError || 'Verifique a URL e a chave, ou teste a conexão.'}`;
+      if (actionsBox) actionsBox.style.display = 'block';
+      document.getElementById('supabaseUrl').value = cfg.url;
+      document.getElementById('supabaseKey').value = cfg.anonKey;
+    } else {
+      box.style.background = 'var(--cinza-claro)';
+      box.style.color = 'var(--cinza-texto)';
+      box.innerHTML = `<strong>📴 Modo local</strong><br>Seus dados ficam apenas neste navegador. Conecte ao Supabase para sincronizar com o celular.`;
+      if (actionsBox) actionsBox.style.display = 'none';
+    }
+  }
+  
+  async function testarSupabase() {
+    const url = document.getElementById('supabaseUrl').value.trim();
+    const key = document.getElementById('supabaseKey').value.trim();
+    
+    if (!url || !key) {
+      showToast('Preencha a URL e a chave anônima', true);
+      return;
+    }
+    if (!url.startsWith('https://') || !url.includes('.supabase.co')) {
+      showToast('URL inválida. Deve ser https://xxxxx.supabase.co', true);
+      return;
+    }
+    
+    showToast('🧪 Testando conexão...');
+    const result = await LiderSync.testConnection(url, key);
+    
+    if (result.ok) {
+      showToast('✓ Conexão funcionando! Pode conectar.');
+      const box = document.getElementById('syncStatusBox');
+      box.style.background = '#dcfce7';
+      box.style.color = 'var(--verde-escuro)';
+      box.innerHTML = '<strong>✓ Conexão testada com sucesso!</strong><br>Clique em "Conectar e sincronizar" para ativar.';
+    } else {
+      showToast('✕ Falha na conexão', true);
+      const box = document.getElementById('syncStatusBox');
+      box.style.background = 'var(--vermelho-claro)';
+      box.style.color = 'var(--vermelho)';
+      box.innerHTML = `<strong>✕ Erro:</strong> ${result.error}<br><span style="font-size:11px">Verifique se rodou o schema.sql e se a URL/chave estão corretas.</span>`;
+    }
+  }
+  
+  async function conectarSupabase() {
+    const url = document.getElementById('supabaseUrl').value.trim();
+    const key = document.getElementById('supabaseKey').value.trim();
+    
+    if (!url || !key) {
+      showToast('Preencha a URL e a chave anônima', true);
+      return;
+    }
+    
+    // Testa primeiro
+    showToast('🔄 Conectando...');
+    const result = await LiderSync.testConnection(url, key);
+    if (!result.ok) {
+      showToast('✕ Não foi possível conectar: ' + result.error, true);
+      return;
+    }
+    
+    // Salva config e inicializa
+    LiderSync.saveConfig(url, key);
+    LiderSync.init();
+    
+    // Verifica se a nuvem tem dados
+    const cloudData = await LiderSync.pullAll();
+    
+    if (cloudData) {
+      const cloudVazia = cloudData.transactions.length === 0 && 
+                         cloudData.billings.length === 0 &&
+                         Object.keys(cloudData.appData).length === 0;
+      const localTemDados = transactions.length > 0 || billings.length > 0;
+      
+      if (cloudVazia && localTemDados) {
+        // Nuvem vazia + tem dados locais → MIGRA pra nuvem
+        if (confirm(`A nuvem está vazia e você tem dados locais:\n\n• ${transactions.length} lançamentos\n• ${billings.length} cobranças\n• ${marketingEntries.length} lançamentos de marketing\n\nEnviar TUDO para a nuvem agora?`)) {
+          await migrarDadosParaNuvem();
+        }
+      } else if (!cloudVazia) {
+        // Nuvem tem dados → pergunta o que fazer
+        const usarNuvem = confirm(`A nuvem JÁ TEM dados:\n\n• ${cloudData.transactions.length} lançamentos\n• ${cloudData.billings.length} cobranças\n\nDeseja BAIXAR os dados da nuvem? (vai substituir os dados locais)\n\n• OK = baixar da nuvem\n• Cancelar = manter dados locais e enviar pra nuvem`);
+        
+        if (usarNuvem) {
+          aplicarDadosDaNuvem(cloudData);
+          showToast('✓ Dados baixados da nuvem!');
+        } else {
+          await migrarDadosParaNuvem();
+        }
+      } else {
+        showToast('✓ Nuvem conectada!');
+      }
+    }
+    
+    renderSyncStatus();
+    LiderSync.updateStatusBadge('synced');
+  }
+  
+  async function migrarDadosParaNuvem() {
+    showToast('⬆️ Enviando dados para a nuvem...');
+    LiderSync.updateStatusBadge('syncing');
+    
+    const r1 = await LiderSync.pushTable('transactions', transactions, LiderSync._toDbTx.bind(LiderSync));
+    const r2 = await LiderSync.pushTable('billings', billings, LiderSync._toDbBilling.bind(LiderSync));
+    const r3 = await LiderSync.pushTable('marketing_entries', marketingEntries, LiderSync._toDbMktEntry.bind(LiderSync));
+    const r4 = await LiderSync.pushTable('marketing_criativos', marketingCriativos, LiderSync._toDbCriativo.bind(LiderSync));
+    const r5 = await LiderSync.pushAppData('categorias', categorias);
+    const r6 = await LiderSync.pushAppData('settings', settings);
+    
+    if (r1 && r2 && r3 && r4 && r5 && r6) {
+      showToast('✓ Todos os dados enviados para a nuvem!');
+      LiderSync.updateStatusBadge('synced');
+    } else {
+      showToast('⚠️ Alguns dados não foram enviados. Tente "Enviar dados locais" novamente.', true);
+      LiderSync.updateStatusBadge('error');
+    }
+  }
+  
+  function aplicarDadosDaNuvem(cloudData) {
+    if (Array.isArray(cloudData.transactions)) {
+      transactions = cloudData.transactions;
+      localStorage.setItem('lider_tx_v5', JSON.stringify(transactions));
+    }
+    if (Array.isArray(cloudData.billings)) {
+      billings = cloudData.billings;
+      localStorage.setItem('lider_billings_v3', JSON.stringify(billings));
+    }
+    if (Array.isArray(cloudData.marketingEntries)) {
+      marketingEntries = cloudData.marketingEntries;
+      localStorage.setItem('lider_marketing_v1', JSON.stringify(marketingEntries));
+    }
+    if (Array.isArray(cloudData.marketingCriativos)) {
+      marketingCriativos = cloudData.marketingCriativos;
+      localStorage.setItem('lider_criativos_v1', JSON.stringify(marketingCriativos));
+    }
+    if (cloudData.appData) {
+      if (cloudData.appData.categorias) {
+        categorias = cloudData.appData.categorias;
+        localStorage.setItem('lider_cats_v1', JSON.stringify(categorias));
+      }
+      if (cloudData.appData.settings) {
+        settings = { ...settings, ...cloudData.appData.settings };
+        localStorage.setItem('lider_settings_v1', JSON.stringify(settings));
+      }
+    }
+    renderAll();
+    updateCategorias();
+  }
+  
+  async function forcarPushSupabase() {
+    if (!LiderSync.enabled) { showToast('Conecte ao Supabase primeiro', true); return; }
+    if (!confirm('Isso vai SUBSTITUIR os dados da nuvem pelos dados deste dispositivo. Continuar?')) return;
+    await migrarDadosParaNuvem();
+  }
+  
+  async function forcarPullSupabase() {
+    if (!LiderSync.enabled) { showToast('Conecte ao Supabase primeiro', true); return; }
+    if (!confirm('Isso vai SUBSTITUIR os dados deste dispositivo pelos dados da nuvem. Continuar?')) return;
+    
+    showToast('⬇️ Baixando dados da nuvem...');
+    const cloudData = await LiderSync.pullAll();
+    if (cloudData) {
+      aplicarDadosDaNuvem(cloudData);
+      showToast('✓ Dados baixados da nuvem!');
+    } else {
+      showToast('✕ Erro ao baixar dados', true);
+    }
+  }
+  
+  function desconectarSupabase() {
+    if (!confirm('Desconectar da nuvem? Seus dados continuam salvos neste dispositivo, mas param de sincronizar.')) return;
+    LiderSync.clearConfig();
+    LiderSync.enabled = false;
+    LiderSync.client = null;
+    renderSyncStatus();
+    LiderSync.updateStatusBadge('offline');
+    showToast('Desconectado da nuvem');
+  }
+
   /* ==================== IA CONFIG ==================== */
   function renderIaPanel() {
     document.getElementById('settingIaKey').value = getIaKey();
@@ -7179,6 +7780,30 @@ Agora responda à pergunta do Alessandro com base nesses dados REAIS. Cite NOMES
   updateCategorias();
   renderSidebars('homeScreen');
   renderAll();
+
+  /* ==================== INICIALIZAÇÃO SUPABASE ==================== */
+  (async function initSupabase() {
+    const ok = LiderSync.init();
+    if (ok) {
+      LiderSync.updateStatusBadge('syncing');
+      // Puxa dados da nuvem ao abrir o painel
+      const cloudData = await LiderSync.pullAll();
+      if (cloudData) {
+        const cloudVazia = cloudData.transactions.length === 0 && cloudData.billings.length === 0;
+        if (!cloudVazia) {
+          // Nuvem tem dados → usa eles (a nuvem é a fonte da verdade)
+          aplicarDadosDaNuvem(cloudData);
+        } else {
+          // Nuvem vazia mas tem config → mantém o que tá local (não faz nada)
+          LiderSync.updateStatusBadge('synced');
+        }
+      }
+      // Atualiza UI de status se estiver na tela de config
+      if (typeof renderSyncStatus === 'function') renderSyncStatus();
+    } else {
+      LiderSync.updateStatusBadge('offline');
+    }
+  })();
 
   /* ==================== SERVICE WORKER (PWA OFFLINE) ==================== */
   if ('serviceWorker' in navigator) {
