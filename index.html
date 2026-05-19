@@ -2016,6 +2016,43 @@
   .promo-status.ativa { background: #dcfce7; color: #16a34a; }
   .promo-status.encerrada { background: #f1f5f9; color: #64748b; }
   
+  /* ===== CATÁLOGO DE PRODUTOS ===== */
+  .cat-filtros {
+    background: white; border: 1.5px solid var(--cinza-borda);
+    border-radius: 12px; padding: 12px; margin-bottom: 12px;
+  }
+  .cat-filtros-linha {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px;
+  }
+  .cat-resumo { font-size: 12px; color: var(--cinza-texto); margin-bottom: 10px; }
+  .cat-prod {
+    display: flex; gap: 12px; align-items: center;
+    background: white; border: 1.5px solid var(--cinza-borda);
+    border-radius: 10px; padding: 10px; margin-bottom: 8px;
+  }
+  .cat-prod-foto {
+    width: 56px; height: 56px; border-radius: 8px; object-fit: cover;
+    background: var(--cinza-claro); flex-shrink: 0;
+  }
+  .cat-prod-foto-vazia {
+    display: flex; align-items: center; justify-content: center; font-size: 22px;
+  }
+  .cat-prod-info { flex: 1; min-width: 0; }
+  .cat-prod-nome {
+    font-weight: 700; font-size: 13px; color: var(--azul);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cat-prod-meta { font-size: 11px; color: var(--cinza-texto); margin-top: 2px; }
+  .cat-prod-preco { font-weight: 800; font-size: 13px; color: #16a34a; }
+  .cat-prod-tags { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+  .cat-tag {
+    font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+    background: var(--cinza-claro); color: var(--cinza-texto);
+  }
+  .cat-tag.ativo { background: #dcfce7; color: #16a34a; }
+  .cat-tag.rascunho { background: #fef3c7; color: #b45309; }
+  .cat-tag.importado { background: #e0e7ff; color: #4338ca; }
+  
   /* ===== RECONCILIAÇÃO DE SKU ===== */
   .reco-secao {
     background: white; border: 1.5px solid var(--cinza-borda);
@@ -3644,7 +3681,10 @@
                 <p>Gerencie suas demandas de ponta a ponta</p>
               </div>
             </div>
-            <button class="op-new-btn" onclick="abrirNovaDemanda()">+ Nova Demanda</button>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="op-new-btn" onclick="abrirProdutosOperacao()" style="background:rgba(255,255,255,0.15)">📦 Produtos</button>
+              <button class="op-new-btn" onclick="abrirNovaDemanda()">+ Nova Demanda</button>
+            </div>
           </div>
           <div class="op-hero-stats">
             <div class="op-stat">
@@ -4193,6 +4233,48 @@
     
     <button class="primary-btn" onclick="salvarPromocao()">Salvar promoção</button>
     <button class="delete-btn" id="promoDeleteBtn" onclick="excluirPromocao()" style="display:none">🗑 Excluir</button>
+  </div>
+</div>
+
+<!-- ===== CATÁLOGO DE PRODUTOS (Operação) ===== -->
+<div class="screen" id="catalogoProdutosScreen">
+  <div class="app-header">
+    <div class="header-content">
+      <button class="back-btn" onclick="goTo('operacaoScreen')">←</button>
+      <div class="header-title-group">
+        <div class="header-title">📦 Produtos</div>
+        <div class="header-subtitle">Todos os produtos do sistema</div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="screen-content">
+    <!-- Filtros -->
+    <div class="cat-filtros">
+      <input type="text" class="form-input" id="catBusca" placeholder="🔍 Buscar por nome ou SKU..."
+             oninput="renderCatalogoProdutos()">
+      <div class="cat-filtros-linha">
+        <select class="form-input" id="catFiltroLoja" onchange="renderCatalogoProdutos()">
+          <option value="">Todas as lojas</option>
+        </select>
+        <select class="form-input" id="catFiltroStatus" onchange="renderCatalogoProdutos()">
+          <option value="">Todos os status</option>
+          <option value="ativo">🟢 Ativo</option>
+          <option value="rascunho">📝 Rascunho</option>
+          <option value="inativo">⚪ Inativo</option>
+        </select>
+        <select class="form-input" id="catOrdenar" onchange="renderCatalogoProdutos()">
+          <option value="nome">Nome (A-Z)</option>
+          <option value="preco_asc">Preço: menor → maior</option>
+          <option value="preco_desc">Preço: maior → menor</option>
+          <option value="estoque_asc">Estoque: menor → maior</option>
+          <option value="estoque_desc">Estoque: maior → menor</option>
+        </select>
+      </div>
+    </div>
+    
+    <div id="catResumo" class="cat-resumo"></div>
+    <div id="catProdutosList"></div>
   </div>
 </div>
 
@@ -6501,9 +6583,45 @@
   
   // --- Produtos ---
   let produtosErp = JSON.parse(localStorage.getItem('lider_produtos_v1') || '[]');
+  
+  // saveProdutos: grava no cache local (rápido) e envia pro backend.
   function saveProdutos() {
     localStorage.setItem('lider_produtos_v1', JSON.stringify(produtosErp));
     LiderSync.schedulePush('produtos', () => LiderSync.pushAppData('produtos', produtosErp));
+  }
+  
+  // Salva UM produto no backend (cria se não tem id de banco, atualiza se tem).
+  // Devolve o produto com o id do banco preenchido.
+  async function salvarProdutoNoBackend(produto) {
+    const temIdBanco = produto.idBanco != null;
+    const url = BACKEND_URL + '/api/produtos' + (temIdBanco ? '/' + produto.idBanco : '');
+    const resp = await fetch(url, {
+      method: temIdBanco ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+      body: JSON.stringify(produto)
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.erro || 'Erro ao salvar produto no backend');
+    return data.produto;
+  }
+  
+  // Carrega os produtos do backend e atualiza o cache local
+  async function carregarProdutosDoBackend() {
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/produtos', {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const data = await resp.json();
+      if (data.ok && Array.isArray(data.produtos)) {
+        // o backend devolve com 'id' = id do banco; guardamos como idBanco
+        produtosErp = data.produtos.map(p => ({ ...p, idBanco: p.id, id: p.id }));
+        localStorage.setItem('lider_produtos_v1', JSON.stringify(produtosErp));
+        if (typeof renderProdutos === 'function') renderProdutos();
+        if (typeof renderCatalogoProdutos === 'function') renderCatalogoProdutos();
+      }
+    } catch (e) {
+      // Backend fora — segue com o cache local, sem quebrar
+    }
   }
   
   // --- Mapeamento de categorias (De↔Para) ---
@@ -6800,18 +6918,20 @@
       atualizadoEm: new Date().toISOString()
     };
     
+    let produtoSalvo;
     if (_produtoEditandoId) {
       const p = produtosErp.find(x => String(x.id) === String(_produtoEditandoId));
-      if (p) Object.assign(p, dados);
+      if (p) { Object.assign(p, dados); produtoSalvo = p; }
     } else {
-      produtosErp.push({
+      produtoSalvo = {
         id: gerarId(),
         ...dados,
         marketplaces: {},
         // Produtos NOVOS usam o modelo atual: preço por variação (igual Shopee e ML 2025+)
         modeloPreco: 'variacao',
         criadoEm: new Date().toISOString()
-      });
+      };
+      produtosErp.push(produtoSalvo);
     }
     
     // Guarda o guia na biblioteca da loja (reaproveita se já existir igual)
@@ -6823,6 +6943,21 @@
     closeProduto();
     renderProdutos();
     showToast('✓ Produto salvo');
+    
+    // Envia o produto pro backend (Supabase) em segundo plano
+    if (produtoSalvo) {
+      salvarProdutoNoBackend(produtoSalvo)
+        .then(salvo => {
+          // guarda o id do banco pra futuras atualizações
+          if (salvo && salvo.id) {
+            produtoSalvo.idBanco = salvo.id;
+            saveProdutos();
+          }
+        })
+        .catch(err => {
+          showToast('⚠ Produto salvo localmente, mas não sincronizou: ' + err.message, true);
+        });
+    }
   }
   
   function excluirProduto() {
@@ -6836,6 +6971,13 @@
       closeProduto();
       renderProdutos();
       showToast('Produto movido para a lixeira');
+      // Avisa o backend (exclusão lógica)
+      if (p.idBanco != null) {
+        fetch(BACKEND_URL + '/api/produtos/' + p.idBanco, {
+          method: 'DELETE',
+          headers: { 'x-api-token': getApiToken() }
+        }).catch(() => {});
+      }
     }
   }
   
@@ -8116,6 +8258,101 @@ São o mesmo produto?`;
   }
   
   // === Renderização da tela de reconciliação ===
+  // ============================================================
+  // ====== CATÁLOGO DE PRODUTOS (tela na Operação) =============
+  // ============================================================
+  function abrirProdutosOperacao() {
+    goTo('catalogoProdutosScreen');
+    // Preenche o filtro de lojas
+    const selLoja = document.getElementById('catFiltroLoja');
+    if (selLoja) {
+      selLoja.innerHTML = '<option value="">Todas as lojas</option>' +
+        lojasErp.map(l => `<option value="${l.id}">${escapeHtml(l.nome)}</option>`).join('');
+    }
+    renderCatalogoProdutos();
+  }
+  
+  // Soma o estoque de todas as variações de um produto
+  function estoqueTotalProduto(p) {
+    if (!p.variacoes || p.variacoes.length === 0) return 0;
+    return p.variacoes.reduce((s, v) => s + (parseInt(v.estoque) || 0), 0);
+  }
+  
+  function renderCatalogoProdutos() {
+    const cont = document.getElementById('catProdutosList');
+    const resumo = document.getElementById('catResumo');
+    if (!cont) return;
+    
+    const busca = (document.getElementById('catBusca').value || '').toLowerCase().trim();
+    const fLoja = document.getElementById('catFiltroLoja').value;
+    const fStatus = document.getElementById('catFiltroStatus').value;
+    const ordenar = document.getElementById('catOrdenar').value;
+    
+    // Filtra
+    let lista = produtosErp.filter(p => {
+      if (p.status === 'excluido') return false;
+      if (fLoja && String(p.lojaId) !== String(fLoja)) return false;
+      if (fStatus && p.status !== fStatus) return false;
+      if (busca) {
+        const alvo = ((p.nome||'') + ' ' + (p.skuPai||'')).toLowerCase();
+        if (!alvo.includes(busca)) return false;
+      }
+      return true;
+    });
+    
+    // Ordena
+    lista.sort((a, b) => {
+      if (ordenar === 'preco_asc') return (a.preco||0) - (b.preco||0);
+      if (ordenar === 'preco_desc') return (b.preco||0) - (a.preco||0);
+      if (ordenar === 'estoque_asc') return estoqueTotalProduto(a) - estoqueTotalProduto(b);
+      if (ordenar === 'estoque_desc') return estoqueTotalProduto(b) - estoqueTotalProduto(a);
+      return (a.nome||'').localeCompare(b.nome||'');
+    });
+    
+    resumo.textContent = lista.length + ' produto(s)';
+    
+    if (lista.length === 0) {
+      cont.innerHTML = '<div class="prod-vazio"><div class="prod-vazio-icone">📦</div><div>Nenhum produto encontrado.</div></div>';
+      return;
+    }
+    
+    cont.innerHTML = lista.map(p => {
+      const loja = lojasErp.find(l => String(l.id) === String(p.lojaId));
+      const foto = (p.fotos && p.fotos[0])
+        ? `<img class="cat-prod-foto" src="${p.fotos[0]}">`
+        : '<div class="cat-prod-foto cat-prod-foto-vazia">📦</div>';
+      const estoque = estoqueTotalProduto(p);
+      const nVar = (p.variacoes||[]).length;
+      
+      let tags = '';
+      if (p.status === 'ativo') tags += '<span class="cat-tag ativo">Ativo</span>';
+      else if (p.status === 'rascunho') tags += '<span class="cat-tag rascunho">Rascunho</span>';
+      else tags += '<span class="cat-tag">' + (p.status||'—') + '</span>';
+      if (p.origem === 'importado') tags += '<span class="cat-tag importado">Importado</span>';
+      // marketplaces onde está
+      Object.keys(p.marketplaces||{}).forEach(mk => {
+        if (p.marketplaces[mk] && p.marketplaces[mk].exportado) {
+          tags += '<span class="cat-tag">' + mk + '</span>';
+        }
+      });
+      
+      return `
+        <div class="cat-prod" onclick="abrirEditarProduto('${p.id}')">
+          ${foto}
+          <div class="cat-prod-info">
+            <div class="cat-prod-nome">${escapeHtml(p.nome||'(sem nome)')}</div>
+            <div class="cat-prod-meta">
+              SKU ${escapeHtml(p.skuPai||'—')} · ${loja ? escapeHtml(loja.nome) : 'sem loja'}
+              · ${nVar} variação(ões) · estoque ${estoque}
+            </div>
+            <div class="cat-prod-tags">${tags}</div>
+          </div>
+          <div class="cat-prod-preco">R$ ${(p.preco||0).toFixed(2)}</div>
+        </div>
+      `;
+    }).join('');
+  }
+  
   function renderReconciliacao() {
     if (!_reconciliacao) {
       document.getElementById('recoResumo').innerHTML =
@@ -10847,6 +11084,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (screenId === 'estoqueScreen') renderEstoque();
     if (screenId === 'promocoesScreen') renderPromocoes();
     if (screenId === 'reconciliacaoScreen') renderReconciliacao();
+    if (screenId === 'catalogoProdutosScreen') renderCatalogoProdutos();
     renderSidebars(screenId);
   }
 
@@ -16786,6 +17024,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   updateCategorias();
   renderSidebars('homeScreen');
   renderAll();
+  
+  // Carrega os produtos do backend (Supabase) ao abrir
+  carregarProdutosDoBackend();
   
   // Detecta retorno do vínculo de marketplace (OAuth)
   // O backend redireciona pra cá com ?vinculo=mercadolivre&status=sucesso
