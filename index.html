@@ -3980,6 +3980,17 @@
       <label class="form-label">Descrição</label>
       <textarea class="form-input" id="prodDescricao" rows="3" placeholder="Descrição do produto para os anúncios"></textarea>
     </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Marca</label>
+        <input type="text" class="form-input" id="prodMarca" placeholder="Ex: Líder">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Material</label>
+        <input type="text" class="form-input" id="prodMaterial" placeholder="Ex: Couro">
+      </div>
+    </div>
+    <div class="settings-help" style="margin-top:-6px;margin-bottom:10px">Marca e material ajudam a montar o título no formato da Shein.</div>
     <div class="form-group">
       <label class="form-label">Status</label>
       <select class="form-input" id="prodStatus">
@@ -6619,6 +6630,8 @@
     document.getElementById('prodPreco').value = '';
     document.getElementById('prodPeso').value = '';
     document.getElementById('prodDescricao').value = '';
+    document.getElementById('prodMarca').value = '';
+    document.getElementById('prodMaterial').value = '';
     document.getElementById('prodStatus').value = 'rascunho';
     document.getElementById('prodDeleteBtn').style.display = 'none';
     document.getElementById('prodMktStatus').style.display = 'none';
@@ -6642,6 +6655,8 @@
     document.getElementById('prodPreco').value = p.preco || '';
     document.getElementById('prodPeso').value = p.peso || '';
     document.getElementById('prodDescricao').value = p.descricao || '';
+    document.getElementById('prodMarca').value = p.marca || '';
+    document.getElementById('prodMaterial').value = p.material || '';
     document.getElementById('prodStatus').value = p.status === 'excluido' ? 'rascunho' : p.status;
     document.getElementById('prodDeleteBtn').style.display = p.status === 'excluido' ? 'none' : 'block';
     popularSelectsProduto();
@@ -6766,6 +6781,8 @@
       preco: parseFloat(document.getElementById('prodPreco').value) || 0,
       peso: parseFloat(document.getElementById('prodPeso').value) || 0,
       descricao: document.getElementById('prodDescricao').value.trim(),
+      marca: document.getElementById('prodMarca').value.trim(),
+      material: document.getElementById('prodMaterial').value.trim(),
       status: document.getElementById('prodStatus').value,
       fotos: [..._fotosProdutoSessao],
       variacoes: JSON.parse(JSON.stringify(_variacoesProduto)),
@@ -6832,8 +6849,25 @@
       return;
     }
     
+    // SHEIN: resolve SKUs duplicados ANTES de exportar (a Shein não aceita SKU repetido)
+    let produtoParaExportar = p;
+    if (marketplace === 'shein') {
+      const prep = prepararProdutoParaShein(p);
+      if (prep.ajustes.length > 0) {
+        // Avisa o usuário sobre os SKUs que foram ajustados automaticamente
+        let msg = '🔄 SKU duplicado detectado na Shein\n\n';
+        msg += 'A Shein não aceita SKU repetido. O sistema gerou SKUs novos automaticamente:\n\n';
+        prep.ajustes.forEach(a => {
+          msg += '• ' + a.tipo + ': "' + a.de + '" → "' + a.para + '"\n';
+        });
+        msg += '\nContinuar com os SKUs novos?';
+        if (!confirm(msg)) return;
+      }
+      produtoParaExportar = prep.produto;
+    }
+    
     // Monta o payload no formato do marketplace
-    const payload = montarPayloadExport(p, marketplace);
+    const payload = montarPayloadExport(produtoParaExportar, marketplace);
     
     const temBackend = !!configIntegracoes.backendUrl;
     if (!temBackend) {
@@ -6843,6 +6877,14 @@
         'Configurações → 🔌 Integrações de API\n\n' +
         'Quando o backend estiver ativo, este botão envia o produto automaticamente.');
       return;
+    }
+    
+    // SHEIN: registra os SKUs usados (pra próxima vez detectar duplicata)
+    if (marketplace === 'shein') {
+      if (produtoParaExportar.skuPai) registrarSkuShein(produtoParaExportar.skuPai);
+      (produtoParaExportar.variacoes||[]).forEach(v => {
+        if (v.sku) registrarSkuShein(v.sku);
+      });
     }
     
     // Backend configurado → marca como exportado (estrutura)
@@ -6911,6 +6953,20 @@
       );
       if (!temGuia) {
         erros.push('Guia de tamanhos (o TikTok exige — texto ou imagem gerada por IA)');
+      }
+    }
+    // Shein exige variações, guia de tamanhos e título no formato dela
+    if (marketplace === 'shein') {
+      if (!p.variacoes || p.variacoes.length === 0) {
+        erros.push('Pelo menos uma variação (a Shein exige)');
+      }
+      if (!p.guiaTamanhos || !p.guiaTamanhos.linhas || p.guiaTamanhos.linhas.length === 0) {
+        erros.push('Guia de tamanhos (a Shein exige)');
+      }
+      const tituloShein = montarTituloShein(p);
+      const nPal = tituloShein.split(' ').filter(Boolean).length;
+      if (nPal < 5) {
+        erros.push('Título da Shein muito curto (' + nPal + ' palavras, mínimo 5) — preencha marca e material');
       }
     }
     return erros;
@@ -7049,8 +7105,181 @@
       };
     }
     
-    // Shein usa a base (será adaptado quando chegarmos nele)
+    // === SHEIN — formato SPU / SKC / SKU ===
+    // Hierarquia da Shein: SPU (produto) > SKC (agrupado por cor) > SKU (cor+tamanho).
+    // As fotos ficam no nivel SKC (por cor), diferente dos outros marketplaces.
+    if (marketplace === 'shein') {
+      // Agrupa as variações por COR (cada cor vira um SKC)
+      const porCor = {};
+      (p.variacoes||[]).forEach(v => {
+        const attrs = montarAttrShein(v);
+        const cor = attrs.cor || 'Único';
+        if (!porCor[cor]) porCor[cor] = [];
+        porCor[cor].push({ variacao: v, tamanho: attrs.tamanho });
+      });
+      
+      // Monta os SKCs (um por cor)
+      const skcList = Object.keys(porCor).map(cor => ({
+        skc_name: cor,
+        // fotos do SKC — por cor (Shein vincula imagem no SKC)
+        images: p.fotos || [],
+        skus: porCor[cor].map(item => ({
+          // SKU único — a Shein não aceita SKU repetido
+          sku_code: item.variacao.sku,
+          sale_attributes: [
+            { name: 'Color', value: cor },
+            { name: 'Size', value: item.tamanho || '-' }
+          ],
+          price: parseFloat(item.variacao.preco) || p.preco,
+          stock: parseInt(item.variacao.estoque) || 0
+        }))
+      }));
+      
+      return {
+        marketplace: 'shein',
+        // SPU = produto base
+        spu_name: montarTituloShein(p),
+        category_id: categoriaMkt,
+        description: p.descricao || '',
+        brand: p.marca || 'Generic',
+        // size guide — a Shein também usa guia de tamanhos
+        size_template: p.guiaTamanhos || null,
+        skc_list: skcList,
+        attributes: p.atributosShein || [],
+        _pendencias: pendenciasShein(p, categoriaMkt)
+      };
+    }
+    
+    // Fallback (nao deveria chegar aqui)
     return { marketplace, ...base };
+  }
+  
+  // Extrai cor e tamanho da variação (formato "Cor Tamanho", ex: "Preto 40")
+  function montarAttrShein(variacao) {
+    const nome = (variacao.nome || '').trim();
+    if (!nome) return { cor: '', tamanho: '' };
+    const partes = nome.split(/\s+/);
+    let cor = '', tamanho = '';
+    partes.forEach(parte => {
+      if (/^\d+$/.test(parte) || /^(PP|P|M|G|GG|XG)$/i.test(parte)) {
+        tamanho = parte;
+      } else {
+        cor = cor ? cor + ' ' + parte : parte;
+      }
+    });
+    return { cor, tamanho };
+  }
+  
+  // Monta o título no formato Shein: [Marca] [Material] [Cor] [Padrão] [Palavra] [Categoria]
+  // Regras: sem caracteres especiais, entre 5 e 11 palavras
+  function montarTituloShein(p) {
+    const partes = [];
+    if (p.marca) partes.push(p.marca);
+    if (p.material) partes.push(p.material);
+    // cor principal (da primeira variação)
+    const primeiraVar = (p.variacoes||[])[0];
+    if (primeiraVar) {
+      const attrs = montarAttrShein(primeiraVar);
+      if (attrs.cor) partes.push(attrs.cor);
+    }
+    // o nome do produto entra como palavra-chave + categoria
+    if (p.nome) partes.push(p.nome);
+    if (p.categoria) partes.push(p.categoria);
+    
+    // junta, remove caracteres especiais, limita a 11 palavras
+    let titulo = partes.join(' ')
+      .replace(/[~!@#$%^&*:_]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const palavras = titulo.split(' ');
+    if (palavras.length > 11) titulo = palavras.slice(0, 11).join(' ');
+    return titulo;
+  }
+  
+  // Pendências do anúncio Shein
+  function pendenciasShein(p, categoriaMkt) {
+    const faltam = [];
+    if (!categoriaMkt) faltam.push('Vínculo da categoria com a Shein');
+    if (!p.fotos || p.fotos.length === 0) faltam.push('Fotos do produto');
+    if (!p.variacoes || p.variacoes.length === 0) faltam.push('Pelo menos uma variação');
+    // título da Shein: 5 a 11 palavras
+    const titulo = montarTituloShein(p);
+    const numPalavras = titulo.split(' ').filter(Boolean).length;
+    if (numPalavras < 5) {
+      faltam.push('Título muito curto para a Shein (tem ' + numPalavras + ' palavras, mínimo 5) — preencha marca/material');
+    }
+    if (!p.guiaTamanhos || !p.guiaTamanhos.linhas || p.guiaTamanhos.linhas.length === 0) {
+      faltam.push('Guia de tamanhos');
+    }
+    return faltam;
+  }
+  
+  // ============================================================
+  // ====== SKU UNICO PARA SHEIN (anuncios duplicados) ==========
+  // ============================================================
+  // A Shein NAO aceita SKU repetido. Quando um anuncio duplicado
+  // vai pra Shein, o sistema gera um SKU novo com sufixo numerico.
+  
+  // Registro dos SKUs ja usados na Shein (controle interno)
+  let skusUsadosShein = JSON.parse(localStorage.getItem('lider_skus_shein_v1') || '[]');
+  function saveSkusShein() {
+    localStorage.setItem('lider_skus_shein_v1', JSON.stringify(skusUsadosShein));
+    LiderSync.schedulePush('settings', () => LiderSync.pushAppData('skus_shein', skusUsadosShein));
+  }
+  
+  // Verifica se um SKU ja foi usado na Shein
+  function skuUsadoNaShein(sku) {
+    return skusUsadosShein.includes(String(sku).toLowerCase());
+  }
+  
+  // Gera um SKU unico: se 'FLOR-001' ja existe, devolve 'FLOR-001-001', depois '-002'...
+  function gerarSkuUnicoShein(skuBase) {
+    if (!skuUsadoNaShein(skuBase)) {
+      return skuBase; // o SKU original ainda esta livre
+    }
+    // procura o proximo sufixo livre
+    let n = 1;
+    let novoSku;
+    do {
+      novoSku = skuBase + '-' + String(n).padStart(3, '0');
+      n++;
+    } while (skuUsadoNaShein(novoSku) && n < 1000);
+    return novoSku;
+  }
+  
+  // Registra um SKU como usado na Shein
+  function registrarSkuShein(sku) {
+    const s = String(sku).toLowerCase();
+    if (!skusUsadosShein.includes(s)) {
+      skusUsadosShein.push(s);
+      saveSkusShein();
+    }
+  }
+  
+  // Prepara um produto pra Shein: resolve SKUs duplicados automaticamente.
+  // Retorna { produto, ajustes: [{de, para}] } — os ajustes sao mostrados ao usuario.
+  function prepararProdutoParaShein(produto) {
+    const ajustes = [];
+    // copia o produto pra nao alterar o original
+    const copia = JSON.parse(JSON.stringify(produto));
+    
+    // resolve o SKU pai
+    if (copia.skuPai && skuUsadoNaShein(copia.skuPai)) {
+      const novo = gerarSkuUnicoShein(copia.skuPai);
+      ajustes.push({ tipo: 'SKU pai', de: copia.skuPai, para: novo });
+      copia.skuPai = novo;
+    }
+    
+    // resolve os SKUs das variações
+    (copia.variacoes || []).forEach(v => {
+      if (v.sku && skuUsadoNaShein(v.sku)) {
+        const novo = gerarSkuUnicoShein(v.sku);
+        ajustes.push({ tipo: 'Variação ' + (v.nome||''), de: v.sku, para: novo });
+        v.sku = novo;
+      }
+    });
+    
+    return { produto: copia, ajustes };
   }
   
   // Monta sales_attributes do TikTok a partir da variação
