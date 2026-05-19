@@ -6361,11 +6361,20 @@
     const inp = document.getElementById('backendUrl');
     if (inp && !inp.value) inp.value = configIntegracoes.backendUrl || '';
     
+    // Desenha a lista com o status que temos em mãos
+    desenharIntegracoes();
+    // E consulta o backend pra atualizar o status real
+    atualizarStatusIntegracoes();
+  }
+  
+  // Desenha os cards com o status atual em memória
+  function desenharIntegracoes() {
+    const lista = document.getElementById('integracoesList');
+    if (!lista) return;
     const temBackend = !!configIntegracoes.backendUrl;
     
     lista.innerHTML = CATALOGO_INTEGRACOES.map(integ => {
       let st = configIntegracoes.status[integ.id] || 'off';
-      // Se tem backend mas status é off, mostra "aguardando"
       if (temBackend && st === 'off') st = 'aguardando';
       const lbl = labelStatusInteg(st);
       const corTexto = integ.corTexto || 'white';
@@ -6379,26 +6388,98 @@
               <span class="integ-bolinha ${lbl.cls}"></span>${lbl.txt}
             </span>
           </div>
-          <button class="integ-acao-btn" onclick="abrirInfoIntegracao('${integ.id}')">Detalhes</button>
+          <button class="integ-acao-btn" onclick="abrirInfoIntegracao('${integ.id}')">${['mercadolivre'].includes(integ.id) ? 'Conectar' : 'Detalhes'}</button>
         </div>
       `;
     }).join('');
   }
   
-  function abrirInfoIntegracao(id) {
+  // Consulta o backend e atualiza o status de cada integração
+  async function atualizarStatusIntegracoes() {
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/status', {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const data = await resp.json();
+      if (!data.ok || !Array.isArray(data.marketplaces)) return;
+      
+      // Atualiza o status: configurado no backend = 'on' (verde)
+      data.marketplaces.forEach(mk => {
+        configIntegracoes.status[mk.marketplace] = mk.configurado ? 'on' : 'aguardando';
+      });
+      // ChatGPT e a IA: se o backend responde, a IA está ativa
+      configIntegracoes.status['chatgpt'] = 'on';
+      
+      saveIntegracoes();
+      desenharIntegracoes();
+    } catch (e) {
+      // Backend fora do ar — mantém o status anterior, sem quebrar a tela
+    }
+  }
+  
+  // Marketplaces que suportam vínculo de conta via OAuth
+  const MARKETPLACES_OAUTH = ['mercadolivre'];
+  
+  async function abrirInfoIntegracao(id) {
     const integ = CATALOGO_INTEGRACOES.find(i => i.id === id);
     if (!integ) return;
-    const temBackend = !!configIntegracoes.backendUrl;
-    let msg = '🔌 ' + integ.nome + '\n\n' + integ.desc + '\n\n';
-    if (!temBackend) {
-      msg += '⚠️ Primeiro informe o endereço do seu backend no campo acima.\n\n';
+    
+    // Se o marketplace suporta vínculo OAuth, abre o fluxo de conexão
+    if (MARKETPLACES_OAUTH.includes(id)) {
+      abrirVinculoMarketplace(integ);
+      return;
     }
-    msg += 'Para ativar esta integração:\n';
-    msg += '1. No seu backend, configure as chaves de API da ' + integ.nome + '\n';
-    msg += '2. O backend expõe os endpoints que o painel vai chamar\n';
-    msg += '3. Quando o backend responder, o status fica "Conectado"\n\n';
+    
+    // Demais: mostra informação
+    let msg = '🔌 ' + integ.nome + '\n\n' + integ.desc + '\n\n';
+    msg += 'Esta integração é gerenciada pelo backend.\n';
+    msg += 'O status verde indica que as credenciais já estão configuradas no servidor.\n\n';
     msg += 'As chaves secretas NUNCA ficam no painel — só no backend.';
     alert(msg);
+  }
+  
+  // Abre o fluxo de vincular uma conta de marketplace
+  async function abrirVinculoMarketplace(integ) {
+    // Consulta se já está vinculado
+    let situacao = null;
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/vincular/' + integ.id + '/situacao', {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const data = await resp.json();
+      if (data.ok) situacao = data;
+    } catch (e) { /* backend fora — trata abaixo */ }
+    
+    if (situacao && situacao.vinculado) {
+      const conta = situacao.conta || {};
+      const msg = '✅ ' + integ.nome + ' — conta vinculada\n\n' +
+        (conta.user_id_marketplace ? 'Vendedor: ' + conta.user_id_marketplace + '\n' : '') +
+        'Vinculado em: ' + (conta.vinculado_em ? new Date(conta.vinculado_em).toLocaleDateString('pt-BR') : '—') + '\n\n' +
+        'Deseja desvincular esta conta?';
+      if (confirm(msg)) {
+        await fetch(BACKEND_URL + '/api/vincular/' + integ.id, {
+          method: 'DELETE',
+          headers: { 'x-api-token': getApiToken() }
+        });
+        showToast(integ.nome + ' desvinculado');
+        renderIntegracoes();
+      }
+      return;
+    }
+    
+    // Não vinculado → oferece conectar
+    const msg = '🔗 Conectar conta do ' + integ.nome + '\n\n' +
+      'Você será levado ao site do ' + integ.nome + ' para fazer login e autorizar.\n\n' +
+      'Após autorizar, a conta fica vinculada e o sistema cuida do resto.\n\n' +
+      'Abrir a tela de autorização agora?';
+    if (confirm(msg)) {
+      // Abre o fluxo OAuth numa nova aba
+      window.open(BACKEND_URL + '/api/vincular/' + integ.id + '/iniciar', '_blank');
+      // Avisa pra revisar o status depois
+      setTimeout(() => {
+        alert('Depois de autorizar no site do ' + integ.nome + ', volte aqui e abra esta tela de novo para confirmar o vínculo.');
+      }, 500);
+    }
   }
   
   // ============================================================
@@ -16705,6 +16786,30 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   updateCategorias();
   renderSidebars('homeScreen');
   renderAll();
+  
+  // Detecta retorno do vínculo de marketplace (OAuth)
+  // O backend redireciona pra cá com ?vinculo=mercadolivre&status=sucesso
+  (function checarRetornoVinculo() {
+    const params = new URLSearchParams(window.location.search);
+    const vinculo = params.get('vinculo');
+    const status = params.get('status');
+    if (!vinculo) return;
+    
+    const nomes = { mercadolivre: 'Mercado Livre', shopee: 'Shopee', tiktok: 'TikTok', shein: 'Shein' };
+    const nome = nomes[vinculo] || vinculo;
+    
+    setTimeout(() => {
+      if (status === 'sucesso') {
+        alert('✅ Conta do ' + nome + ' vinculada com sucesso!\n\nVocê já pode exportar produtos para essa conta.');
+      } else if (status === 'cancelado') {
+        alert('A autorização do ' + nome + ' foi cancelada. Você pode tentar de novo quando quiser.');
+      } else if (status === 'erro') {
+        alert('❌ Não foi possível vincular a conta do ' + nome + '.\n\nTente de novo ou verifique as configurações da aplicação.');
+      }
+      // Limpa os parâmetros da URL pra não repetir o aviso
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }, 600);
+  })();
 
   /* ==================== INICIALIZAÇÃO SUPABASE ==================== */
   (async function initSupabase() {
