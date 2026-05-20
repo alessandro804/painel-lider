@@ -3075,24 +3075,6 @@
                 <div class="module-name">Operação</div>
                 <div class="module-status" id="moduleOpStatus">Central de demandas</div>
               </div>
-              <div class="module-card" onclick="goTo('produtosScreen')">
-                <div class="status-dot dot-green" id="moduleProdDot"></div>
-                <div class="module-icon icon-product" style="background:linear-gradient(135deg,#0891b2,#0e7490)">📦</div>
-                <div class="module-name">Produtos</div>
-                <div class="module-status" id="moduleProdStatus">Catálogo do ERP</div>
-              </div>
-              <div class="module-card" onclick="goTo('estoqueScreen')">
-                <div class="status-dot dot-green"></div>
-                <div class="module-icon icon-product" style="background:linear-gradient(135deg,#d97706,#b45309)">📊</div>
-                <div class="module-name">Estoque</div>
-                <div class="module-status">Controle de estoque</div>
-              </div>
-              <div class="module-card" onclick="goTo('promocoesScreen')">
-                <div class="status-dot dot-green"></div>
-                <div class="module-icon icon-product" style="background:linear-gradient(135deg,#dc2626,#b91c1c)">🎟️</div>
-                <div class="module-name">Promoções</div>
-                <div class="module-status">Ofertas e cupons</div>
-              </div>
             </div>
           </div>
         </div>
@@ -3630,7 +3612,9 @@
               </div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="op-new-btn" onclick="abrirProdutosOperacao()" style="background:rgba(255,255,255,0.15)">📦 Produtos</button>
+              <button class="op-new-btn" onclick="goTo('produtosScreen')" style="background:rgba(255,255,255,0.15)">📦 Produtos</button>
+              <button class="op-new-btn" onclick="goTo('estoqueScreen')" style="background:rgba(255,255,255,0.15)">📊 Estoque</button>
+              <button class="op-new-btn" onclick="goTo('promocoesScreen')" style="background:rgba(255,255,255,0.15)">🎟️ Promoções</button>
               <button class="op-new-btn" onclick="abrirNovaDemanda()">+ Nova Demanda</button>
             </div>
           </div>
@@ -8043,54 +8027,33 @@ Use medidas coerentes com o tipo de produto. Para calçados, use a numeração b
   // O SKU é a chave: ao importar, casa produtos da plataforma com os internos.
   
   function abrirSincronizar() {
-    const temBackend = !!configIntegracoes.backendUrl;
-    if (lojasErp.length === 0) {
-      alert('Cadastre uma loja primeiro em Configurações → 🏪 Lojas.');
+    // Filtra só as contas REALMENTE conectadas via OAuth
+    const contasOk = lojasErp.filter(l => l.contaConectada);
+    if (contasOk.length === 0) {
+      alert('Nenhuma conta de marketplace conectada.\n\n' +
+        'Para conectar, vai em Configurações → 🔌 Integrações → Mercado Livre → Conectar.');
       return;
     }
-    
-    if (!temBackend) {
-      alert('🔄 Sincronização — estrutura pronta\n\n' +
-        'A sincronização importa os produtos das suas contas conectadas para dentro do ERP, ' +
-        'usando o SKU como chave de controle.\n\n' +
-        'Como funciona quando o backend estiver ativo:\n' +
-        '1. O backend busca os produtos da loja na plataforma\n' +
-        '2. O sistema casa cada item pelo SKU\n' +
-        '3. Produtos novos são criados; existentes são atualizados\n' +
-        '4. As variações também são vinculadas por SKU\n\n' +
-        '⚠️ Configure o backend em Configurações → 🔌 Integrações para ativar.');
+    if (contasOk.length === 1) {
+      // Só uma conta — sincroniza direto, sem perguntar
+      sincronizarConta(contasOk[0].marketplace);
       return;
     }
-    
-    // Com backend: escolhe a loja para sincronizar
-    const nomesLojas = lojasErp.map((l,i) => (i+1) + ') ' + l.nome).join('\n');
-    const escolha = prompt('🔄 Sincronizar qual loja?\n\n' + nomesLojas + '\n\nDigite o número:');
+    // Várias contas — pede pra escolher
+    const nomesContas = contasOk.map((l,i) => (i+1) + ') ' + l.nome).join('\n');
+    const escolha = prompt('🔄 Sincronizar qual conta?\n\n' + nomesContas + '\n\nDigite o número:');
     if (!escolha) return;
     const idx = parseInt(escolha) - 1;
-    if (idx < 0 || idx >= lojasErp.length) { showToast('Loja inválida', true); return; }
-    
-    sincronizarLoja(lojasErp[idx]);
+    if (idx < 0 || idx >= contasOk.length) { showToast('Conta inválida', true); return; }
+    sincronizarConta(contasOk[idx].marketplace);
   }
   
-  // Sincroniza uma loja (estrutura — quando backend existir, busca de verdade)
+  // Função legada — mantida pra compatibilidade, mas agora chama o fluxo novo
   async function sincronizarLoja(loja) {
-    showToast('🔄 Sincronizando ' + loja.nome + '...');
-    // ESTRUTURA: aqui o backend seria chamado:
-    // const resp = await fetch(configIntegracoes.backendUrl + '/sync/' + loja.marketplace + '/' + loja.id);
-    // const produtosDaLoja = await resp.json();
-    // depois: a reconciliação classifica e abre o relatório:
-    // reconciliarImportacao(produtosDaLoja, loja);
-    // goTo('reconciliacaoScreen');
-    
-    setTimeout(() => {
-      alert('🔄 Sincronização de "' + loja.nome + '"\n\n' +
-        'A estrutura está pronta. Quando o backend responder, os produtos da ' +
-        loja.marketplace + ' passam pela RECONCILIAÇÃO DE SKU:\n\n' +
-        '• SKU idêntico → vinculado automaticamente\n' +
-        '• SKU divergente ou nome parecido → você analisa (com ajuda da IA)\n' +
-        '• Sem correspondência → criado como produto novo\n\n' +
-        'Você verá o relatório completo antes de qualquer alteração.');
-    }, 600);
+    if (loja && loja.contaConectada) {
+      return sincronizarConta(loja.marketplace);
+    }
+    showToast('Esta loja não tem conta conectada. Conecte em 🔌 Integrações.', true);
   }
   
   // Importa produtos vindos da plataforma, casando por SKU
