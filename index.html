@@ -4527,8 +4527,8 @@
 
         <!-- Tab: Config. Gerais -->
         <div class="settings-panel" id="panel-gerais">
-          <!-- SEÇÃO 1: Vínculos Marketplace -->
-          <div class="settings-card">
+          <!-- SEÇÃO 1: Vínculos Marketplace — OCULTA (substituída pelo vínculo OAuth real em 🔌 Integrações) -->
+          <div class="settings-card" style="display:none">
             <div class="settings-card-header">
               <div>
                 <div class="settings-card-title">🔗 Vínculos Marketplace ↔ Cliente</div>
@@ -8704,11 +8704,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // Contas conectadas (vindas do backend via OAuth)
   let _contasConectadas = [];
   
-  async function renderLojas() {
-    const cont = document.getElementById('lojasList');
-    if (!cont) return;
-    cont.innerHTML = '<div style="font-size:12px;color:var(--cinza-texto)">Carregando contas conectadas...</div>';
-    
+  // Carrega as contas conectadas do backend e espelha em lojasErp
+  async function carregarContasConectadas() {
     try {
       const resp = await fetch(BACKEND_URL + '/api/vincular', {
         headers: { 'x-api-token': getApiToken() }
@@ -8718,6 +8715,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     } catch (e) {
       _contasConectadas = [];
     }
+    // Espelha as contas conectadas em lojasErp pra o resto do painel enxergar
+    sincronizarLojasComContas();
+    return _contasConectadas;
+  }
+  
+  async function renderLojas() {
+    const cont = document.getElementById('lojasList');
+    if (!cont) return;
+    cont.innerHTML = '<div style="font-size:12px;color:var(--cinza-texto)">Carregando contas conectadas...</div>';
+    
+    await carregarContasConectadas();
     
     const nomeMkt = {shopee:'🛍️ Shopee',mercadolivre:'🟡 Mercado Livre',tiktok:'🎵 TikTok Shop',shein:'⬛ Shein'};
     
@@ -8738,10 +8746,43 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               ${c.user_id_marketplace ? 'Vendedor ' + escapeHtml(String(c.user_id_marketplace)) + ' · ' : ''}conectada em ${desde}
             </div>
           </div>
+          <button class="toolbar-btn" onclick="sincronizarConta('${c.marketplace}')" style="margin-right:8px;font-size:11px">🔄 Sincronizar</button>
           <span class="integ-status on" style="font-size:10px"><span class="integ-bolinha on"></span>Conectada</span>
         </div>
       `;
     }).join('');
+  }
+  
+  // Sincroniza os anúncios de uma conta conectada — busca do marketplace via backend
+  async function sincronizarConta(marketplace) {
+    showToast('🔄 Sincronizando anúncios da conta ' + marketplace + '...');
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/' + marketplace + '/sincronizar', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        showToast('⚠ ' + (data.erro || 'Erro ao sincronizar'), true);
+        return;
+      }
+      const anuncios = data.produtos || [];
+      if (anuncios.length === 0) {
+        showToast('Nenhum anúncio encontrado nesta conta.');
+        return;
+      }
+      // Importa os anúncios usando a reconciliação por SKU que já temos
+      const loja = lojasErp.find(l => l.contaConectada && l.marketplace === marketplace);
+      if (loja && typeof reconciliarImportacao === 'function') {
+        reconciliarImportacao(anuncios, loja);
+        showToast('✓ ' + anuncios.length + ' anúncio(s) baixado(s). Revise na tela de Reconciliação.');
+        goTo('reconciliacaoScreen');
+      } else {
+        showToast('✓ ' + anuncios.length + ' anúncio(s) recebido(s) do ' + marketplace);
+      }
+    } catch (err) {
+      showToast('Erro: ' + err.message, true);
+    }
   }
   
   // Conta cadastrada como "loja" para uso interno do sistema.
@@ -17190,6 +17231,12 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   
   // Carrega os produtos do backend (Supabase) ao abrir
   carregarProdutosDoBackend();
+  
+  // Carrega as contas conectadas (espelha em lojasErp) — pra elas aparecerem
+  // em todas as listagens do sistema sem precisar entrar em Configurações.
+  if (typeof carregarContasConectadas === 'function') {
+    carregarContasConectadas();
+  }
   
   // Detecta retorno do vínculo de marketplace (OAuth)
   // O backend redireciona pra cá com ?vinculo=mercadolivre&status=sucesso
