@@ -6656,6 +6656,14 @@
     return [...new Set([...CATEGORIAS_INTERNAS_PADRAO, ...doMapa])];
   }
   
+  // Devolve só as categorias internas que têm vínculo com pelo menos um marketplace.
+  // Usado no cadastro de produto — pra não aparecer categoria que não dá pra exportar.
+  function categoriasVinculadas() {
+    return categoriasMapErp
+      .filter(c => c.vinculos && Object.keys(c.vinculos).length > 0)
+      .map(c => c.categoriaInterna);
+  }
+  
   // Estado da tela
   let _filtroProdStatus = 'todos';
   let _produtoEditandoId = null;
@@ -6817,8 +6825,13 @@
     }
     const selCat = document.getElementById('prodCategoria');
     if (selCat) {
-      selCat.innerHTML = '<option value="">Selecione...</option>' +
-        categoriasInternas().map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+      const cats = categoriasVinculadas();
+      if (cats.length === 0) {
+        selCat.innerHTML = '<option value="">⚠ Nenhuma categoria vinculada — configure em ⚙️ Config. Gerais → 🔁 De↔Para</option>';
+      } else {
+        selCat.innerHTML = '<option value="">Selecione...</option>' +
+          cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+      }
     }
   }
   
@@ -7052,7 +7065,60 @@
       });
     }
     
-    // Backend configurado → marca como exportado (estrutura)
+    // Mapeia 'mercado_livre' (legado) para 'mercadolivre' (backend)
+    const mkBackend = marketplace === 'mercado_livre' ? 'mercadolivre' : marketplace;
+    
+    // O produto precisa estar SALVO no backend antes — usamos idBanco
+    if (!produtoParaExportar.idBanco) {
+      alert('⚠️ Este produto ainda não foi sincronizado com o servidor.\n\nClique em Salvar produto antes de exportar.');
+      return;
+    }
+    
+    // Chama o backend pra exportar de verdade
+    const btn = event && event.target;
+    if (btn) { btn.disabled = true; btn.textContent = 'Enviando...'; }
+    
+    fetch(BACKEND_URL + '/api/marketplaces/' + mkBackend + '/exportar/' + produtoParaExportar.idBanco, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+      body: JSON.stringify({ payload })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) {
+        // Mostra o erro do ML com clareza (pra a gente afinar)
+        let msg = '❌ Não foi possível enviar para o ' + marketplace + ':\n\n' + (data.erro || 'erro desconhecido');
+        if (data.detalhes && Array.isArray(data.detalhes)) {
+          msg += '\n\nPendências:\n• ' + data.detalhes.join('\n• ');
+        }
+        alert(msg);
+        return;
+      }
+      // Sucesso real — marca local e mostra o id do anúncio criado
+      if (!p.marketplaces) p.marketplaces = {};
+      p.marketplaces[marketplace] = {
+        exportado: true,
+        exportadoEm: new Date().toISOString(),
+        itemId: data.dados && data.dados.itemId,
+        payload
+      };
+      saveProdutos();
+      renderMktStatusProduto(p);
+      renderProdutos();
+      const idMsg = data.dados && data.dados.itemId ? '\n\nID no marketplace: ' + data.dados.itemId : '';
+      alert('✅ Anúncio publicado com sucesso no ' + marketplace + '!' + idMsg);
+    })
+    .catch(err => {
+      alert('❌ Erro ao falar com o servidor: ' + err.message + '\n\nVerifique se o backend está no ar.');
+    })
+    .finally(() => {
+      if (btn) { btn.disabled = false; btn.textContent = 'Exportar'; }
+    });
+    return;
+  }
+  
+  // [versão antiga que só marcava localmente — desativada]
+  function _exportarLocalmenteSomente(p, marketplace, payload) {
     if (!p.marketplaces) p.marketplaces = {};
     p.marketplaces[marketplace] = { exportado: true, exportadoEm: new Date().toISOString(), payload };
     saveProdutos();
