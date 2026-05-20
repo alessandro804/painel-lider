@@ -8700,20 +8700,45 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     
     cont.innerHTML = _contasConectadas.map(c => {
       const desde = c.vinculado_em ? new Date(c.vinculado_em).toLocaleDateString('pt-BR') : '—';
+      const apelidos = JSON.parse(localStorage.getItem('lider_contas_apelido') || '{}');
+      const apelido = apelidos[c.marketplace] || '';
+      const nomeBase = nomeMkt[c.marketplace] || c.marketplace;
+      const tituloExibido = apelido ? (apelido + ' (' + nomeBase + ')') : nomeBase;
       return `
         <div class="mkt-card" style="padding:8px 12px">
           <div class="mkt-logo" style="background:#dcfce7;color:#16a34a;width:34px;height:34px;font-size:15px">✓</div>
           <div class="mkt-card-info">
-            <div class="mkt-card-cliente" style="font-size:13px">${nomeMkt[c.marketplace] || c.marketplace}</div>
+            <div class="mkt-card-cliente" style="font-size:13px">${escapeHtml(tituloExibido)}</div>
             <div class="mkt-card-meta">
               ${c.user_id_marketplace ? 'Vendedor ' + escapeHtml(String(c.user_id_marketplace)) + ' · ' : ''}conectada em ${desde}
             </div>
           </div>
+          <button class="toolbar-btn" onclick="renomearConta('${c.marketplace}')" style="margin-right:6px;font-size:11px" title="Renomear">✏️</button>
           <button class="toolbar-btn" onclick="sincronizarConta('${c.marketplace}')" style="margin-right:8px;font-size:11px">🔄 Sincronizar</button>
           <span class="integ-status on" style="font-size:10px"><span class="integ-bolinha on"></span>Conectada</span>
         </div>
       `;
     }).join('');
+  }
+  
+  // Permite dar um apelido pra conta (Loja Principal, Loja Mãe, etc.)
+  function renomearConta(marketplace) {
+    const apelidos = JSON.parse(localStorage.getItem('lider_contas_apelido') || '{}');
+    const atual = apelidos[marketplace] || '';
+    const novo = prompt('Digite um apelido para esta conta (ex: Loja Principal, Loja Tênis...):', atual);
+    if (novo === null) return; // cancelou
+    apelidos[marketplace] = novo.trim();
+    if (!novo.trim()) delete apelidos[marketplace];
+    localStorage.setItem('lider_contas_apelido', JSON.stringify(apelidos));
+    // Atualiza o nome também em lojasErp (pra refletir nas demais telas)
+    const loja = lojasErp.find(l => l.contaConectada && l.marketplace === marketplace);
+    if (loja) {
+      const nomeMkt = {shopee:'Shopee',mercadolivre:'Mercado Livre',tiktok:'TikTok Shop',shein:'Shein'};
+      loja.nome = novo.trim() ? (novo.trim() + ' (' + (nomeMkt[marketplace] || marketplace) + ')') : (nomeMkt[marketplace] || marketplace);
+      saveLojas();
+    }
+    showToast('✓ Apelido salvo');
+    renderLojas();
   }
   
   // Sincroniza os anúncios de uma conta conectada — busca do marketplace via backend
@@ -11101,6 +11126,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
       
       if (data.ok && data.token) {
         setTokenLogin(data.token);
+        // Guarda o token de API que o backend manda - usado em todas as
+        // requisicoes posteriores no header x-api-token
+        if (data.apiToken) {
+          localStorage.setItem('lider_api_token', data.apiToken);
+        }
         goTo('homeScreen');
         renderAll();
       } else {
@@ -11117,6 +11147,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   
   function sair() {
     setTokenLogin('');
+    localStorage.removeItem('lider_api_token');
     const fab = document.getElementById('consultorFab');
     if (fab) fab.style.display = 'none';
     closeConsultorModal();
