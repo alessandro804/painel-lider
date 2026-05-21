@@ -7047,10 +7047,26 @@
     if (produtoSalvo) {
       salvarProdutoNoBackend(produtoSalvo)
         .then(salvo => {
-          // guarda o id do banco pra futuras atualizações
           if (salvo && salvo.id) {
+            // Atualiza o id do banco
             produtoSalvo.idBanco = salvo.id;
+            // CRITICO: atualiza as fotos com as URLs publicas que o backend
+            // gerou (em vez do base64 que estava no cache). Sem isso, o
+            // exportar pro marketplace continua mandando base64 e estoura
+            // o limite de tamanho do ML.
+            if (Array.isArray(salvo.fotos)) {
+              produtoSalvo.fotos = salvo.fotos;
+            }
+            // Atualiza tambem fotos das variacoes (se o backend devolveu)
+            if (Array.isArray(salvo.variacoes) && Array.isArray(produtoSalvo.variacoes)) {
+              salvo.variacoes.forEach((vSalva, idx) => {
+                if (produtoSalvo.variacoes[idx] && vSalva.foto) {
+                  produtoSalvo.variacoes[idx].foto = vSalva.foto;
+                }
+              });
+            }
             saveProdutos();
+            renderProdutos();
           }
         })
         .catch(err => {
@@ -7089,7 +7105,16 @@
   }
   
   // === Exportar produto para marketplace (estrutura — backend pluga aqui) ===
-  function exportarProdutoMarketplace(produtoId, marketplace) {
+  async function exportarProdutoMarketplace(produtoId, marketplace) {
+    // 1. Sincroniza o cache com o backend antes de exportar.
+    // Sem isso, podemos enviar fotos em base64 (do cache antigo) ao inves
+    // das URLs do Storage. O ML rejeita base64 com erro 413.
+    try {
+      await carregarProdutosDoBackend();
+    } catch (e) {
+      console.warn('Nao foi possivel sincronizar com o backend antes de exportar:', e);
+    }
+    
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) return;
     
