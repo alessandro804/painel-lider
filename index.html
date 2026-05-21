@@ -6605,13 +6605,86 @@
   
   // Salva UM produto no backend (cria se não tem id de banco, atualiza se tem).
   // Devolve o produto com o id do banco preenchido.
+  // Antes de enviar o produto pro backend, processa as fotos que estao
+  // em base64: faz upload pro Supabase Storage e troca pela URL publica.
+  // Fotos que ja sao URL (http...) passam sem mudanca.
+  async function enviarFotosParaStorage(produto) {
+    if (!produto.fotos || !Array.isArray(produto.fotos) || produto.fotos.length === 0) {
+      return produto;
+    }
+    
+    const fotosNovas = [];
+    let qtdEnviadas = 0;
+    
+    for (let i = 0; i < produto.fotos.length; i++) {
+      const foto = produto.fotos[i];
+      // Foto vazia → ignora
+      if (!foto) continue;
+      // Foto ja eh URL publica (http/https) → mantem como esta
+      if (typeof foto === 'string' && foto.startsWith('http')) {
+        fotosNovas.push(foto);
+        continue;
+      }
+      // Foto em base64 → faz upload
+      if (typeof foto === 'string' && foto.startsWith('data:')) {
+        try {
+          const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+            body: JSON.stringify({ dataUrl: foto })
+          });
+          const data = await resp.json();
+          if (data.ok && data.url) {
+            fotosNovas.push(data.url);
+            qtdEnviadas++;
+          } else {
+            throw new Error(data.erro || 'erro no upload da foto ' + (i+1));
+          }
+        } catch (err) {
+          throw new Error('Falha ao subir foto ' + (i+1) + ': ' + err.message);
+        }
+      }
+    }
+    
+    if (qtdEnviadas > 0) {
+      console.log('[upload] ' + qtdEnviadas + ' foto(s) enviada(s) para o Storage');
+    }
+    
+    // Tambem processa fotos das variacoes (cada variacao pode ter sua propria foto)
+    if (produto.variacoes && Array.isArray(produto.variacoes)) {
+      for (let v = 0; v < produto.variacoes.length; v++) {
+        const variacao = produto.variacoes[v];
+        if (variacao.foto && typeof variacao.foto === 'string' && variacao.foto.startsWith('data:')) {
+          try {
+            const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+              body: JSON.stringify({ dataUrl: variacao.foto })
+            });
+            const data = await resp.json();
+            if (data.ok && data.url) variacao.foto = data.url;
+          } catch (err) {
+            // Foto de variacao falhou: deixa em branco, nao trava o salvar
+            console.warn('[upload] foto da variacao ' + (v+1) + ' nao subiu:', err.message);
+          }
+        }
+      }
+    }
+    
+    return { ...produto, fotos: fotosNovas };
+  }
+  
   async function salvarProdutoNoBackend(produto) {
-    const temIdBanco = produto.idBanco != null;
-    const url = BACKEND_URL + '/api/produtos' + (temIdBanco ? '/' + produto.idBanco : '');
+    // 1. Sobe as fotos pro Storage antes (troca base64 por URL)
+    const produtoComUrls = await enviarFotosParaStorage(produto);
+    
+    // 2. Agora salva o produto - leve, sem base64 gigante
+    const temIdBanco = produtoComUrls.idBanco != null;
+    const url = BACKEND_URL + '/api/produtos' + (temIdBanco ? '/' + produtoComUrls.idBanco : '');
     const resp = await fetch(url, {
       method: temIdBanco ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-      body: JSON.stringify(produto)
+      body: JSON.stringify(produtoComUrls)
     });
     const data = await resp.json();
     if (!data.ok) throw new Error(data.erro || 'Erro ao salvar produto no backend');
