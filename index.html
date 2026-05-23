@@ -5283,6 +5283,32 @@
   </div>
 </div>
 
+<!-- FASE B/C: Modal Vínculos do Produto -->
+<div class="modal-overlay modal-v2-overlay" id="vinculosOverlay" onclick="closeVinculosIfOverlay(event)" style="align-items:center">
+  <div class="modal-v2" style="max-width:780px">
+    <div class="modal-v2-header">
+      <h3 class="modal-v2-title" id="vinculosModalTitulo">🔗 Vínculos do Produto</h3>
+      <button class="modal-v2-close" onclick="closeVinculos()">✕</button>
+    </div>
+    <div class="modal-v2-body" style="grid-template-columns:1fr">
+      <div class="modal-v2-section">
+        <div class="modal-v2-info-box" id="vinculosResumo">
+          Carregando vínculos...
+        </div>
+        <div id="vinculosLista"></div>
+      </div>
+    </div>
+    <div class="modal-v2-footer">
+      <div style="font-size:11px;color:#6b7280">
+        💡 Vínculos amarelos têm SKU diferente do interno. Você pode corrigir o SKU interno ou ignorar a divergência.
+      </div>
+      <div class="modal-v2-actions">
+        <button class="modal-v2-btn modal-v2-btn-secondary" onclick="closeVinculos()">Fechar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== CONFIGURAÇÕES ===== -->
 <div class="screen" id="settingsScreen">
   <div class="app-layout">
@@ -7860,9 +7886,13 @@
         showToast('Nenhum anúncio encontrado em ' + loja.nome);
         return;
       }
-      if (typeof reconciliarImportacao === 'function') {
-        reconciliarImportacao(anuncios, loja);
-        showToast('✓ ' + anuncios.length + ' anúncio(s) baixado(s) de ' + loja.nome);
+      if (typeof importarAnunciosAutomatico === 'function') {
+        const stats = importarAnunciosAutomatico(anuncios, loja);
+        let msg = '✓ ' + anuncios.length + ' anúncio(s) de ' + loja.nome + ' · ';
+        msg += stats.vinculadosNovos + ' vinculado(s) · ' + stats.produtosCriados + ' novo(s)';
+        if (stats.suspeitos > 0) msg += ' · ⚠ ' + stats.suspeitos + ' suspeito(s)';
+        showToast(msg);
+        renderProdutos();
       }
     } catch (e) {
       showToast('⚠ Erro: ' + e.message, true);
@@ -8118,6 +8148,17 @@
         }
       });
       
+      // FASE A/B: badges de vínculos e suspeitos (CLICÁVEIS — abrem modal)
+      const totalVinc = contarVinculosProduto(p);
+      const totalSusp = contarVinculosSuspeitos(p);
+      let vincBadges = '';
+      if (totalVinc > 0) {
+        vincBadges += `<span class="prod-card-mkt-chip" style="background:#3b82f6;cursor:pointer" title="${totalVinc} anúncio(s) vinculado(s) - clique pra ver" onclick="event.stopPropagation();abrirVinculos('${p.id}')">🔗 ${totalVinc}</span>`;
+      }
+      if (totalSusp > 0) {
+        vincBadges += `<span class="prod-card-mkt-chip" style="background:#f59e0b;cursor:pointer" title="${totalSusp} vínculo(s) com SKU suspeito - clique pra revisar" onclick="event.stopPropagation();abrirVinculos('${p.id}')">⚠ ${totalSusp}</span>`;
+      }
+      
       // Classificacao do estoque
       let estoqueCls = 'ok';
       if (estoqueTotal === 0) estoqueCls = 'low';
@@ -8137,7 +8178,7 @@
         <div class="prod-card-body">
           <div class="prod-card-nome">${escapeHtml(p.nome)}</div>
           <div class="prod-card-sku">SKU: ${escapeHtml(p.skuPai||'—')}</div>
-          <div class="prod-card-mkts">${mktChips || '<span style="font-size:10px;color:#9ca3af">Não publicado</span>'}</div>
+          <div class="prod-card-mkts">${mktChips}${vincBadges || (mktChips ? '' : '<span style="font-size:10px;color:#9ca3af">Não publicado</span>')}</div>
           <div class="prod-card-footer">
             <div class="prod-card-preco">R$ ${(parseFloat(p.preco)||0).toFixed(2)}</div>
             <div class="prod-card-estoque ${estoqueCls}">${estoqueTotal} un.</div>
@@ -9684,8 +9725,8 @@ Use medidas coerentes com o tipo de produto. Para calçados, use a numeração b
         const data = await resp.json();
         if (data.ok && Array.isArray(data.produtos)) {
           totalAnuncios += data.produtos.length;
-          if (data.produtos.length > 0 && typeof reconciliarImportacao === 'function') {
-            reconciliarImportacao(data.produtos, loja);
+          if (data.produtos.length > 0 && typeof importarAnunciosAutomatico === 'function') {
+            importarAnunciosAutomatico(data.produtos, loja);
           }
           sucessos++;
         } else {
@@ -10210,6 +10251,407 @@ São o mesmo produto?`;
     });
   }
   
+  // ============================================================
+  // FASE A - IMPORTAÇÃO AUTOMÁTICA COM DEDUP POR SKU
+  // ============================================================
+  // Substitui a antiga `reconciliarImportacao` (que pedia confirmação).
+  // Esta função:
+  //  - Casa por SKU NORMALIZADO (ignora hifen, espaço, case)
+  //  - Cria vínculo na variação interna existente (não duplica produto)
+  //  - Funciona ENTRE LOJAS (mesmo SKU em ML e Shopee = mesmo produto interno)
+  //  - Anúncio sem SKU → cria placeholder "sem-sku-XXX"
+  //  - Marca skuSuspeito quando SKU local != SKU externo após normalizar
+  //  - Re-sync de vínculo existente: atualiza timestamp/skuExterno sem duplicar
+  // ============================================================
+  
+  // Contador pra placeholders "sem-sku-XXX"
+  let _semSkuCounter = parseInt(localStorage.getItem('lider_sem_sku_counter') || '1');
+  function proximoSemSku() {
+    const id = _semSkuCounter++;
+    localStorage.setItem('lider_sem_sku_counter', String(_semSkuCounter));
+    return 'sem-sku-' + String(id).padStart(4, '0');
+  }
+  
+  // Procura uma variação NO CATÁLOGO INTEIRO que casa com o SKU dado (normalizado)
+  // Retorna { produto, variacao, skuExatoBate } ou null
+  function acharVariacaoPorSku(skuExterno) {
+    if (!skuExterno) return null;
+    const skuNorm = normalizarSku(skuExterno);
+    if (!skuNorm) return null;
+    
+    for (const p of produtosErp) {
+      if (p.status === 'excluido') continue;
+      for (const v of (p.variacoes || [])) {
+        if (v.sku && normalizarSku(v.sku) === skuNorm) {
+          return {
+            produto: p,
+            variacao: v,
+            skuExatoBate: String(v.sku).trim() === String(skuExterno).trim()
+          };
+        }
+      }
+      // Também tenta casar com o SKU pai (caso produto sem variações)
+      if (p.skuPai && normalizarSku(p.skuPai) === skuNorm) {
+        return {
+          produto: p,
+          variacao: null, // sem variação específica
+          skuExatoBate: String(p.skuPai).trim() === String(skuExterno).trim()
+        };
+      }
+    }
+    return null;
+  }
+  
+  // Cria ou atualiza vínculo numa variação interna
+  function aplicarVinculoNaVariacao(variacao, info) {
+    if (!variacao.vinculos) variacao.vinculos = [];
+    
+    // Procura vínculo existente do mesmo anúncio/loja
+    const idx = variacao.vinculos.findIndex(v => 
+      String(v.lojaId) === String(info.lojaId) && 
+      String(v.anuncioId) === String(info.anuncioId) &&
+      String(v.variacaoExternaId || '') === String(info.variacaoExternaId || '')
+    );
+    
+    const novoVinculo = {
+      id: idx >= 0 ? variacao.vinculos[idx].id : 'vinc-' + gerarId(),
+      lojaId: info.lojaId,
+      marketplace: info.marketplace,
+      anuncioId: info.anuncioId,
+      variacaoExternaId: info.variacaoExternaId || null,
+      skuExterno: info.skuExterno,
+      skuSuspeito: !info.skuExatoBate,
+      titulo: info.titulo,
+      vinculadoEm: idx >= 0 ? variacao.vinculos[idx].vinculadoEm : new Date().toISOString(),
+      atualizadoEm: new Date().toISOString()
+    };
+    
+    if (idx >= 0) {
+      variacao.vinculos[idx] = novoVinculo;
+      return 'atualizado';
+    } else {
+      variacao.vinculos.push(novoVinculo);
+      return 'criado';
+    }
+  }
+  
+  // Função principal: importa anúncios de uma loja automaticamente
+  // anuncios: lista vinda do marketplace via sincronização
+  // loja: a loja local (com idBanco)
+  // Retorna estatísticas: { vinculadosNovos, vinculadosAtualizados, produtosCriados, variacoesAdicionadas, suspeitos }
+  function importarAnunciosAutomatico(anuncios, loja) {
+    const stats = {
+      vinculadosNovos: 0,
+      vinculadosAtualizados: 0,
+      produtosCriados: 0,
+      variacoesAdicionadas: 0,
+      suspeitos: 0,
+      semSku: 0,
+      total: anuncios.length
+    };
+    
+    anuncios.forEach(anuncio => {
+      // Normaliza pra ter ao menos uma "variação" mesmo se o anúncio for de produto único
+      let variacoesExt = anuncio.variacoes && anuncio.variacoes.length > 0
+        ? anuncio.variacoes
+        : [{ sku: anuncio.sku, nome: anuncio.nome, estoque: anuncio.estoque || 0, preco: anuncio.preco }];
+      
+      variacoesExt.forEach(varExt => {
+        // 1. Trata SKU vazio -> placeholder
+        let skuExterno = varExt.sku;
+        if (!skuExterno || String(skuExterno).trim() === '') {
+          skuExterno = proximoSemSku();
+          stats.semSku++;
+        }
+        
+        const infoVinculo = {
+          lojaId: loja.id,
+          marketplace: loja.marketplace,
+          anuncioId: anuncio.id || anuncio.mlb || anuncio.item_id,
+          variacaoExternaId: varExt.id || varExt.variation_id || null,
+          skuExterno: skuExterno,
+          skuExatoBate: true, // será reavaliado se houver match
+          titulo: anuncio.nome || anuncio.title || '?'
+        };
+        
+        // 2. Procura match no catálogo
+        const match = acharVariacaoPorSku(skuExterno);
+        
+        if (match) {
+          // Match encontrado - vincula
+          infoVinculo.skuExatoBate = match.skuExatoBate;
+          if (!match.skuExatoBate) stats.suspeitos++;
+          
+          if (match.variacao) {
+            // Vincula na variação específica
+            const resultado = aplicarVinculoNaVariacao(match.variacao, infoVinculo);
+            if (resultado === 'criado') stats.vinculadosNovos++;
+            else stats.vinculadosAtualizados++;
+          } else {
+            // Produto sem variações - cria uma variação representativa e vincula nela
+            if (!match.produto.variacoes) match.produto.variacoes = [];
+            const novaVar = {
+              id: gerarId(),
+              nome: varExt.nome || 'Variação única',
+              sku: match.produto.skuPai,
+              estoque: varExt.estoque || 0,
+              preco: varExt.preco || match.produto.preco || ''
+            };
+            aplicarVinculoNaVariacao(novaVar, infoVinculo);
+            match.produto.variacoes.push(novaVar);
+            stats.variacoesAdicionadas++;
+            stats.vinculadosNovos++;
+          }
+          
+          // Marca marketplace como importado no produto
+          if (!match.produto.marketplaces) match.produto.marketplaces = {};
+          if (!match.produto.marketplaces[loja.marketplace]) {
+            match.produto.marketplaces[loja.marketplace] = {};
+          }
+          match.produto.marketplaces[loja.marketplace].importado = true;
+          match.produto.marketplaces[loja.marketplace].exportado = true;
+          match.produto.atualizadoEm = new Date().toISOString();
+        } else {
+          // Sem match - cria produto novo
+          // Mas se outras variações do MESMO anúncio já foram criadas, adiciona variação a esse produto
+          const skuPaiAnuncio = anuncio.sku || skuExterno;
+          let prodNovo = produtosErp.find(p => 
+            p.skuPai === skuPaiAnuncio && 
+            String(p.lojaId) === String(loja.id) &&
+            p.status === 'rascunho' &&
+            p._criadoNaSync === stats // marca pra distinguir desta sincronização
+          );
+          
+          if (!prodNovo) {
+            prodNovo = {
+              id: gerarId(),
+              nome: anuncio.nome || anuncio.title || 'Produto sem nome',
+              skuPai: skuPaiAnuncio,
+              lojaId: loja.id,
+              categoria: anuncio.categoria || '',
+              preco: anuncio.preco || varExt.preco || 0,
+              peso: anuncio.peso || 0,
+              descricao: anuncio.descricao || '',
+              status: 'rascunho',
+              fotos: anuncio.fotos || [],
+              variacoes: [],
+              marketplaces: { 
+                [loja.marketplace]: { exportado: true, importado: true } 
+              },
+              modeloPreco: anuncio.modeloPreco || 'unico',
+              criadoEm: new Date().toISOString(),
+              _criadoNaSync: stats
+            };
+            produtosErp.push(prodNovo);
+            stats.produtosCriados++;
+          }
+          
+          // Adiciona a variação ao produto novo
+          const novaVar = {
+            id: gerarId(),
+            nome: varExt.nome || (anuncio.nome + ' - única'),
+            sku: skuExterno,
+            estoque: varExt.estoque || 0,
+            preco: varExt.preco || prodNovo.preco || ''
+          };
+          aplicarVinculoNaVariacao(novaVar, infoVinculo);
+          prodNovo.variacoes.push(novaVar);
+          stats.vinculadosNovos++;
+        }
+      });
+    });
+    
+    // Limpa marcação interna usada na criação
+    produtosErp.forEach(p => { delete p._criadoNaSync; });
+    
+    // Persiste
+    saveProdutos();
+    
+    return stats;
+  }
+  
+  // Helper: conta total de vínculos de um produto (somando todas as variações)
+  function contarVinculosProduto(produto) {
+    if (!produto || !produto.variacoes) return 0;
+    return produto.variacoes.reduce((total, v) => 
+      total + ((v.vinculos && v.vinculos.length) || 0), 0);
+  }
+  
+  // Helper: conta vínculos suspeitos (SKU divergente) de um produto
+  function contarVinculosSuspeitos(produto) {
+    if (!produto || !produto.variacoes) return 0;
+    return produto.variacoes.reduce((total, v) => 
+      total + ((v.vinculos || []).filter(vi => vi.skuSuspeito).length), 0);
+  }
+  
+  // ============================================================
+  // FASE B/C - MODAL VÍNCULOS DO PRODUTO
+  // ============================================================
+  // Mostra todas as conexões entre uma variação interna e anúncios
+  // de marketplaces, agrupados por variação.
+  // Permite corrigir SKUs suspeitos e remover vínculos manualmente.
+  // ============================================================
+  
+  let _produtoVinculosAtual = null;
+  
+  function abrirVinculos(produtoId) {
+    const produto = produtosErp.find(p => String(p.id) === String(produtoId));
+    if (!produto) { showToast('Produto não encontrado', true); return; }
+    _produtoVinculosAtual = produto;
+    document.getElementById('vinculosModalTitulo').textContent = '🔗 Vínculos: ' + produto.nome;
+    desenharVinculos();
+    document.getElementById('vinculosOverlay').classList.add('active');
+  }
+  
+  function closeVinculos() {
+    document.getElementById('vinculosOverlay').classList.remove('active');
+    _produtoVinculosAtual = null;
+  }
+  function closeVinculosIfOverlay(e) {
+    if (e.target.id === 'vinculosOverlay') closeVinculos();
+  }
+  
+  function desenharVinculos() {
+    const produto = _produtoVinculosAtual;
+    if (!produto) return;
+    const cont = document.getElementById('vinculosLista');
+    const resumo = document.getElementById('vinculosResumo');
+    
+    const total = contarVinculosProduto(produto);
+    const susp = contarVinculosSuspeitos(produto);
+    const variacoesComVinculo = (produto.variacoes || []).filter(v => v.vinculos && v.vinculos.length > 0);
+    
+    // Resumo no topo
+    if (total === 0) {
+      resumo.innerHTML = `Este produto não tem nenhum anúncio vinculado ainda. Os vínculos são criados automaticamente quando você <strong>sincroniza uma loja</strong> e o SKU bate com alguma variação deste produto.`;
+    } else {
+      let resumoTxt = `<strong>${total} anúncio(s)</strong> vinculado(s) em <strong>${variacoesComVinculo.length} variação(ões)</strong>.`;
+      if (susp > 0) {
+        resumoTxt += ` <strong style="color:#92400e">⚠ ${susp} com SKU suspeito</strong> — revise abaixo.`;
+      }
+      resumo.innerHTML = resumoTxt;
+    }
+    
+    if (variacoesComVinculo.length === 0) {
+      cont.innerHTML = `<div class="empty-state-v2">
+        <div class="empty-icon-v2">🔗</div>
+        <div class="empty-title-v2">Sem vínculos ainda</div>
+        <div class="empty-desc-v2">Sincronize uma loja em 🏪 Lojas & Conexões pra criar vínculos automaticamente.</div>
+      </div>`;
+      return;
+    }
+    
+    // Renderiza grupos por variação
+    cont.innerHTML = variacoesComVinculo.map(varInterna => {
+      const vincs = varInterna.vinculos || [];
+      const vincSusp = vincs.filter(v => v.skuSuspeito).length;
+      
+      return `<div style="background:white;border:1px solid #e5e7eb;border-radius:14px;margin-bottom:12px;overflow:hidden">
+        <!-- Header da variação -->
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:#f9fafb;border-bottom:1px solid #f3f4f6">
+          <div style="width:36px;height:36px;background:#1e2a47;color:white;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px">🎨</div>
+          <div style="flex:1">
+            <div style="font-weight:800;color:#1e2a47;font-size:14px">${escapeHtml(varInterna.nome || 'Variação')}</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px">SKU interno: <code style="background:#e5e7eb;padding:1px 6px;border-radius:4px">${escapeHtml(varInterna.sku || '—')}</code> · ${vincs.length} vínculo(s)${vincSusp > 0 ? ' · ⚠ ' + vincSusp + ' suspeito(s)' : ''}</div>
+          </div>
+        </div>
+        
+        <!-- Lista de vínculos desta variação -->
+        ${vincs.map(vinc => renderLinhaVinculo(varInterna, vinc)).join('')}
+      </div>`;
+    }).join('');
+  }
+  
+  function renderLinhaVinculo(variacao, vinc) {
+    const info = MK_INFO[vinc.marketplace] || { nome: vinc.marketplace, sigla: '?', cor: '#666', txt: 'white' };
+    const loja = lojasErp.find(l => String(l.idBanco) === String(vinc.lojaId) || String(l.id) === String(vinc.lojaId));
+    const nomeLoja = loja ? loja.nome : ('Loja ' + vinc.lojaId);
+    
+    const bg = vinc.skuSuspeito ? '#fef3c7' : 'white';
+    const borderLeft = vinc.skuSuspeito ? '3px solid #f59e0b' : '3px solid transparent';
+    
+    return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #f3f4f6;background:${bg};border-left:${borderLeft}">
+      <div style="width:28px;height:28px;background:${info.cor};color:${info.txt};border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:10px;flex-shrink:0">${info.sigla}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;color:#1e2a47;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(vinc.titulo || '?')}</div>
+        <div style="font-size:11px;color:#6b7280;margin-top:2px;display:flex;gap:10px;flex-wrap:wrap">
+          <span>🏪 ${escapeHtml(nomeLoja)}</span>
+          <span>📋 <code style="background:#f3f4f6;padding:1px 5px;border-radius:3px">${escapeHtml(vinc.anuncioId || '—')}</code></span>
+          <span>${vinc.skuSuspeito ? '⚠' : '✓'} SKU externo: <code style="background:#f3f4f6;padding:1px 5px;border-radius:3px">${escapeHtml(vinc.skuExterno || '—')}</code></span>
+        </div>
+      </div>
+      ${vinc.skuSuspeito 
+        ? `<button class="modal-v2-btn modal-v2-btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirCorrigirSku('${variacao.id}','${vinc.id}')" title="Corrigir SKU divergente">⚠ Corrigir</button>` 
+        : ''}
+      <button class="modal-v2-btn modal-v2-btn-delete" style="font-size:11px;padding:6px 10px" onclick="removerVinculo('${variacao.id}','${vinc.id}')" title="Remover este vínculo">🗑</button>
+    </div>`;
+  }
+  
+  // FASE C: corrigir SKU suspeito
+  function abrirCorrigirSku(variacaoId, vinculoId) {
+    const produto = _produtoVinculosAtual;
+    if (!produto) return;
+    const variacao = produto.variacoes.find(v => String(v.id) === String(variacaoId));
+    if (!variacao) return;
+    const vinc = (variacao.vinculos || []).find(v => String(v.id) === String(vinculoId));
+    if (!vinc) return;
+    
+    const msg = `Vínculo divergente:\n\n` +
+      `📌 SKU interno (no ERP): "${variacao.sku}"\n` +
+      `🔗 SKU externo (no marketplace): "${vinc.skuExterno}"\n\n` +
+      `Escolha uma ação:\n\n` +
+      `1️⃣ Digite o novo SKU pra ATUALIZAR o interno\n` +
+      `   (e bater certinho com o externo: "${vinc.skuExterno}")\n\n` +
+      `2️⃣ Digite "ok" pra IGNORAR a suspeita\n` +
+      `   (mantém os 2 SKUs como estão, sem alerta)\n\n` +
+      `Ou cancele pra não fazer nada:`;
+    
+    const resposta = prompt(msg, vinc.skuExterno);
+    if (resposta === null) return;
+    
+    if (resposta.toLowerCase().trim() === 'ok') {
+      // Ignora a suspeita - só remove flag
+      vinc.skuSuspeito = false;
+      vinc.atualizadoEm = new Date().toISOString();
+      showToast('✓ Divergência ignorada — vínculo mantido');
+    } else if (resposta.trim()) {
+      // Atualiza SKU interno
+      const novoSku = resposta.trim();
+      variacao.sku = novoSku;
+      
+      // Re-avalia TODOS os vínculos desta variação (pode ter outros suspeitos que agora batem)
+      (variacao.vinculos || []).forEach(v => {
+        if (normalizarSku(v.skuExterno) === normalizarSku(novoSku)) {
+          v.skuSuspeito = (String(v.skuExterno).trim() !== String(novoSku).trim());
+        }
+      });
+      
+      showToast('✓ SKU interno atualizado pra "' + novoSku + '"');
+    }
+    
+    saveProdutos();
+    desenharVinculos();
+    renderProdutos(); // atualiza os badges nos cards
+  }
+  
+  function removerVinculo(variacaoId, vinculoId) {
+    const produto = _produtoVinculosAtual;
+    if (!produto) return;
+    const variacao = produto.variacoes.find(v => String(v.id) === String(variacaoId));
+    if (!variacao || !variacao.vinculos) return;
+    
+    const vinc = variacao.vinculos.find(v => String(v.id) === String(vinculoId));
+    if (!vinc) return;
+    
+    if (!confirm('Remover vínculo com "' + (vinc.titulo || vinc.anuncioId) + '"?\n\nIsso NÃO apaga o anúncio no marketplace. Na próxima sincronização, ele pode ser vinculado de novo se o SKU bater.')) return;
+    
+    variacao.vinculos = variacao.vinculos.filter(v => String(v.id) !== String(vinculoId));
+    saveProdutos();
+    showToast('✓ Vínculo removido');
+    desenharVinculos();
+    renderProdutos();
+  }
+  
   // === Chat de melhoria do prompt da IA ===
   let _chatPromptHist = [];
   
@@ -10430,12 +10872,16 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         showToast('Nenhum anúncio encontrado nesta conta.');
         return;
       }
-      // Importa os anúncios usando a reconciliação por SKU que já temos
+      // FASE A: importação automática com dedup por SKU
       const lojaParaImportar = lojasErp.find(l => l.contaConectada && l.marketplace === marketplace) || loja;
-      if (lojaParaImportar && typeof reconciliarImportacao === 'function') {
-        reconciliarImportacao(anuncios, lojaParaImportar);
-        showToast('✓ ' + anuncios.length + ' anúncio(s) baixado(s). Revise na tela de Reconciliação.');
-        goTo('reconciliacaoScreen');
+      if (lojaParaImportar && typeof importarAnunciosAutomatico === 'function') {
+        const stats = importarAnunciosAutomatico(anuncios, lojaParaImportar);
+        let msg = '✓ ' + anuncios.length + ' anúncio(s) processado(s) · ';
+        msg += stats.vinculadosNovos + ' vinculado(s) · ';
+        msg += stats.produtosCriados + ' produto(s) novo(s)';
+        if (stats.suspeitos > 0) msg += ' · ⚠ ' + stats.suspeitos + ' suspeito(s)';
+        showToast(msg);
+        renderProdutos();
       } else {
         showToast('✓ ' + anuncios.length + ' anúncio(s) recebido(s) do ' + marketplace);
       }
