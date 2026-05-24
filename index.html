@@ -8431,12 +8431,39 @@
   
   // === Atualiza UM anúncio (usado individualmente E em massa) ===
   async function atualizarUmAnuncio(produto, vinculo) {
-    if (!vinculo || !vinculo.lojaId || !vinculo.anuncioId) {
-      return { ok: false, erro: 'Vínculo sem lojaId ou anuncioId' };
+    if (!vinculo || !vinculo.anuncioId) {
+      return { ok: false, erro: 'Vínculo sem anuncioId' };
+    }
+    
+    // Resolve o lojaId do BANCO (numérico/UUID), não o local
+    // Vínculos antigos (criados antes desta correção) só têm `lojaId` local.
+    // Faz migração transparente: busca a loja em lojasErp e pega o idBanco.
+    let lojaIdBanco = vinculo.lojaIdBanco;
+    if (!lojaIdBanco) {
+      const lojaLocal = lojasErp.find(l => String(l.id) === String(vinculo.lojaId));
+      if (lojaLocal) {
+        lojaIdBanco = lojaLocal.idBanco;
+        // Se ainda não tem idBanco, tenta criar/buscar
+        if (!lojaIdBanco && typeof garantirLojaNoBanco === 'function') {
+          try { lojaIdBanco = await garantirLojaNoBanco(lojaLocal); } catch(e) {}
+        }
+        // Atualiza o vínculo pra próxima vez (migração permanente)
+        if (lojaIdBanco) {
+          vinculo.lojaIdBanco = lojaIdBanco;
+          if (typeof saveProdutos === 'function') saveProdutos();
+        }
+      }
+    }
+    
+    if (!lojaIdBanco) {
+      return { 
+        ok: false, 
+        erro: 'Loja "' + (vinculo.lojaId || '?') + '" não tem ID do banco. Vá em "🏪 Lojas & Conexões" e clique em sincronizar (ou re-conecte a loja) pra a gente poder atualizar anúncios.' 
+      };
     }
     
     try {
-      const url = BACKEND_URL + '/api/marketplaces/loja/' + vinculo.lojaId + '/anuncio/' + vinculo.anuncioId + '/atualizar';
+      const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/anuncio/' + vinculo.anuncioId + '/atualizar';
       const resp = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
@@ -8444,7 +8471,6 @@
       });
       const data = await resp.json();
       
-      // Marca timestamp no vínculo
       if (data.ok) {
         vinculo.ultimaAtualizacao = new Date().toISOString();
         saveProdutos();
@@ -11046,6 +11072,7 @@ São o mesmo produto?`;
     const novoVinculo = {
       id: idx >= 0 ? variacao.vinculos[idx].id : 'vinc-' + gerarId(),
       lojaId: info.lojaId,
+      lojaIdBanco: info.lojaIdBanco || null,
       marketplace: info.marketplace,
       anuncioId: info.anuncioId,
       variacaoExternaId: info.variacaoExternaId || null,
@@ -11172,7 +11199,8 @@ São o mesmo produto?`;
         }
         
         const infoVinculo = {
-          lojaId: loja.id,
+          lojaId: loja.id,                  // ID local do front (compat)
+          lojaIdBanco: loja.idBanco || null, // ID do banco (usado nas chamadas API)
           marketplace: loja.marketplace,
           anuncioId: anuncioId,
           variacaoExternaId: varExt.id || varExt.variation_id || null,
