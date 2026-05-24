@@ -8308,18 +8308,48 @@
   let _prodSelecionados = new Set();
   
   // Quais campos são considerados "faltantes" pra o filtro
-  const CAMPOS_OBRIGATORIOS_ML = ['tipoCalcado','genero','usoRecomendado',
-    'materialExterior','materialInterior','materialSola','tipoAjuste'];
+  // Mapeia campos importantes: id novo do ML, chave antiga (legacy), e nome amigavel.
+  // Pra ter "OK" basta UMA das chaves (legacy OU nova) estar preenchida.
+  const GRUPOS_FALTANTES_ML = [
+    { ids: ['GENDER', 'genero'], nome: 'Gênero' },
+    { ids: ['EXTERIOR_MATERIALS', 'materialExterior'], nome: 'Material externo' },
+    { ids: ['OUTSOLE_MATERIALS', 'materialSola'], nome: 'Material da sola' },
+    { ids: ['RECOMMENDED_USES', 'usoRecomendado'], nome: 'Uso recomendado' },
+  ];
   
   function temDadosFaltantes(produto) {
     if (!produto || produto.status === 'excluido') return false;
-    const at = produto.atributosMl || {};
-    return CAMPOS_OBRIGATORIOS_ML.some(campo => !at[campo] || !String(at[campo]).trim());
+    return listarFaltantes(produto).length > 0;
   }
   
   function listarFaltantes(produto) {
+    if (!produto) return [];
     const at = produto.atributosMl || {};
-    return CAMPOS_OBRIGATORIOS_ML.filter(campo => !at[campo] || !String(at[campo]).trim());
+    const fl = [];
+    
+    // Basicos do produto
+    if (!produto.nome || !String(produto.nome).trim()) fl.push('Nome');
+    if (!produto.categoria) fl.push('Categoria interna');
+    if (!produto.marca && !at.BRAND) fl.push('Marca');
+    if (!produto.fotos || produto.fotos.length === 0) fl.push('Foto');
+    if (!produto.descricao || String(produto.descricao).trim().length < 20) fl.push('Descrição');
+    if (!produto.categoryIdMl) fl.push('Categoria ML');
+    
+    // Atributos ML importantes (aceita ID novo OU chave antiga)
+    for (const g of GRUPOS_FALTANTES_ML) {
+      const tem = g.ids.some(id => at[id] && String(at[id]).trim());
+      if (!tem) fl.push(g.nome);
+    }
+    
+    // Variacoes
+    if (!produto.variacoes || produto.variacoes.length === 0) {
+      fl.push('Variações');
+    } else {
+      const semSku = produto.variacoes.filter(v => !v.sku || !String(v.sku).trim()).length;
+      if (semSku > 0) fl.push(semSku + ' var sem SKU');
+    }
+    
+    return fl;
   }
   
   function toggleSelecaoProduto(produtoId, event) {
@@ -9260,9 +9290,11 @@
       }
       
       // Badge de dados faltantes (cor laranja)
-      const qtdFaltantes = listarFaltantes(p).length;
+      const faltantes = listarFaltantes(p);
+      const qtdFaltantes = faltantes.length;
       if (qtdFaltantes > 0) {
-        vincBadges += `<span class="prod-card-mkt-chip" style="background:#ea580c" title="${qtdFaltantes} atributo(s) faltando preencher">⚠ ${qtdFaltantes} falta</span>`;
+        const tt = 'Faltam: ' + faltantes.join(', ');
+        vincBadges += `<span class="prod-card-mkt-chip" style="background:#ea580c" title="${escapeHtml(tt)}">⚠ ${qtdFaltantes} falta</span>`;
       }
       
       // Checkbox de seleção (canto superior esquerdo do card)
@@ -10273,9 +10305,33 @@
       variacoes: JSON.parse(JSON.stringify(_variacoesProduto)),
       guiaTamanhos: _guiaTamanhosProduto ? JSON.parse(JSON.stringify(_guiaTamanhosProduto)) : null,
       // Atributos do marketplace (qualidade do anuncio)
-      atributosMl: coletarAtributosDinamicos(),
+      atributosMl: (function() {
+        // Faz MERGE em vez de sobrescrever. Se renderAtributosDinamicos ainda nao
+        // carregou (fetch async), nao perdemos o que ja tinha salvo antes.
+        // Inputs presentes:
+        //   - com valor: atualiza
+        //   - vazios: REMOVE do existente (user limpou propositalmente)
+        // Atributos sem input no DOM (categoria mudou, fetch falhou, etc): preserva.
+        const pAtual = _produtoEditandoId 
+          ? produtosErp.find(x => String(x.id) === String(_produtoEditandoId))
+          : null;
+        const existente = pAtual && pAtual.atributosMl ? Object.assign({}, pAtual.atributosMl) : {};
+        
+        const inputsDinamicos = document.querySelectorAll('.atr-dinamico');
+        // Se nao tem NENHUM input dinamico carregado, preserva tudo (nao perdeu nada)
+        if (inputsDinamicos.length === 0) return existente;
+        
+        // Pra cada input no DOM: atualiza valor ou remove se vazio
+        inputsDinamicos.forEach(el => {
+          const id = el.dataset.atrId;
+          if (!id) return;
+          const val = (el.value || '').trim();
+          if (val) existente[id] = val;
+          else delete existente[id];
+        });
+        return existente;
+      })(),
       categoryIdMl: (function() {
-        // Mantém o que ja estava no produto (renderAtributosDinamicos nao mexe nisso)
         const p = _produtoEditandoId 
           ? produtosErp.find(x => String(x.id) === String(_produtoEditandoId))
           : null;
