@@ -9982,12 +9982,16 @@ Responda APENAS a descrição nova, sem aspas.`;
         // 1. Clone profundo do produto
         const novo = JSON.parse(JSON.stringify(p));
         delete novo.id; // novo ID será atribuído
+        delete novo.idBanco; // CRITICO: senão sobrescreve o original no banco!
         delete novo.itemIdMarketplace;
         delete novo.criadoEm;
         novo.atualizadoEm = new Date().toISOString();
         novo.origem = 'duplicado';
         // Limpa vínculos pra forçar nova exportação
-        (novo.variacoes || []).forEach(v => { v.vinculos = []; });
+        (novo.variacoes || []).forEach(v => { 
+          v.vinculos = []; 
+          delete v.idBanco; // mesma logica
+        });
         // Limpa marketplaces.exportado
         novo.marketplaces = {};
         // Atribui ID novo
@@ -10099,14 +10103,32 @@ Responda APENAS a descrição nova, sem aspas.`;
             errCopias++;
             continue;
           }
+          
+          // CRITICO: precisa MONTAR o payload no formato do marketplace 
+          // (com title, category_id, price, listing_type_id etc.) — senao
+          // ML rejeita com "body.required_fields".
+          const payload = montarPayloadExport(novo, lojaDestino.marketplace);
+          
           const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + novo.idBanco;
-          const resp = await fetch(url, { method: 'POST', headers: { 'x-api-token': getApiToken() } });
+          const resp = await fetch(url, { 
+            method: 'POST', 
+            headers: { 
+              'x-api-token': getApiToken(),
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ payload })
+          });
           const data = await resp.json();
           if (data.ok || data.success) {
-            dupLogStep(`  ✓ Exportado para ${lojaDestino.marketplace} (anuncio ${data.itemId || data.anuncioId || '?'})`, 'ok');
+            dupLogStep(`  ✓ Exportado para ${lojaDestino.marketplace} (anuncio ${data.itemId || (data.dados && data.dados.id) || '?'})`, 'ok');
             okCopias++;
           } else {
-            dupLogStep(`  ✗ Erro exportar: ${data.erro || JSON.stringify(data).slice(0,150)}`, 'err');
+            // Mostra detalhes do erro
+            const erroMsg = data.erro || JSON.stringify(data).slice(0,200);
+            dupLogStep(`  ✗ Erro exportar: ${erroMsg}`, 'err');
+            if (data.detalhes) {
+              data.detalhes.slice(0, 5).forEach(d => dupLogStep(`    • ${d}`, 'err'));
+            }
             errCopias++;
           }
         } catch(e) {
