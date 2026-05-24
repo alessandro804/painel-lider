@@ -8206,7 +8206,19 @@
       _prodSelecionados.add(produtoId);
     }
     atualizarBarraSelecao();
-    renderProdutos();
+    
+    // NÃO chama renderProdutos() — só atualiza o card afetado manualmente.
+    // (Re-render durante click em checkbox quebra o estado visual do input.)
+    const cardEl = document.querySelector('.prod-card-v2[data-prod-id="' + produtoId + '"]');
+    if (cardEl) {
+      if (_prodSelecionados.has(produtoId)) {
+        cardEl.style.borderColor = '#1e2a47';
+        cardEl.style.boxShadow = '0 0 0 2px #1e2a47';
+      } else {
+        cardEl.style.borderColor = '';
+        cardEl.style.boxShadow = '';
+      }
+    }
   }
   
   function atualizarBarraSelecao() {
@@ -8529,9 +8541,11 @@ Devolva JSON exato (string vazia "" se não souber):
       
       // Checkbox de seleção (canto superior esquerdo do card)
       const selecionado = _prodSelecionados.has(p.id);
-      const checkHtml = `<input type="checkbox" ${selecionado ? 'checked' : ''} 
-        onclick="event.stopPropagation();toggleSelecaoProduto('${p.id}', event)"
-        style="position:absolute;top:8px;left:8px;width:20px;height:20px;cursor:pointer;z-index:2;accent-color:#1e2a47">`;
+      const checkHtml = `<label style="position:absolute;top:8px;left:8px;z-index:2;background:white;border-radius:6px;padding:3px;box-shadow:0 1px 3px rgba(0,0,0,0.15);cursor:pointer;display:flex;align-items:center;justify-content:center" onclick="event.stopPropagation()">
+        <input type="checkbox" ${selecionado ? 'checked' : ''} 
+          onchange="toggleSelecaoProduto('${p.id}', event)"
+          style="width:18px;height:18px;cursor:pointer;margin:0;accent-color:#1e2a47">
+      </label>`;
       
       // Classificacao do estoque
       let estoqueCls = 'ok';
@@ -8547,7 +8561,7 @@ Devolva JSON exato (string vazia "" se não souber):
         ? `<div class="prod-card-foto" style="background-image: url('${escapeHtml(fotoUrl)}')">${badgeHtml}</div>`
         : `<div class="prod-card-foto-empty">📦${badgeHtml}</div>`;
       
-      return `<div class="prod-card-v2" onclick="abrirEditarProduto('${p.id}')" style="${selecionado ? 'border-color:#1e2a47;box-shadow:0 0 0 2px #1e2a47' : ''}">
+      return `<div class="prod-card-v2" data-prod-id="${p.id}" onclick="abrirEditarProduto('${p.id}')" style="${selecionado ? 'border-color:#1e2a47;box-shadow:0 0 0 2px #1e2a47' : ''}">
         ${checkHtml}
         ${fotoHtml}
         <div class="prod-card-body">
@@ -10968,12 +10982,89 @@ São o mesmo produto?`;
     
     anuncios.forEach(anuncio => {
       // Normaliza pra ter ao menos uma "variação" mesmo se o anúncio for de produto único
-      let variacoesExt = anuncio.variacoes && anuncio.variacoes.length > 0
+      const variacoesExt = anuncio.variacoes && anuncio.variacoes.length > 0
         ? anuncio.variacoes
         : [{ sku: anuncio.sku, nome: anuncio.nome, estoque: anuncio.estoque || 0, preco: anuncio.preco }];
       
+      const anuncioId = anuncio.id || anuncio.mlb || anuncio.item_id;
+      
+      // ==========================================================
+      // PASSO 1: ESCOLHE O PRODUTO INTERNO (1 anúncio = 1 produto)
+      // Tenta achar nesta ordem:
+      //   a) Algum produto com vínculo já existente pra esse anúncio (re-sync)
+      //   b) Match por SKU de QUALQUER variação do anúncio
+      //   c) Match pelo SKU pai do anúncio
+      //   d) Cria produto novo
+      // ==========================================================
+      let produtoInterno = null;
+      
+      // a) Re-sync: já existe produto com vínculo pra este anuncioId?
+      for (const p of produtosErp) {
+        if (p.status === 'excluido') continue;
+        for (const v of (p.variacoes || [])) {
+          for (const vinc of (v.vinculos || [])) {
+            if (String(vinc.anuncioId) === String(anuncioId)) {
+              produtoInterno = p;
+              break;
+            }
+          }
+          if (produtoInterno) break;
+        }
+        if (produtoInterno) break;
+      }
+      
+      // b) Match por SKU de alguma variação
+      if (!produtoInterno) {
+        for (const varExt of variacoesExt) {
+          if (varExt.sku && String(varExt.sku).trim()) {
+            const match = acharVariacaoPorSku(varExt.sku);
+            if (match) { produtoInterno = match.produto; break; }
+          }
+        }
+      }
+      
+      // c) Match pelo SKU pai do anúncio
+      if (!produtoInterno && anuncio.sku) {
+        const match = acharVariacaoPorSku(anuncio.sku);
+        if (match) produtoInterno = match.produto;
+      }
+      
+      // d) Não achou - CRIA UM PRODUTO NOVO PRA O ANÚNCIO INTEIRO
+      let isProdutoNovo = false;
+      if (!produtoInterno) {
+        // Decide o skuPai: se tem, usa. Se não, gera placeholder único pro anúncio.
+        const skuPaiAnuncio = (anuncio.sku && String(anuncio.sku).trim())
+          ? anuncio.sku
+          : ('anuncio-' + (anuncioId || gerarId()));
+        
+        produtoInterno = {
+          id: gerarId(),
+          nome: anuncio.nome || anuncio.title || 'Produto sem nome',
+          skuPai: skuPaiAnuncio,
+          lojaId: loja.id,
+          categoria: anuncio.categoria || '',
+          preco: anuncio.preco || 0,
+          peso: anuncio.peso || 0,
+          descricao: anuncio.descricao || '',
+          status: 'rascunho',
+          fotos: anuncio.fotos || [],
+          variacoes: [],
+          marketplaces: { 
+            [loja.marketplace]: { exportado: true, importado: true } 
+          },
+          modeloPreco: anuncio.modeloPreco || 'variacao',
+          criadoEm: new Date().toISOString()
+        };
+        produtosErp.push(produtoInterno);
+        stats.produtosCriados++;
+        isProdutoNovo = true;
+      }
+      
+      // ==========================================================
+      // PASSO 2: PRA CADA VARIAÇÃO DO ANÚNCIO, VINCULA OU CRIA
+      // (sempre dentro do MESMO produtoInterno escolhido acima)
+      // ==========================================================
       variacoesExt.forEach(varExt => {
-        // 1. Trata SKU vazio -> placeholder
         let skuExterno = varExt.sku;
         if (!skuExterno || String(skuExterno).trim() === '') {
           skuExterno = proximoSemSku();
@@ -10983,106 +11074,66 @@ São o mesmo produto?`;
         const infoVinculo = {
           lojaId: loja.id,
           marketplace: loja.marketplace,
-          anuncioId: anuncio.id || anuncio.mlb || anuncio.item_id,
+          anuncioId: anuncioId,
           variacaoExternaId: varExt.id || varExt.variation_id || null,
           skuExterno: skuExterno,
-          skuExatoBate: true, // será reavaliado se houver match
+          skuExatoBate: true,
           titulo: anuncio.nome || anuncio.title || '?'
         };
         
-        // 2. Procura match no catálogo
-        const match = acharVariacaoPorSku(skuExterno);
+        // Procura variação INTERNA correspondente (DENTRO do produto escolhido)
+        const skuNorm = normalizarSku(skuExterno);
+        let varInterna = (produtoInterno.variacoes || []).find(v => 
+          v.sku && normalizarSku(v.sku) === skuNorm);
         
-        if (match) {
-          // Match encontrado - vincula
-          infoVinculo.skuExatoBate = match.skuExatoBate;
-          if (!match.skuExatoBate) stats.suspeitos++;
-          
-          if (match.variacao) {
-            // Vincula na variação específica
-            const resultado = aplicarVinculoNaVariacao(match.variacao, infoVinculo);
-            if (resultado === 'criado') stats.vinculadosNovos++;
-            else stats.vinculadosAtualizados++;
-          } else {
-            // Produto sem variações - cria uma variação representativa e vincula nela
-            if (!match.produto.variacoes) match.produto.variacoes = [];
-            const novaVar = {
-              id: gerarId(),
-              nome: varExt.nome || 'Variação única',
-              cor: varExt.cor || '',
-              tamanho: varExt.tamanho || '',
-              sku: match.produto.skuPai,
-              estoque: varExt.estoque || 0,
-              preco: varExt.preco || match.produto.preco || ''
-            };
-            aplicarVinculoNaVariacao(novaVar, infoVinculo);
-            match.produto.variacoes.push(novaVar);
-            stats.variacoesAdicionadas++;
-            stats.vinculadosNovos++;
-          }
-          
-          // Marca marketplace como importado no produto
-          if (!match.produto.marketplaces) match.produto.marketplaces = {};
-          if (!match.produto.marketplaces[loja.marketplace]) {
-            match.produto.marketplaces[loja.marketplace] = {};
-          }
-          match.produto.marketplaces[loja.marketplace].importado = true;
-          match.produto.marketplaces[loja.marketplace].exportado = true;
-          match.produto.atualizadoEm = new Date().toISOString();
+        // Se não achou no produto, mas o produto tem só 1 variação "default", usa ela
+        if (!varInterna && produtoInterno.variacoes && produtoInterno.variacoes.length === 1
+            && (produtoInterno.variacoes[0].vinculos || []).length === 0
+            && !produtoInterno.variacoes[0].sku) {
+          varInterna = produtoInterno.variacoes[0];
+          varInterna.sku = skuExterno;
+          varInterna.cor = varExt.cor || varInterna.cor || '';
+          varInterna.tamanho = varExt.tamanho || varInterna.tamanho || '';
+          varInterna.nome = varExt.nome || varInterna.nome || '';
+        }
+        
+        if (varInterna) {
+          // Atualiza vínculo
+          const skuExatoBate = String(varInterna.sku).trim() === String(skuExterno).trim();
+          infoVinculo.skuExatoBate = skuExatoBate;
+          if (!skuExatoBate) stats.suspeitos++;
+          const resultado = aplicarVinculoNaVariacao(varInterna, infoVinculo);
+          if (resultado === 'criado') stats.vinculadosNovos++;
+          else stats.vinculadosAtualizados++;
         } else {
-          // Sem match - cria produto novo
-          // Mas se outras variações do MESMO anúncio já foram criadas, adiciona variação a esse produto
-          const skuPaiAnuncio = anuncio.sku || skuExterno;
-          let prodNovo = produtosErp.find(p => 
-            p.skuPai === skuPaiAnuncio && 
-            String(p.lojaId) === String(loja.id) &&
-            p.status === 'rascunho' &&
-            p._criadoNaSync === stats // marca pra distinguir desta sincronização
-          );
-          
-          if (!prodNovo) {
-            prodNovo = {
-              id: gerarId(),
-              nome: anuncio.nome || anuncio.title || 'Produto sem nome',
-              skuPai: skuPaiAnuncio,
-              lojaId: loja.id,
-              categoria: anuncio.categoria || '',
-              preco: anuncio.preco || varExt.preco || 0,
-              peso: anuncio.peso || 0,
-              descricao: anuncio.descricao || '',
-              status: 'rascunho',
-              fotos: anuncio.fotos || [],
-              variacoes: [],
-              marketplaces: { 
-                [loja.marketplace]: { exportado: true, importado: true } 
-              },
-              modeloPreco: anuncio.modeloPreco || 'unico',
-              criadoEm: new Date().toISOString(),
-              _criadoNaSync: stats
-            };
-            produtosErp.push(prodNovo);
-            stats.produtosCriados++;
-          }
-          
-          // Adiciona a variação ao produto novo
+          // Cria variação nova no produto interno
           const novaVar = {
             id: gerarId(),
-            nome: varExt.nome || (anuncio.nome + ' - única'),
+            nome: varExt.nome || '',
             cor: varExt.cor || '',
             tamanho: varExt.tamanho || '',
             sku: skuExterno,
             estoque: varExt.estoque || 0,
-            preco: varExt.preco || prodNovo.preco || ''
+            preco: varExt.preco || produtoInterno.preco || ''
           };
           aplicarVinculoNaVariacao(novaVar, infoVinculo);
-          prodNovo.variacoes.push(novaVar);
+          produtoInterno.variacoes.push(novaVar);
           stats.vinculadosNovos++;
+          if (!isProdutoNovo) stats.variacoesAdicionadas++;
         }
       });
+      
+      // ==========================================================
+      // PASSO 3: marca marketplace e atualiza timestamp
+      // ==========================================================
+      if (!produtoInterno.marketplaces) produtoInterno.marketplaces = {};
+      if (!produtoInterno.marketplaces[loja.marketplace]) {
+        produtoInterno.marketplaces[loja.marketplace] = {};
+      }
+      produtoInterno.marketplaces[loja.marketplace].importado = true;
+      produtoInterno.marketplaces[loja.marketplace].exportado = true;
+      produtoInterno.atualizadoEm = new Date().toISOString();
     });
-    
-    // Limpa marcação interna usada na criação
-    produtosErp.forEach(p => { delete p._criadoNaSync; });
     
     // Persiste
     saveProdutos();
