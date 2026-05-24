@@ -8220,10 +8220,11 @@
   
   function toggleSelecaoProduto(produtoId, event) {
     if (event) event.stopPropagation();
-    if (_prodSelecionados.has(produtoId)) {
-      _prodSelecionados.delete(produtoId);
+    const id = String(produtoId);  // SEMPRE como string pra Set bater certo
+    if (_prodSelecionados.has(id)) {
+      _prodSelecionados.delete(id);
     } else {
-      _prodSelecionados.add(produtoId);
+      _prodSelecionados.add(id);
     }
     atualizarBarraSelecao();
     
@@ -8277,7 +8278,7 @@
         const txt = (p.nome + ' ' + p.skuPai).toLowerCase();
         if (!txt.includes(busca)) return;
       }
-      _prodSelecionados.add(p.id);
+      _prodSelecionados.add(String(p.id));  // SEMPRE string
     });
     atualizarBarraSelecao();
     renderProdutos();
@@ -8381,13 +8382,22 @@
     
     // Calcula quantos vínculos serão atualizados no total
     let totalVinc = 0;
+    const detalhes = [];
     ids.forEach(id => {
       const p = produtosErp.find(x => String(x.id) === String(id));
-      if (p) totalVinc += contarVinculosProduto(p);
+      if (!p) {
+        detalhes.push('ID ' + id + ': PRODUTO NAO ENCONTRADO no produtosErp');
+      } else {
+        const v = contarVinculosProduto(p);
+        detalhes.push(p.nome + ' (id=' + p.id + '): ' + v + ' vinculo(s)');
+        totalVinc += v;
+      }
     });
+    console.log('[acaoMassaAtualizarMarketplaces] ' + ids.length + ' selecionado(s), ' + totalVinc + ' vinculos total:');
+    detalhes.forEach(d => console.log('  -', d));
     
     if (totalVinc === 0) {
-      showToast('Nenhum dos produtos selecionados tem anúncios vinculados', true);
+      showToast('Nenhum dos produtos selecionados tem anúncios vinculados. Veja Console (F12) pra detalhes.', true);
       return;
     }
     
@@ -8766,12 +8776,72 @@
     lista.innerHTML = mks.map(mk => {
       const info = p.marketplaces && p.marketplaces[mk.id];
       const exp = info && info.exportado;
+      // Conta vínculos COM ESTE marketplace especificamente
+      const vincsMkt = (p.variacoes || []).reduce((tot, v) => 
+        tot + ((v.vinculos || []).filter(vi => vi.marketplace === mk.id).length), 0);
+      
+      let btn;
+      if (vincsMkt > 0) {
+        // Já tem vínculo → botão atualiza
+        btn = `<button class="integ-acao-btn" style="padding:4px 9px;background:#3b82f6;color:white;border:none" onclick="atualizarVinculosDeUmMarketplace('${p.id}','${mk.id}')" title="${vincsMkt} anúncio(s) vinculado(s) neste marketplace">🔄 Atualizar (${vincsMkt})</button>`;
+      } else {
+        // Sem vínculo → exporta novo
+        btn = `<button class="integ-acao-btn" style="padding:4px 9px" onclick="exportarProdutoMarketplace('${p.id}','${mk.id}')">Exportar</button>`;
+      }
+      
       return `<div class="prod-mkt-linha">
         <span style="flex:1">${mk.nome}</span>
-        <span style="font-weight:700;color:${exp?'#16a34a':'#94a3b8'}">${exp?'✓ Exportado':'Não exportado'}</span>
-        <button class="integ-acao-btn" style="padding:4px 9px" onclick="exportarProdutoMarketplace('${p.id}','${mk.id}')">Exportar</button>
+        <span style="font-weight:700;color:${exp||vincsMkt?'#16a34a':'#94a3b8'}">${vincsMkt > 0 ? '🔗 '+vincsMkt+' vínculo(s)' : (exp ? '✓ Exportado' : 'Não exportado')}</span>
+        ${btn}
       </div>`;
     }).join('');
+  }
+  
+  // Atualiza todos os vínculos do produto que sejam de UM marketplace específico
+  // Usado pelo botão "🔄 Atualizar" na seção "Situação nos marketplaces" do modal
+  async function atualizarVinculosDeUmMarketplace(produtoId, marketplace) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!p) { showToast('Produto não encontrado', true); return; }
+    
+    // Filtra só vínculos deste marketplace
+    const vincs = [];
+    for (const v of (p.variacoes || [])) {
+      for (const vinc of (v.vinculos || [])) {
+        if (vinc.marketplace === marketplace) vincs.push(vinc);
+      }
+    }
+    
+    if (vincs.length === 0) {
+      showToast('Nenhum vínculo neste marketplace', true);
+      return;
+    }
+    
+    if (!confirm('Atualizar ' + vincs.length + ' anúncio(s) no ' + marketplace + ' com os dados atuais do ERP?\n\nIsso vai sobrescrever nome, preço, fotos, atributos e estoque no marketplace.')) return;
+    
+    let ok = 0, erros = 0;
+    const erroDetalhes = [];
+    showToast('🔄 Atualizando ' + vincs.length + ' anúncio(s)...');
+    
+    for (const vinc of vincs) {
+      try {
+        const r = await atualizarUmAnuncio(p, vinc);
+        if (r.ok) ok++;
+        else { 
+          erros++; 
+          erroDetalhes.push(vinc.anuncioId + ': ' + r.erro);
+        }
+      } catch(e) {
+        erros++;
+        erroDetalhes.push(vinc.anuncioId + ': ' + e.message);
+      }
+    }
+    
+    if (erros === 0) {
+      showToast('✅ ' + ok + ' anúncio(s) atualizados!');
+    } else {
+      showToast('⚠ ' + ok + ' OK · ' + erros + ' erro(s) — veja console', true);
+      console.warn('[atualizarVinculosDeUmMarketplace] erros:', erroDetalhes);
+    }
   }
   
   // === Fotos do produto ===
