@@ -4703,6 +4703,15 @@
         </div>
         
         <div class="modal-v2-form-group">
+          <label class="modal-v2-label">EAN / Código de barras (GTIN)</label>
+          <div style="display:flex;gap:6px">
+            <input type="text" class="modal-v2-input form-input" id="prodEan" placeholder="Ex: 7891234567895 (13 dígitos)" maxlength="14" style="flex:1">
+            <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="background:#fef3c7;color:#92400e;border-color:#f59e0b;white-space:nowrap" onclick="gerarEanProduto()" title="Gera EAN-13 válido com prefixo 789 (Brasil) — só pra uso no ML, NUNCA pra NF-e">🔢 Gerar EAN</button>
+          </div>
+          <div class="modal-v2-input-hint">Se vazio E sem variações: backend manda automaticamente "EMPTY_GTIN_REASON: Não registrado" pro ML. Se preencher manualmente: vai como atributo GTIN do anúncio.</div>
+        </div>
+        
+        <div class="modal-v2-form-group">
           <label class="modal-v2-label">Categoria interna</label>
           <select class="modal-v2-input form-input" id="prodCategoria" onchange="onCategoriaInternaChange()"></select>
           <div class="modal-v2-input-hint">💡 A categoria do seu ERP. O vínculo com marketplaces fica em Configurações.</div>
@@ -4777,9 +4786,10 @@
         
         <div class="modal-v2-form-group">
           <div id="prodVariacoesList"></div>
-          <div style="display:flex;gap:6px;margin-top:6px">
-            <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1" onclick="addVariacaoProduto()">+ Adicionar variação</button>
-            <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;background:#fef3c7;color:#92400e;border-color:#f59e0b" onclick="gerarSkusVariacoesAutomatico()" title="Gera SKU pra cada variação combinando SKU do produto + cor + tamanho">🏷️ Gerar SKUs automaticamente</button>
+          <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+            <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px" onclick="addVariacaoProduto()">+ Adicionar variação</button>
+            <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#fef3c7;color:#92400e;border-color:#f59e0b" onclick="gerarSkusVariacoesAutomatico()" title="Gera SKU pra cada variação combinando SKU do produto + cor + tamanho">🏷️ Gerar SKUs</button>
+            <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#fef3c7;color:#92400e;border-color:#f59e0b" onclick="gerarEansVariacoesAutomatico()" title="Gera EAN-13 válido com prefixo 789 (Brasil) pra cada variação — só pra uso no ML">🔢 Gerar EANs</button>
           </div>
           <div class="modal-v2-input-hint" id="prodModeloPrecoInfo">Cada variação tem SKU, estoque e preço próprios (modelo atual de Shopee e ML).</div>
         </div>
@@ -8672,6 +8682,7 @@
     document.getElementById('produtoModalTitulo').textContent = 'Novo Produto';
     document.getElementById('prodNome').value = '';
     document.getElementById('prodSku').value = '';
+    document.getElementById('prodEan').value = '';
     document.getElementById('prodPreco').value = '';
     document.getElementById('prodPeso').value = '';
     document.getElementById('prodDescricao').value = '';
@@ -8951,6 +8962,7 @@
     document.getElementById('produtoModalTitulo').textContent = 'Editar Produto';
     document.getElementById('prodNome').value = p.nome || '';
     document.getElementById('prodSku').value = p.skuPai || '';
+    document.getElementById('prodEan').value = p.ean || '';
     document.getElementById('prodPreco').value = p.preco || '';
     document.getElementById('prodPeso').value = p.peso || '';
     document.getElementById('prodDescricao').value = p.descricao || '';
@@ -9147,9 +9159,13 @@
                  oninput="_variacoesProduto[${i}].estoque = this.value">
         </div>
         <div class="var-item-row">
+          <input type="text" value="${escapeHtml(v.ean||'')}" placeholder="EAN / código de barras (13 dígitos)" maxlength="14"
+                 oninput="_variacoesProduto[${i}].ean = this.value">
           <input type="number" value="${v.preco||''}" placeholder="Preço (opcional, sobrescreve o do pai)" step="0.01"
                  oninput="_variacoesProduto[${i}].preco = this.value">
-          <button type="button" class="var-item-del" onclick="removerVariacaoProduto(${i})">🗑 Remover</button>
+        </div>
+        <div style="text-align:right;margin-top:4px">
+          <button type="button" class="var-item-del" onclick="removerVariacaoProduto(${i})">🗑 Remover variação</button>
         </div>
       </div>
     `;}).join('');
@@ -9219,6 +9235,109 @@
     
     renderVariacoesProduto();
     showToast('✓ ' + _variacoesProduto.length + ' SKU(s) gerado(s). Revise e clique Salvar.');
+  }
+  
+  // ============================================================
+  // GERADOR DE EAN-13 (padrao GS1 brasileiro: prefixo 789 ou 790)
+  // ============================================================
+  // Gera codigo com checksum valido. NAO eh registrado na GS1 - uso INTERNO no
+  // marketplace apenas. NUNCA usar pra emissao de NF-e (vai dar rejeicao 882).
+  
+  function calcularDigitoVerificadorEan13(doze) {
+    if (String(doze).length !== 12 || !/^\d{12}$/.test(doze)) return null;
+    let soma = 0;
+    for (let i = 0; i < 12; i++) {
+      const d = parseInt(doze[i]);
+      // Posicoes 1,3,5,7,9,11 (indices pares 0,2,4...) x 1
+      // Posicoes 2,4,6,8,10,12 (indices impares 1,3,5...) x 3
+      soma += (i % 2 === 0) ? d : d * 3;
+    }
+    return (10 - (soma % 10)) % 10;
+  }
+  
+  function gerarEAN13Brasil(seed) {
+    // Prefixo 789 (Brasil GS1). Pode usar 790 tb.
+    const prefixo = '789';
+    
+    // 9 digitos: usa seed (string) pra ser DETERMINISTICO (mesmo SKU = mesmo EAN)
+    // ou aleatorio se seed nao informada
+    let nove = '';
+    if (seed) {
+      // Hash simples da seed pra gerar 9 digitos consistentes
+      let h = 0;
+      const str = String(seed);
+      for (let i = 0; i < str.length; i++) {
+        h = ((h << 5) - h) + str.charCodeAt(i);
+        h = h & h;
+      }
+      // Garante positivo e pega 9 digitos
+      nove = String(Math.abs(h)).padStart(9, '0').slice(-9);
+    } else {
+      for (let i = 0; i < 9; i++) {
+        nove += Math.floor(Math.random() * 10);
+      }
+    }
+    
+    const doze = prefixo + nove;
+    const dv = calcularDigitoVerificadorEan13(doze);
+    return doze + dv;
+  }
+  
+  function validarEAN13(ean) {
+    const s = String(ean || '').replace(/\D/g, '');
+    if (s.length !== 13) return false;
+    const dvEsperado = calcularDigitoVerificadorEan13(s.slice(0, 12));
+    return parseInt(s[12]) === dvEsperado;
+  }
+  
+  // Gera EAN pro produto pai (input #prodEan)
+  function gerarEanProduto() {
+    const inp = document.getElementById('prodEan');
+    if (!inp) return;
+    if (inp.value && inp.value.trim()) {
+      if (!confirm('Já tem EAN preenchido. Sobrescrever com EAN gerado?')) return;
+    }
+    // Usa SKU como seed pra ser deterministico (mesmo produto -> mesmo EAN)
+    const sku = (document.getElementById('prodSku')||{}).value.trim();
+    const seed = sku || ('prod-' + (_produtoEditandoId || Date.now()));
+    inp.value = gerarEAN13Brasil(seed);
+    showToast('✓ EAN gerado (uso INTERNO no marketplace, NUNCA em NF-e)');
+  }
+  
+  // Gera EAN pra cada variacao
+  function gerarEansVariacoesAutomatico() {
+    if (_variacoesProduto.length === 0) {
+      showToast('Adicione pelo menos uma variação primeiro', true);
+      return;
+    }
+    
+    const comEan = _variacoesProduto.filter(v => v.ean && v.ean.trim()).length;
+    if (comEan > 0) {
+      if (!confirm(comEan + ' variação(ões) já têm EAN preenchido. Sobrescrever TODAS com EANs gerados?')) {
+        return;
+      }
+    }
+    
+    const skuPai = (document.getElementById('prodSku')||{}).value.trim() || 'X';
+    const eansGerados = new Set();
+    
+    _variacoesProduto.forEach((v, i) => {
+      // Seed: skuPai + sku da variacao + cor + tamanho + indice (garante unico)
+      const seed = [skuPai, v.sku || '', v.cor || '', v.tamanho || '', i].join('|');
+      let novoEan = gerarEAN13Brasil(seed);
+      
+      // Se ja gerou esse EAN nessa rodada, tenta com seed alternativa
+      let tentativa = 0;
+      while (eansGerados.has(novoEan) && tentativa < 50) {
+        tentativa++;
+        novoEan = gerarEAN13Brasil(seed + '|retry' + tentativa);
+      }
+      eansGerados.add(novoEan);
+      v.ean = novoEan;
+    });
+    
+    renderVariacoesProduto();
+    showToast('✓ ' + _variacoesProduto.length + ' EAN(s) gerado(s). Uso INTERNO apenas.');
   }
   
   // ============================================================
@@ -9454,6 +9573,7 @@
     const dados = {
       nome,
       skuPai: document.getElementById('prodSku').value.trim(),
+      ean: document.getElementById('prodEan').value.trim(),
       lojaId: document.getElementById('prodLoja').value,
       categoria: document.getElementById('prodCategoria').value,
       preco: parseFloat(document.getElementById('prodPreco').value) || 0,
