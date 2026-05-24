@@ -4934,16 +4934,20 @@
 </div>
 
 <!-- MODAL: progresso da duplicacao -->
-<div class="dup-overlay" id="dupProgressOverlay">
+<div class="dup-overlay" id="dupProgressOverlay" onclick="if(event.target.id==='dupProgressOverlay')fecharDupProgress()">
   <div class="dup-modal">
-    <h3>🔄 Duplicando anúncios...</h3>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 style="margin:0">🔄 Duplicando anúncios...</h3>
+      <button type="button" onclick="fecharDupProgress()" title="Fechar (processo continua em background se em andamento)" style="background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;width:28px;height:28px;cursor:pointer;font-weight:700">×</button>
+    </div>
     <div class="dup-progress-bar">
       <div class="dup-progress-fill" id="dupProgressFill"></div>
     </div>
     <div class="dup-progress-text" id="dupProgressText">Iniciando...</div>
     <div class="dup-step-log" id="dupStepLog"></div>
-    <div style="text-align:right;margin-top:14px">
-      <button type="button" id="dupBtnFechar" onclick="fecharDupProgress()" style="padding:8px 16px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:8px;font-weight:700;cursor:pointer;display:none">Fechar</button>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button type="button" id="dupBtnCancelar" onclick="cancelarDuplicacao()" style="flex:1;padding:8px 16px;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:8px;font-weight:700;cursor:pointer">⏸ Cancelar próximas</button>
+      <button type="button" id="dupBtnFechar" onclick="fecharDupProgress()" style="flex:1;padding:8px 16px;background:#3b82f6;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer">Fechar</button>
     </div>
   </div>
 </div>
@@ -9402,13 +9406,20 @@
       const estoqueTotal = (p.variacoes || []).reduce((s,v) => s + (parseInt(v.estoque)||0), 0);
       const fotoUrl = p.fotos && p.fotos[0] ? p.fotos[0] : '';
       
-      // Chips de marketplaces onde já foi publicado
+      // Chips de marketplaces COM CONTAGEM de anuncios vinculados
+      // Ex: produto pode ter 4 anuncios no ML, 3 na Shopee, etc.
       let mktChips = '';
+      const contVincPorMk = contarVinculosPorMarketplace(p);
       ['mercadolivre','shopee','tiktok','shein'].forEach(mk => {
-        const exp = p.marketplaces && p.marketplaces[mk] && p.marketplaces[mk].exportado;
-        if (exp) {
+        const qtd = contVincPorMk[mk] || 0;
+        const exportado = p.marketplaces && p.marketplaces[mk] && p.marketplaces[mk].exportado;
+        if (qtd > 0 || exportado) {
           const sigla = {mercadolivre:'ML',shopee:'SP',tiktok:'TT',shein:'SH'}[mk];
-          mktChips += `<span class="prod-card-mkt-chip ${mk==='mercadolivre'?'ml':mk}">${sigla}</span>`;
+          const cssClass = mk === 'mercadolivre' ? 'ml' : mk;
+          // Se tem vinculos, mostra contagem; senao, so a sigla
+          const txt = qtd > 0 ? sigla + ' <strong>' + qtd + '</strong>' : sigla;
+          const tt = qtd > 0 ? qtd + ' anúncio(s) vinculado(s) no ' + sigla : 'Marcado como exportado no ' + sigla;
+          mktChips += `<span class="prod-card-mkt-chip ${cssClass}" title="${tt}" style="cursor:pointer" onclick="event.stopPropagation();abrirVinculos('${p.id}')">${txt}</span>`;
         }
       });
       
@@ -9844,9 +9855,14 @@
   }
   function fecharDupProgress() {
     document.getElementById('dupProgressOverlay').classList.remove('active');
-    document.getElementById('dupBtnFechar').style.display = 'none';
     // Re-render pra mostrar produtos novos
     renderProdutos();
+  }
+  function cancelarDuplicacao() {
+    _dupCancelar = true;
+    dupLogStep('⏸ Cancelamento solicitado — terminando cópia atual e parando...', 'err');
+    const btn = document.getElementById('dupBtnCancelar');
+    if (btn) { btn.disabled = true; btn.textContent = 'Cancelando...'; }
   }
   
   function dupLogStep(msg, tipo) {
@@ -9943,7 +9959,8 @@ Responda APENAS a descrição nova, sem aspas.`;
     fecharDupConfig();
     document.getElementById('dupProgressOverlay').classList.add('active');
     document.getElementById('dupStepLog').innerHTML = '';
-    document.getElementById('dupBtnFechar').style.display = 'none';
+    const btnCancelar = document.getElementById('dupBtnCancelar');
+    if (btnCancelar) { btnCancelar.disabled = false; btnCancelar.textContent = '⏸ Cancelar próximas'; }
     
     // Passos por cópia: título IA + descrição IA + clone + salvar + exportar = 5
     // Total de passos:
@@ -10050,27 +10067,46 @@ Responda APENAS a descrição nova, sem aspas.`;
           dupLogStep(`  ✓ Preço: R$ ${(parseFloat(novo.preco)||0).toFixed(2)}`, 'ok');
         }
         
-        // 6. Salva no backend
+        // 6. Salva no backend (retorna o idBanco do produto)
         passoAtual++;
         dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: salvando produto...`);
         produtosErp.push(novo);
-        await salvarProdutoNoBackend(novo);
-        dupLogStep(`  ✓ Produto salvo (id=${novo.id})`, 'ok');
+        const salvoResp = await salvarProdutoNoBackend(novo);
+        // salvarProdutoNoBackend pode retornar o idBanco — garante que existe
+        if (salvoResp && salvoResp.idBanco) {
+          novo.idBanco = salvoResp.idBanco;
+        }
+        if (!novo.idBanco) {
+          // Re-busca: o salvarProdutoNoBackend deve ter preenchido em novo.idBanco direto
+          dupLogStep(`  ⚠ Produto salvo mas idBanco não veio na resposta`, 'err');
+        }
+        dupLogStep(`  ✓ Produto salvo (id=${novo.id}, idBanco=${novo.idBanco || '?'})`, 'ok');
         
         passoAtual++; // contava o "clone" como passo
         
-        // 7. Exporta automaticamente
+        // 7. Exporta automaticamente — precisa do lojaIdBanco e idBanco do produto
         passoAtual++;
         dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: exportando para ${lojaDestino.nome}...`);
         try {
-          const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaDestino.id + '/exportar/' + novo.id;
+          const lojaIdBanco = await garantirLojaNoBanco(lojaDestino);
+          if (!lojaIdBanco) {
+            dupLogStep(`  ✗ Loja sem idBanco — não pode exportar`, 'err');
+            errCopias++;
+            continue;
+          }
+          if (!novo.idBanco) {
+            dupLogStep(`  ✗ Produto sem idBanco — não pode exportar`, 'err');
+            errCopias++;
+            continue;
+          }
+          const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + novo.idBanco;
           const resp = await fetch(url, { method: 'POST', headers: { 'x-api-token': getApiToken() } });
           const data = await resp.json();
           if (data.ok || data.success) {
-            dupLogStep(`  ✓ Exportado para ${lojaDestino.marketplace}`, 'ok');
+            dupLogStep(`  ✓ Exportado para ${lojaDestino.marketplace} (anuncio ${data.itemId || data.anuncioId || '?'})`, 'ok');
             okCopias++;
           } else {
-            dupLogStep(`  ✗ Erro exportar: ${data.erro || JSON.stringify(data).slice(0,100)}`, 'err');
+            dupLogStep(`  ✗ Erro exportar: ${data.erro || JSON.stringify(data).slice(0,150)}`, 'err');
             errCopias++;
           }
         } catch(e) {
@@ -10088,7 +10124,8 @@ Responda APENAS a descrição nova, sem aspas.`;
     dupAtualizarProgress(totalPassos, totalPassos, 'Concluído!');
     dupLogStep(`\n━━━━━━━━━━━━━━━━━━━━`);
     dupLogStep(`✅ ${okCopias} cópia(s) exportada(s) · ${errCopias} falha(s)`, okCopias > 0 ? 'ok' : 'err');
-    document.getElementById('dupBtnFechar').style.display = 'inline-block';
+    const btnC = document.getElementById('dupBtnCancelar');
+    if (btnC) { btnC.disabled = true; btnC.textContent = '✓ Concluído'; }
     showToast(`Duplicação concluída: ${okCopias} OK · ${errCopias} erro(s)`);
   }
   
@@ -12901,6 +12938,24 @@ São o mesmo produto?`;
     if (!produto || !produto.variacoes) return 0;
     return produto.variacoes.reduce((total, v) => 
       total + ((v.vinculos && v.vinculos.length) || 0), 0);
+  }
+  
+  // Conta ANÚNCIOS distintos por marketplace.
+  // Um produto interno pode ter 1 anuncio (com varias variacoes) ou varios anuncios
+  // (cada um com suas variacoes). Conta cada anuncioId unico por marketplace.
+  function contarVinculosPorMarketplace(produto) {
+    const cont = {};
+    if (!produto || !produto.variacoes) return cont;
+    const seen = {}; // mk -> Set de anuncioIds
+    for (const v of produto.variacoes) {
+      for (const vi of (v.vinculos || [])) {
+        if (!vi.marketplace || !vi.anuncioId) continue;
+        if (!seen[vi.marketplace]) seen[vi.marketplace] = new Set();
+        seen[vi.marketplace].add(String(vi.anuncioId));
+      }
+    }
+    for (const mk in seen) cont[mk] = seen[mk].size;
+    return cont;
   }
   
   // Helper: conta vínculos suspeitos (SKU divergente) de um produto
