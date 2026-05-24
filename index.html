@@ -4877,6 +4877,31 @@
           </select>
         </div>
         
+        <div class="modal-v2-form-group">
+          <label class="modal-v2-label">Modelo alfanumérico</label>
+          <input type="text" class="modal-v2-input form-input" id="prodModeloAlfanumerico" placeholder="Ex: AMX-2024, MX500">
+        </div>
+        
+        <div class="modal-v2-form-group">
+          <label class="modal-v2-label">Tipo de largura</label>
+          <select class="modal-v2-input form-input" id="prodTipoLargura">
+            <option value="">Selecione...</option>
+            <option value="Normal">Normal</option>
+            <option value="Estreita">Estreita</option>
+            <option value="Larga">Larga</option>
+            <option value="Extra larga">Extra larga</option>
+          </select>
+        </div>
+        
+        <div class="modal-v2-form-group">
+          <label class="modal-v2-label">Com materiais reciclados</label>
+          <select class="modal-v2-input form-input" id="prodMateriaisReciclados">
+            <option value="">Selecione...</option>
+            <option value="Sim">Sim</option>
+            <option value="Não">Não</option>
+          </select>
+        </div>
+        
         <!-- Status nos marketplaces (só aparece quando editando produto existente) -->
         <div class="modal-v2-form-group" id="prodMktStatus" style="display:none">
           <div class="modal-v2-section-title">
@@ -8779,6 +8804,9 @@
     document.getElementById('prodMaterialInt').value = at.materialInterior || '';
     document.getElementById('prodMaterialSola').value = at.materialSola || '';
     document.getElementById('prodAjuste').value = at.tipoAjuste || '';
+    document.getElementById('prodModeloAlfanumerico').value = at.modeloAlfanumerico || '';
+    document.getElementById('prodTipoLargura').value = at.tipoLargura || '';
+    document.getElementById('prodMateriaisReciclados').value = at.materiaisReciclados || '';
     renderFotosProduto();
     renderVariacoesProduto();
     renderGuiaTamanhos();
@@ -9073,6 +9101,16 @@
       if (ajusteEl && !ajusteEl.value && at.tipoAjuste) {
         if (setSelectInteligente(ajusteEl, at.tipoAjuste, false)) preenchidos++;
       }
+      // 3 campos novos
+      if (preencherSeVazio('prodModeloAlfanumerico', at.modeloAlfanumerico)) preenchidos++;
+      const larguraEl = document.getElementById('prodTipoLargura');
+      if (larguraEl && !larguraEl.value && at.tipoLargura) {
+        if (setSelectInteligente(larguraEl, at.tipoLargura, false)) preenchidos++;
+      }
+      const reciEl = document.getElementById('prodMateriaisReciclados');
+      if (reciEl && !reciEl.value && at.materiaisReciclados) {
+        if (setSelectInteligente(reciEl, at.materiaisReciclados, false)) preenchidos++;
+      }
       
       if (preenchidos > 0) {
         showToast('✨ IA preencheu ' + preenchidos + ' campo(s). Revise antes de salvar.');
@@ -9188,7 +9226,10 @@
         materialExterior: (document.getElementById('prodMaterialExt')||{}).value || '',
         materialInterior: (document.getElementById('prodMaterialInt')||{}).value || '',
         materialSola: (document.getElementById('prodMaterialSola')||{}).value || '',
-        tipoAjuste: (document.getElementById('prodAjuste')||{}).value || ''
+        tipoAjuste: (document.getElementById('prodAjuste')||{}).value || '',
+        modeloAlfanumerico: (document.getElementById('prodModeloAlfanumerico')||{}).value || '',
+        tipoLargura: (document.getElementById('prodTipoLargura')||{}).value || '',
+        materiaisReciclados: (document.getElementById('prodMateriaisReciclados')||{}).value || ''
       },
       atualizadoEm: new Date().toISOString()
     };
@@ -11111,7 +11152,7 @@ São o mesmo produto?`;
   // anuncios: lista vinda do marketplace via sincronização
   // loja: a loja local (com idBanco)
   // Retorna estatísticas: { vinculadosNovos, vinculadosAtualizados, produtosCriados, variacoesAdicionadas, suspeitos }
-  function importarAnunciosAutomatico(anuncios, loja) {
+  async function importarAnunciosAutomatico(anuncios, loja) {
     const stats = {
       vinculadosNovos: 0,
       vinculadosAtualizados: 0,
@@ -11121,6 +11162,9 @@ São o mesmo produto?`;
       semSku: 0,
       total: anuncios.length
     };
+    
+    // Set de IDs locais que precisam ser persistidos no backend ao final
+    const produtosModificados = new Set();
     
     anuncios.forEach(anuncio => {
       // Normaliza pra ter ao menos uma "variação" mesmo se o anúncio for de produto único
@@ -11276,10 +11320,35 @@ São o mesmo produto?`;
       produtoInterno.marketplaces[loja.marketplace].importado = true;
       produtoInterno.marketplaces[loja.marketplace].exportado = true;
       produtoInterno.atualizadoEm = new Date().toISOString();
+      
+      // Marca pra persistir no backend ao final
+      produtosModificados.add(produtoInterno.id);
     });
     
-    // Persiste
+    // Persiste no localStorage
     saveProdutos();
+    
+    // Persiste cada produto modificado no Supabase (vínculos precisam ir pro banco
+    // pra sobreviver a reload). Roda em paralelo, sem bloquear o retorno.
+    if (produtosModificados.size > 0 && typeof salvarProdutoNoBackend === 'function') {
+      const ids = Array.from(produtosModificados);
+      console.log('[importarAnunciosAutomatico] persistindo', ids.length, 'produto(s) no backend...');
+      Promise.all(ids.map(id => {
+        const p = produtosErp.find(x => x.id === id);
+        if (!p) return null;
+        return salvarProdutoNoBackend(p).then(salvo => {
+          // Atualiza idBanco caso o backend tenha criado registro novo
+          if (salvo && salvo.id && !p.idBanco) {
+            p.idBanco = salvo.id;
+            saveProdutos();
+          }
+        }).catch(err => {
+          console.warn('[importarAnunciosAutomatico] falha ao persistir produto', id, ':', err.message);
+        });
+      })).then(() => {
+        console.log('[importarAnunciosAutomatico] vinculos persistidos no banco com sucesso');
+      });
+    }
     
     return stats;
   }
@@ -15348,7 +15417,10 @@ Devolva JSON com TODOS estes campos:
     "materialExterior": "Couro Sintético | Couro | Mesh | Tecido | Camurça",
     "materialInterior": "Tecido | Espuma | Forro Têxtil",
     "materialSola": "Borracha | EVA | TR | Couro",
-    "tipoAjuste": "Cadarço | Velcro | Elástico | Sem ajuste | Fivela | Zíper"
+    "tipoAjuste": "Cadarço | Velcro | Elástico | Sem ajuste | Fivela | Zíper",
+    "modeloAlfanumerico": "código alfanumérico curto do modelo. Ex: AMX-2024, MX500, T-PRO-23. Use a marca + um identificador",
+    "tipoLargura": "Normal | Estreita | Larga | Extra larga",
+    "materiaisReciclados": "Sim | Não"
   }
 }`
     },
