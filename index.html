@@ -4704,7 +4704,7 @@
         
         <div class="modal-v2-form-group">
           <label class="modal-v2-label">Categoria interna</label>
-          <select class="modal-v2-input form-input" id="prodCategoria"></select>
+          <select class="modal-v2-input form-input" id="prodCategoria" onchange="onCategoriaInternaChange()"></select>
           <div class="modal-v2-input-hint">💡 A categoria do seu ERP. O vínculo com marketplaces fica em Configurações.</div>
         </div>
         
@@ -8758,18 +8758,38 @@
     
     cont.innerHTML = '<div style="padding:14px;color:#9ca3af;font-size:13px">Carregando atributos da categoria...</div>';
     
-    const categoryId = produto && produto.categoryIdMl;
+    // 1. Tenta categoryIdMl direto do produto
+    let categoryId = produto && produto.categoryIdMl;
+    let origemCategoria = '';
+    
+    // 2. Senao, busca no mapa De→Para (Configurações > Categorias)
+    //    usando a categoria interna do produto
+    if (!categoryId && produto && produto.categoria) {
+      const mapa = categoriasMapErp.find(c => 
+        String(c.categoriaInterna).toLowerCase() === String(produto.categoria).toLowerCase()
+      );
+      if (mapa && mapa.vinculos && mapa.vinculos.mercadolivre) {
+        const vincMl = mapa.vinculos.mercadolivre;
+        // Vinculo pode ser string (catId direto) ou objeto { categoryId, ... }
+        categoryId = typeof vincMl === 'string' ? vincMl : (vincMl.categoryId || vincMl.id);
+        if (categoryId) {
+          origemCategoria = ' <span style="color:#16a34a;font-size:10px;font-weight:600;background:#dcfce7;padding:1px 6px;border-radius:4px;margin-left:4px">via De→Para</span>';
+          // Salva no produto pra proxima vez nao precisar buscar
+          produto.categoryIdMl = categoryId;
+        }
+      }
+    }
     
     if (!categoryId) {
-      // Sem categoria ML definida
       if (info) info.style.display = 'block';
-      if (lbl) lbl.innerHTML = '<strong style="color:#dc2626">⚠ Categoria do Mercado Livre não definida.</strong> Clique em "trocar categoria" pra definir.';
-      cont.innerHTML = '<div style="padding:14px;background:#fef3c7;border-radius:8px;font-size:13px;color:#92400e">Defina a categoria do ML acima pra ver os campos específicos.</div>';
+      const catInternaTxt = produto && produto.categoria ? '"' + escapeHtml(produto.categoria) + '"' : '(sem categoria interna)';
+      if (lbl) lbl.innerHTML = '<strong style="color:#dc2626">⚠ Categoria do Mercado Livre não definida.</strong> Categoria interna: ' + catInternaTxt + '. Configure o De→Para em Configurações, ou clique em "trocar categoria".';
+      cont.innerHTML = '<div style="padding:14px;background:#fef3c7;border-radius:8px;font-size:13px;color:#92400e">Defina a categoria do ML acima pra ver os campos específicos.<br><br><strong>Dica:</strong> em Configurações → De↔Para de Categorias, vincule "<em>' + escapeHtml(produto.categoria || '?') + '</em>" a uma categoria do ML pra ficar automático em todos os produtos dessa categoria.</div>';
       return;
     }
     
     if (info) info.style.display = 'block';
-    if (lbl) lbl.innerHTML = '📦 Categoria ML: <code style="background:white;padding:2px 6px;border-radius:4px">' + categoryId + '</code>';
+    if (lbl) lbl.innerHTML = '📦 Categoria ML: <code style="background:white;padding:2px 6px;border-radius:4px">' + categoryId + '</code>' + origemCategoria;
     
     const atributos = await carregarAtributosCategoria(categoryId);
     if (!atributos || atributos.length === 0) {
@@ -8900,6 +8920,22 @@
     } catch(e) {
       showToast('Erro: ' + e.message, true);
     }
+  }
+  
+  // Quando o usuario muda a categoria INTERNA no select, busca o vinculo ML no
+  // mapa De->Para e atualiza os campos dinamicos.
+  async function onCategoriaInternaChange() {
+    const p = _produtoEditandoId 
+      ? produtosErp.find(x => String(x.id) === String(_produtoEditandoId))
+      : null;
+    if (!p) return;
+    
+    const novaCat = (document.getElementById('prodCategoria')||{}).value || '';
+    p.categoria = novaCat;
+    
+    // Limpa categoryIdMl pra forcar o renderAtributosDinamicos buscar do mapa De->Para
+    p.categoryIdMl = null;
+    await renderAtributosDinamicos(p);
   }
   
   function abrirEditarProduto(id) {
@@ -12449,6 +12485,27 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (e.target.id === 'promocaoOverlay') closePromocao();
   }
   
+  // Cache de nomes de categoria do ML (catId -> 'Calçados > Tênis')
+  const _cacheNomesCat = new Map();
+  async function buscarNomeCategoria(catId) {
+    if (!catId) return '';
+    catId = String(catId).trim().toUpperCase();
+    if (!/^MLB?\d+$/.test(catId)) return ''; // só ML por enquanto
+    if (_cacheNomesCat.has(catId)) return _cacheNomesCat.get(catId);
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/' + catId + '/info', {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        const nome = data.caminho || data.nome || '';
+        _cacheNomesCat.set(catId, nome);
+        return nome;
+      }
+    } catch(e) {}
+    return '';
+  }
+  
   function renderCatMap() {
     const cont = document.getElementById('catMapList');
     if (!cont) return;
@@ -12465,11 +12522,18 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     cont.innerHTML = categoriasMapErp.map((cm, idx) => {
       const campos = mks.map(mk => {
         const val = (cm.vinculos && cm.vinculos[mk.id]) || '';
-        return `<div style="margin-bottom:5px">
+        // ID do span pra preencher com nome quando carregar
+        const spanId = 'catNome-' + idx + '-' + mk.id;
+        return `<div style="margin-bottom:8px">
           <label style="font-size:10px;font-weight:700;color:var(--cinza-texto)">${mk.nome}</label>
-          <input type="text" class="form-input" style="font-size:12px;padding:6px 8px"
-                 value="${escapeHtml(val)}" placeholder="ID/código da categoria na ${mk.nome}"
-                 oninput="atualizarVinculoCat(${idx},'${mk.id}',this.value)">
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="text" class="form-input" style="font-size:12px;padding:6px 8px;flex:1"
+                   value="${escapeHtml(val)}" placeholder="ID (ex: MLB23332)"
+                   oninput="atualizarVinculoCat(${idx},'${mk.id}',this.value);buscarEMostrarNomeCat('${spanId}',this.value)"
+                   onblur="buscarEMostrarNomeCat('${spanId}',this.value)">
+            ${mk.id === 'mercadolivre' ? `<button type="button" class="fluxo-mini-btn" onclick="abrirBuscaCategoriaML(${idx})" title="Buscar categoria pelo nome">🔍</button>` : ''}
+          </div>
+          <div id="${spanId}" style="font-size:11px;color:#16a34a;margin-top:2px;font-style:italic;min-height:14px"></div>
         </div>`;
       }).join('');
       return `<div class="settings-card" style="background:var(--cinza-claro);margin-bottom:8px;padding:12px">
@@ -12483,6 +12547,80 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         ${campos}
       </div>`;
     }).join('');
+    
+    // Carrega nomes assim que renderiza (em paralelo)
+    categoriasMapErp.forEach((cm, idx) => {
+      mks.forEach(mk => {
+        const val = (cm.vinculos && cm.vinculos[mk.id]) || '';
+        if (val) {
+          const spanId = 'catNome-' + idx + '-' + mk.id;
+          buscarEMostrarNomeCat(spanId, val);
+        }
+      });
+    });
+  }
+  
+  // Busca nome da categoria e exibe no span. Debounce simples por valor.
+  async function buscarEMostrarNomeCat(spanId, catId) {
+    const span = document.getElementById(spanId);
+    if (!span) return;
+    const v = String(catId || '').trim().toUpperCase();
+    if (!v) { span.textContent = ''; return; }
+    // Só ML por enquanto
+    if (!/^MLB?\d+$/.test(v)) { 
+      span.textContent = ''; 
+      return; 
+    }
+    span.textContent = '⏳ buscando...';
+    span.style.color = '#9ca3af';
+    const nome = await buscarNomeCategoria(v);
+    if (nome) {
+      span.textContent = '✓ ' + nome;
+      span.style.color = '#16a34a';
+    } else {
+      span.textContent = '⚠ categoria não encontrada no ML';
+      span.style.color = '#dc2626';
+    }
+  }
+  
+  // Abre busca por nome (usa o predictor do ML)
+  async function abrirBuscaCategoriaML(idx) {
+    const cm = categoriasMapErp[idx];
+    const sugestao = cm ? cm.categoriaInterna : '';
+    const busca = prompt('Buscar categoria do Mercado Livre.\n\nDigite o nome do tipo de produto (ex: "tênis masculino corrida", "chuteira futsal", "sandália feminina"):', sugestao);
+    if (!busca || !busca.trim()) return;
+    
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/predizer?titulo=' + encodeURIComponent(busca.trim()), {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const data = await resp.json();
+      if (!data.ok || !data.sugestoes || data.sugestoes.length === 0) {
+        showToast('Nenhuma sugestão pra "' + busca + '"', true);
+        return;
+      }
+      const opcoes = data.sugestoes.map((s, i) => (i+1) + '. ' + (s.nome || '?') + ' [' + s.categoryId + ']').join('\n');
+      const escolha = prompt('Sugestões do ML pra "' + busca + '":\n\n' + opcoes + '\n\nDigite o número (1, 2...) pra escolher, ou um ID MLB:');
+      if (!escolha) return;
+      
+      let catId = null;
+      if (/^\d$/.test(escolha.trim())) {
+        const i = parseInt(escolha.trim()) - 1;
+        if (data.sugestoes[i]) catId = data.sugestoes[i].categoryId;
+      } else if (/^MLB?\d+$/i.test(escolha.trim())) {
+        catId = escolha.trim().toUpperCase();
+      }
+      
+      if (catId) {
+        if (!categoriasMapErp[idx].vinculos) categoriasMapErp[idx].vinculos = {};
+        categoriasMapErp[idx].vinculos.mercadolivre = catId;
+        saveCategoriasMap();
+        renderCatMap();
+        showToast('✓ Vinculado: ' + catId);
+      }
+    } catch(e) {
+      showToast('Erro: ' + e.message, true);
+    }
   }
   function addCategoriaMap() {
     const nome = document.getElementById('novaCatInterna').value.trim();
