@@ -5438,6 +5438,7 @@
         <div class="settings-tabs">
           <button class="settings-tab active" onclick="setSettingsTab('financas', this)">💰 Finanças</button>
           <button class="settings-tab" onclick="setSettingsTab('gerais', this)">⚙️ Config. Gerais</button>
+          <button class="settings-tab" onclick="setSettingsTab('prompts', this)">🤖 Prompts da IA</button>
           <button class="settings-tab" onclick="setSettingsTab('backup', this)">💾 Backup</button>
           <button class="settings-tab" onclick="setSettingsTab('profile', this)">👤 Perfil</button>
         </div>
@@ -5716,6 +5717,25 @@
             </div>
           </div>
 
+        </div>
+
+        <!-- Tab: Prompts da IA -->
+        <div class="settings-panel" id="panel-prompts">
+          <div class="settings-card" style="border:2px solid #7c3aed">
+            <div class="settings-card-title">🤖 Prompts da IA</div>
+            <div class="settings-card-subtitle">
+              Aqui você ajusta como a IA se comporta em cada situação do sistema. Mudanças aqui afetam diretamente os resultados (preenchimento automático, chat, reconciliação, etc.).
+              <br><br>
+              <strong>💡 Dicas:</strong>
+              <ul style="margin:8px 0 0 18px;padding:0">
+                <li>Os trechos <code>{{variavel}}</code> são <strong>placeholders</strong> que o sistema preenche automaticamente quando usa o prompt. Mantenha-os.</li>
+                <li>Quando um prompt está <strong>customizado</strong>, aparece um indicador "✏️ Customizado". O botão "🔄 Restaurar padrão" volta ao original.</li>
+                <li>Salva no seu navegador (localStorage). Pra resetar tudo, use F12 → Application → Local Storage → apaga <code>lider_prompts_custom</code>.</li>
+              </ul>
+            </div>
+          </div>
+          
+          <div id="promptsList"></div>
         </div>
 
         <!-- Tab: Backup -->
@@ -8304,49 +8324,19 @@
     const cats = (typeof categoriasInternas === 'function') ? categoriasInternas() : [];
     const primeiraFoto = (produto.fotos && produto.fotos.length > 0) ? produto.fotos[0] : null;
     
-    const system = `Você é um especialista sênior em catalogação de calçados para marketplaces brasileiros.
-Sua função é PREENCHER COMPLETAMENTE todos os campos. Se faltar info, INVENTE valores PLAUSÍVEIS e COERENTES.
-
-REGRAS:
-1. Se houver IMAGEM, analise tipo de calçado, cor, materiais visíveis e ajustes.
-2. A DESCRIÇÃO é fonte principal textual. Depois nome, marca, material e variações.
-3. Para campos não cobertos, INVENTE com bom-senso brasileiro de calçados.
-4. NÃO deixe nenhum campo vazio na resposta.
-5. SEJA REALISTA. Não invente marcas absurdas ou pesos absurdos.
-6. RESPONDE APENAS JSON VÁLIDO, sem markdown nem texto extra.`;
-    
-    const prompt = `Preencha COMPLETAMENTE os campos deste produto. Invente coerentemente o que faltar.
-${primeiraFoto ? 'ANALISE A IMAGEM ANEXADA pra identificar características visuais.\n' : ''}
-DADOS ATUAIS:
-NOME: "${produto.nome || '(VAZIO — crie título max 60 chars)'}"
-DESCRIÇÃO: "${produto.descricao || '(VAZIA — crie descrição 300-500 chars persuasiva)'}"
-MARCA: "${produto.marca || '(VAZIA — sugira marca plausível brasileira)'}"
-MATERIAL: "${produto.material || '(vazio)'}"
-CATEGORIA: "${produto.categoria || '(vazia)'}"
-PESO (kg): "${produto.peso || '(vazio — estimar: tênis 0.6-0.9, sapato 0.5-0.7, bota 1.0-1.5)'}"
-VARIAÇÕES: ${variacoesTxt}
-
-CATEGORIAS DISPONÍVEIS (escolha UMA da lista ou ''):
-${cats.length > 0 ? cats.map(c => '- "' + c + '"').join('\n') : '(nenhuma)'}
-
-Devolva JSON com TODOS estes campos:
-{
-  "nome": "título max 60 chars",
-  "descricao": "300-500 chars persuasivos",
-  "categoria": "uma da lista ou ''",
-  "marca": "marca plausível",
-  "material": "material curto",
-  "peso": 0.7,
-  "atributosMl": {
-    "tipoCalcado": "Tênis | Sapato | Bota | Sandália | Chinelo | Sapatênis | Mocassim",
-    "genero": "Masculino | Feminino | Unissex | Infantil Masculino | Infantil Feminino | Infantil Unissex",
-    "usoRecomendado": "Casual, Esportivo (lista por vírgula)",
-    "materialExterior": "Couro Sintético | Couro | Mesh | Tecido | Camurça",
-    "materialInterior": "Tecido | Espuma | Forro Têxtil",
-    "materialSola": "Borracha | EVA | TR | Couro",
-    "tipoAjuste": "Cadarço | Velcro | Elástico | Sem ajuste | Fivela | Zíper"
-  }
-}`;
+    const system = getPrompt('preencher_produto_system');
+    const promptTemplate = getPrompt('preencher_produto_user');
+    const prompt = renderTemplate(promptTemplate, {
+      nome: produto.nome || '(VAZIO — crie título max 60 chars)',
+      descricao: produto.descricao || '(VAZIA — crie descrição 300-500 chars persuasiva)',
+      marca: produto.marca || '(VAZIA — sugira marca plausível brasileira)',
+      material: produto.material || '(vazio)',
+      categoria: produto.categoria || '(vazia)',
+      peso: produto.peso || '(vazio — estimar: tênis 0.6-0.9, sapato 0.5-0.7, bota 1.0-1.5)',
+      variacoesTxt: variacoesTxt,
+      categoriasLista: cats.length > 0 ? cats.map(c => '- "' + c + '"').join('\n') : '(nenhuma)',
+      instrucaoImagem: primeiraFoto ? 'ANALISE A IMAGEM ANEXADA pra identificar características visuais.\n' : ''
+    });
     
     const opcoesIA = { prompt, system, maxTokens: 1500 };
     if (primeiraFoto) opcoesIA.imagens = [primeiraFoto];
@@ -8368,8 +8358,9 @@ Devolva JSON com TODOS estes campos:
     setSeVazio('marca', dados.marca);
     setSeVazio('material', dados.material);
     setSeVazio('peso', dados.peso);
-    if (!produto.categoria && dados.categoria && cats.includes(dados.categoria)) {
-      produto.categoria = dados.categoria;
+    if (!produto.categoria && dados.categoria) {
+      // Aceita categoria nova (será criada como opção quando o usuário editar o produto)
+      produto.categoria = String(dados.categoria).trim();
     }
     
     if (!produto.atributosMl) produto.atributosMl = {};
@@ -8917,51 +8908,19 @@ Devolva JSON com TODOS estes campos:
     if (btn) { txtOriginal = btn.textContent; btn.disabled = true; btn.textContent = '🤖 Analisando com IA...'; }
     
     try {
-      const system = `Você é um especialista sênior em catalogação de calçados para marketplaces brasileiros (Mercado Livre, Shopee).
-Sua função é PREENCHER COMPLETAMENTE todos os campos de cadastro de um produto. Se faltar informação, INVENTE dados PLAUSÍVEIS e COERENTES baseados no contexto que tiver.
-
-REGRAS:
-1. Se houver IMAGEM do produto, ANALISE ela com atenção (cor, formato, tipo de calçado, materiais visíveis, presença de cadarço/velcro, tipo de sola).
-2. A DESCRIÇÃO é tua FONTE PRINCIPAL TEXTUAL — extraia o máximo de info dela.
-3. Depois use o NOME, MARCA, MATERIAL e VARIAÇÕES como apoio.
-4. Para campos não cobertos pela imagem nem pelo texto, INVENTE com bom-senso (valores típicos do mercado brasileiro de calçados).
-5. NÃO deixe nenhum campo vazio na resposta JSON.
-6. SEJA REALISTA — não invente marcas absurdas, pesos absurdos ou materiais que não existem.
-7. RESPONDE APENAS JSON VÁLIDO, sem markdown, sem texto antes ou depois.`;
-      
-      const prompt = `Preencha COMPLETAMENTE os dados deste produto.
-${primeiraFoto ? 'ANALISE A IMAGEM ANEXADA pra identificar tipo de calçado, cor, materiais visíveis, tipo de ajuste e demais características.\n' : ''}Use a descrição como fonte principal textual e invente coerentemente o que faltar.
-
-DADOS ATUAIS DO PRODUTO:
-NOME: "${nome || '(VAZIO — crie título descritivo, max 60 chars)'}"
-DESCRIÇÃO: "${descricao || '(VAZIA — crie descrição persuasiva 300-500 chars)'}"
-MARCA: "${marca || '(VAZIA — sugira marca plausível brasileira)'}"
-MATERIAL GENÉRICO: "${material || '(vazio)'}"
-CATEGORIA INTERNA: "${categoria || '(vazia)'}"
-PESO (kg): "${peso || '(vazio — estimar: tênis 0.6-0.9, sapato 0.5-0.7, bota 1.0-1.5)'}"
-VARIAÇÕES: ${variacoesTxt}
-
-CATEGORIAS INTERNAS DISPONÍVEIS (escolha UMA da lista, ou '' se nenhuma encaixa):
-${cats.length > 0 ? cats.map(c => '- "' + c + '"').join('\n') : '(nenhuma categoria cadastrada)'}
-
-Devolva JSON com TODOS estes campos:
-{
-  "nome": "título descritivo, max 60 chars",
-  "descricao": "descrição persuasiva 300-500 chars com benefícios e ocasiões de uso",
-  "categoria": "uma da lista acima ou ''",
-  "marca": "marca plausível",
-  "material": "material genérico curto",
-  "peso": 0.7,
-  "atributosMl": {
-    "tipoCalcado": "Tênis | Sapato | Bota | Sandália | Chinelo | Sapatênis | Mocassim",
-    "genero": "Masculino | Feminino | Unissex | Infantil Masculino | Infantil Feminino | Infantil Unissex",
-    "usoRecomendado": "Casual, Esportivo (lista separada por vírgula)",
-    "materialExterior": "Couro Sintético | Couro | Mesh | Tecido | Camurça",
-    "materialInterior": "Tecido | Espuma | Forro Têxtil",
-    "materialSola": "Borracha | EVA | TR | Couro",
-    "tipoAjuste": "Cadarço | Velcro | Elástico | Sem ajuste | Fivela | Zíper"
-  }
-}`;
+      const system = getPrompt('preencher_produto_system');
+      const promptTemplate = getPrompt('preencher_produto_user');
+      const prompt = renderTemplate(promptTemplate, {
+        nome: nome || '(VAZIO — crie título descritivo, max 60 chars)',
+        descricao: descricao || '(VAZIA — crie descrição persuasiva 300-500 chars)',
+        marca: marca || '(VAZIA — sugira marca plausível brasileira)',
+        material: material || '(vazio)',
+        categoria: categoria || '(vazia)',
+        peso: peso || '(vazio — estimar: tênis 0.6-0.9, sapato 0.5-0.7, bota 1.0-1.5)',
+        variacoesTxt: variacoesTxt,
+        categoriasLista: cats.length > 0 ? cats.map(c => '- "' + c + '"').join('\n') : '(nenhuma categoria cadastrada)',
+        instrucaoImagem: primeiraFoto ? 'ANALISE A IMAGEM ANEXADA pra identificar tipo de calçado, cor, materiais visíveis, tipo de ajuste e demais características.\n' : ''
+      });
       
       // Se tem foto, manda no array de imagens (Claude vai analisar visualmente)
       const opcoesIA = { prompt, system, maxTokens: 1500 };
@@ -8973,26 +8932,36 @@ Devolva JSON com TODOS estes campos:
       catch(e) { throw new Error('IA não respondeu JSON válido: ' + raw.slice(0, 120)); }
       
       let preenchidos = 0;
+      // Campos texto simples
       if (preencherSeVazio('prodNome', dados.nome)) preenchidos++;
       if (preencherSeVazio('prodDescricao', dados.descricao)) preenchidos++;
       if (preencherSeVazio('prodMarca', dados.marca)) preenchidos++;
       if (preencherSeVazio('prodMaterial', dados.material)) preenchidos++;
       if (preencherSeVazio('prodPeso', dados.peso)) preenchidos++;
+      if (preencherSeVazio('prodSku', dados.skuPai)) preenchidos++;  // NOVO: SKU pai
+      if (preencherSeVazio('prodUso', (dados.atributosMl||{}).usoRecomendado)) preenchidos++;
+      if (preencherSeVazio('prodMaterialExt', (dados.atributosMl||{}).materialExterior)) preenchidos++;
+      if (preencherSeVazio('prodMaterialInt', (dados.atributosMl||{}).materialInterior)) preenchidos++;
+      if (preencherSeVazio('prodMaterialSola', (dados.atributosMl||{}).materialSola)) preenchidos++;
       
+      // Selects: usa matching inteligente (case-insensitive, substring, ou adiciona nova opção)
+      const at = dados.atributosMl || {};
       const catEl = document.getElementById('prodCategoria');
       if (catEl && !catEl.value && dados.categoria) {
-        const opt = Array.from(catEl.options).find(o => o.value === dados.categoria);
-        if (opt) { catEl.value = dados.categoria; preenchidos++; }
+        if (setSelectInteligente(catEl, dados.categoria, true)) preenchidos++; // categoria: adiciona se novo
       }
-      
-      const at = dados.atributosMl || {};
-      if (preencherSeVazio('prodTipoCalcado', at.tipoCalcado)) preenchidos++;
-      if (preencherSeVazio('prodGenero', at.genero)) preenchidos++;
-      if (preencherSeVazio('prodUso', at.usoRecomendado)) preenchidos++;
-      if (preencherSeVazio('prodMaterialExt', at.materialExterior)) preenchidos++;
-      if (preencherSeVazio('prodMaterialInt', at.materialInterior)) preenchidos++;
-      if (preencherSeVazio('prodMaterialSola', at.materialSola)) preenchidos++;
-      if (preencherSeVazio('prodAjuste', at.tipoAjuste)) preenchidos++;
+      const tipoEl = document.getElementById('prodTipoCalcado');
+      if (tipoEl && !tipoEl.value && at.tipoCalcado) {
+        if (setSelectInteligente(tipoEl, at.tipoCalcado, false)) preenchidos++;
+      }
+      const genEl = document.getElementById('prodGenero');
+      if (genEl && !genEl.value && at.genero) {
+        if (setSelectInteligente(genEl, at.genero, false)) preenchidos++;
+      }
+      const ajusteEl = document.getElementById('prodAjuste');
+      if (ajusteEl && !ajusteEl.value && at.tipoAjuste) {
+        if (setSelectInteligente(ajusteEl, at.tipoAjuste, false)) preenchidos++;
+      }
       
       if (preenchidos > 0) {
         showToast('✨ IA preencheu ' + preenchidos + ' campo(s). Revise antes de salvar.');
@@ -15209,6 +15178,164 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // A chave da IA fica no servidor; o painel só manda o pedido.
   // Recebe: { prompt, system, modelo }  →  devolve o texto da resposta.
   // ===================================================================
+  // ============================================================
+  // SISTEMA DE PROMPTS CUSTOMIZÁVEIS
+  // Centraliza os prompts da IA em um único lugar.
+  // Usuário pode editar via Configurações > Prompts da IA.
+  // Suporta placeholders {{variavel}} renderizados na hora do uso.
+  // ============================================================
+  
+  const PROMPTS_DEFAULT = {
+    preencher_produto_system: {
+      nome: '🎯 Preencher produto · Personalidade (system)',
+      descricao: 'Define a personalidade da IA quando preenche dados de produto automaticamente. Editar pode mudar drasticamente a qualidade do preenchimento.',
+      texto: `Você é um especialista sênior em catalogação de calçados para marketplaces brasileiros (Mercado Livre, Shopee).
+Sua função é PREENCHER COMPLETAMENTE todos os campos de cadastro de um produto. Se faltar informação, INVENTE dados PLAUSÍVEIS e COERENTES baseados no contexto que tiver.
+
+REGRAS:
+1. Se houver IMAGEM do produto, ANALISE ela com atenção (cor, formato, tipo de calçado, materiais visíveis, presença de cadarço/velcro, tipo de sola).
+2. A DESCRIÇÃO é tua FONTE PRINCIPAL TEXTUAL — extraia o máximo de info dela.
+3. Depois use o NOME, MARCA, MATERIAL e VARIAÇÕES como apoio.
+4. Para campos não cobertos pela imagem nem pelo texto, INVENTE com bom-senso (valores típicos do mercado brasileiro de calçados).
+5. NÃO deixe nenhum campo vazio na resposta JSON.
+6. SEJA REALISTA — não invente marcas absurdas, pesos absurdos ou materiais que não existem.
+7. RESPONDE APENAS JSON VÁLIDO, sem markdown, sem texto antes ou depois.`
+    },
+    preencher_produto_user: {
+      nome: '🎯 Preencher produto · Prompt principal',
+      descricao: 'Template do pedido enviado à IA. Placeholders disponíveis: {{nome}} {{descricao}} {{marca}} {{material}} {{categoria}} {{peso}} {{variacoesTxt}} {{categoriasLista}} {{instrucaoImagem}}',
+      texto: `Preencha COMPLETAMENTE os dados deste produto.
+{{instrucaoImagem}}Use a descrição como fonte principal textual e invente coerentemente o que faltar.
+
+DADOS ATUAIS DO PRODUTO:
+NOME: "{{nome}}"
+DESCRIÇÃO: "{{descricao}}"
+MARCA: "{{marca}}"
+MATERIAL GENÉRICO: "{{material}}"
+CATEGORIA INTERNA: "{{categoria}}"
+PESO (kg): "{{peso}}"
+VARIAÇÕES: {{variacoesTxt}}
+
+CATEGORIAS INTERNAS DISPONÍVEIS (escolha UMA da lista, ou '' se nenhuma encaixa):
+{{categoriasLista}}
+
+Devolva JSON com TODOS estes campos:
+{
+  "nome": "título descritivo, max 60 chars",
+  "descricao": "descrição persuasiva 300-500 chars com benefícios e ocasiões de uso",
+  "categoria": "uma da lista acima ou ''",
+  "marca": "marca plausível",
+  "material": "material genérico curto",
+  "peso": 0.7,
+  "skuPai": "código curto único pro produto (3-8 chars), use abreviações do tipo+gênero. Ex: TM001, BNF02, TENPRA01. NUNCA repetir o exemplo, gerar único",
+  "atributosMl": {
+    "tipoCalcado": "Tênis | Sapato | Bota | Sandália | Chinelo | Sapatênis | Mocassim",
+    "genero": "Masculino | Feminino | Unissex | Infantil Masculino | Infantil Feminino | Infantil Unissex",
+    "usoRecomendado": "Casual, Esportivo (lista separada por vírgula)",
+    "materialExterior": "Couro Sintético | Couro | Mesh | Tecido | Camurça",
+    "materialInterior": "Tecido | Espuma | Forro Têxtil",
+    "materialSola": "Borracha | EVA | TR | Couro",
+    "tipoAjuste": "Cadarço | Velcro | Elástico | Sem ajuste | Fivela | Zíper"
+  }
+}`
+    },
+    consultor_ia_system: {
+      nome: '🤖 Consultor IA · Chat interno',
+      descricao: 'Personalidade do consultor IA que conversa contigo no chat. Define tom, expertise e estilo de resposta.',
+      texto: `Você é o Consultor IA da Líder Commerce, especialista em e-commerce, marketplaces brasileiros (Mercado Livre, Shopee, Shein, TikTok Shop), gestão de catálogo, precificação, anúncios e operação de venda online de calçados.
+
+Responda de forma direta, prática e em português brasileiro. Quando o usuário fizer pergunta técnica, dê passos concretos. Quando perguntar opinião, dê opinião embasada na sua expertise. Não use jargão sem explicar.
+
+Use markdown leve (listas, negrito, código) para clareza.`
+    },
+    reconciliacao_sku_system: {
+      nome: '🔗 Reconciliação de SKU',
+      descricao: 'Personalidade da IA quando identifica match entre anúncios de marketplaces e produtos internos do ERP.',
+      texto: `Você é um especialista em reconciliação de catálogos de e-commerce. Recebe dados de um produto interno do ERP e um anúncio de marketplace, e diz se são o MESMO produto.
+
+Critérios principais:
+1. SKU normalizado bate? → muito provável match
+2. Nome muito similar? → provável
+3. Mesmo gênero, tipo de calçado e cor? → indício
+4. Preço próximo (margem 30%)? → indício adicional
+
+Responda APENAS JSON: { "match": true/false, "confianca": 0-100, "motivo": "explicação curta" }`
+    }
+  };
+  
+  function getPrompt(id) {
+    try {
+      const custom = JSON.parse(localStorage.getItem('lider_prompts_custom') || '{}');
+      if (custom[id] && typeof custom[id] === 'string') return custom[id];
+    } catch(e) {}
+    return (PROMPTS_DEFAULT[id] || {}).texto || '';
+  }
+  
+  function setPrompt(id, valor) {
+    try {
+      const custom = JSON.parse(localStorage.getItem('lider_prompts_custom') || '{}');
+      if (valor === null || valor === undefined || valor === '') {
+        delete custom[id]; // restaura default
+      } else {
+        custom[id] = String(valor);
+      }
+      localStorage.setItem('lider_prompts_custom', JSON.stringify(custom));
+      return true;
+    } catch(e) { return false; }
+  }
+  
+  function isPromptCustomizado(id) {
+    try {
+      const custom = JSON.parse(localStorage.getItem('lider_prompts_custom') || '{}');
+      return !!custom[id];
+    } catch(e) { return false; }
+  }
+  
+  // Substitui {{variavel}} pelos valores do objeto vars
+  function renderTemplate(template, vars) {
+    return String(template || '').replace(/\{\{(\w+)\}\}/g, (m, key) => 
+      vars[key] !== undefined && vars[key] !== null ? String(vars[key]) : m);
+  }
+  
+  // Helper pra setar valor em select de forma "inteligente":
+  // tenta exato → case-insensitive → substring → adiciona como nova opção se permitido
+  function setSelectInteligente(selectEl, valor, adicionarSeNovo) {
+    if (!selectEl || !valor) return false;
+    const valStr = String(valor).trim();
+    if (!valStr) return false;
+    
+    const opts = Array.from(selectEl.options);
+    
+    // 1. Match exato
+    let opt = opts.find(o => o.value === valStr);
+    if (opt) { selectEl.value = opt.value; return true; }
+    
+    // 2. Case-insensitive
+    opt = opts.find(o => o.value.toLowerCase() === valStr.toLowerCase());
+    if (opt) { selectEl.value = opt.value; return true; }
+    
+    // 3. Substring (ex: "Cordão" bate em "Cadarço" não, mas "ten" bate em "Tênis")
+    opt = opts.find(o => 
+      o.value && (
+        o.value.toLowerCase().includes(valStr.toLowerCase()) ||
+        valStr.toLowerCase().includes(o.value.toLowerCase())
+      )
+    );
+    if (opt) { selectEl.value = opt.value; return true; }
+    
+    // 4. Adiciona como nova opção (só se permitido — útil pra categorias dinâmicas)
+    if (adicionarSeNovo) {
+      const novaOpt = document.createElement('option');
+      novaOpt.value = valStr;
+      novaOpt.textContent = valStr;
+      selectEl.appendChild(novaOpt);
+      selectEl.value = valStr;
+      return true;
+    }
+    
+    return false;
+  }
+  
   async function chamarIA({ prompt, system, modelo, maxTokens, imagens }) {
     const body = {
       prompt,
@@ -17263,6 +17390,68 @@ ${JSON.stringify(metricas, null, 2)}`
     if (painel) painel.classList.add('active');
     if (tab === 'backup' && typeof renderSyncStatus === 'function') renderSyncStatus();
     if (tab === 'gerais' && typeof renderConfigGerais === 'function') renderConfigGerais();
+    if (tab === 'prompts' && typeof renderPromptsList === 'function') renderPromptsList();
+  }
+  
+  // ============================================================
+  // RENDERIZAÇÃO DA TELA DE PROMPTS DA IA
+  // ============================================================
+  function renderPromptsList() {
+    const cont = document.getElementById('promptsList');
+    if (!cont) return;
+    
+    const ids = Object.keys(PROMPTS_DEFAULT);
+    if (ids.length === 0) {
+      cont.innerHTML = '<div class="empty-state-v2"><div class="empty-icon-v2">🤖</div><div class="empty-title-v2">Sem prompts cadastrados</div></div>';
+      return;
+    }
+    
+    cont.innerHTML = ids.map(id => {
+      const def = PROMPTS_DEFAULT[id];
+      const valorAtual = getPrompt(id);
+      const customizado = isPromptCustomizado(id);
+      
+      return `<div class="settings-card" style="margin-top:14px">
+        <div class="settings-card-header" style="align-items:flex-start">
+          <div style="flex:1">
+            <div class="settings-card-title">${escapeHtml(def.nome)} ${customizado ? '<span style="font-size:11px;background:#7c3aed;color:white;padding:2px 8px;border-radius:8px;margin-left:6px;font-weight:600">✏️ Customizado</span>' : ''}</div>
+            <div class="settings-card-subtitle">${escapeHtml(def.descricao)}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${customizado ? `<button class="toolbar-btn" onclick="restaurarPromptDefault('${id}')" title="Volta ao texto original do sistema">🔄 Restaurar padrão</button>` : ''}
+            <button class="toolbar-btn primary" onclick="salvarPromptEditado('${id}')" id="btn-salvar-${id}">💾 Salvar alterações</button>
+          </div>
+        </div>
+        <textarea id="prompt-textarea-${id}" 
+          style="width:100%;min-height:240px;padding:12px;border:1.5px solid #e5e7eb;border-radius:10px;font-family:'SF Mono',Consolas,monospace;font-size:12px;line-height:1.6;resize:vertical;margin-top:10px;background:#fafafa"
+          oninput="document.getElementById('btn-salvar-${id}').style.background='#16a34a';document.getElementById('btn-salvar-${id}').textContent='💾 Tem alterações - clique pra salvar'"
+        >${escapeHtml(valorAtual)}</textarea>
+      </div>`;
+    }).join('');
+  }
+  
+  function salvarPromptEditado(id) {
+    const textarea = document.getElementById('prompt-textarea-' + id);
+    if (!textarea) return;
+    const novo = textarea.value;
+    const defaultTexto = (PROMPTS_DEFAULT[id] || {}).texto || '';
+    
+    if (novo.trim() === defaultTexto.trim()) {
+      // Texto igual ao default - remove customização
+      setPrompt(id, null);
+      showToast('✓ Texto igual ao padrão — customização removida.');
+    } else {
+      setPrompt(id, novo);
+      showToast('✓ Prompt salvo. Vai usar em toda a IA daqui em diante.');
+    }
+    renderPromptsList();
+  }
+  
+  function restaurarPromptDefault(id) {
+    if (!confirm('Restaurar este prompt pro texto padrão do sistema? Sua versão customizada será apagada.')) return;
+    setPrompt(id, null);
+    showToast('✓ Prompt restaurado pro padrão.');
+    renderPromptsList();
   }
 
   function slugify(s) {
