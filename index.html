@@ -4399,6 +4399,9 @@
           </div>
         </div>
 
+        <!-- PAINEL MACRO: Execuções de fluxos em andamento -->
+        <div id="painelExecucoes" style="display:none;background:white;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,0.05)"></div>
+
         <!-- ESCRITÓRIO VIVO — Sala completa -->
         <div class="escritorio-card">
           <div class="escritorio-header">
@@ -4969,22 +4972,32 @@
   </div>
 </div>
 
-<!-- MODAL: execução de fluxo da demanda -->
-<div class="dup-overlay" id="execOverlay">
+<!-- MODAL: execução de fluxo da demanda (minimizável, não-blocking) -->
+<div class="dup-overlay" id="execOverlay" data-demanda-id="">
   <div class="dup-modal" style="max-width:680px">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <h3 style="margin:0">🚀 Executando fluxo</h3>
-      <button type="button" onclick="execCancelar()" style="background:#fee2e2;border:1px solid #fca5a5;border-radius:6px;width:28px;height:28px;cursor:pointer;font-weight:700;color:#dc2626">×</button>
+      <div style="display:flex;gap:6px">
+        <button type="button" onclick="minimizarExecOverlay()" title="Minimizar — execução continua em background" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:4px 10px;cursor:pointer;font-weight:700;color:#92400e;font-size:12px">— Minimizar</button>
+        <button type="button" onclick="execCancelar()" title="Cancelar execução" style="background:#fee2e2;border:1px solid #fca5a5;border-radius:6px;width:28px;height:28px;cursor:pointer;font-weight:700;color:#dc2626">×</button>
+      </div>
     </div>
     <div style="font-size:12px;color:#6b7280;margin:6px 0 12px" id="execNomeFluxo">—</div>
     <div class="dup-progress-bar">
       <div class="dup-progress-fill" id="execProgressFill"></div>
     </div>
     <div class="dup-progress-text" id="execProgressText">Iniciando...</div>
+    
+    <!-- Texto da decisão (visível só em passos de decisão) -->
+    <div id="execTextoDecisao" style="display:none;margin:12px 0;padding:10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;color:#92400e;font-size:13px"></div>
+    
     <div class="dup-step-log" id="execLog"></div>
-    <div style="display:flex;gap:8px;margin-top:14px">
+    
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
       <button type="button" id="execBotaoContinuar" onclick="execContinuar()" style="flex:1;padding:10px;background:#16a34a;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer;display:none">▶️ Continuar</button>
-      <button type="button" onclick="execCancelar()" style="padding:8px 16px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-weight:700;cursor:pointer">⏹ Cancelar</button>
+      <button type="button" id="execBotaoSim" onclick="execDecidirSim()" style="flex:1;padding:10px;background:#16a34a;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer;display:none">✓ Sim</button>
+      <button type="button" id="execBotaoNao" onclick="execDecidirNao()" style="flex:1;padding:10px;background:#dc2626;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer;display:none">✕ Não</button>
+      <button type="button" onclick="minimizarExecOverlay()" style="padding:8px 16px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-weight:700;cursor:pointer">— Minimizar</button>
     </div>
   </div>
 </div>
@@ -7527,15 +7540,15 @@
   }
   
   // ============================================================
-  // MOTOR DE EXECUÇÃO DE FLUXO
+  // MOTOR DE EXECUÇÃO DE FLUXO (multi-demanda, não-blocking)
   // ============================================================
-  // Roda passos automatizados (auto: true) em sequência, pausando em
-  // passos manuais (operador/gestor) pra aguardar ação humana.
+  // Estado das execuções ativas vive em window._execucoes:
+  //   { demandaId: { fluxo, passoAtual, total, feitos, status, log, resolve_continuar } }
   //
-  // Estado da execução fica no objeto demanda:
-  //   d.execucao = { passoAtualId, outputs: {passoId: any}, status, log: [] }
+  // O modal antigo (execOverlay) é OPCIONAL — pode ser fechado e a
+  // execução continua em background. O painel "Em execução" mostra TODAS.
   
-  let _execCancelar = false;
+  window._execucoes = window._execucoes || {};
   
   async function executarFluxoDemanda(demandaId) {
     const d = demandas.find(x => String(x.id) === String(demandaId));
@@ -7550,17 +7563,40 @@
     }
     if (!fluxo.passos || fluxo.passos.length === 0) { showToast('Fluxo sem passos', true); return; }
     
-    // Inicializa estado de execução
+    // Bloqueia re-execução simultânea da mesma demanda
+    if (window._execucoes[d.id] && window._execucoes[d.id].status === 'rodando') {
+      showToast('Esta demanda já está em execução', true);
+      return;
+    }
+    
+    // Estado da execução (em memória + persiste no localStorage com log curto)
+    const execState = {
+      demandaId: d.id,
+      demandaNome: d.cliente + ' · ' + (d.produto || '?'),
+      fluxoNome: fluxo.nome,
+      total: fluxo.passos.length,
+      feitos: 0,
+      passoAtual: null,
+      status: 'rodando',
+      log: [],
+      iniciadoEm: Date.now(),
+      cancelar: false,
+      resolverContinuar: null,
+      decisaoPendente: null,
+    };
+    window._execucoes[d.id] = execState;
+    
+    // Persiste estado curto na demanda
     if (!d.execucao) d.execucao = { outputs: {}, log: [], status: 'rodando' };
     d.execucao.status = 'rodando';
     if (!d.execucao.outputs) d.execucao.outputs = {};
-    if (!d.execucao.log) d.execucao.log = [];
     if (!d.passosConcluidos) d.passosConcluidos = [];
     
-    _execCancelar = false;
+    // Atualiza UI (modal opcional + painel macro)
     abrirExecOverlay(d, fluxo);
+    renderPainelExecucoes();
     
-    // Acha passo inicial (procura tipo "inicio" ou o que não tem ligação chegando)
+    // Acha passo inicial
     const conexoes = fluxo.conexoes || [];
     let atualId = (fluxo.passos.find(p => p.tipo === 'inicio') || {}).id 
       || (function() {
@@ -7568,79 +7604,337 @@
           return (fluxo.passos.find(p => !destinos.has(p.id)) || fluxo.passos[0]).id;
         })();
     
-    while (atualId && !_execCancelar) {
+    while (atualId && !execState.cancelar) {
       const passo = fluxo.passos.find(p => p.id === atualId);
       if (!passo) {
-        execLog(d, '⚠ Passo não encontrado: ' + atualId, 'err');
+        execLog2(execState, '⚠ Passo não encontrado: ' + atualId, 'err');
         break;
       }
       const tipo = TIPOS_PASSO[passo.tipo] || {};
       
-      execLog(d, `\n— ${tipo.icone || '•'} ${passo.titulo || passo.tipo} (${passo.quem || '?'}) —`);
-      execAtualizar(d, fluxo, passo);
-      
-      // Marca passo como atual
+      execLog2(execState, `— ${tipo.icone || '•'} ${passo.titulo || passo.tipo} (${passo.quem || '?'}) —`);
+      execState.passoAtual = passo;
       d.execucao.passoAtualId = passo.id;
       saveDemandas();
+      atualizarUIExec(execState);
+      renderPainelExecucoes();
       
-      // Decidiu como tratar este passo
       let proximoId = null;
       
       if (tipo.auto && tipo.acao) {
-        // Passo automatizado
         try {
           const resultado = await executarAcaoPasso(d, fluxo, passo, tipo.acao);
           d.execucao.outputs[passo.id] = resultado;
           d.passosConcluidos.push(passo.id);
-          execLog(d, `  ✓ OK${resultado && resultado._msg ? ': ' + resultado._msg : ''}`, 'ok');
+          execState.feitos++;
+          execLog2(execState, `  ✓ OK${resultado && resultado._msg ? ': ' + resultado._msg : ''}`, 'ok');
           proximoId = proximoPasso(fluxo, passo.id);
         } catch(e) {
-          execLog(d, `  ✗ Erro: ${e.message}`, 'err');
+          execLog2(execState, `  ✗ Erro: ${e.message}`, 'err');
+          execState.status = 'erro';
           d.execucao.status = 'erro';
           break;
         }
       } else if (passo.tipo === 'decisao') {
-        // Decisão: pergunta humano
-        const sim = confirm(`Decisão: ${passo.titulo}\n\n${passo.desc || ''}\n\nSIM = avança caminho "Sim"\nCANCELAR = avança caminho "Não"`);
-        const labelEscolhido = sim ? 'Sim' : 'Não';
-        execLog(d, `  ↳ Decisão: ${labelEscolhido}`, 'ok');
+        // Decisão: pausa e pede ação humana via painel/modal
+        execState.decisaoPendente = passo;
+        execState.status = 'aguardando_decisao';
+        atualizarUIExec(execState);
+        renderPainelExecucoes();
+        
+        const escolha = await aguardarDecisao(execState);
+        if (escolha === '_cancel') break;
+        
+        execState.status = 'rodando';
+        execState.decisaoPendente = null;
+        const labelEscolhido = escolha ? 'Sim' : 'Não';
+        execLog2(execState, `  ↳ Decisão: ${labelEscolhido}`, 'ok');
         d.passosConcluidos.push(passo.id);
-        // Procura conexão com label correspondente
+        execState.feitos++;
         const conexao = conexoes.find(c => 
           c.de === passo.id && (c.label || '').toLowerCase().startsWith(labelEscolhido.toLowerCase())
         ) || conexoes.find(c => c.de === passo.id);
         proximoId = conexao ? conexao.para : null;
       } else {
-        // Passo MANUAL — pausa pra aguardar
-        execLog(d, `  ⏸ Aguardando ação humana: ${passo.quem === 'operador' ? '👤 Operador' : passo.quem === 'gestor' ? '👩‍💼 Gestor' : '👤 Humano'}`);
-        d.execucao.status = 'aguardando';
-        saveDemandas();
-        // Aguarda o user clicar "Continuar" no modal
-        try {
-          await aguardarContinuar(d, fluxo, passo);
-        } catch(e) {
-          execLog(d, `  ✗ Cancelado pelo usuário`, 'err');
-          break;
-        }
+        // Passo MANUAL — pausa
+        execLog2(execState, `  ⏸ Aguardando ação humana: ${passo.quem === 'operador' ? '👤 Operador' : passo.quem === 'gestor' ? '👩‍💼 Gestor' : '👤 Humano'}`);
+        execState.status = 'aguardando_humano';
+        atualizarUIExec(execState);
+        renderPainelExecucoes();
+        
+        const ok = await aguardarContinuar2(execState);
+        if (!ok) break;
+        
+        execState.status = 'rodando';
         d.passosConcluidos.push(passo.id);
-        execLog(d, `  ✓ Operação humana concluída`, 'ok');
+        execState.feitos++;
+        execLog2(execState, `  ✓ Operação humana concluída`, 'ok');
         proximoId = proximoPasso(fluxo, passo.id);
       }
       
       atualId = proximoId;
       d.atualizadoEm = new Date().toISOString();
       saveDemandas();
+      atualizarUIExec(execState);
+      renderPainelExecucoes();
     }
     
-    if (_execCancelar) {
+    if (execState.cancelar) {
+      execState.status = 'cancelado';
       d.execucao.status = 'cancelado';
-      execLog(d, `\n⏹ Execução cancelada pelo usuário`, 'err');
-    } else if (d.execucao.status !== 'erro') {
+      execLog2(execState, `⏹ Execução cancelada`, 'err');
+    } else if (execState.status !== 'erro') {
+      execState.status = 'concluido';
       d.execucao.status = 'concluido';
-      execLog(d, `\n🎉 Fluxo concluído com sucesso!`, 'ok');
+      d.status = 'producao'; // demanda passa pra "em produção"
+      d.concluidoEm = new Date().toISOString();
+      execLog2(execState, `🎉 Fluxo concluído com sucesso!`, 'ok');
     }
     saveDemandas();
-    execFinalizar();
+    atualizarUIExec(execState);
+    renderPainelExecucoes();
+    if (typeof renderOperacao === 'function') renderOperacao();
+  }
+  
+  // Helpers do estado em memoria
+  function execLog2(state, msg, tipo) {
+    state.log.push({ msg, tipo, em: Date.now() });
+    // Mantem só os últimos 100 itens pra não vazar memória
+    if (state.log.length > 100) state.log.shift();
+  }
+  
+  function atualizarUIExec(state) {
+    // Só atualiza modal se ele estiver aberto pra esta execução
+    const ov = document.getElementById('execOverlay');
+    if (!ov || !ov.classList.contains('active')) return;
+    if (ov.dataset.demandaId !== String(state.demandaId)) return;
+    
+    const pct = Math.round((state.feitos / state.total) * 100);
+    const fill = document.getElementById('execProgressFill');
+    const txt = document.getElementById('execProgressText');
+    if (fill) fill.style.width = pct + '%';
+    if (txt) txt.textContent = `${state.feitos}/${state.total} · ${state.passoAtual ? state.passoAtual.titulo || state.passoAtual.tipo : '...'} (${pct}%)`;
+    
+    // Re-renderiza log inteiro
+    const log = document.getElementById('execLog');
+    if (log) {
+      log.innerHTML = state.log.map(l => {
+        const cls = l.tipo === 'ok' ? 'step-ok' : l.tipo === 'err' ? 'step-err' : '';
+        return `<div class="${cls}">${escapeHtml(l.msg)}</div>`;
+      }).join('');
+      log.scrollTop = log.scrollHeight;
+    }
+    
+    // Botões aguardando
+    const btnCont = document.getElementById('execBotaoContinuar');
+    const btnSim = document.getElementById('execBotaoSim');
+    const btnNao = document.getElementById('execBotaoNao');
+    if (btnCont) btnCont.style.display = state.status === 'aguardando_humano' ? 'inline-block' : 'none';
+    if (btnSim) btnSim.style.display = state.status === 'aguardando_decisao' ? 'inline-block' : 'none';
+    if (btnNao) btnNao.style.display = state.status === 'aguardando_decisao' ? 'inline-block' : 'none';
+    if (btnCont && state.status === 'aguardando_humano' && state.passoAtual) {
+      btnCont.innerHTML = `▶️ Marcar "${escapeHtml(state.passoAtual.titulo || state.passoAtual.tipo)}" e continuar`;
+    }
+    if (state.status === 'aguardando_decisao' && state.passoAtual) {
+      const txtDec = document.getElementById('execTextoDecisao');
+      if (txtDec) {
+        txtDec.style.display = 'block';
+        txtDec.innerHTML = '<strong>❓ ' + escapeHtml(state.passoAtual.titulo || 'Decisão') + '</strong>'
+          + (state.passoAtual.desc ? '<br><span style="font-size:11px">' + escapeHtml(state.passoAtual.desc) + '</span>' : '');
+      }
+    } else {
+      const txtDec = document.getElementById('execTextoDecisao');
+      if (txtDec) txtDec.style.display = 'none';
+    }
+  }
+  
+  function aguardarContinuar2(state) {
+    return new Promise((resolve) => {
+      state.resolverContinuar = resolve;
+    });
+  }
+  
+  function aguardarDecisao(state) {
+    return new Promise((resolve) => {
+      state.resolverContinuar = resolve;
+    });
+  }
+  
+  // Ações dos botões do modal — usam o estado da execução ativa
+  function execContinuar() {
+    const id = document.getElementById('execOverlay').dataset.demandaId;
+    const st = window._execucoes[id];
+    if (st && st.resolverContinuar) {
+      st.resolverContinuar(true);
+      st.resolverContinuar = null;
+    }
+  }
+  
+  function execDecidirSim() {
+    const id = document.getElementById('execOverlay').dataset.demandaId;
+    const st = window._execucoes[id];
+    if (st && st.resolverContinuar) {
+      st.resolverContinuar(true);
+      st.resolverContinuar = null;
+    }
+  }
+  
+  function execDecidirNao() {
+    const id = document.getElementById('execOverlay').dataset.demandaId;
+    const st = window._execucoes[id];
+    if (st && st.resolverContinuar) {
+      st.resolverContinuar(false);
+      st.resolverContinuar = null;
+    }
+  }
+  
+  function execCancelar() {
+    const id = document.getElementById('execOverlay').dataset.demandaId;
+    const st = window._execucoes[id];
+    if (st) {
+      st.cancelar = true;
+      if (st.resolverContinuar) {
+        st.resolverContinuar('_cancel');
+        st.resolverContinuar = null;
+      }
+    }
+    fecharExecOverlay();
+  }
+  
+  // Continuar via PAINEL macro (sem abrir modal)
+  function execContinuarPorId(demandaId) {
+    const st = window._execucoes[demandaId];
+    if (!st) { showToast('Execução não encontrada', true); return; }
+    if (st.resolverContinuar) {
+      st.resolverContinuar(true);
+      st.resolverContinuar = null;
+    }
+  }
+  function execDecidirPorId(demandaId, sim) {
+    const st = window._execucoes[demandaId];
+    if (!st) return;
+    if (st.resolverContinuar) {
+      st.resolverContinuar(sim);
+      st.resolverContinuar = null;
+    }
+  }
+  function execCancelarPorId(demandaId) {
+    const st = window._execucoes[demandaId];
+    if (!st) return;
+    if (!confirm('Cancelar a execução desta demanda?')) return;
+    st.cancelar = true;
+    if (st.resolverContinuar) {
+      st.resolverContinuar('_cancel');
+      st.resolverContinuar = null;
+    }
+  }
+  function abrirExecModal(demandaId) {
+    const st = window._execucoes[demandaId];
+    if (!st) return;
+    const d = demandas.find(x => String(x.id) === String(demandaId));
+    const fluxo = fluxosDemanda.find(f => String(f.id) === String(d.fluxoId));
+    abrirExecOverlay(d, fluxo);
+    atualizarUIExec(st);
+  }
+  
+  function abrirExecOverlay(d, fluxo) {
+    const ov = document.getElementById('execOverlay');
+    if (!ov) return;
+    ov.dataset.demandaId = String(d.id);
+    document.getElementById('execNomeFluxo').textContent = fluxo.nome + ' · ' + (d.cliente || '');
+    document.getElementById('execLog').innerHTML = '';
+    document.getElementById('execProgressFill').style.width = '0%';
+    document.getElementById('execProgressText').textContent = 'Iniciando...';
+    ov.classList.add('active');
+  }
+  
+  function fecharExecOverlay() {
+    const ov = document.getElementById('execOverlay');
+    if (ov) {
+      ov.classList.remove('active');
+      ov.dataset.demandaId = '';
+    }
+  }
+  
+  // Minimizar modal — execução continua em background
+  function minimizarExecOverlay() {
+    fecharExecOverlay();
+    showToast('Execução continua em background. Acompanhe no painel "Em execução".');
+  }
+  
+  // === Painel macro de execuções (na tela de Operação) ===
+  function renderPainelExecucoes() {
+    const cont = document.getElementById('painelExecucoes');
+    if (!cont) return;
+    
+    const ativas = Object.values(window._execucoes).filter(s => 
+      s.status === 'rodando' || s.status === 'aguardando_humano' || s.status === 'aguardando_decisao'
+    );
+    const finalizadas = Object.values(window._execucoes).filter(s => 
+      s.status === 'concluido' || s.status === 'erro' || s.status === 'cancelado'
+    ).slice(-3); // ultimas 3
+    
+    if (ativas.length === 0 && finalizadas.length === 0) {
+      cont.style.display = 'none';
+      return;
+    }
+    
+    cont.style.display = 'block';
+    let html = '<div style="font-size:13px;font-weight:700;color:#1e2a47;margin-bottom:8px">🚀 Execuções em andamento (' + ativas.length + ')</div>';
+    
+    if (ativas.length === 0) {
+      html += '<div style="font-size:12px;color:#9ca3af;padding:6px 0">Nenhuma demanda executando agora</div>';
+    } else {
+      html += '<div style="display:flex;flex-direction:column;gap:6px">';
+      ativas.forEach(s => {
+        const pct = Math.round((s.feitos / s.total) * 100);
+        const corStatus = s.status === 'rodando' ? '#16a34a' : (s.status === 'aguardando_decisao' ? '#f59e0b' : '#3b82f6');
+        const txtStatus = s.status === 'rodando' ? '⚡ Rodando' : (s.status === 'aguardando_decisao' ? '❓ Aguardando decisão' : '⏸ Aguardando ação');
+        const passoTxt = s.passoAtual ? (s.passoAtual.titulo || s.passoAtual.tipo) : '...';
+        
+        let botoes = '';
+        if (s.status === 'aguardando_humano') {
+          botoes = `<button onclick="execContinuarPorId('${s.demandaId}')" style="padding:4px 10px;background:#16a34a;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">▶️ Continuar</button>`;
+        } else if (s.status === 'aguardando_decisao') {
+          botoes = `<button onclick="execDecidirPorId('${s.demandaId}',true)" style="padding:4px 10px;background:#16a34a;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">✓ Sim</button>
+                    <button onclick="execDecidirPorId('${s.demandaId}',false)" style="padding:4px 10px;background:#dc2626;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">✕ Não</button>`;
+        }
+        botoes += ` <button onclick="abrirExecModal('${s.demandaId}')" style="padding:4px 10px;background:#3b82f6;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer">📺 Detalhes</button>`;
+        botoes += ` <button onclick="execCancelarPorId('${s.demandaId}')" style="padding:4px 8px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;font-size:11px;cursor:pointer">✕</button>`;
+        
+        html += `<div style="padding:8px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <div style="flex:1;min-width:200px">
+              <div style="font-size:12px;font-weight:700">${escapeHtml(s.demandaNome)}</div>
+              <div style="font-size:10px;color:#6b7280">${escapeHtml(s.fluxoNome)}</div>
+            </div>
+            <span style="font-size:10px;padding:2px 8px;background:${corStatus};color:white;border-radius:10px;font-weight:700">${txtStatus}</span>
+          </div>
+          <div style="margin-top:6px">
+            <div style="height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,${corStatus},#3b82f6);transition:width .3s"></div>
+            </div>
+            <div style="font-size:10px;color:#6b7280;margin-top:3px;display:flex;justify-content:space-between">
+              <span>${s.feitos}/${s.total} · ${escapeHtml(passoTxt)}</span>
+              <span>${pct}%</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">${botoes}</div>
+        </div>`;
+      });
+      html += '</div>';
+    }
+    
+    if (finalizadas.length > 0) {
+      html += '<div style="font-size:11px;color:#6b7280;margin-top:10px;margin-bottom:4px">Últimas finalizadas:</div>';
+      finalizadas.forEach(s => {
+        const icone = s.status === 'concluido' ? '✅' : s.status === 'erro' ? '❌' : '⏹';
+        const cor = s.status === 'concluido' ? '#16a34a' : s.status === 'erro' ? '#dc2626' : '#6b7280';
+        html += `<div style="font-size:11px;padding:4px 0;color:${cor}">${icone} ${escapeHtml(s.demandaNome)}</div>`;
+      });
+    }
+    
+    cont.innerHTML = html;
   }
   
   function proximoPasso(fluxo, passoId) {
@@ -7894,7 +8188,7 @@
     if (!limpo.idBanco) throw new Error('Não consegui obter idBanco do produto salvo');
     
     produtosErp.push(limpo);
-    saveProdutosLocal();
+    saveProdutos();
     
     // Salva referencia no produtoTemp pra próximo passo (exportar)
     p.idBanco = limpo.idBanco;
@@ -7940,76 +8234,6 @@
     }
     const anuncioId = data.itemId || (data.dados && data.dados.id) || '?';
     return { _msg: `Anúncio criado: ${anuncioId} (${loja.marketplace})` };
-  }
-  
-  // ============================================================
-  // UI da execução (overlay com progresso + log + botões)
-  // ============================================================
-  let _execContinuarResolver = null;
-  
-  function abrirExecOverlay(d, fluxo) {
-    document.getElementById('execNomeFluxo').textContent = fluxo.nome;
-    document.getElementById('execLog').innerHTML = '';
-    document.getElementById('execProgressFill').style.width = '0%';
-    document.getElementById('execProgressText').textContent = 'Iniciando...';
-    document.getElementById('execBotaoContinuar').style.display = 'none';
-    document.getElementById('execOverlay').classList.add('active');
-  }
-  
-  function execFinalizar() {
-    document.getElementById('execBotaoContinuar').style.display = 'none';
-  }
-  
-  function execLog(d, msg, tipo) {
-    if (!d.execucao) d.execucao = { log: [] };
-    if (!d.execucao.log) d.execucao.log = [];
-    d.execucao.log.push({ msg, tipo, em: Date.now() });
-    const log = document.getElementById('execLog');
-    if (log) {
-      const div = document.createElement('div');
-      if (tipo === 'ok') div.className = 'step-ok';
-      if (tipo === 'err') div.className = 'step-err';
-      div.textContent = msg;
-      log.appendChild(div);
-      log.scrollTop = log.scrollHeight;
-    }
-  }
-  
-  function execAtualizar(d, fluxo, passo) {
-    const total = fluxo.passos.length;
-    const feitos = (d.passosConcluidos || []).length;
-    const pct = Math.round((feitos / total) * 100);
-    const fill = document.getElementById('execProgressFill');
-    const txt = document.getElementById('execProgressText');
-    if (fill) fill.style.width = pct + '%';
-    if (txt) txt.textContent = `${feitos}/${total} · ${passo.titulo || passo.tipo} (${pct}%)`;
-  }
-  
-  function aguardarContinuar(d, fluxo, passo) {
-    return new Promise((resolve, reject) => {
-      const btn = document.getElementById('execBotaoContinuar');
-      const txtPasso = passo.titulo || passo.tipo;
-      btn.innerHTML = `▶️ Marcar "${escapeHtml(txtPasso)}" como FEITO e continuar`;
-      btn.style.display = 'inline-block';
-      _execContinuarResolver = { resolve, reject };
-    });
-  }
-  
-  function execContinuar() {
-    if (_execContinuarResolver) {
-      document.getElementById('execBotaoContinuar').style.display = 'none';
-      _execContinuarResolver.resolve();
-      _execContinuarResolver = null;
-    }
-  }
-  
-  function execCancelar() {
-    _execCancelar = true;
-    if (_execContinuarResolver) {
-      _execContinuarResolver.reject(new Error('cancelado'));
-      _execContinuarResolver = null;
-    }
-    document.getElementById('execOverlay').classList.remove('active');
   }
   
   // === Fluxo dentro da demanda ===
@@ -9236,7 +9460,7 @@
       }
     });
     Promise.all(pendentes).then(() => {
-      saveProdutosLocal();
+      saveProdutos();
       renderProdutos();
       showToast('✓ ' + ok + ' produto(s) marcado(s) como ' + labels[novoStatus]);
     });
@@ -9275,7 +9499,7 @@
       }
     });
     Promise.all(pendentes).then(() => {
-      saveProdutosLocal();
+      saveProdutos();
       renderProdutos();
       showToast('✓ ' + ok + ' produto(s) movido(s) pra "' + novaCat + '"');
     });
@@ -9302,7 +9526,7 @@
       }
     });
     Promise.all(pendentes).then(() => {
-      saveProdutosLocal();
+      saveProdutos();
       renderProdutos();
       showToast('✓ Marca atualizada em ' + ok + ' produto(s)');
     });
@@ -9357,7 +9581,7 @@
       }
     });
     Promise.all(pendentes).then(() => {
-      saveProdutosLocal();
+      saveProdutos();
       renderProdutos();
       showToast('✓ Preço ajustado em ' + ok + ' produto(s)');
     });
@@ -9398,7 +9622,7 @@
       ok++;
     });
     Promise.all(pendentes).then(() => {
-      saveProdutosLocal();
+      saveProdutos();
       renderProdutos();
       showToast('✓ Estoque ajustado em ' + ok + ' produto(s) (' + vars + ' variação(ões))');
     });
@@ -9443,7 +9667,7 @@
       }
     });
     Promise.all(pendentes).then(() => {
-      saveProdutosLocal();
+      saveProdutos();
       renderProdutos();
       showToast('✓ ' + vars + ' SKU(s) gerados em ' + prods + ' produto(s)');
     });
@@ -9490,7 +9714,7 @@
       }
     });
     Promise.all(pendentes).then(() => {
-      saveProdutosLocal();
+      saveProdutos();
       renderProdutos();
       showToast('✓ ' + vars + ' EAN(s) gerados em ' + prods + ' produto(s)');
     });
@@ -9531,7 +9755,7 @@
         }
       } catch(e) { falhas++; }
     }
-    saveProdutosLocal();
+    saveProdutos();
     renderProdutos();
     showToast('✓ ' + ok + ' categorias definidas · ' + falhas + ' falha(s)');
   }
@@ -10853,7 +11077,7 @@ Responda APENAS a descrição nova, sem aspas.`;
       }
     }
     
-    saveProdutosLocal();
+    saveProdutos();
     dupAtualizarProgress(totalPassos, totalPassos, 'Concluído!');
     dupLogStep(`\n━━━━━━━━━━━━━━━━━━━━`);
     dupLogStep(`✅ ${okCopias} cópia(s) exportada(s) · ${errCopias} falha(s)`, okCopias > 0 ? 'ok' : 'err');
@@ -10929,7 +11153,7 @@ Responda APENAS a descrição nova, sem aspas.`;
       }
       const idx = produtosErp.findIndex(x => String(x.id) === String(copiaId));
       if (idx >= 0) produtosErp.splice(idx, 1);
-      saveProdutosLocal();
+      saveProdutos();
       showToast('✓ Cópia removida');
       abrirCopiasDoProduto(paiId); // re-render
     } catch(e) {
@@ -11022,7 +11246,7 @@ Responda APENAS a descrição nova, sem aspas.`;
       if (adicionadas > 0) {
         p.atualizadoEm = new Date().toISOString();
         await salvarProdutoNoBackend(p);
-        saveProdutosLocal();
+        saveProdutos();
         renderProdutos();
         showToast('✓ ' + adicionadas + ' variação(ões) recuperada(s)');
       } else {
@@ -21189,6 +21413,9 @@ ${JSON.stringify(metricas, null, 2)}`
       dl.innerHTML = [...clientesSet].sort().map(c => `<option value="${c}">`).join('');
     }
     
+    // Atualiza painel macro de execuções (multi-demanda em tempo real)
+    if (typeof renderPainelExecucoes === 'function') renderPainelExecucoes();
+    
     // Atualiza as contas/anúncios da IA Auditora
     if (typeof renderContasAuditoria === 'function') renderContasAuditoria();
     
@@ -22256,13 +22483,26 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!estoque || estoque < 1) erros.push('• Informe o estoque por variação (mínimo 1)');
     
     // Pega imagens da sessao (variavel correta: _imagensDemandaSessao)
-    const imgs = (typeof _imagensDemandaSessao !== 'undefined' && Array.isArray(_imagensDemandaSessao)) 
-      ? _imagensDemandaSessao.map(im => im.dataUrl || im.url || im) 
+    const imgsBase64 = (typeof _imagensDemandaSessao !== 'undefined' && Array.isArray(_imagensDemandaSessao)) 
+      ? _imagensDemandaSessao.map(im => im.dataUrl || im.url || im).filter(Boolean)
       : [];
-    if (imgs.length === 0) erros.push('• Sobe pelo menos 1 foto do produto (IA precisa pra analisar)');
+    if (imgsBase64.length === 0) erros.push('• Sobe pelo menos 1 foto do produto (IA precisa pra analisar)');
     
     if (erros.length > 0) {
       alert('⚠ Pré-requisitos faltando pra executar o fluxo:\n\n' + erros.join('\n') + '\n\nPreencha tudo e tente de novo.');
+      return;
+    }
+    
+    // CRITICO: sobe as fotos pro Storage ANTES de salvar a demanda.
+    // Senao, base64 gigante explode o localStorage (QuotaExceededError).
+    showToast('📤 Subindo fotos pro Storage...');
+    let urlsFotos = [];
+    try {
+      const produtoFake = { fotos: imgsBase64 };
+      const comUrls = await enviarFotosParaStorage(produtoFake);
+      urlsFotos = comUrls.fotos || [];
+    } catch(e) {
+      alert('Erro ao subir fotos: ' + e.message);
       return;
     }
     
@@ -22285,11 +22525,9 @@ ${JSON.stringify(metricas, null, 2)}`
       return; 
     }
     
-    // Anexa as imagens à demanda (no formato {url})
-    if (imgs.length > 0) {
-      d.imagens = imgs.map(url => ({ url }));
-      saveDemandas();
-    }
+    // Anexa as URLs (não base64!) à demanda
+    d.imagens = urlsFotos.map(url => ({ url }));
+    saveDemandas();
     
     // Pequeno delay pra modal fechar e DOM atualizar
     setTimeout(() => {
