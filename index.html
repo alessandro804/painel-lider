@@ -8154,22 +8154,25 @@ RETORNE APENAS JSON nesse formato exato (sem \`\`\`json):
       return { _msg: `título="${p.nome.slice(0,30)}", marca="${p.marca}", ${Object.keys(p.atributosMl).length} atrs (sem categoria)` };
     }
     
-    const promptAttrs = `Para o produto "${p.nome}" (categoria ML ${p.categoryIdMl}), marca "${p.marca}", preencha TODOS os atributos abaixo baseado nas informações e fotos.
+    const promptAttrs = `Para o produto "${p.nome}" (categoria ML ${p.categoryIdMl}), marca "${p.marca}", preencha ABSOLUTAMENTE TODOS os atributos abaixo. Não deixe NENHUM em branco.
 
 REGRAS:
-- Para atributos com lista de valores aceitos, ESCOLHA UM dos valores listados. Não invente.
-- Para boolean, use true ou false.
-- Para number_unit, inclua a unidade (ex: "12 cm").
-- Se não conseguir inferir um atributo, NÃO inclua ele no JSON (melhor faltar do que vir errado).
-- Atributos secundários ajudam o anúncio aparecer nas buscas — preencha o máximo possível.
+- Para atributos com lista de valores aceitos, ESCOLHA UM dos valores listados. Não invente valores.
+- Para boolean, escolha true ou false (use false como default quando não tiver certeza).
+- Para number_unit, inclua a unidade (ex: "12 cm", "500 g").
+- Para textos livres, use seu melhor inferência das fotos + contexto.
+- ALPHANUMERIC_MODEL: combine marca/modelo (ex: "AMX-VX001", "NK-AIR2024"). SEMPRE preencha.
+- WIDTH_TYPE: se não souber, use "Médio" ou "Padrão" (valor mais comum).
+- WITH_RECYCLED_MATERIALS: false (a menos que produto seja claramente eco).
+- VOCÊ DEVE preencher TODOS os obrigatórios E TODOS os opcionais. Não pule nenhum.
 
-⚠ OBRIGATÓRIOS (priorize ao máximo):
+⚠ OBRIGATÓRIOS (preencha TODOS):
 ${obrigatorios.map(formatarAttr).join('\n') || '(nenhum)'}
 
 📌 FIXOS DA CATEGORIA:
 ${fixos.map(formatarAttr).join('\n') || '(nenhum)'}
 
-✨ OPCIONAIS (preencha o que conseguir inferir das fotos/contexto):
+✨ OPCIONAIS — preencha TODOS (use defaults razoáveis se não conseguir inferir):
 ${opcionais.slice(0, 30).map(formatarAttr).join('\n') || '(nenhum)'}
 
 PRODUTO:
@@ -8179,14 +8182,7 @@ PRODUTO:
 - Variações: ${variacoesTxt}
 - Descrição: ${(p.descricao||'').slice(0,300)}
 
-RETORNE APENAS JSON com formato {"ID_ATRIBUTO": "valor"}:
-{
-  "BRAND": "${p.marca}",
-  "MODEL": "...",
-  "GENDER": "Masculino",
-  ...
-}
-NÃO inclua atributos que não conseguir inferir.`;
+RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados acima (obrigatórios + opcionais).`;
     
     const opcoes2 = { prompt: promptAttrs, system: 'Você responde APENAS com JSON válido, sem texto antes ou depois.', maxTokens: 2000 };
     if (p.fotos[0]) opcoes2.imagens = [p.fotos[0]];
@@ -8204,6 +8200,39 @@ NÃO inclua atributos que não conseguir inferir.`;
     // MERGE atributos da IA, garantindo BRAND/MODEL
     Object.assign(p.atributosMl, attrsIA);
     if (p.marca && !p.atributosMl.BRAND) p.atributosMl.BRAND = p.marca;
+    
+    // DEFAULTS INTELIGENTES — pra atributos opcionais que a IA frequentemente esquece.
+    // Aplicamos só se a categoria TEM o atributo (atributosCat) e a IA NÃO preencheu.
+    const temAttr = (id) => atributosCat.some(a => a.id === id);
+    
+    if (temAttr('ALPHANUMERIC_MODEL') && !p.atributosMl.ALPHANUMERIC_MODEL) {
+      const marcaLimpa = (p.marca || 'X').replace(/[^A-Za-z0-9]/g,'').toUpperCase().slice(0,4);
+      const modeloLimpa = (p.atributosMl.MODEL || dadosConteudo.modelo || p.skuPai || 'M1')
+        .replace(/[^A-Za-z0-9]/g,'').toUpperCase().slice(0,6);
+      p.atributosMl.ALPHANUMERIC_MODEL = marcaLimpa + '-' + modeloLimpa;
+    }
+    
+    if (temAttr('WIDTH_TYPE') && !p.atributosMl.WIDTH_TYPE) {
+      // valor mais comum: "Estándar/Padrão"
+      const attr = atributosCat.find(a => a.id === 'WIDTH_TYPE');
+      const valores = (attr && attr.values) ? attr.values.map(v => v.name) : [];
+      // tenta achar "Padrão", "Médio", "Standard"
+      const padrao = valores.find(v => /padr[ãa]o|m[eé]dio|standard|normal|regular/i.test(v));
+      p.atributosMl.WIDTH_TYPE = padrao || valores[0] || 'Padrão';
+    }
+    
+    if (temAttr('WITH_RECYCLED_MATERIALS') && p.atributosMl.WITH_RECYCLED_MATERIALS === undefined) {
+      p.atributosMl.WITH_RECYCLED_MATERIALS = false;
+    }
+    
+    if (temAttr('GENDER') && !p.atributosMl.GENDER) {
+      // tenta inferir do título
+      const ntit = (p.nome || '').toLowerCase();
+      if (ntit.includes('feminin')) p.atributosMl.GENDER = 'Feminino';
+      else if (ntit.includes('masculin')) p.atributosMl.GENDER = 'Masculino';
+      else if (ntit.includes('infant')) p.atributosMl.GENDER = 'Infantil';
+      else if (ntit.includes('unissex')) p.atributosMl.GENDER = 'Unissex';
+    }
     
     // Conta o que foi preenchido vs obrigatório
     const preenchidos = Object.keys(p.atributosMl).length;
