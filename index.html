@@ -12657,17 +12657,32 @@ Responda APENAS a descrição nova, sem aspas.`;
       
     // Converte atributosMl objeto → array
     const attrsItem = _converterAtributosMlParaArray(p);
-    // Garante SELLER_SKU/GTIN no item-level (importante quando NÃO tem variações,
-    // mas o ML também aceita no item mesmo com variações)
-    const jaTemSeller = attrsItem.some(a => a.id === 'SELLER_SKU');
-    if (!jaTemSeller && p.skuPai) attrsItem.push({ id: 'SELLER_SKU', value_name: String(p.skuPai) });
-    const jaTemGtin = attrsItem.some(a => a.id === 'GTIN' || a.id === 'EMPTY_GTIN_REASON');
-    if (!jaTemGtin) {
-      if (p.ean && /^\d{8}$|^\d{12,14}$/.test(String(p.ean))) {
-        attrsItem.push({ id: 'GTIN', value_name: String(p.ean) });
-      } else if (!modeloNovo || (p.variacoes||[]).length === 0) {
-        // Só manda EMPTY_GTIN_REASON no item se não tem variações
-        attrsItem.push({ id: 'EMPTY_GTIN_REASON', value_id: '17055160' });
+    const temVariacoes = (p.variacoes || []).length > 0;
+    
+    // REGRA CRÍTICA DO ML: SELLER_SKU e GTIN ficam APENAS nas variações
+    // quando o anúncio tem variações. Senão duplicariam (item.attributes
+    // + variation.attributes) e o ML retorna "Same attributes are used
+    // in more than of item.attributes, variation.attribute_combinations
+    // and variation.attributes". Já passamos por isso.
+    if (!temVariacoes) {
+      const jaTemSeller = attrsItem.some(a => a.id === 'SELLER_SKU');
+      if (!jaTemSeller && p.skuPai) {
+        attrsItem.push({ id: 'SELLER_SKU', value_name: String(p.skuPai) });
+      }
+      const jaTemGtin = attrsItem.some(a => a.id === 'GTIN' || a.id === 'EMPTY_GTIN_REASON');
+      if (!jaTemGtin) {
+        if (p.ean && /^\d{8}$|^\d{12,14}$/.test(String(p.ean))) {
+          attrsItem.push({ id: 'GTIN', value_name: String(p.ean) });
+        } else {
+          attrsItem.push({ id: 'EMPTY_GTIN_REASON', value_id: '17055160' });
+        }
+      }
+    } else {
+      // Com variações, REMOVE qualquer SELLER_SKU/GTIN que tenha vindo no item
+      for (let i = attrsItem.length - 1; i >= 0; i--) {
+        if (['SELLER_SKU','GTIN','EMPTY_GTIN_REASON'].includes(attrsItem[i].id)) {
+          attrsItem.splice(i, 1);
+        }
       }
     }
       
@@ -12686,7 +12701,8 @@ Responda APENAS a descrição nova, sem aspas.`;
         sale_terms: [],
         attributes: attrsItem,
         variations: variacoesML,
-        seller_custom_field: p.skuPai || '',
+        // seller_custom_field só no item quando NÃO tem variações
+        seller_custom_field: temVariacoes ? undefined : (p.skuPai || ''),
         // Guia de tamanhos — obrigatório no modelo novo para moda/calçados
         size_guide: p.guiaTamanhos || null,
         modelo: modeloNovo ? 'user_products' : 'legado',
