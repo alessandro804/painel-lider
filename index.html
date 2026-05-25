@@ -11837,40 +11837,158 @@ Retorne JSON: {"ID": "valor", ...}`;
     return result;
   }
   
-  async function gerarTituloVariadoIA(tituloOriginal) {
-    const prompt = `Refaça este título de anúncio mantendo o significado, mas com pequena variação (ordem das palavras, sinônimos sutis). NUNCA mude: marca, tipo do produto, modelo, gênero. Máximo 60 caracteres.
+  async function gerarTituloVariadoIA(produtoOuTitulo) {
+    // Aceita produto inteiro (preferível) OU só título string (compat)
+    const p = typeof produtoOuTitulo === 'string' 
+      ? { nome: produtoOuTitulo } 
+      : produtoOuTitulo;
+    
+    const nome = p.nome || '';
+    const categoria = p.categoria || '';
+    const marca = p.marca || '';
+    const genderAttr = (p.atributosMl || {}).GENDER || '';
+    const tipoAttr = (p.atributosMl || {}).FOOTWEAR_TYPE || (p.atributosMl || {}).PRODUCT_TYPE || '';
+    
+    const prompt = `Você cria títulos OTIMIZADOS pra busca no Mercado Livre Brasil.
 
-Original: "${tituloOriginal}"
+PRODUTO ATUAL: "${nome}"
+${categoria ? 'CATEGORIA: ' + categoria : ''}
+${marca ? 'MARCA: ' + marca : ''}
+${genderAttr ? 'GÊNERO: ' + genderAttr : ''}
+${tipoAttr ? 'TIPO: ' + tipoAttr : ''}
 
-Responda APENAS o título novo. Sem aspas, sem explicação, sem nada extra.`;
+Crie um NOVO título de no máximo 60 caracteres que:
+✓ MANTENHA marca (se houver), tipo do produto, gênero
+✓ Use palavras-chave de busca relevantes pra esse produto (exemplos pra calçados: "leve", "confortável", "antiderrapante", "macio", "esportivo", "casual", "trabalho", "lançamento", "premium")
+✓ Tenha uma abordagem DIFERENTE do original — não seja uma simples reordenação de palavras
+✓ Use linguagem natural, sem CAPS LOCK, sem emojis, sem aspas
+✓ Pense em como um comprador buscaria esse produto
+
+Responda APENAS o título novo. Nada mais.`;
     
     try {
       const resp = await chamarIA({ prompt, maxTokens: 100 });
       let novo = String(resp || '').trim().replace(/^["']|["']$/g, '').slice(0, 60);
-      if (novo.length < 10) novo = tituloOriginal; // fallback
+      if (novo.length < 10) novo = nome;
       return novo;
     } catch(e) {
       console.warn('[duplicar] IA título falhou:', e.message);
-      return tituloOriginal + ' • Novo';
+      return nome + ' • Novo';
     }
   }
   
-  async function gerarDescricaoVariadaIA(descricaoOriginal) {
-    const prompt = `Reescreva esta descrição mantendo as informações principais. Use sinônimos onde possível mas mantenha o sentido e o tamanho aproximado. Mantenha estilo e tom.
+  // Tabelas padrão de tamanhos pra calçados BR (cm aproximado)
+  const TAMANHOS_CM_FEM = {
+    '33':'22,00','34':'22,50','35':'23,00','36':'23,50','37':'24,00',
+    '38':'24,50','39':'25,00','40':'25,50','41':'26,00','42':'26,50'
+  };
+  const TAMANHOS_CM_MASC = {
+    '37':'24,00','38':'25,00','39':'26,00','40':'26,50','41':'27,00',
+    '42':'27,50','43':'28,00','44':'28,50','45':'29,00','46':'29,50'
+  };
+  
+  function _gerarGuiaTamanhos(produto) {
+    const variacoes = produto.variacoes || [];
+    const gender = String((produto.atributosMl || {}).GENDER || '').toLowerCase();
+    const masculino = gender.includes('masc') || gender.includes('mascul');
+    const tabela = masculino ? TAMANHOS_CM_MASC : TAMANHOS_CM_FEM;
+    
+    // Pega tamanhos únicos das variações
+    const tamSet = new Set();
+    variacoes.forEach(v => {
+      const t = String(v.tamanho || v.nome || '').match(/\d{2}/);
+      if (t) tamSet.add(t[0]);
+    });
+    
+    if (tamSet.size === 0) return ''; // sem variações de tamanho, pula
+    
+    const tams = Array.from(tamSet).sort((a,b) => parseInt(a) - parseInt(b));
+    return tams.map(t => {
+      const cm = tabela[t] || '—';
+      return t + ' ———————— ' + cm + ' cm';
+    }).join('\n');
+  }
+  
+  async function gerarDescricaoVariadaIA(produtoOuDesc) {
+    // Aceita produto inteiro (preferível) OU só descrição string (compat)
+    const p = typeof produtoOuDesc === 'string' 
+      ? { descricao: produtoOuDesc, nome: '', variacoes: [] } 
+      : produtoOuDesc;
+    
+    const nome = p.nome || 'Produto';
+    const descOrig = p.descricao || '';
+    const categoria = p.categoria || '';
+    const marca = p.marca || '';
+    const atributos = p.atributosMl || {};
+    const gender = atributos.GENDER || '';
+    const tipo = atributos.FOOTWEAR_TYPE || atributos.PRODUCT_TYPE || categoria || 'Produto';
+    
+    // Guia de tamanhos pré-gerado (se houver variações)
+    const guiaTam = _gerarGuiaTamanhos(p);
+    
+    const prompt = `Você escreve descrições de produtos pra Mercado Livre Brasil.
 
-Original:
-"${descricaoOriginal}"
+PRODUTO: ${nome}
+${marca ? 'MARCA: ' + marca : ''}
+${tipo ? 'TIPO: ' + tipo : ''}
+${gender ? 'GÊNERO: ' + gender : ''}
+${descOrig ? 'DESCRIÇÃO ORIGINAL (use como base, NÃO copie):\n"""\n' + descOrig.slice(0, 1500) + '\n"""' : ''}
 
-Responda APENAS a descrição nova, sem aspas.`;
+Gere uma descrição NOVA seguindo EXATAMENTE este formato (incluindo as linhas separadoras com underscores):
+
+[BLOCO 1 — STORYTELLING DE DESEJO]
+Escreva 3 a 5 parágrafos curtos que façam o cliente IMAGINAR usando o produto.
+- Use sentidos (conforto, leveza, beleza)
+- Cite situações reais (trabalho, festa, dia a dia, esporte)
+- Linguagem natural, calorosa, evite clichês como "qualidade premium"
+- Termine com algo que crie urgência ou desejo
+
+___________________________
+
+Especificações do ${tipo}:
+- [Liste 6 a 10 especificações técnicas em bullets com hífen]
+- [Materiais, tecnologias, características]
+- Produto nacional
+- Gênero ${gender ? gender.toLowerCase() : '(deduzir do produto)'}
+
+Acompanha:
+- 1 ${tipo}
+- 1 caixa
+- [outros itens se fizer sentido pro produto]
+
+___________________________
+
+Guia de tamanhos em centímetros:
+${guiaTam || '[gerar guia de tamanhos baseado nas variações]'}
+
+___________________________
+
+Dúvidas frequentes:
+- Produto disponível a pronta entrega.
+- Após a confirmação da compra o envio é imediato.
+- Fotos 100% reais do produto.
+- Acompanha nota fiscal.
+- Garantia contra defeitos de fabricação.
+- Atendimento personalizado.
+
+REGRAS:
+✗ Sem markdown (sem **negrito**, sem # títulos)
+✗ Sem aspas no início/fim
+✗ Sem emojis
+✓ Responda APENAS a descrição no formato literal acima
+✓ Mantenha as linhas separadoras de underscores
+✓ Use o tipo do produto correto no título dos blocos`;
     
     try {
-      const resp = await chamarIA({ prompt, maxTokens: 800 });
+      const resp = await chamarIA({ prompt, maxTokens: 1500 });
       let novo = String(resp || '').trim().replace(/^["']|["']$/g, '');
-      if (novo.length < 30) novo = descricaoOriginal;
+      // Remove markdown se IA escapou
+      novo = novo.replace(/\*\*/g, '').replace(/^#+\s+/gm, '');
+      if (novo.length < 100) novo = descOrig;
       return novo;
     } catch(e) {
       console.warn('[duplicar] IA descrição falhou:', e.message);
-      return descricaoOriginal;
+      return descOrig;
     }
   }
   
@@ -11948,7 +12066,7 @@ Responda APENAS a descrição nova, sem aspas.`;
         if (opts.variarTitulo) {
           passoAtual++;
           dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: gerando título com IA...`);
-          novo.nome = await gerarTituloVariadoIA(p.nome);
+          novo.nome = await gerarTituloVariadoIA(p);
           dupLogStep(`  ✓ Título: "${novo.nome.slice(0,50)}"`, 'ok');
         }
         
@@ -11956,7 +12074,7 @@ Responda APENAS a descrição nova, sem aspas.`;
         if (opts.variarDescricao) {
           passoAtual++;
           dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: refazendo descrição com IA...`);
-          novo.descricao = await gerarDescricaoVariadaIA(p.descricao);
+          novo.descricao = await gerarDescricaoVariadaIA(p);
           dupLogStep(`  ✓ Descrição refeita (${novo.descricao.length} chars)`, 'ok');
         }
         
@@ -15374,16 +15492,21 @@ São o mesmo produto?`;
             const lojaIdResolvida = vi.lojaId ? _resolverLojaIdNumerica(vi.lojaId, mkAlvo) : null;
             const meuLojaStr = lojaIdResolvida ? String(lojaIdResolvida) : null;
             
-            // Se tem lojaId resolvida e é de outra loja, mantém
-            if (meuLojaStr && meuLojaStr !== lojaIdAlvo) return true;
+            // Conta quantas lojas conectadas existem desse mk
+            const lojasDoMk = lojasErp.filter(l => l.marketplace === mkAlvo);
+            const soUmaLojaDoMk = lojasDoMk.length === 1;
             
-            // Se NÃO conseguiu resolver lojaId E há outras lojas do mesmo mk, dá benefício
-            // da dúvida (mantém). Senão considera dessa loja.
-            const outrasLojasMesmoMk = lojasErp.filter(l => 
-              l.marketplace === mkAlvo && String(l.idBanco || l.id) !== lojaIdAlvo
-            );
-            if (!meuLojaStr && outrasLojasMesmoMk.length > 0) {
-              return true; // sem lojaId E tem outras lojas → não posso saber
+            // Se tem lojaId resolvida e é de OUTRA loja, mantém
+            if (meuLojaStr && meuLojaStr !== lojaIdAlvo && !soUmaLojaDoMk) {
+              return true;
+            }
+            
+            // Se SÓ TEM 1 loja desse mk, qualquer vínculo desse mk é dessa loja —
+            // mesmo se lojaId for diferente (provavelmente desatualizado)
+            // Se há MÚLTIPLAS lojas E não conseguiu resolver, dá benefício da dúvida
+            if (!meuLojaStr && !soUmaLojaDoMk) {
+              console.log('[reconciliação] vínculo sem lojaId em ' + p.nome + ' — mantido (multi-loja)');
+              return true;
             }
             
             // Considera dessa loja: verifica se anuncioId está vivo
@@ -15394,6 +15517,7 @@ São o mesmo produto?`;
               return true;
             }
             // Fantasma!
+            console.log('[reconciliação] FANTASMA detectado: ' + aid + ' em ' + p.nome + ' (lojaId vínculo=' + vi.lojaId + ', resolvida=' + meuLojaStr + ')');
             if (aid) anunciosFantasmasIds.add(aid);
             return false;
           });
