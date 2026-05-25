@@ -2991,6 +2991,10 @@
   .prod-card-v2 .prod-card-badge.ativo { background: #16a34a; }
   .prod-card-v2 .prod-card-badge.inativo { background: #6b7280; }
   .prod-card-v2 .prod-card-badge.rascunho { background: #f59e0b; }
+  @keyframes piscarBanido {
+    0%, 100% { opacity: 0.92; }
+    50% { opacity: 0.65; }
+  }
   .prod-card-v2 .prod-card-body {
     padding: 12px 14px;
   }
@@ -4880,6 +4884,8 @@
             <button onclick="acaoMassaAtualizarMarketplaces('shein')">👗 Só Shein</button>
             <hr>
             <button onclick="acaoMassaAtualizarPorLoja()">🏪 Escolher loja específica...</button>
+            <hr>
+            <button onclick="acaoMassaRecriarVinculosFaltantes()" style="background:#fef3c7">🔗 Recriar vínculos faltantes</button>
           </div>
         </div>
         
@@ -9569,8 +9575,17 @@ Retorne JSON: {"ID": "valor", ...}`;
         let msg = '✓ ' + anuncios.length + ' anúncio(s) de ' + loja.nome + ' · ';
         msg += stats.vinculadosNovos + ' vinculado(s) · ' + stats.produtosCriados + ' novo(s)';
         if (stats.suspeitos > 0) msg += ' · ⚠ ' + stats.suspeitos + ' suspeito(s)';
+        if (stats.vinculosFantasmaRemovidos > 0) {
+          msg += ' · 🧹 ' + stats.vinculosFantasmaRemovidos + ' fantasma(s) limpo(s)';
+        }
+        if (stats.banimentosNovos > 0) {
+          msg += ' · 🚨 ' + stats.banimentosNovos + ' BANIDO(S)';
+        }
         showToast(msg);
         renderProdutos();
+        
+        // Mostra modal de notificação se houver banimentos não lidos
+        setTimeout(() => notificarBanimentos(), 400);
       }
     } catch (e) {
       showToast('⚠ Erro: ' + e.message, true);
@@ -9863,6 +9878,84 @@ Retorne JSON: {"ID": "valor", ...}`;
     renderProdutos();
   }
   
+  // AÇÃO EM MASSA: recria vínculos pra produtos exportados mas SEM vínculo
+  // (problema comum: anúncio criado antes do fix automático de vínculo, sync
+  // ainda não rodou). Pra cada produto exportado, usa o itemId guardado em
+  // p.marketplaces[mk].itemId e cria vínculos em cada variação.
+  async function acaoMassaRecriarVinculosFaltantes() {
+    fecharTodosDropdownsMassa();
+    const ids = Array.from(_prodSelecionados);
+    if (ids.length === 0) { alert('Selecione produtos primeiro'); return; }
+    
+    let recriados = 0, semItemId = 0, jaTinham = 0;
+    const detalhes = [];
+    
+    ids.forEach(prodId => {
+      const p = produtosErp.find(x => String(x.id) === String(prodId));
+      if (!p || !p.marketplaces) return;
+      
+      ['mercadolivre','shopee','tiktok','shein'].forEach(mk => {
+        const cfg = p.marketplaces[mk];
+        if (!cfg || !cfg.exportado) return;
+        
+        // Já tem vínculo desse mk nesse produto?
+        const jaTemVinculo = (p.variacoes || []).some(v => 
+          (v.vinculos || []).some(vi => vi.marketplace === mk)
+        );
+        if (jaTemVinculo) { jaTinham++; return; }
+        
+        // Precisa do itemId pra criar vínculo
+        const itemId = cfg.itemId;
+        if (!itemId) {
+          semItemId++;
+          detalhes.push('⚠ ' + p.nome + ' [' + mk + ']: sem itemId guardado');
+          return;
+        }
+        
+        // Pega a lojaId. Se não tem na config, pega a 1ª loja do mk.
+        let lojaIdBanco = cfg.lojaId;
+        if (!lojaIdBanco) {
+          const lojaMk = lojasErp.find(l => l.marketplace === mk);
+          if (lojaMk) lojaIdBanco = lojaMk.idBanco || lojaMk.id;
+        }
+        
+        // Cria vínculo em cada variação
+        (p.variacoes || []).forEach(v => {
+          if (!v.vinculos) v.vinculos = [];
+          if (!v.vinculos.some(vi => String(vi.anuncioId) === String(itemId))) {
+            v.vinculos.push({
+              id: gerarId(),
+              anuncioId: itemId,
+              marketplace: mk,
+              lojaId: lojaIdBanco,
+              titulo: p.nome,
+              skuExterno: v.sku || '',
+              skuSuspeito: false,
+              criadoPor: 'recriar-vinculo-manual',
+              criadoEm: new Date().toISOString()
+            });
+          }
+        });
+        recriados++;
+        detalhes.push('✓ ' + p.nome + ' [' + mk + '] → vínculo criado pra ' + (p.variacoes||[]).length + ' variação(ões)');
+      });
+    });
+    
+    saveProdutos();
+    renderProdutos();
+    
+    const resumo = [
+      '✓ ' + recriados + ' vínculo(s) recriado(s)',
+      jaTinham > 0 ? '↻ ' + jaTinham + ' já tinham vínculo' : null,
+      semItemId > 0 ? '⚠ ' + semItemId + ' sem itemId guardado (use Sincronizar Loja em vez)' : null,
+    ].filter(Boolean).join('\n');
+    
+    const msg = '🔗 Recriar Vínculos\n\n' + resumo + 
+      (detalhes.length > 0 ? '\n\nDetalhes:\n' + detalhes.slice(0, 30).join('\n') : '') +
+      (detalhes.length > 30 ? '\n... e mais ' + (detalhes.length - 30) : '');
+    alert(msg);
+  }
+  
   // AÇÃO EM MASSA: excluir TODOS os anúncios ML dos produtos selecionados
   async function acaoMassaExcluirAnunciosML() {
     fecharTodosDropdownsMassa();
@@ -9960,6 +10053,12 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
     
     localStorage.setItem('lc_anuncios_ignorados', JSON.stringify(ignorados));
+    // Desmarca exportado e move pra lixeira em CADA produto
+    const produtosAfetados = new Set(todos.map(t => t.produto));
+    produtosAfetados.forEach(prod => {
+      _atualizarExportadoAposExclusao(prod, 'mercadolivre');
+      _moverParaLixeiraAposExclusaoML(prod, 'Excluído manualmente do Mercado Livre (massa)');
+    });
     saveProdutos();
     
     prog.textContent += '\n\n━━━━━━━━━━\n✓ ' + sucessos + ' excluído(s) | ✗ ' + falhas + ' falhou(aram)';
@@ -10923,10 +11022,30 @@ Retorne JSON: {"ID": "valor", ...}`;
       const statusLabel = { ativo:'ATIVO', inativo:'INATIVO', rascunho:'RASCUNHO', excluido:'LIXEIRA' }[p.status] || p.status;
       const badgeHtml = `<span class="prod-card-badge ${p.status}">${statusLabel}</span>`;
       
+      // SELO GRANDE pra produtos na lixeira que foram excluídos/banidos do ML
+      let seloMlHtml = '';
+      if (p.status === 'excluido') {
+        if (p.banidoDoML) {
+          const naoLido = !p.banimentoLido;
+          seloMlHtml = `<div style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(220,38,38,0.92);color:white;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:12px;text-align:center;${naoLido?'animation:piscarBanido 2s ease-in-out infinite':''}">
+            <div style="font-size:32px;margin-bottom:4px">🚨</div>
+            <div style="font-weight:900;font-size:14px;line-height:1.1">BANIDO PELO ML</div>
+            <div style="font-size:10px;margin-top:6px;opacity:0.95">${escapeHtml(p.motivoBanimento || 'Motivo não especificado')}</div>
+            ${naoLido ? '<div style="font-size:9px;margin-top:6px;background:white;color:#dc2626;padding:2px 6px;border-radius:4px;font-weight:800">NÃO LIDO</div>' : ''}
+          </div>`;
+        } else if (p.excluidoDoML) {
+          seloMlHtml = `<div style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(75,85,99,0.92);color:white;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:12px;text-align:center">
+            <div style="font-size:32px;margin-bottom:4px">🗑</div>
+            <div style="font-weight:900;font-size:13px;line-height:1.1">EXCLUÍDO DO ML</div>
+            <div style="font-size:10px;margin-top:6px;opacity:0.9">${p.excluidoDoMLEm ? new Date(p.excluidoDoMLEm).toLocaleDateString('pt-BR') : ''}</div>
+          </div>`;
+        }
+      }
+      
       // Foto ou placeholder
       const fotoHtml = fotoUrl
-        ? `<div class="prod-card-foto" style="background-image: url('${escapeHtml(fotoUrl)}')">${badgeHtml}</div>`
-        : `<div class="prod-card-foto-empty">📦${badgeHtml}</div>`;
+        ? `<div class="prod-card-foto" style="background-image: url('${escapeHtml(fotoUrl)}');position:relative">${badgeHtml}${seloMlHtml}</div>`
+        : `<div class="prod-card-foto-empty" style="position:relative">📦${badgeHtml}${seloMlHtml}</div>`;
       
       return `<div class="prod-card-v2" data-prod-id="${p.id}" onclick="abrirEditarProduto('${p.id}')" style="${selecionado ? 'border-color:#1e2a47;box-shadow:0 0 0 2px #1e2a47' : ''}">
         ${checkHtml}
@@ -12843,6 +12962,35 @@ Responda APENAS a descrição nova, sem aspas.`;
         itemId: data.dados && data.dados.itemId,
         payload
       };
+      
+      // CRIA VÍNCULOS AUTOMATICAMENTE pra cada variação interna.
+      // Sem isso o produto fica "exportado sem vínculo" e o filtro/exclusão
+      // não acham o anúncio. Os vínculos serão refinados na próxima sincronização
+      // (que pega os SKUs externos exatos do ML).
+      const itemIdCriado = data.dados && data.dados.itemId;
+      if (itemIdCriado) {
+        const lojaIdParaVinculo = lojaIdBanco || (lojasErp.find(l => l.marketplace === mkBackend) || {}).idBanco;
+        (p.variacoes || []).forEach(v => {
+          if (!v.vinculos) v.vinculos = [];
+          // Evita duplicar se já existe vínculo pro mesmo anúncio
+          const jaTem = v.vinculos.some(vi => String(vi.anuncioId) === String(itemIdCriado));
+          if (!jaTem) {
+            v.vinculos.push({
+              id: gerarId(),
+              anuncioId: itemIdCriado,
+              marketplace,
+              lojaId: lojaIdParaVinculo,
+              titulo: p.nome,
+              skuExterno: v.sku || '',
+              skuSuspeito: false,
+              criadoPor: 'exportacao-auto',
+              criadoEm: new Date().toISOString()
+            });
+          }
+        });
+        console.log('[exportar] vínculos criados pra ' + (p.variacoes||[]).length + ' variação(ões), itemId=' + itemIdCriado);
+      }
+      
       saveProdutos();
       renderMktStatusProduto(p);
       renderProdutos();
@@ -14674,6 +14822,7 @@ São o mesmo produto?`;
       return true;
     });
     stats.total = anunciosUteis.length;
+    stats.banimentosNovos = 0;
     
     // Set de IDs locais que precisam ser persistidos no backend ao final
     const produtosModificados = new Set();
@@ -14685,6 +14834,14 @@ São o mesmo produto?`;
         : [{ sku: anuncio.sku, nome: anuncio.nome, estoque: anuncio.estoque || 0, preco: anuncio.preco }];
       
       const anuncioId = anuncio.id || anuncio.mlb || anuncio.item_id;
+      
+      // DETECÇÃO DE BANIMENTO: se o ML retornou sub_status indicativo, marca
+      // o produto local correspondente (será processado abaixo após achar produtoInterno)
+      const subStatus = Array.isArray(anuncio.subStatus) ? anuncio.subStatus : [];
+      const statusMl = anuncio.statusMl || '';
+      const ehBanimento = subStatus.some(ss => 
+        ['forbidden','pending','moderation_penalty','freezed','held','inactive'].includes(ss)
+      );
       
       // ==========================================================
       // PASSO 1: ESCOLHE O PRODUTO INTERNO (1 anúncio = 1 produto)
@@ -14849,12 +15006,100 @@ São o mesmo produto?`;
         }
       }
       
+      // BANIMENTO: se o ML retornou sub_status problemático, marca produto
+      if (ehBanimento) {
+        const eraBanimentoNovo = _marcarComoBanido(produtoInterno, subStatus, statusMl);
+        if (eraBanimentoNovo) stats.banimentosNovos++;
+      } else if (produtoInterno.banidoDoML) {
+        // O anúncio voltou a ficar OK — limpa o banimento mas mantém histórico
+        produtoInterno.banidoDoML = false;
+        produtoInterno.banimentoResolvidoEm = new Date().toISOString();
+        // Se status era 'excluido' SÓ por banimento, restaura pra ativo
+        if (produtoInterno.excluidoTipo === 'banido') {
+          produtoInterno.status = 'ativo';
+          produtoInterno.excluidoTipo = null;
+        }
+      }
+      
       // Marca pra persistir no backend ao final
       produtosModificados.add(produtoInterno.id);
     });
     
     // Persiste no localStorage
     saveProdutos();
+    
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // RECONCILIAÇÃO: remove vínculos FANTASMA que não vieram do ML
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Se sincronizamos a loja X e recebemos N anúncios, qualquer vínculo
+    // local pra essa loja que tinha um anuncioId que NÃO veio nessa lista
+    // é fantasma (anúncio foi excluído no ML, ou nunca existiu).
+    // Também limpa marketplaces[mk].exportado se nenhum vínculo restou.
+    if (loja && (loja.idBanco || loja.id)) {
+      const lojaIdAlvo = String(loja.idBanco || loja.id);
+      const mkAlvo = loja.marketplace;
+      const idsVivos = new Set(anunciosUteis.map(a => String(a.id || a.mlb || a.item_id)).filter(Boolean));
+      
+      let vinculosRemovidos = 0;
+      let exportadosLimpos = 0;
+      const novosIgnorados = [];
+      
+      produtosErp.forEach(p => {
+        if (p.status === 'excluido') return;
+        let tinhaVinculoNaLoja = false;
+        let temVinculoVivo = false;
+        
+        (p.variacoes || []).forEach(v => {
+          if (!Array.isArray(v.vinculos)) return;
+          const antes = v.vinculos.length;
+          v.vinculos = v.vinculos.filter(vi => {
+            // Mantém vínculos de outras lojas/marketplaces
+            if (vi.marketplace !== mkAlvo) return true;
+            // Pra essa loja: precisa do lojaId bater (se tiver) e anuncioId existir no ML
+            const meuLoja = vi.lojaId ? String(vi.lojaId) : null;
+            if (meuLoja && meuLoja !== lojaIdAlvo) return true; // outra loja do mesmo mk
+            
+            tinhaVinculoNaLoja = true;
+            const aid = String(vi.anuncioId || '').replace(/:\d+$/, '');
+            if (idsVivos.has(aid)) {
+              temVinculoVivo = true;
+              return true;
+            }
+            // Fantasma — remove
+            return false;
+          });
+          vinculosRemovidos += (antes - v.vinculos.length);
+        });
+        
+        // Se o produto tinha vínculos nessa loja mas todos eram fantasmas,
+        // limpa o flag "exportado" pra não aparecer mais no filtro
+        if (tinhaVinculoNaLoja && !temVinculoVivo && p.marketplaces && p.marketplaces[mkAlvo]) {
+          if (p.marketplaces[mkAlvo].exportado) {
+            p.marketplaces[mkAlvo].exportado = false;
+            p.marketplaces[mkAlvo].limpoEm = new Date().toISOString();
+            exportadosLimpos++;
+          }
+        }
+      });
+      
+      // Marca anúncios excluídos no ML como IGNORADOS (não recriar produto)
+      // baseado em produtos locais que tinham vínculos pra IDs não vivos
+      if (vinculosRemovidos > 0) {
+        try {
+          const ign = new Set(JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]'));
+          // Coleta IDs que estavam em vínculos removidos
+          // (já foram filtrados, então não conseguimos pegar aqui — mas como esses
+          // anúncios não existem no ML, eles nunca virão na sync de novo mesmo)
+          // Esta parte é mais defensiva, deixamos pra futuro.
+        } catch(_) {}
+        
+        saveProdutos();
+        console.log('[reconciliação] removidos ' + vinculosRemovidos + ' vínculo(s) fantasma de ' + exportadosLimpos + ' produto(s) (loja=' + loja.nome + ')');
+        // Adiciona info ao stats pra exibir no toast
+        stats.vinculosFantasmaRemovidos = vinculosRemovidos;
+        stats.produtosLimpos = exportadosLimpos;
+      }
+    }
     
     // Persiste cada produto modificado no Supabase (vínculos precisam ir pro banco
     // pra sobreviver a reload). Roda em paralelo, sem bloquear o retorno.
@@ -15119,6 +15364,135 @@ São o mesmo produto?`;
     return String(id).replace(/:\d+$/, '');
   }
   
+  // Após excluir vínculos de um produto, desmarca exportado[mk]=false se não
+  // sobrou nenhum vínculo desse marketplace. Tira o produto do filtro daquele mk.
+  function _atualizarExportadoAposExclusao(produto, marketplace) {
+    if (!produto || !marketplace) return;
+    const aindaTemVinculo = (produto.variacoes || []).some(v => 
+      (v.vinculos || []).some(vi => vi.marketplace === marketplace)
+    );
+    if (!aindaTemVinculo && produto.marketplaces && produto.marketplaces[marketplace]) {
+      if (produto.marketplaces[marketplace].exportado) {
+        produto.marketplaces[marketplace].exportado = false;
+        produto.marketplaces[marketplace].canceladoEm = new Date().toISOString();
+      }
+    }
+  }
+  
+  // Move produto pra LIXEIRA marcando como excluído do ML.
+  // Se o produto ainda tinha vínculos em OUTROS marketplaces, NÃO move pra lixeira
+  // — só sai do filtro ML mas permanece ativo no catálogo (porque outros mks ainda usam).
+  function _moverParaLixeiraAposExclusaoML(produto, motivo) {
+    if (!produto) return;
+    
+    // Tem vínculo em algum OUTRO marketplace?
+    const aindaTemOutrosMks = (produto.variacoes || []).some(v => 
+      (v.vinculos || []).some(vi => vi.marketplace !== 'mercadolivre' && vi.marketplace !== 'mercado_livre')
+    );
+    const exportadoEmOutros = produto.marketplaces && Object.keys(produto.marketplaces).some(mk => 
+      mk !== 'mercadolivre' && mk !== 'mercado_livre' && 
+      produto.marketplaces[mk] && produto.marketplaces[mk].exportado
+    );
+    
+    if (aindaTemOutrosMks || exportadoEmOutros) {
+      // Não move — produto continua útil pra outras lojas
+      console.log('[lixeira] produto ' + produto.nome + ' não vai pra lixeira (tem outros mks)');
+      return;
+    }
+    
+    // Move pra lixeira com selo
+    produto.status = 'excluido';
+    produto.excluidoDoML = true;
+    produto.excluidoDoMLEm = new Date().toISOString();
+    produto.motivoExclusao = motivo || 'Excluído manualmente do Mercado Livre';
+    produto.excluidoTipo = 'manual'; // vs 'banido'
+  }
+  
+  // Marca produto como BANIDO pelo ML (com base em sub_status detectado na sync).
+  // Diferente de exclusão manual — gera notificação pra usuário.
+  function _marcarComoBanido(produto, subStatus, statusMl) {
+    if (!produto) return false;
+    
+    const motivosBanimento = {
+      'forbidden': 'Anúncio proibido (violação de política)',
+      'pending': 'Anúncio pendente (dívida ou violação)',
+      'moderation_penalty': 'Anúncio moderado preventivamente',
+      'freezed': 'Anúncio congelado',
+      'held': 'Anúncio retido',
+      'inactive': 'Anúncio inativado pelo ML',
+    };
+    
+    let motivo = null;
+    for (const ss of (subStatus || [])) {
+      if (motivosBanimento[ss]) { motivo = motivosBanimento[ss]; break; }
+    }
+    
+    if (!motivo) return false; // não é banimento
+    
+    // Se já estava marcado como banido pelo mesmo motivo, não notifica de novo
+    const jaMarcado = produto.banidoDoML && produto.motivoBanimento === motivo;
+    
+    produto.status = 'excluido';
+    produto.banidoDoML = true;
+    produto.banidoEm = produto.banidoEm || new Date().toISOString();
+    produto.motivoBanimento = motivo;
+    produto.subStatusBanimento = subStatus;
+    produto.statusMlBanimento = statusMl;
+    produto.excluidoTipo = 'banido';
+    produto.banimentoLido = jaMarcado ? produto.banimentoLido : false;
+    
+    return !jaMarcado; // true se é banimento NOVO (pra notificar)
+  }
+  
+  // Lista produtos banidos não lidos pra exibir notificação
+  function listarBanimentosNaoLidos() {
+    return produtosErp.filter(p => p.banidoDoML && !p.banimentoLido);
+  }
+  
+  // Mostra modal de notificação se houver banimentos novos
+  function notificarBanimentos() {
+    const banidos = listarBanimentosNaoLidos();
+    if (banidos.length === 0) return;
+    
+    // Cria modal
+    const existente = document.getElementById('banimentoNotifModal');
+    if (existente) existente.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'banimentoNotifModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:white;border-radius:16px;padding:0;width:min(600px,95vw);max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+      <div style="padding:20px;background:linear-gradient(135deg,#dc2626,#991b1b);color:white">
+        <h2 style="margin:0;font-size:20px;display:flex;align-items:center;gap:10px">🚨 Anúncio(s) banido(s) detectado(s)</h2>
+        <p style="margin:6px 0 0;font-size:13px;opacity:0.95">${banidos.length} anúncio${banidos.length>1?'s':''} foi/foram banido${banidos.length>1?'s':''} pelo Mercado Livre. Confira na Lixeira pra mais detalhes.</p>
+      </div>
+      <div style="padding:16px;overflow:auto;flex:1">
+        ${banidos.map(p => `
+          <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px;margin-bottom:10px">
+            <div style="font-weight:800;color:#991b1b;font-size:14px">${escapeHtml(p.nome || 'Sem nome')}</div>
+            <div style="font-size:12px;color:#7f1d1d;margin-top:4px">📋 ${escapeHtml(p.motivoBanimento || 'Motivo não especificado')}</div>
+            <div style="font-size:11px;color:#9ca3af;margin-top:6px">SKU: ${escapeHtml(p.skuPai || '—')} · Banido em ${new Date(p.banidoEm).toLocaleString('pt-BR')}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div style="padding:14px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;gap:10px">
+        <button onclick="document.getElementById('banimentoNotifModal').remove()" style="padding:10px 16px;background:white;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;font-weight:600">Lembrar depois</button>
+        <button onclick="marcarBanimentosComoLido()" style="padding:10px 16px;background:#dc2626;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:800">✓ Marcar como lido</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+  
+  function marcarBanimentosComoLido() {
+    listarBanimentosNaoLidos().forEach(p => { p.banimentoLido = true; });
+    saveProdutos();
+    const modal = document.getElementById('banimentoNotifModal');
+    if (modal) modal.remove();
+    showToast('✓ Notificações marcadas como lidas');
+    renderProdutos();
+  }
+  window.marcarBanimentosComoLido = marcarBanimentosComoLido;
+  
   async function abrirExcluirAnuncioML(variacaoId, vinculoId) {
     const produto = _produtoVinculosAtual;
     if (!produto) return;
@@ -15192,7 +15566,7 @@ São o mesmo produto?`;
         return;
       }
       
-      // SUCESSO — remove vínculo do produto local + marca ignorado
+      // SUCESSO — remove vínculo do produto local + marca ignorado + desmarca exportado
       try {
         const ignorados = JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]');
         if (!ignorados.includes(String(vinc.anuncioId))) {
@@ -15201,6 +15575,14 @@ São o mesmo produto?`;
         }
       } catch(_) {}
       variacao.vinculos = variacao.vinculos.filter(v => String(v.id) !== String(vinculoId));
+      // Procura produto pra desmarcar exportado se não sobrou vínculo
+      const prodPai = produtosErp.find(p => 
+        (p.variacoes || []).some(v => v === variacao)
+      );
+      if (prodPai) {
+        _atualizarExportadoAposExclusao(prodPai, vinc.marketplace);
+        _moverParaLixeiraAposExclusaoML(prodPai, 'Excluído manualmente do Mercado Livre');
+      }
       saveProdutos();
       
       const msg = data.jaExcluido 
@@ -15323,6 +15705,9 @@ São o mesmo produto?`;
     
     // Salva ignorados e produto
     localStorage.setItem('lc_anuncios_ignorados', JSON.stringify(ignorados));
+    // Desmarca exportado e move pra lixeira se não sobrou vínculo
+    _atualizarExportadoAposExclusao(produto, 'mercadolivre');
+    _moverParaLixeiraAposExclusaoML(produto, 'Excluído manualmente do Mercado Livre');
     saveProdutos();
     
     progresso.textContent += '\n\n━━━━━━━━━━\n✓ ' + sucessos + ' excluído(s) | ✗ ' + falhas + ' falhou(aram)';
@@ -24939,6 +25324,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } else {
       LiderSync.updateStatusBadge('offline');
     }
+    
+    // Notifica sobre anúncios banidos não lidos (caso user fechou modal antes)
+    setTimeout(() => {
+      if (typeof notificarBanimentos === 'function') notificarBanimentos();
+    }, 2000);
   })();
 
   /* ==================== SERVICE WORKER (PWA OFFLINE) ==================== */
