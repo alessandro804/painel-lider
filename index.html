@@ -9578,6 +9578,9 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (stats.vinculosFantasmaRemovidos > 0) {
           msg += ' · 🧹 ' + stats.vinculosFantasmaRemovidos + ' fantasma(s) limpo(s)';
         }
+        if (stats.produtosMovidosLixeira > 0) {
+          msg += ' · 🗑 ' + stats.produtosMovidosLixeira + ' movido(s) pra lixeira';
+        }
         if (stats.banimentosNovos > 0) {
           msg += ' · 🚨 ' + stats.banimentosNovos + ' BANIDO(S)';
         }
@@ -15042,7 +15045,8 @@ São o mesmo produto?`;
       
       let vinculosRemovidos = 0;
       let exportadosLimpos = 0;
-      const novosIgnorados = [];
+      let produtosMovidosLixeira = 0;
+      const anunciosFantasmasIds = new Set(); // pra adicionar nos ignorados
       
       produtosErp.forEach(p => {
         if (p.status === 'excluido') return;
@@ -15065,39 +15069,58 @@ São o mesmo produto?`;
               temVinculoVivo = true;
               return true;
             }
-            // Fantasma — remove
+            // Fantasma — registra ID e remove
+            if (aid) anunciosFantasmasIds.add(aid);
             return false;
           });
           vinculosRemovidos += (antes - v.vinculos.length);
         });
         
-        // Se o produto tinha vínculos nessa loja mas todos eram fantasmas,
-        // limpa o flag "exportado" pra não aparecer mais no filtro
-        if (tinhaVinculoNaLoja && !temVinculoVivo && p.marketplaces && p.marketplaces[mkAlvo]) {
-          if (p.marketplaces[mkAlvo].exportado) {
+        // Se o produto tinha vínculos nessa loja mas todos eram fantasmas
+        if (tinhaVinculoNaLoja && !temVinculoVivo) {
+          // Desmarca exportado
+          if (p.marketplaces && p.marketplaces[mkAlvo] && p.marketplaces[mkAlvo].exportado) {
             p.marketplaces[mkAlvo].exportado = false;
             p.marketplaces[mkAlvo].limpoEm = new Date().toISOString();
             exportadosLimpos++;
           }
+          
+          // MOVE PRA LIXEIRA se produto ficou sem vínculos em NENHUM marketplace
+          // (verifica se tem vínculo vivo em qualquer outro mk)
+          const aindaTemOutrosMks = (p.variacoes || []).some(v => 
+            (v.vinculos || []).length > 0
+          );
+          const exportadoEmOutros = p.marketplaces && Object.keys(p.marketplaces).some(mk => 
+            mk !== mkAlvo && p.marketplaces[mk] && p.marketplaces[mk].exportado
+          );
+          
+          if (!aindaTemOutrosMks && !exportadoEmOutros) {
+            // Move pra lixeira com selo "Excluído do ML"
+            p.status = 'excluido';
+            p.excluidoDoML = true;
+            p.excluidoDoMLEm = new Date().toISOString();
+            p.motivoExclusao = 'Anúncio não encontrado no ML após sincronização (removido externamente)';
+            p.excluidoTipo = 'manual';
+            produtosMovidosLixeira++;
+          }
         }
       });
       
-      // Marca anúncios excluídos no ML como IGNORADOS (não recriar produto)
-      // baseado em produtos locais que tinham vínculos pra IDs não vivos
-      if (vinculosRemovidos > 0) {
+      // Adiciona anúncios fantasmas aos ignorados pra não recriar na próxima sync
+      if (anunciosFantasmasIds.size > 0) {
         try {
           const ign = new Set(JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]'));
-          // Coleta IDs que estavam em vínculos removidos
-          // (já foram filtrados, então não conseguimos pegar aqui — mas como esses
-          // anúncios não existem no ML, eles nunca virão na sync de novo mesmo)
-          // Esta parte é mais defensiva, deixamos pra futuro.
+          anunciosFantasmasIds.forEach(id => ign.add(id));
+          localStorage.setItem('lc_anuncios_ignorados', JSON.stringify(Array.from(ign)));
         } catch(_) {}
-        
+      }
+      
+      if (vinculosRemovidos > 0 || produtosMovidosLixeira > 0) {
         saveProdutos();
-        console.log('[reconciliação] removidos ' + vinculosRemovidos + ' vínculo(s) fantasma de ' + exportadosLimpos + ' produto(s) (loja=' + loja.nome + ')');
-        // Adiciona info ao stats pra exibir no toast
+        console.log('[reconciliação] loja=' + loja.nome + ' → removidos ' + vinculosRemovidos + ' vínculo(s) fantasma, ' + exportadosLimpos + ' produto(s) desmarcado(s), ' + produtosMovidosLixeira + ' produto(s) movido(s) pra lixeira');
         stats.vinculosFantasmaRemovidos = vinculosRemovidos;
         stats.produtosLimpos = exportadosLimpos;
+        stats.produtosMovidosLixeira = produtosMovidosLixeira;
       }
     }
     
