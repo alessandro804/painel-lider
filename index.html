@@ -11156,12 +11156,32 @@ Retorne JSON: {"ID": "valor", ...}`;
     const ativos = produtosErp.filter(p => p.status === 'ativo').length;
     const rascunhos = produtosErp.filter(p => p.status === 'rascunho').length;
     const total = produtosErp.filter(p => p.status !== 'excluido').length;
+    const naLixeira = produtosErp.filter(p => p.status === 'excluido').length;
     
-    // Publicados em qualquer marketplace
+    // Publicados em qualquer marketplace (flag exportado)
     const publicados = produtosErp.filter(p => {
       if (p.status === 'excluido') return false;
       const mks = p.marketplaces || {};
       return Object.values(mks).some(m => m && m.exportado);
+    }).length;
+    
+    // Quebra por marketplace — quantos têm vínculo REAL (anúncio existente)
+    const comVincReal = {};
+    ['mercadolivre','shopee','tiktok','shein'].forEach(mk => {
+      comVincReal[mk] = produtosErp.filter(p => {
+        if (p.status === 'excluido') return false;
+        return (p.variacoes || []).some(v => 
+          (v.vinculos || []).some(vi => vi.marketplace === mk)
+        );
+      }).length;
+    });
+    
+    // Catálogo puro: ativos sem vínculo em nenhum mk
+    const catalogoPuro = produtosErp.filter(p => {
+      if (p.status === 'excluido') return false;
+      const temVinc = (p.variacoes || []).some(v => (v.vinculos || []).length > 0);
+      const exportado = p.marketplaces && Object.values(p.marketplaces).some(m => m && m.exportado);
+      return !temVinc && !exportado;
     }).length;
     
     // Estoque total
@@ -11169,21 +11189,28 @@ Retorne JSON: {"ID": "valor", ...}`;
       .filter(p => p.status !== 'excluido')
       .reduce((s, p) => s + (p.variacoes||[]).reduce((ss,v) => ss + (parseInt(v.estoque)||0), 0), 0);
     
+    const breakdownMk = ['mercadolivre','shopee','tiktok','shein']
+      .filter(mk => comVincReal[mk] > 0)
+      .map(mk => {
+        const sigla = {mercadolivre:'ML',shopee:'SP',tiktok:'TT',shein:'SH'}[mk];
+        return sigla + ': ' + comVincReal[mk];
+      }).join(' · ') || 'nenhum';
+    
     cont.innerHTML = `
       <div class="stat-card-v2">
         <div class="stat-label-v2">Total no Catálogo</div>
         <div class="stat-value-v2">${total}</div>
-        <div class="stat-trend-v2">${rascunhos} em rascunho</div>
+        <div class="stat-trend-v2">${rascunhos} em rascunho · ${naLixeira} na lixeira</div>
       </div>
       <div class="stat-card-v2">
-        <div class="stat-label-v2">Ativos</div>
-        <div class="stat-value-v2">${ativos}</div>
-        <div class="stat-trend-v2 up">Prontos pra vender</div>
+        <div class="stat-label-v2">Catálogo puro</div>
+        <div class="stat-value-v2">${catalogoPuro}</div>
+        <div class="stat-trend-v2">Sem vínculo em nenhum mk</div>
       </div>
       <div class="stat-card-v2">
-        <div class="stat-label-v2">Publicados</div>
-        <div class="stat-value-v2">${publicados}</div>
-        <div class="stat-trend-v2">Em marketplaces</div>
+        <div class="stat-label-v2">Com vínculo REAL</div>
+        <div class="stat-value-v2">${comVincReal.mercadolivre + comVincReal.shopee + comVincReal.tiktok + comVincReal.shein}</div>
+        <div class="stat-trend-v2">${breakdownMk}</div>
       </div>
       <div class="stat-card-v2">
         <div class="stat-label-v2">Estoque Total</div>
