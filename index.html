@@ -7508,8 +7508,8 @@
       criadoEm: new Date().toISOString(),
       passos: [
         passo('inicio',   'inicio',      'Início',                    'Pré-requisitos coletados no modal',                  'ia'),
-        passo('ia',       'ia',          'IA preenche descrição',     'Gera título, descrição, marca, atributos via IA',    'ia'),
-        passo('catml',    'catml',       'Define categoria ML',       'Predictor do ML baseado no título',                  'ia'),
+        passo('catml',    'catml',       'Define categoria ML',       'Predictor do ML antes da IA — pra IA conhecer atrs', 'ia'),
+        passo('ia',       'ia',          'IA preenche TUDO',          'Título, descrição, marca, modelo, atributos da categoria','ia'),
         passo('sku',      'sku',         'Gera SKUs variações',       'Padrão {SKU}-{COR}-{TAM}',                           'ia'),
         passo('ean',      'ean',         'Gera EANs (uso interno)',   'Prefixo 789, dígito verificador válido',             'ia'),
         passo('salvar',   'salvar_prod', 'Salva produto no ERP',      'Cria o produto interno no banco',                    'ia'),
@@ -7519,9 +7519,9 @@
         passo('fim',      'fim',         'Fim — anúncio publicado',   '',                                                   'ia'),
       ],
       conexoes: [
-        ligar('inicio',   'ia'),
-        ligar('ia',       'catml'),
-        ligar('catml',    'sku'),
+        ligar('inicio',   'catml'),
+        ligar('catml',    'ia'),
+        ligar('ia',       'sku'),
         ligar('sku',      'ean'),
         ligar('ean',      'salvar'),
         ligar('salvar',   'revisao'),
@@ -7992,6 +7992,8 @@
         categoryIdMl: null,
         lojaId: d.lojaDestinoId || (d.contas && d.contas[0]),
         marketplaces: {},
+        // CRITICO: copia guia de tamanhos da demanda — ML exige no modelo novo
+        guiaTamanhos: d.guiaTamanhos || null,
       };
     }
     return d._produtoTemp;
@@ -8033,11 +8035,50 @@
     if ((p.fotos || []).length === 0 && !p.nome) {
       throw new Error('Sem foto E sem nome — IA precisa de pelo menos um');
     }
+    
+    // Se já temos categoryIdMl, buscamos os atributos REAIS da categoria
+    // pra pedir pra IA preencher TODOS (não só os genéricos).
+    let atributosCat = [];
+    if (p.categoryIdMl) {
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/' + p.categoryIdMl + '/atributos', {
+          headers: { 'x-api-token': getApiToken() }
+        });
+        const data = await resp.json();
+        if (data.ok && Array.isArray(data.atributos)) {
+          atributosCat = data.atributos.filter(a => 
+            a.tags && (a.tags.required || a.tags.catalog_required || a.tags.fixed)
+          );
+        }
+      } catch(e) { console.warn('[IA] nao conseguiu buscar atributos da categoria', e); }
+    }
+    
     const cats = (typeof categoriasInternas === 'function') ? categoriasInternas() : [];
     const variacoesTxt = p.variacoes.map(v => [v.cor, v.tamanho].filter(Boolean).join(' ')).join(' | ') || '(sem variações)';
     
+    // Lista de atributos obrigatórios da categoria pra IA preencher TODOS
+    let atrInstrucao = '';
+    if (atributosCat.length > 0) {
+      atrInstrucao = '\nATRIBUTOS OBRIGATÓRIOS DA CATEGORIA ML — preencha TODOS no campo "atributosMl":\n';
+      atributosCat.forEach(a => {
+        let exemplo = '';
+        if (a.values && a.values.length > 0) {
+          exemplo = ' (valores aceitos: ' + a.values.slice(0,5).map(v => v.name).join(', ') + (a.values.length > 5 ? '...' : '') + ')';
+        }
+        if (a.value_type === 'boolean') exemplo = ' (true/false)';
+        if (a.value_type === 'number_unit') exemplo = ' (ex: "12 cm", "500 g")';
+        atrInstrucao += `  - "${a.id}" (${a.name})${exemplo}\n`;
+      });
+      atrInstrucao += '\nSe um atributo é "list" com valores fixos, escolha um dos valores listados. Não invente.';
+    } else {
+      atrInstrucao = '\nATRIBUTOS GENÉRICOS pra calçados — preencha em "atributosMl":\n' +
+        '  - BRAND (marca)\n  - MODEL (modelo do tênis)\n  - GENDER (Masculino/Feminino/Unissex)\n' +
+        '  - FOOTWEAR_TYPE (Tênis Esportivo, etc.)\n  - EXTERIOR_MATERIALS, OUTSOLE_MATERIALS\n' +
+        '  - RECOMMENDED_USES (Casual, Corrida, etc.)';
+    }
+    
     const system = getPrompt('preencher_produto_system');
-    const prompt = renderTemplate(getPrompt('preencher_produto_user'), {
+    let prompt = renderTemplate(getPrompt('preencher_produto_user'), {
       nome: p.nome || '(VAZIO — crie título 60 chars)',
       descricao: p.descricao || '(vazio)',
       marca: p.marca || '(VAZIA)',
@@ -8048,8 +8089,10 @@
       categoriasLista: cats.map(c => '- "' + c + '"').join('\n') || '(nenhuma)',
       instrucaoImagem: (p.fotos[0] ? 'ANALISE A IMAGEM ANEXADA.\n' : '')
     });
+    prompt += atrInstrucao;
+    prompt += '\n\nRETORNE JSON com TODOS estes campos preenchidos: nome, descricao, marca, peso (kg), skuPai, categoria, atributosMl (objeto com TODAS as chaves obrigatórias acima).';
     
-    const opcoes = { prompt, system, maxTokens: 1500 };
+    const opcoes = { prompt, system, maxTokens: 2000 };
     if (p.fotos[0]) opcoes.imagens = [p.fotos[0]];
     const respIA = await chamarIA(opcoes);
     
@@ -8057,21 +8100,26 @@
     try { dados = JSON.parse(String(respIA).replace(/^```json|```$/g, '').trim()); }
     catch(e) { throw new Error('IA retornou JSON inválido: ' + String(respIA).slice(0,100)); }
     
-    if (dados.nome && !p.nome) p.nome = String(dados.nome).slice(0, 60);
+    if (dados.nome) p.nome = String(dados.nome).slice(0, 60);
     if (dados.descricao) p.descricao = dados.descricao;
-    if (dados.marca && !p.marca) p.marca = dados.marca;
-    if (dados.peso) p.peso = parseFloat(dados.peso);
+    if (dados.marca) p.marca = dados.marca;
+    if (dados.peso) p.peso = parseFloat(dados.peso) || 0.5;
     if (dados.skuPai && !p.skuPai) p.skuPai = dados.skuPai;
     if (dados.categoria && !p.categoria) p.categoria = dados.categoria;
-    if (dados.atributosMl) {
+    if (dados.atributosMl && typeof dados.atributosMl === 'object') {
+      // MERGE em vez de substituir
       Object.assign(p.atributosMl, dados.atributosMl);
     }
-    return { _msg: `Preenchido: nome="${p.nome.slice(0,30)}", marca="${p.marca}"` };
+    // Garante BRAND/MODEL no atributosMl (alguns marketplaces lêem de lá)
+    if (p.marca && !p.atributosMl.BRAND) p.atributosMl.BRAND = p.marca;
+    
+    const qtdAttrs = Object.keys(p.atributosMl).length;
+    return { _msg: `nome="${p.nome.slice(0,30)}", marca="${p.marca}", ${qtdAttrs} atributos ML` };
   }
   
   async function acaoCategoriaML(d) {
     const p = _produtoDaDemanda(d);
-    // 1. Tenta De↔Para
+    // 1. Tenta De↔Para se ja tem categoria interna
     if (p.categoria) {
       const mapa = categoriasMapErp.find(c => 
         String(c.categoriaInterna).toLowerCase() === String(p.categoria).toLowerCase()
@@ -8082,18 +8130,46 @@
         if (p.categoryIdMl) return { _msg: 'via De↔Para: ' + p.categoryIdMl };
       }
     }
-    // 2. Predictor
-    if (p.nome) {
-      const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/predizer?titulo=' + encodeURIComponent(p.nome), {
-        headers: { 'x-api-token': getApiToken() }
-      });
-      const data = await resp.json();
-      if (data.ok && data.sugestoes && data.sugestoes[0]) {
-        p.categoryIdMl = data.sugestoes[0].categoryId;
-        return { _msg: 'via predictor: ' + p.categoryIdMl + ' (' + (data.sugestoes[0].nome||'?') + ')' };
+    
+    // 2. Predictor — monta texto a partir de tudo que conhecemos
+    const partesTitulo = [
+      p.nome,
+      d.produto,
+      d.descricao,
+      (p.variacoes || []).slice(0,2).map(v => v.nome).join(' '),
+    ].filter(Boolean).join(' ').slice(0, 200);
+    
+    if (!partesTitulo.trim()) {
+      // 3. Fallback: usa categoria do De↔Para mais recente como chute
+      if (categoriasMapErp.length > 0) {
+        const ultimo = categoriasMapErp.find(c => c.vinculos && c.vinculos.mercadolivre);
+        if (ultimo) {
+          const v = ultimo.vinculos.mercadolivre;
+          p.categoryIdMl = typeof v === 'string' ? v : (v.categoryId || v.id);
+          p.categoria = ultimo.categoriaInterna;
+          if (p.categoryIdMl) return { _msg: 'fallback (sem texto pra predictor): ' + p.categoryIdMl };
+        }
       }
+      throw new Error('Sem texto pra inferir categoria — preencha o "Produto / Item" na demanda');
     }
-    throw new Error('Não consegui definir categoria ML (sem De↔Para nem nome pra predictor)');
+    
+    const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/predizer?titulo=' + encodeURIComponent(partesTitulo), {
+      headers: { 'x-api-token': getApiToken() }
+    });
+    const data = await resp.json();
+    if (data.ok && data.sugestoes && data.sugestoes[0]) {
+      p.categoryIdMl = data.sugestoes[0].categoryId;
+      // Se não tem categoria interna, tenta achar uma vinculada
+      if (!p.categoria) {
+        const mapaInv = categoriasMapErp.find(c => 
+          c.vinculos && c.vinculos.mercadolivre && 
+          (typeof c.vinculos.mercadolivre === 'string' ? c.vinculos.mercadolivre : c.vinculos.mercadolivre.categoryId) === p.categoryIdMl
+        );
+        if (mapaInv) p.categoria = mapaInv.categoriaInterna;
+      }
+      return { _msg: 'via predictor: ' + p.categoryIdMl + ' (' + (data.sugestoes[0].nome||'?') + ')' };
+    }
+    throw new Error('Predictor ML não retornou sugestão pra "' + partesTitulo.slice(0,40) + '..."');
   }
   
   async function acaoGerarSKUs(d) {
@@ -22506,6 +22582,23 @@ ${JSON.stringify(metricas, null, 2)}`
       return;
     }
     
+    // PEGA O GUIA DE TAMANHOS — da sessao OU da biblioteca da loja destino
+    let guiaParaUsar = _guiaDemandaSessao;
+    if (!guiaParaUsar || !guiaParaUsar.linhas || guiaParaUsar.linhas.length === 0) {
+      // Tenta achar um guia da loja destino na biblioteca
+      try {
+        const guiasLoja = (typeof guiasDaLoja === 'function') ? guiasDaLoja(lojaDestino) : [];
+        if (guiasLoja.length > 0) {
+          guiaParaUsar = guiasLoja[0];
+          showToast('📏 Usando guia da biblioteca: ' + (guiaParaUsar.nome || 'Guia'));
+        }
+      } catch(_) {}
+    }
+    if (!guiaParaUsar || !guiaParaUsar.linhas || guiaParaUsar.linhas.length === 0) {
+      alert('⚠ Faltando guia de tamanhos\n\nEsta demanda não tem guia, e a loja destino não tem nenhum guia na biblioteca.\n\nAdicione um guia clicando em "✏️ Criar / editar guia" ANTES de executar.');
+      return;
+    }
+    
     // Guarda se é edição (pra achar a demanda certa depois)
     const idEditando = editingDemanda;
     
@@ -22525,8 +22618,9 @@ ${JSON.stringify(metricas, null, 2)}`
       return; 
     }
     
-    // Anexa as URLs (não base64!) à demanda
+    // Anexa as URLs (não base64!) à demanda + o guia
     d.imagens = urlsFotos.map(url => ({ url }));
+    d.guiaTamanhos = guiaParaUsar;
     saveDemandas();
     
     // Pequeno delay pra modal fechar e DOM atualizar
