@@ -7541,10 +7541,15 @@
   
   async function executarFluxoDemanda(demandaId) {
     const d = demandas.find(x => String(x.id) === String(demandaId));
-    if (!d) { showToast('Demanda não encontrada', true); return; }
-    if (!d.fluxoId) { showToast('Demanda sem fluxo vinculado', true); return; }
-    const fluxo = fluxosDemanda.find(f => f.id === d.fluxoId);
-    if (!fluxo) { showToast('Fluxo não encontrado', true); return; }
+    if (!d) { showToast('Demanda não encontrada (id=' + demandaId + ')', true); return; }
+    if (!d.fluxoId) { showToast('Demanda sem fluxo vinculado (d.fluxoId vazio)', true); return; }
+    const fluxo = fluxosDemanda.find(f => String(f.id) === String(d.fluxoId));
+    if (!fluxo) { 
+      showToast('Fluxo não encontrado (fluxoId=' + d.fluxoId + '). Fluxos disponíveis: ' + fluxosDemanda.map(f => f.id).slice(0,3).join(', '), true); 
+      console.error('[executar] demanda:', d);
+      console.error('[executar] fluxos cadastrados:', fluxosDemanda);
+      return; 
+    }
     if (!fluxo.passos || fluxo.passos.length === 0) { showToast('Fluxo sem passos', true); return; }
     
     // Inicializa estado de execução
@@ -15329,7 +15334,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Calcula progresso de uma demanda (% de passos concluídos)
   function progressoDemanda(d) {
     if (!d.fluxoId) return null;
-    const fluxo = fluxosDemanda.find(f => f.id === d.fluxoId);
+    const fluxo = fluxosDemanda.find(f => String(f.id) === String(d.fluxoId));
     if (!fluxo || !fluxo.passos || fluxo.passos.length === 0) return null;
     const total = fluxo.passos.length;
     const feitos = (d.passosConcluidos || []).filter(pid =>
@@ -15518,7 +15523,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   
   function duplicarFluxo(id) {
-    const orig = fluxosDemanda.find(f => f.id === id);
+    const orig = fluxosDemanda.find(f => String(f.id) === String(id));
     if (!orig) return;
     const copia = JSON.parse(JSON.stringify(orig));
     copia.id = gerarId();
@@ -15660,7 +15665,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   function fecharEditorFluxo() {
     if (_fluxoEditando) {
       // Pergunta se quer salvar mudanças não salvas
-      const original = fluxosDemanda.find(f => f.id === _fluxoEditando.id);
+      const original = fluxosDemanda.find(f => String(f.id) === String(_fluxoEditando.id));
       const mudou = !original || JSON.stringify(original.passos) !== JSON.stringify(_fluxoEditando.passos)
         || JSON.stringify(original.conexoes) !== JSON.stringify(_fluxoEditando.conexoes)
         || (original.nome !== document.getElementById('fluxoNome').value);
@@ -22192,32 +22197,55 @@ ${JSON.stringify(metricas, null, 2)}`
       showToast('Selecione o fluxo antes de executar', true);
       return;
     }
+    // Confirma que o fluxo existe MESMO no array
+    const fluxoExiste = fluxosDemanda.find(f => String(f.id) === String(fluxoId));
+    if (!fluxoExiste) {
+      showToast('Fluxo selecionado não existe mais. Recarregue a página.', true);
+      return;
+    }
     
     // Valida inputs essenciais
     const lojaDestino = document.getElementById('demandaLojaDestino').value;
     if (!lojaDestino) { showToast('Selecione a loja destino', true); return; }
     
-    const imgs = (typeof _demandaImagens === 'object' && _demandaImagens) ? _demandaImagens : [];
+    // Pega imagens da sessao (variavel correta: _imagensDemandaSessao)
+    const imgs = (typeof _imagensDemandaSessao !== 'undefined' && Array.isArray(_imagensDemandaSessao)) 
+      ? _imagensDemandaSessao.map(im => im.dataUrl || im.url || im) 
+      : [];
+    
     if (imgs.length === 0) {
       if (!confirm('Sem fotos da demanda. A IA não vai conseguir analisar visualmente — só usa o texto. Continuar mesmo assim?')) return;
     }
     
-    // Pega/cria a demanda
-    const eraEdit = !!editingDemanda;
-    salvarDemanda(); // salva os campos
+    // Guarda se é edição (pra achar a demanda certa depois)
+    const idEditando = editingDemanda;
     
-    // Acha a demanda recém-criada (primeira da lista)
-    const d = demandas[0]; // unshift coloca no topo
-    if (!d) { showToast('Erro ao localizar demanda', true); return; }
+    // Salva os campos
+    salvarDemanda();
     
-    // Anexa as imagens da sessão à demanda
+    // Acha a demanda certa: se era edição, busca por id; senão pega a primeira (unshift)
+    let d;
+    if (idEditando) {
+      d = demandas.find(x => String(x.id) === String(idEditando));
+    } else {
+      d = demandas[0];
+    }
+    if (!d) { showToast('Erro ao localizar demanda criada', true); return; }
+    if (!d.fluxoId) { 
+      showToast('Demanda criada mas sem fluxoId — verifique se o select de fluxo estava preenchido', true); 
+      return; 
+    }
+    
+    // Anexa as imagens à demanda (no formato {url})
     if (imgs.length > 0) {
-      d.imagens = imgs.map(im => ({ url: im }));
+      d.imagens = imgs.map(url => ({ url }));
       saveDemandas();
     }
     
-    // Pequeno delay pra modal fechar
-    setTimeout(() => executarFluxoDemanda(d.id), 200);
+    // Pequeno delay pra modal fechar e DOM atualizar
+    setTimeout(() => {
+      executarFluxoDemanda(d.id);
+    }, 300);
   }
   
   function avisarClienteWhats(demanda) {
