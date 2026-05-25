@@ -4810,6 +4810,7 @@
       <button class="prod-filtro-btn" data-status="sem-estoque" onclick="filtrarProdutos('sem-estoque')" title="Produtos com estoque zerado">📭 Sem estoque</button>
       <button class="prod-filtro-btn" data-status="sem-foto" onclick="filtrarProdutos('sem-foto')" title="Produtos sem foto">🖼️ Sem foto</button>
       <button class="prod-filtro-btn" data-status="excluido" onclick="filtrarProdutos('excluido')">🗑 Lixeira</button>
+      <button class="prod-filtro-btn" onclick="limparFantasmasAgora()" style="background:#fef2f2;color:#991b1b;border-color:#fecaca" title="Re-sincroniza todas as lojas e move pra lixeira todos os produtos sem anúncio correspondente">🧹 Limpar fantasmas</button>
       <button class="prod-filtro-btn" id="btnLimparFiltros" onclick="limparTodosFiltros()" style="background:#fef3c7;color:#92400e;display:none">✕ Limpar filtros</button>
     </div>
     
@@ -15043,10 +15044,12 @@ São o mesmo produto?`;
       const mkAlvo = loja.marketplace;
       const idsVivos = new Set(anunciosUteis.map(a => String(a.id || a.mlb || a.item_id)).filter(Boolean));
       
+      console.log('[reconciliação] iniciando — loja=' + loja.nome + ' idBanco=' + lojaIdAlvo + ' mk=' + mkAlvo + ' anuncios_vivos=' + idsVivos.size);
+      
       let vinculosRemovidos = 0;
       let exportadosLimpos = 0;
       let produtosMovidosLixeira = 0;
-      const anunciosFantasmasIds = new Set(); // pra adicionar nos ignorados
+      const anunciosFantasmasIds = new Set();
       
       produtosErp.forEach(p => {
         if (p.status === 'excluido') return;
@@ -15057,56 +15060,85 @@ São o mesmo produto?`;
           if (!Array.isArray(v.vinculos)) return;
           const antes = v.vinculos.length;
           v.vinculos = v.vinculos.filter(vi => {
-            // Mantém vínculos de outras lojas/marketplaces
+            // Marketplace diferente → mantém
             if (vi.marketplace !== mkAlvo) return true;
-            // Pra essa loja: precisa do lojaId bater (se tiver) e anuncioId existir no ML
-            const meuLoja = vi.lojaId ? String(vi.lojaId) : null;
-            if (meuLoja && meuLoja !== lojaIdAlvo) return true; // outra loja do mesmo mk
             
+            // RESOLVE lojaId — pode ser texto antigo tipo "conta_mercadolivre"
+            const lojaIdResolvida = vi.lojaId ? _resolverLojaIdNumerica(vi.lojaId, mkAlvo) : null;
+            const meuLojaStr = lojaIdResolvida ? String(lojaIdResolvida) : null;
+            
+            // Se tem lojaId resolvida e é de outra loja, mantém
+            if (meuLojaStr && meuLojaStr !== lojaIdAlvo) return true;
+            
+            // Se NÃO conseguiu resolver lojaId E há outras lojas do mesmo mk, dá benefício
+            // da dúvida (mantém). Senão considera dessa loja.
+            const outrasLojasMesmoMk = lojasErp.filter(l => 
+              l.marketplace === mkAlvo && String(l.idBanco || l.id) !== lojaIdAlvo
+            );
+            if (!meuLojaStr && outrasLojasMesmoMk.length > 0) {
+              return true; // sem lojaId E tem outras lojas → não posso saber
+            }
+            
+            // Considera dessa loja: verifica se anuncioId está vivo
             tinhaVinculoNaLoja = true;
             const aid = String(vi.anuncioId || '').replace(/:\d+$/, '');
             if (idsVivos.has(aid)) {
               temVinculoVivo = true;
               return true;
             }
-            // Fantasma — registra ID e remove
+            // Fantasma!
             if (aid) anunciosFantasmasIds.add(aid);
             return false;
           });
           vinculosRemovidos += (antes - v.vinculos.length);
         });
         
-        // Se o produto tinha vínculos nessa loja mas todos eram fantasmas
-        if (tinhaVinculoNaLoja && !temVinculoVivo) {
-          // Desmarca exportado
+        // PRODUTOS COM flag exportado=true MAS SEM VÍNCULO: também checa
+        // se o itemId guardado em marketplaces[mk].itemId está vivo
+        let exportadoComItemIdMorto = false;
+        if (!tinhaVinculoNaLoja && p.marketplaces && p.marketplaces[mkAlvo] && p.marketplaces[mkAlvo].exportado) {
+          const itemIdSalvo = p.marketplaces[mkAlvo].itemId;
+          if (itemIdSalvo) {
+            const aidClean = String(itemIdSalvo).replace(/:\d+$/, '');
+            if (!idsVivos.has(aidClean)) {
+              exportadoComItemIdMorto = true;
+              anunciosFantasmasIds.add(aidClean);
+            }
+          } else {
+            // exportado=true mas sem itemId → suspeito (provavelmente foi de uma exportação antiga falha)
+            exportadoComItemIdMorto = true;
+          }
+        }
+        
+        // Se o produto perdeu TUDO desta loja
+        if ((tinhaVinculoNaLoja && !temVinculoVivo) || exportadoComItemIdMorto) {
           if (p.marketplaces && p.marketplaces[mkAlvo] && p.marketplaces[mkAlvo].exportado) {
             p.marketplaces[mkAlvo].exportado = false;
             p.marketplaces[mkAlvo].limpoEm = new Date().toISOString();
             exportadosLimpos++;
           }
           
-          // MOVE PRA LIXEIRA se produto ficou sem vínculos em NENHUM marketplace
-          // (verifica se tem vínculo vivo em qualquer outro mk)
-          const aindaTemOutrosMks = (p.variacoes || []).some(v => 
+          // Move pra lixeira se ficou sem nenhum outro mk
+          const aindaTemOutrosVinc = (p.variacoes || []).some(v => 
             (v.vinculos || []).length > 0
           );
           const exportadoEmOutros = p.marketplaces && Object.keys(p.marketplaces).some(mk => 
             mk !== mkAlvo && p.marketplaces[mk] && p.marketplaces[mk].exportado
           );
           
-          if (!aindaTemOutrosMks && !exportadoEmOutros) {
-            // Move pra lixeira com selo "Excluído do ML"
+          if (!aindaTemOutrosVinc && !exportadoEmOutros) {
             p.status = 'excluido';
             p.excluidoDoML = true;
             p.excluidoDoMLEm = new Date().toISOString();
-            p.motivoExclusao = 'Anúncio não encontrado no ML após sincronização (removido externamente)';
+            p.motivoExclusao = 'Anúncio não encontrado no ML após sincronização';
             p.excluidoTipo = 'manual';
             produtosMovidosLixeira++;
+            console.log('[reconciliação] → lixeira:', p.nome, '(skuPai=' + (p.skuPai||'?') + ')');
           }
         }
       });
       
-      // Adiciona anúncios fantasmas aos ignorados pra não recriar na próxima sync
+      // Adiciona aos ignorados
       if (anunciosFantasmasIds.size > 0) {
         try {
           const ign = new Set(JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]'));
@@ -15115,9 +15147,9 @@ São o mesmo produto?`;
         } catch(_) {}
       }
       
-      if (vinculosRemovidos > 0 || produtosMovidosLixeira > 0) {
+      if (vinculosRemovidos > 0 || produtosMovidosLixeira > 0 || exportadosLimpos > 0) {
         saveProdutos();
-        console.log('[reconciliação] loja=' + loja.nome + ' → removidos ' + vinculosRemovidos + ' vínculo(s) fantasma, ' + exportadosLimpos + ' produto(s) desmarcado(s), ' + produtosMovidosLixeira + ' produto(s) movido(s) pra lixeira');
+        console.log('[reconciliação] FIM: ' + vinculosRemovidos + ' vínculo(s) removido(s), ' + exportadosLimpos + ' desmarcado(s), ' + produtosMovidosLixeira + ' movido(s) pra lixeira');
         stats.vinculosFantasmaRemovidos = vinculosRemovidos;
         stats.produtosLimpos = exportadosLimpos;
         stats.produtosMovidosLixeira = produtosMovidosLixeira;
@@ -15931,6 +15963,93 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   
   // Sincroniza os anúncios de uma conta conectada — busca do marketplace via backend
   // CHUNK 3.1 multi-loja: usa rota nova /loja/:lojaId/sincronizar quando possivel
+  // LIMPAR FANTASMAS AGORA — re-sincroniza todas as lojas conectadas e
+  // dispara a reconciliação pra mover pra lixeira produtos sem anúncio vivo
+  async function limparFantasmasAgora() {
+    if (!confirm(
+      '🧹 Limpar produtos fantasmas\n\n' +
+      'Vou re-sincronizar TODAS as lojas conectadas e mover pra LIXEIRA todos os ' +
+      'produtos que estão marcados como "publicados" mas não têm anúncio real no marketplace.\n\n' +
+      'Continuar?'
+    )) return;
+    
+    const conectadas = lojasErp.filter(l => l.contaConectada);
+    if (conectadas.length === 0) {
+      alert('Nenhuma loja conectada. Conecte uma em 🏪 Lojas & Conexões primeiro.');
+      return;
+    }
+    
+    // Modal de progresso
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+    modal.innerHTML = `<div style="background:white;border-radius:14px;padding:24px;width:min(600px,90vw);max-height:80vh;overflow:auto">
+      <h3 style="margin:0 0 12px;font-size:16px;color:#1e2a47">🧹 Limpando fantasmas...</h3>
+      <div id="limpProg" style="font-size:12px;color:#374151;font-family:monospace;white-space:pre-wrap;background:#f9fafb;padding:10px;border-radius:8px;max-height:400px;overflow:auto">Iniciando...</div>
+      <div style="margin-top:14px;text-align:right">
+        <button id="limpBtn" style="padding:8px 14px;background:#1e2a47;color:white;border:none;border-radius:8px;cursor:pointer;display:none">Fechar</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    const prog = modal.querySelector('#limpProg');
+    const btn = modal.querySelector('#limpBtn');
+    
+    let totalVivos = 0, totalFantasmas = 0, totalLixeira = 0, totalDesmarcados = 0;
+    
+    for (const loja of conectadas) {
+      prog.textContent += '\n━━━ ' + loja.nome + ' (' + loja.marketplace + ') ━━━';
+      prog.scrollTop = prog.scrollHeight;
+      
+      try {
+        const lojaIdBanco = await garantirLojaNoBanco(loja);
+        if (!lojaIdBanco) {
+          prog.textContent += '\n⚠ Loja sem idBanco — pulando';
+          continue;
+        }
+        
+        const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/sincronizar';
+        prog.textContent += '\n⏳ Buscando anúncios...';
+        const resp = await fetch(url, { method: 'POST', headers: { 'x-api-token': getApiToken() } });
+        const data = await resp.json();
+        
+        if (!data.ok) {
+          prog.textContent += '\n✗ Falhou: ' + (data.erro || 'erro');
+          continue;
+        }
+        
+        const anuncios = data.produtos || [];
+        prog.textContent += '\n✓ ' + anuncios.length + ' anúncio(s) reais retornados pelo ' + loja.marketplace;
+        
+        // Roda importar (que faz a reconciliação)
+        const stats = await importarAnunciosAutomatico(anuncios, loja);
+        
+        totalVivos += anuncios.length;
+        totalFantasmas += stats.vinculosFantasmaRemovidos || 0;
+        totalLixeira += stats.produtosMovidosLixeira || 0;
+        totalDesmarcados += stats.produtosLimpos || 0;
+        
+        prog.textContent += '\n  → ' + (stats.vinculosFantasmaRemovidos || 0) + ' vínculo(s) fantasma removido(s)';
+        prog.textContent += '\n  → ' + (stats.produtosLimpos || 0) + ' produto(s) desmarcado(s)';
+        prog.textContent += '\n  → ' + (stats.produtosMovidosLixeira || 0) + ' produto(s) movido(s) pra lixeira';
+      } catch(e) {
+        prog.textContent += '\n✗ Erro: ' + e.message;
+      }
+      prog.scrollTop = prog.scrollHeight;
+    }
+    
+    prog.textContent += '\n\n━━━━━━━━━━━━━━━━━━━━\n';
+    prog.textContent += '✅ RESUMO TOTAL\n';
+    prog.textContent += '  • Anúncios reais nas lojas: ' + totalVivos + '\n';
+    prog.textContent += '  • Vínculos fantasmas removidos: ' + totalFantasmas + '\n';
+    prog.textContent += '  • Produtos desmarcados: ' + totalDesmarcados + '\n';
+    prog.textContent += '  • Produtos movidos pra LIXEIRA: ' + totalLixeira + '\n';
+    
+    saveProdutos();
+    renderProdutos();
+    btn.style.display = 'inline-block';
+    btn.onclick = () => { modal.remove(); renderProdutos(); };
+  }
+  window.limparFantasmasAgora = limparFantasmasAgora;
+  
   async function sincronizarConta(marketplace) {
     showToast('🔄 Sincronizando anúncios da conta ' + marketplace + '...');
     
