@@ -15480,6 +15480,7 @@ São o mesmo produto?`;
         if (p.status === 'excluido') return;
         let tinhaVinculoNaLoja = false;
         let temVinculoVivo = false;
+        let estaModificado = false;
         
         (p.variacoes || []).forEach(v => {
           if (!Array.isArray(v.vinculos)) return;
@@ -15503,7 +15504,6 @@ São o mesmo produto?`;
             
             // Se SÓ TEM 1 loja desse mk, qualquer vínculo desse mk é dessa loja —
             // mesmo se lojaId for diferente (provavelmente desatualizado)
-            // Se há MÚLTIPLAS lojas E não conseguiu resolver, dá benefício da dúvida
             if (!meuLojaStr && !soUmaLojaDoMk) {
               console.log('[reconciliação] vínculo sem lojaId em ' + p.nome + ' — mantido (multi-loja)');
               return true;
@@ -15519,6 +15519,7 @@ São o mesmo produto?`;
             // Fantasma!
             console.log('[reconciliação] FANTASMA detectado: ' + aid + ' em ' + p.nome + ' (lojaId vínculo=' + vi.lojaId + ', resolvida=' + meuLojaStr + ')');
             if (aid) anunciosFantasmasIds.add(aid);
+            estaModificado = true;
             return false;
           });
           vinculosRemovidos += (antes - v.vinculos.length);
@@ -15547,6 +15548,7 @@ São o mesmo produto?`;
             p.marketplaces[mkAlvo].exportado = false;
             p.marketplaces[mkAlvo].limpoEm = new Date().toISOString();
             exportadosLimpos++;
+            estaModificado = true;
           }
           
           // Move pra lixeira se ficou sem nenhum outro mk
@@ -15564,8 +15566,14 @@ São o mesmo produto?`;
             p.motivoExclusao = 'Anúncio não encontrado no ML após sincronização';
             p.excluidoTipo = 'manual';
             produtosMovidosLixeira++;
+            estaModificado = true;
             console.log('[reconciliação] → lixeira:', p.nome, '(skuPai=' + (p.skuPai||'?') + ')');
           }
+        }
+        
+        // CRITICAL: marca produto pra persistir no Supabase (senão alteração não dura!)
+        if (estaModificado) {
+          produtosModificados.add(p.id);
         }
       });
       
@@ -15580,6 +15588,7 @@ São o mesmo produto?`;
           p.status = 'rascunho';
           p.movidoRascunhoEm = new Date().toISOString();
           viraramRascunho++;
+          produtosModificados.add(p.id); // CRITICAL: persistir no backend
         }
       });
       if (viraramRascunho > 0) {
@@ -15596,6 +15605,10 @@ São o mesmo produto?`;
       if (agrupados > 0) {
         console.log('[reconciliação] ' + agrupados + ' produto(s) agrupado(s) como duplicado(s) por SKU pai');
         stats.duplicadosAgrupados = agrupados;
+        // CRITICAL: persistir os duplicados pra duplicadoDeId sobreviver no banco
+        produtosErp.forEach(p => { 
+          if (p.duplicadoDeId) produtosModificados.add(p.id); 
+        });
       }
       
       // Adiciona aos ignorados
