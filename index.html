@@ -7475,7 +7475,7 @@
     
     const idFluxo = gerarId();
     const ids = {};
-    ['inicio','ia','catml','sku','ean','salvar','revisao','decisao','publicar','fim']
+    ['inicio','catml','ia','sku','ean','salvar','qa','revisao','decisao','publicar','fim']
       .forEach(k => ids[k] = gerarId());
     
     // Posicionamento horizontal no canvas
@@ -7509,10 +7509,11 @@
       passos: [
         passo('inicio',   'inicio',      'Início',                    'Pré-requisitos coletados no modal',                  'ia'),
         passo('catml',    'catml',       'Define categoria ML',       'Predictor do ML antes da IA — pra IA conhecer atrs', 'ia'),
-        passo('ia',       'ia',          'IA preenche TUDO',          'Título, descrição, marca, modelo, atributos da categoria','ia'),
+        passo('ia',       'ia',          'IA preenche TUDO (2-pass)', 'Pass 1: título+desc · Pass 2: atributos completos',  'ia'),
         passo('sku',      'sku',         'Gera SKUs variações',       'Padrão {SKU}-{COR}-{TAM}',                           'ia'),
         passo('ean',      'ean',         'Gera EANs (uso interno)',   'Prefixo 789, dígito verificador válido',             'ia'),
         passo('salvar',   'salvar_prod', 'Salva produto no ERP',      'Cria o produto interno no banco',                    'ia'),
+        passo('qa',       'qa',          'QA: verifica qualidade',    'Checa título, desc, atributos. Re-roda IA se falta','ia'),
         passo('revisao',  'revisao',     'Revisão do gestor',         'Gestor confere antes de publicar',                   'gestor'),
         passo('decisao',  'decisao',     'Aprovado?',                 'SIM → publica · NÃO → volta pra IA',                 'gestor'),
         passo('publicar', 'publicar',    'Publica no ML',             'POST /items no Mercado Livre',                       'ia'),
@@ -7524,7 +7525,8 @@
         ligar('ia',       'sku'),
         ligar('sku',      'ean'),
         ligar('ean',      'salvar'),
-        ligar('salvar',   'revisao'),
+        ligar('salvar',   'qa'),
+        ligar('qa',       'revisao'),
         ligar('revisao',  'decisao'),
         ligar('decisao',  'publicar', 'Sim'),
         ligar('decisao',  'ia',       'Não (retrabalho)'),
@@ -7964,6 +7966,8 @@
         return await acaoSalvarProduto(d);
       case 'exportar_marketplace': 
         return await acaoExportar(d);
+      case 'qa_qualidade': 
+        return await acaoQAQualidade(d);
       
       default:
         throw new Error('Ação desconhecida: ' + acao);
@@ -8030,14 +8034,16 @@
   }
   
   // === Ações ===
+  // IA preenche TUDO em 2 passes:
+  //   1) Conteúdo (título 60ch SEO, descrição rica com bullets, marca, modelo, peso, skuPai)
+  //   2) Atributos da categoria ML (TODOS — obrigatórios + opcionais)
   async function acaoIAPreencher(d) {
     const p = _produtoDaDemanda(d);
-    if ((p.fotos || []).length === 0 && !p.nome) {
+    if ((p.fotos || []).length === 0 && !p.nome && !d.produto) {
       throw new Error('Sem foto E sem nome — IA precisa de pelo menos um');
     }
     
-    // Se já temos categoryIdMl, buscamos os atributos REAIS da categoria
-    // pra pedir pra IA preencher TODOS (não só os genéricos).
+    // ------- BUSCA ATRIBUTOS DA CATEGORIA ML -------
     let atributosCat = [];
     if (p.categoryIdMl) {
       try {
@@ -8046,75 +8052,162 @@
         });
         const data = await resp.json();
         if (data.ok && Array.isArray(data.atributos)) {
-          atributosCat = data.atributos.filter(a => 
-            a.tags && (a.tags.required || a.tags.catalog_required || a.tags.fixed)
-          );
+          atributosCat = data.atributos;
         }
-      } catch(e) { console.warn('[IA] nao conseguiu buscar atributos da categoria', e); }
+      } catch(e) { console.warn('[IA] erro atributos:', e); }
     }
     
-    const cats = (typeof categoriasInternas === 'function') ? categoriasInternas() : [];
+    const obrigatorios = atributosCat.filter(a => a.tags && (a.tags.required || a.tags.catalog_required));
+    const fixos = atributosCat.filter(a => a.tags && a.tags.fixed);
+    const opcionais = atributosCat.filter(a => 
+      !a.tags || (!a.tags.required && !a.tags.catalog_required && !a.tags.fixed && !a.tags.hidden && !a.tags.read_only)
+    );
+    
+    const formatarAttr = (a) => {
+      let s = '  - "' + a.id + '" (' + a.name + ')';
+      if (a.values && a.values.length > 0) {
+        const vs = a.values.slice(0,8).map(v => '"' + v.name + '"').join(', ');
+        s += ' valores: [' + vs + (a.values.length > 8 ? ', ...' : '') + ']';
+      } else if (a.value_type === 'boolean') s += ' (true/false)';
+      else if (a.value_type === 'number_unit') s += ' (ex: "12 cm", "500 g")';
+      else if (a.value_type === 'number') s += ' (número)';
+      else s += ' (texto livre)';
+      return s;
+    };
+    
     const variacoesTxt = p.variacoes.map(v => [v.cor, v.tamanho].filter(Boolean).join(' ')).join(' | ') || '(sem variações)';
     
-    // Lista de atributos obrigatórios da categoria pra IA preencher TODOS
-    let atrInstrucao = '';
-    if (atributosCat.length > 0) {
-      atrInstrucao = '\nATRIBUTOS OBRIGATÓRIOS DA CATEGORIA ML — preencha TODOS no campo "atributosMl":\n';
-      atributosCat.forEach(a => {
-        let exemplo = '';
-        if (a.values && a.values.length > 0) {
-          exemplo = ' (valores aceitos: ' + a.values.slice(0,5).map(v => v.name).join(', ') + (a.values.length > 5 ? '...' : '') + ')';
-        }
-        if (a.value_type === 'boolean') exemplo = ' (true/false)';
-        if (a.value_type === 'number_unit') exemplo = ' (ex: "12 cm", "500 g")';
-        atrInstrucao += `  - "${a.id}" (${a.name})${exemplo}\n`;
-      });
-      atrInstrucao += '\nSe um atributo é "list" com valores fixos, escolha um dos valores listados. Não invente.';
-    } else {
-      atrInstrucao = '\nATRIBUTOS GENÉRICOS pra calçados — preencha em "atributosMl":\n' +
-        '  - BRAND (marca)\n  - MODEL (modelo do tênis)\n  - GENDER (Masculino/Feminino/Unissex)\n' +
-        '  - FOOTWEAR_TYPE (Tênis Esportivo, etc.)\n  - EXTERIOR_MATERIALS, OUTSOLE_MATERIALS\n' +
-        '  - RECOMMENDED_USES (Casual, Corrida, etc.)';
+    // ========================================================
+    // PASS 1: CONTEÚDO (título, descrição, marca, modelo, etc.)
+    // ========================================================
+    const contextoFotos = (p.fotos[0] ? 'ANALISE A IMAGEM ANEXADA para extrair: marca visível, modelo, materiais aparentes, cor predominante, tipo de fechamento, design.\n' : '');
+    
+    const promptConteudo = `Você é especialista em criar anúncios para Mercado Livre que vendem muito.
+Crie um anúncio COMPLETO para este produto.
+
+DADOS DISPONÍVEIS:
+- Produto/referência: "${d.produto || p.nome || '(use as fotos)'}"
+- Categoria interna: "${p.categoria || '(detecte das fotos)'}"
+- Categoria ML: ${p.categoryIdMl || '(não definida)'}
+- Variações: ${variacoesTxt}
+- Preço: R$ ${p.preco}
+${contextoFotos}
+
+REGRAS DO ML:
+- Título: EXATAMENTE entre 50 e 60 caracteres. Comece com tipo do produto + marca + diferencial + público.
+  Ex: "Tênis Esportivo AMX Voxel Corrida Masculino Casual"
+- Descrição: NO MÍNIMO 400 caracteres. Estruture com:
+  ✅ Parágrafo inicial (oferta, benefício principal)
+  ✅ Lista com ✔ destacando 5-7 características técnicas
+  ✅ Quem usa esse produto / para que serve
+  ✅ Garantia e qualidade
+  ✅ Chamada final pra ação (compre agora, frete grátis, etc.)
+- Marca: identifique pela foto ou pelo nome
+- Modelo: nome específico do produto
+- Peso: estime em KG (calçados ficam entre 0.4 e 1.2 kg geralmente)
+- skuPai: até 8 chars maiúsculos, sem espaço
+
+RETORNE APENAS JSON nesse formato exato (sem \`\`\`json):
+{
+  "nome": "título 50-60 chars",
+  "descricao": "descrição completa multilinha com emojis e bullets",
+  "marca": "nome da marca",
+  "modelo": "modelo específico",
+  "peso": 0.5,
+  "skuPai": "ABC1234",
+  "categoria": "${p.categoria || 'Tênis Masculino'}"
+}`;
+    
+    const opcoes1 = { prompt: promptConteudo, system: 'Você responde APENAS com JSON válido, sem texto antes ou depois.', maxTokens: 1500 };
+    if (p.fotos[0]) opcoes1.imagens = [p.fotos[0]];
+    
+    let dadosConteudo;
+    try {
+      const respIA = await chamarIA(opcoes1);
+      const limpo = String(respIA).replace(/^```json\s*|\s*```$/g, '').replace(/^```\s*|\s*```$/g, '').trim();
+      dadosConteudo = JSON.parse(limpo);
+    } catch(e) { 
+      throw new Error('Pass 1 (conteúdo) — IA retornou JSON inválido. ' + e.message); 
     }
     
-    const system = getPrompt('preencher_produto_system');
-    let prompt = renderTemplate(getPrompt('preencher_produto_user'), {
-      nome: p.nome || '(VAZIO — crie título 60 chars)',
-      descricao: p.descricao || '(vazio)',
-      marca: p.marca || '(VAZIA)',
-      material: '',
-      categoria: p.categoria || '(vazio)',
-      peso: '',
-      variacoesTxt,
-      categoriasLista: cats.map(c => '- "' + c + '"').join('\n') || '(nenhuma)',
-      instrucaoImagem: (p.fotos[0] ? 'ANALISE A IMAGEM ANEXADA.\n' : '')
-    });
-    prompt += atrInstrucao;
-    prompt += '\n\nRETORNE JSON com TODOS estes campos preenchidos: nome, descricao, marca, peso (kg), skuPai, categoria, atributosMl (objeto com TODAS as chaves obrigatórias acima).';
+    // Aplica conteúdo
+    if (dadosConteudo.nome) p.nome = String(dadosConteudo.nome).slice(0, 60);
+    if (dadosConteudo.descricao) p.descricao = dadosConteudo.descricao;
+    if (dadosConteudo.marca) p.marca = dadosConteudo.marca;
+    if (dadosConteudo.peso) p.peso = parseFloat(dadosConteudo.peso) || 0.5;
+    if (dadosConteudo.skuPai && !p.skuPai) p.skuPai = String(dadosConteudo.skuPai).toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8);
+    if (dadosConteudo.categoria && !p.categoria) p.categoria = dadosConteudo.categoria;
+    if (dadosConteudo.modelo) p.atributosMl.MODEL = dadosConteudo.modelo;
     
-    const opcoes = { prompt, system, maxTokens: 2000 };
-    if (p.fotos[0]) opcoes.imagens = [p.fotos[0]];
-    const respIA = await chamarIA(opcoes);
-    
-    let dados;
-    try { dados = JSON.parse(String(respIA).replace(/^```json|```$/g, '').trim()); }
-    catch(e) { throw new Error('IA retornou JSON inválido: ' + String(respIA).slice(0,100)); }
-    
-    if (dados.nome) p.nome = String(dados.nome).slice(0, 60);
-    if (dados.descricao) p.descricao = dados.descricao;
-    if (dados.marca) p.marca = dados.marca;
-    if (dados.peso) p.peso = parseFloat(dados.peso) || 0.5;
-    if (dados.skuPai && !p.skuPai) p.skuPai = dados.skuPai;
-    if (dados.categoria && !p.categoria) p.categoria = dados.categoria;
-    if (dados.atributosMl && typeof dados.atributosMl === 'object') {
-      // MERGE em vez de substituir
-      Object.assign(p.atributosMl, dados.atributosMl);
+    // ========================================================
+    // PASS 2: ATRIBUTOS DA CATEGORIA (todos)
+    // ========================================================
+    if (atributosCat.length === 0) {
+      // Fallback básico se não conseguiu atributos da categoria
+      if (p.marca) p.atributosMl.BRAND = p.marca;
+      if (dadosConteudo.modelo) p.atributosMl.MODEL = dadosConteudo.modelo;
+      return { _msg: `título="${p.nome.slice(0,30)}", marca="${p.marca}", ${Object.keys(p.atributosMl).length} atrs (sem categoria)` };
     }
-    // Garante BRAND/MODEL no atributosMl (alguns marketplaces lêem de lá)
+    
+    const promptAttrs = `Para o produto "${p.nome}" (categoria ML ${p.categoryIdMl}), marca "${p.marca}", preencha TODOS os atributos abaixo baseado nas informações e fotos.
+
+REGRAS:
+- Para atributos com lista de valores aceitos, ESCOLHA UM dos valores listados. Não invente.
+- Para boolean, use true ou false.
+- Para number_unit, inclua a unidade (ex: "12 cm").
+- Se não conseguir inferir um atributo, NÃO inclua ele no JSON (melhor faltar do que vir errado).
+- Atributos secundários ajudam o anúncio aparecer nas buscas — preencha o máximo possível.
+
+⚠ OBRIGATÓRIOS (priorize ao máximo):
+${obrigatorios.map(formatarAttr).join('\n') || '(nenhum)'}
+
+📌 FIXOS DA CATEGORIA:
+${fixos.map(formatarAttr).join('\n') || '(nenhum)'}
+
+✨ OPCIONAIS (preencha o que conseguir inferir das fotos/contexto):
+${opcionais.slice(0, 30).map(formatarAttr).join('\n') || '(nenhum)'}
+
+PRODUTO:
+- Título: ${p.nome}
+- Marca: ${p.marca}
+- Modelo: ${dadosConteudo.modelo || '?'}
+- Variações: ${variacoesTxt}
+- Descrição: ${(p.descricao||'').slice(0,300)}
+
+RETORNE APENAS JSON com formato {"ID_ATRIBUTO": "valor"}:
+{
+  "BRAND": "${p.marca}",
+  "MODEL": "...",
+  "GENDER": "Masculino",
+  ...
+}
+NÃO inclua atributos que não conseguir inferir.`;
+    
+    const opcoes2 = { prompt: promptAttrs, system: 'Você responde APENAS com JSON válido, sem texto antes ou depois.', maxTokens: 2000 };
+    if (p.fotos[0]) opcoes2.imagens = [p.fotos[0]];
+    
+    let attrsIA = {};
+    try {
+      const respIA2 = await chamarIA(opcoes2);
+      const limpo2 = String(respIA2).replace(/^```json\s*|\s*```$/g, '').replace(/^```\s*|\s*```$/g, '').trim();
+      attrsIA = JSON.parse(limpo2);
+    } catch(e) {
+      console.warn('[IA] pass 2 falhou:', e);
+      // Não falha total — segue com o que tem do pass 1
+    }
+    
+    // MERGE atributos da IA, garantindo BRAND/MODEL
+    Object.assign(p.atributosMl, attrsIA);
     if (p.marca && !p.atributosMl.BRAND) p.atributosMl.BRAND = p.marca;
     
-    const qtdAttrs = Object.keys(p.atributosMl).length;
-    return { _msg: `nome="${p.nome.slice(0,30)}", marca="${p.marca}", ${qtdAttrs} atributos ML` };
+    // Conta o que foi preenchido vs obrigatório
+    const preenchidos = Object.keys(p.atributosMl).length;
+    const faltamObrig = obrigatorios.filter(a => !p.atributosMl[a.id]);
+    const aviso = faltamObrig.length > 0 
+      ? ` ⚠ Faltam ${faltamObrig.length} obrigatórios: ${faltamObrig.slice(0,3).map(a => a.id).join(',')}` 
+      : '';
+    
+    return { _msg: `título="${p.nome.slice(0,30)}", desc=${p.descricao.length}ch, marca="${p.marca}", ${preenchidos} atrs (${obrigatorios.length} obrig)${aviso}` };
   }
   
   async function acaoCategoriaML(d) {
@@ -8273,6 +8366,112 @@
     d._produtoIdLocal = limpo.id;
     
     return { _msg: `Produto salvo (idBanco=${limpo.idBanco}, skuPai=${limpo.skuPai})` };
+  }
+  
+  // QA: verifica qualidade do produto antes de publicar.
+  // Se faltam coisas críticas, dispara IA novamente pra completar.
+  async function acaoQAQualidade(d) {
+    const p = _produtoDaDemanda(d);
+    const problemas = [];
+    
+    // Título
+    if (!p.nome || p.nome.length < 30) problemas.push('Título muito curto (' + (p.nome||'').length + 'ch, ideal 50-60)');
+    if (p.nome && p.nome.length > 60) problemas.push('Título passou de 60ch (' + p.nome.length + ')');
+    
+    // Descrição
+    if (!p.descricao || p.descricao.length < 200) problemas.push('Descrição muito curta (' + (p.descricao||'').length + 'ch, mínimo 200)');
+    
+    // Marca
+    if (!p.marca) problemas.push('Sem marca');
+    if (!p.atributosMl.BRAND) problemas.push('Sem BRAND no atributosMl');
+    
+    // Categoria
+    if (!p.categoryIdMl) problemas.push('Sem categoria ML');
+    
+    // SKU
+    if (!p.skuPai) problemas.push('Sem SKU pai');
+    
+    // Variações
+    if (!p.variacoes || p.variacoes.length === 0) problemas.push('Sem variações');
+    (p.variacoes || []).forEach((v, i) => {
+      if (!v.sku) problemas.push('Var ' + (i+1) + ' sem SKU');
+      if (!v.ean) problemas.push('Var ' + (i+1) + ' sem EAN');
+    });
+    
+    // Atributos da categoria
+    let faltamObrig = [];
+    if (p.categoryIdMl) {
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/' + p.categoryIdMl + '/atributos', {
+          headers: { 'x-api-token': getApiToken() }
+        });
+        const data = await resp.json();
+        if (data.ok && Array.isArray(data.atributos)) {
+          const obrigs = data.atributos.filter(a => a.tags && (a.tags.required || a.tags.catalog_required));
+          faltamObrig = obrigs.filter(a => !p.atributosMl[a.id]).map(a => a.id);
+          if (faltamObrig.length > 0) {
+            problemas.push('Atributos obrigatórios faltando: ' + faltamObrig.slice(0,5).join(', '));
+          }
+        }
+      } catch(_) {}
+    }
+    
+    // Fotos
+    if (!p.fotos || p.fotos.length === 0) problemas.push('Sem fotos');
+    if (p.fotos && p.fotos.length < 3) problemas.push('Apenas ' + p.fotos.length + ' foto(s) — ideal 4+');
+    
+    // Guia de tamanhos
+    if (!p.guiaTamanhos || !p.guiaTamanhos.linhas || p.guiaTamanhos.linhas.length === 0) {
+      problemas.push('Sem guia de tamanhos (ML exige no modelo novo)');
+    }
+    
+    if (problemas.length === 0) {
+      return { _msg: '✅ Produto 100% preenchido — pronto pra publicar' };
+    }
+    
+    // Tem problemas — loga e tenta corrigir os críticos
+    console.warn('[QA] problemas no produto:', problemas);
+    
+    // Tenta dar uma chamada extra na IA SÓ pra os atributos faltantes
+    if (faltamObrig.length > 0 && p.categoryIdMl) {
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/' + p.categoryIdMl + '/atributos', {
+          headers: { 'x-api-token': getApiToken() }
+        });
+        const data = await resp.json();
+        const todosAttrs = (data.atributos || []);
+        const faltam = todosAttrs.filter(a => faltamObrig.includes(a.id));
+        
+        const lista = faltam.map(a => {
+          let s = '  - "' + a.id + '" (' + a.name + ')';
+          if (a.values && a.values.length > 0) {
+            s += ' valores: [' + a.values.slice(0,10).map(v => '"' + v.name + '"').join(', ') + ']';
+          }
+          return s;
+        }).join('\n');
+        
+        const prompt = `Produto "${p.nome}" (categoria ML ${p.categoryIdMl}), marca "${p.marca}".
+
+Preencha ESSES ATRIBUTOS FALTANTES (todos obrigatórios):
+${lista}
+
+Use os valores listados quando houver lista. Não invente.
+Retorne JSON: {"ID": "valor", ...}`;
+        
+        const opcoes = { prompt, system: 'Responda APENAS JSON válido.', maxTokens: 800 };
+        if (p.fotos[0]) opcoes.imagens = [p.fotos[0]];
+        const respIA = await chamarIA(opcoes);
+        const limpo = String(respIA).replace(/^```json\s*|\s*```$/g, '').replace(/^```\s*|\s*```$/g, '').trim();
+        const novos = JSON.parse(limpo);
+        Object.assign(p.atributosMl, novos);
+        const recuperados = faltamObrig.filter(id => p.atributosMl[id]).length;
+        return { _msg: `⚠ Tinha ${problemas.length} problema(s) — IA recuperou ${recuperados}/${faltamObrig.length} atributos. Problemas restantes: ${problemas.length - recuperados}` };
+      } catch(e) {
+        return { _msg: `⚠ Tinha ${problemas.length} problema(s). Retry IA falhou: ${e.message}` };
+      }
+    }
+    
+    return { _msg: `⚠ ${problemas.length} problema(s): ${problemas.slice(0,3).join(' | ')}` };
   }
   
   async function acaoExportar(d) {
@@ -15915,6 +16114,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     ean:        { nome: 'Gerar EAN', icone: '🔢', classe: 'passo-tipo-sku', cat: 'fluxo', auto: true, acao: 'gerar_eans' },
     catml:      { nome: 'Categoria ML auto', icone: '📂', classe: 'passo-tipo-ia', cat: 'fluxo', auto: true, acao: 'definir_categoria_ml' },
     salvar_prod:{ nome: 'Salvar produto', icone: '💾', classe: 'passo-tipo-sku', cat: 'fluxo', auto: true, acao: 'salvar_produto' },
+    qa:         { nome: 'QA: Verifica qualidade', icone: '🔬', classe: 'passo-tipo-ia', cat: 'fluxo', auto: true, acao: 'qa_qualidade' },
     // --- Pessoas / aprovação ---
     aprovacao:  { nome: 'Aprovação', icone: '👍', classe: 'passo-tipo-aprovacao', cat: 'pessoas' },
     retrabalho: { nome: 'Retrabalho', icone: '🔄', classe: 'passo-tipo-retrabalho', cat: 'pessoas' },
