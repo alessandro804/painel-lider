@@ -4887,6 +4887,7 @@
             <button onclick="acaoMassaAtualizarPorLoja()">🏪 Escolher loja específica...</button>
             <hr>
             <button onclick="acaoMassaRecriarVinculosFaltantes()" style="background:#fef3c7">🔗 Recriar vínculos faltantes</button>
+            <button onclick="acaoAgruparDuplicadosAgora()" style="background:#faf5ff">📋 Agrupar duplicados por SKU pai</button>
           </div>
         </div>
         
@@ -9580,7 +9581,10 @@ Retorne JSON: {"ID": "valor", ...}`;
           msg += ' · 🧹 ' + stats.vinculosFantasmaRemovidos + ' fantasma(s) limpo(s)';
         }
         if (stats.produtosMovidosLixeira > 0) {
-          msg += ' · 🗑 ' + stats.produtosMovidosLixeira + ' movido(s) pra lixeira';
+          msg += ' · 🗑 ' + stats.produtosMovidosLixeira + ' pra lixeira';
+        }
+        if (stats.viraramRascunho > 0) {
+          msg += ' · 📝 ' + stats.viraramRascunho + ' pra rascunho';
         }
         if (stats.banimentosNovos > 0) {
           msg += ' · 🚨 ' + stats.banimentosNovos + ' BANIDO(S)';
@@ -9886,6 +9890,19 @@ Retorne JSON: {"ID": "valor", ...}`;
   // (problema comum: anúncio criado antes do fix automático de vínculo, sync
   // ainda não rodou). Pra cada produto exportado, usa o itemId guardado em
   // p.marketplaces[mk].itemId e cria vínculos em cada variação.
+  // AÇÃO MANUAL: agrupa duplicados por SKU pai (rodável a qualquer momento)
+  function acaoAgruparDuplicadosAgora() {
+    fecharTodosDropdownsMassa();
+    const agrupados = _agruparDuplicadosPorSkuPai();
+    saveProdutos();
+    renderProdutos();
+    if (agrupados === 0) {
+      alert('Nenhum duplicado encontrado.\n\nProdutos só são agrupados quando o SKU pai bate exatamente (case-insensitive). Produtos com SKU placeholder "anuncio-*" não são agrupados.');
+    } else {
+      alert('📋 ' + agrupados + ' produto(s) agrupado(s) como duplicado(s).\n\nO mais antigo de cada grupo virou PAI. Os outros viraram filhos (escondidos da lista, acessíveis ao clicar no pai).');
+    }
+  }
+  
   async function acaoMassaRecriarVinculosFaltantes() {
     fecharTodosDropdownsMassa();
     const ids = Array.from(_prodSelecionados);
@@ -10435,26 +10452,15 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   function acaoMassaSelecionarTodos() {
-    // Seleciona todos os produtos visíveis no filtro atual
-    const busca = (document.getElementById('prodBusca')?.value || '').toLowerCase().trim();
-    const filtroLoja = document.getElementById('prodFiltroLoja')?.value || '';
-    produtosErp.forEach(p => {
-      if (_filtroProdStatus === 'faltantes') {
-        if (!temDadosFaltantes(p)) return;
-      } else if (_filtroProdStatus !== 'todos' && p.status !== _filtroProdStatus) {
-        return;
-      } else if (_filtroProdStatus === 'todos' && p.status === 'excluido') {
-        return;
-      }
-      if (filtroLoja && String(p.lojaId) !== String(filtroLoja)) return;
-      if (busca) {
-        const txt = (p.nome + ' ' + p.skuPai).toLowerCase();
-        if (!txt.includes(busca)) return;
-      }
-      _prodSelecionados.add(String(p.id));  // SEMPRE string
+    // Pega DIRETO os cards visíveis no DOM — respeita TODOS os filtros aplicados
+    const cards = document.querySelectorAll('#prodLista [data-prod-id]');
+    cards.forEach(c => {
+      const id = c.dataset.prodId;
+      if (id) _prodSelecionados.add(String(id));
     });
     atualizarBarraSelecao();
     renderProdutos();
+    showToast('✓ ' + _prodSelecionados.size + ' produto(s) selecionado(s)');
   }
   
   // === AÇÃO MASSA: preencher faltantes com IA ===
@@ -15165,6 +15171,35 @@ São o mesmo produto?`;
         }
       });
       
+      // PADRÃO: produtos sem vínculo em nenhum mk E sem flag exportado → rascunho
+      // (evita "bagunça" de produtos limbo entre ativo e publicado)
+      let viraramRascunho = 0;
+      produtosErp.forEach(p => {
+        if (p.status !== 'ativo') return;
+        const temVinc = (p.variacoes || []).some(v => (v.vinculos || []).length > 0);
+        const exportadoEmAlgum = p.marketplaces && Object.values(p.marketplaces).some(m => m && m.exportado);
+        if (!temVinc && !exportadoEmAlgum) {
+          p.status = 'rascunho';
+          p.movidoRascunhoEm = new Date().toISOString();
+          viraramRascunho++;
+        }
+      });
+      if (viraramRascunho > 0) {
+        console.log('[reconciliação] ' + viraramRascunho + ' produto(s) sem vínculo viraram rascunho');
+        stats.viraramRascunho = viraramRascunho;
+      }
+      
+      // AGRUPAMENTO AUTOMÁTICO de duplicados por SKU pai
+      // Pra cada grupo de produtos com mesmo skuPai (case-insensitive):
+      // - O mais antigo (criadoEm) vira pai
+      // - Os outros viram filhos (duplicadoDeId = pai.id)
+      // Filhos ficam escondidos da lista principal automaticamente.
+      const agrupados = _agruparDuplicadosPorSkuPai();
+      if (agrupados > 0) {
+        console.log('[reconciliação] ' + agrupados + ' produto(s) agrupado(s) como duplicado(s) por SKU pai');
+        stats.duplicadosAgrupados = agrupados;
+      }
+      
       // Adiciona aos ignorados
       if (anunciosFantasmasIds.size > 0) {
         try {
@@ -15218,10 +15253,13 @@ São o mesmo produto?`;
   // Conta ANÚNCIOS distintos por marketplace.
   // Um produto interno pode ter 1 anuncio (com varias variacoes) ou varios anuncios
   // (cada um com suas variacoes). Conta cada anuncioId unico por marketplace.
+  // Se o produto for PAI de duplicados, SOMA os vínculos dos filhos também.
   function contarVinculosPorMarketplace(produto) {
     const cont = {};
     if (!produto || !produto.variacoes) return cont;
     const seen = {}; // mk -> Set de anuncioIds
+    
+    // Vínculos do próprio produto
     for (const v of produto.variacoes) {
       for (const vi of (v.vinculos || [])) {
         if (!vi.marketplace || !vi.anuncioId) continue;
@@ -15229,6 +15267,21 @@ São o mesmo produto?`;
         seen[vi.marketplace].add(String(vi.anuncioId));
       }
     }
+    
+    // Vínculos dos FILHOS duplicados (este produto é pai?)
+    const filhos = produtosErp.filter(p => 
+      p.duplicadoDeId && String(p.duplicadoDeId) === String(produto.id) && p.status !== 'excluido'
+    );
+    filhos.forEach(filho => {
+      for (const v of (filho.variacoes || [])) {
+        for (const vi of (v.vinculos || [])) {
+          if (!vi.marketplace || !vi.anuncioId) continue;
+          if (!seen[vi.marketplace]) seen[vi.marketplace] = new Set();
+          seen[vi.marketplace].add(String(vi.anuncioId));
+        }
+      }
+    });
+    
     for (const mk in seen) cont[mk] = seen[mk].size;
     return cont;
   }
@@ -15273,22 +15326,45 @@ São o mesmo produto?`;
     const cont = document.getElementById('vinculosLista');
     const resumo = document.getElementById('vinculosResumo');
     
-    const total = contarVinculosProduto(produto);
-    const susp = contarVinculosSuspeitos(produto);
-    const variacoesComVinculo = (produto.variacoes || []).filter(v => v.vinculos && v.vinculos.length > 0);
+    // Coleta filhos duplicados
+    const filhos = produtosErp.filter(p => 
+      p.duplicadoDeId && String(p.duplicadoDeId) === String(produto.id) && p.status !== 'excluido'
+    );
+    
+    // Reúne variações com vínculo do PAI + todos os FILHOS
+    const todasComVinculo = [];
+    (produto.variacoes || []).forEach(v => {
+      if (v.vinculos && v.vinculos.length > 0) {
+        todasComVinculo.push({ variacao: v, donoNome: produto.nome, donoId: produto.id, ehFilho: false });
+      }
+    });
+    filhos.forEach(f => {
+      (f.variacoes || []).forEach(v => {
+        if (v.vinculos && v.vinculos.length > 0) {
+          todasComVinculo.push({ variacao: v, donoNome: f.nome, donoId: f.id, ehFilho: true });
+        }
+      });
+    });
+    
+    const total = todasComVinculo.reduce((s, x) => s + x.variacao.vinculos.length, 0);
+    const susp = todasComVinculo.reduce((s, x) => s + x.variacao.vinculos.filter(vi => vi.skuSuspeito).length, 0);
     
     // Resumo no topo
     if (total === 0) {
       resumo.innerHTML = `Este produto não tem nenhum anúncio vinculado ainda. Os vínculos são criados automaticamente quando você <strong>sincroniza uma loja</strong> e o SKU bate com alguma variação deste produto.`;
     } else {
-      let resumoTxt = `<strong>${total} anúncio(s)</strong> vinculado(s) em <strong>${variacoesComVinculo.length} variação(ões)</strong>.`;
+      let resumoTxt = `<strong>${total} anúncio(s)</strong> vinculado(s) em <strong>${todasComVinculo.length} variação(ões)</strong>`;
+      if (filhos.length > 0) {
+        resumoTxt += ` · 📋 <strong>${filhos.length} produto(s) duplicado(s)</strong> agrupado(s) por SKU pai`;
+      }
+      resumoTxt += '.';
       if (susp > 0) {
         resumoTxt += ` <strong style="color:#92400e">⚠ ${susp} com SKU suspeito</strong> — revise abaixo.`;
       }
       resumo.innerHTML = resumoTxt;
     }
     
-    if (variacoesComVinculo.length === 0) {
+    if (todasComVinculo.length === 0) {
       cont.innerHTML = `<div class="empty-state-v2">
         <div class="empty-icon-v2">🔗</div>
         <div class="empty-title-v2">Sem vínculos ainda</div>
@@ -15297,18 +15373,24 @@ São o mesmo produto?`;
       return;
     }
     
-    // Renderiza grupos por variação
-    cont.innerHTML = variacoesComVinculo.map(varInterna => {
+    // Renderiza grupos por variação (incluindo filhos duplicados)
+    cont.innerHTML = todasComVinculo.map(({ variacao: varInterna, donoNome, donoId, ehFilho }) => {
       const vincs = varInterna.vinculos || [];
       const vincSusp = vincs.filter(v => v.skuSuspeito).length;
+      const corBorda = ehFilho ? '#a78bfa' : '#e5e7eb';
+      const bgHeader = ehFilho ? '#faf5ff' : '#f9fafb';
+      const seloFilho = ehFilho ? '<span style="background:#7c3aed;color:white;padding:2px 7px;border-radius:6px;font-size:9px;font-weight:800;margin-left:6px">📋 DUPLICADO</span>' : '';
       
-      return `<div style="background:white;border:1px solid #e5e7eb;border-radius:14px;margin-bottom:12px;overflow:hidden">
+      return `<div style="background:white;border:1.5px solid ${corBorda};border-radius:14px;margin-bottom:12px;overflow:hidden">
         <!-- Header da variação -->
-        <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:#f9fafb;border-bottom:1px solid #f3f4f6">
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:${bgHeader};border-bottom:1px solid #f3f4f6">
           <div style="width:36px;height:36px;background:#1e2a47;color:white;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px">🎨</div>
           <div style="flex:1">
-            <div style="font-weight:800;color:#1e2a47;font-size:14px">${escapeHtml(varInterna.nome || 'Variação')}</div>
-            <div style="font-size:11px;color:#6b7280;margin-top:2px">SKU interno: <code style="background:#e5e7eb;padding:1px 6px;border-radius:4px">${escapeHtml(varInterna.sku || '—')}</code> · ${vincs.length} vínculo(s)${vincSusp > 0 ? ' · ⚠ ' + vincSusp + ' suspeito(s)' : ''}</div>
+            <div style="font-weight:800;color:#1e2a47;font-size:14px">${escapeHtml(varInterna.nome || 'Variação')}${seloFilho}</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px">
+              ${ehFilho ? '📋 ' + escapeHtml(donoNome) + ' · ' : ''}
+              SKU interno: <code style="background:#e5e7eb;padding:1px 6px;border-radius:4px">${escapeHtml(varInterna.sku || '—')}</code> · ${vincs.length} vínculo(s)${vincSusp > 0 ? ' · ⚠ ' + vincSusp + ' suspeito(s)' : ''}
+            </div>
           </div>
         </div>
         
@@ -15438,6 +15520,46 @@ São o mesmo produto?`;
       return loja.idBanco || loja.id;
     }
     return null;
+  }
+  
+  // Agrupa produtos com mesmo SKU pai como duplicados.
+  // - O mais antigo (criadoEm) vira PAI
+  // - Os outros viram FILHOS (duplicadoDeId = pai.id) — escondidos da lista
+  // Retorna quantos foram agrupados.
+  function _agruparDuplicadosPorSkuPai() {
+    const grupos = {};
+    produtosErp.forEach(p => {
+      if (p.status === 'excluido') return;
+      if (!p.skuPai) return;
+      const key = String(p.skuPai).toLowerCase().trim();
+      if (!key || key.startsWith('anuncio-')) return; // placeholder não agrupa
+      if (!grupos[key]) grupos[key] = [];
+      grupos[key].push(p);
+    });
+    
+    let agrupados = 0;
+    Object.values(grupos).forEach(prods => {
+      if (prods.length < 2) return; // sem duplicata
+      // Ordena por criadoEm — mais antigo vira pai
+      prods.sort((a, b) => String(a.criadoEm || '').localeCompare(String(b.criadoEm || '')));
+      const pai = prods[0];
+      // Se o "pai" já é filho de outro, usa o pai dele
+      const paiReal = pai.duplicadoDeId 
+        ? (produtosErp.find(p => String(p.id) === String(pai.duplicadoDeId)) || pai)
+        : pai;
+      
+      for (let i = 1; i < prods.length; i++) {
+        const filho = prods[i];
+        if (String(filho.id) === String(paiReal.id)) continue;
+        if (filho.duplicadoDeId && String(filho.duplicadoDeId) === String(paiReal.id)) continue;
+        filho.duplicadoDeId = paiReal.id;
+        filho.agrupadoEm = new Date().toISOString();
+        agrupados++;
+      }
+    });
+    
+    if (agrupados > 0) saveProdutos();
+    return agrupados;
   }
   
   // Anuncio_id às vezes vem com ":N" no final (row_id de chart) — limpa
