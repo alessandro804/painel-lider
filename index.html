@@ -4933,6 +4933,18 @@
   </div>
 </div>
 
+<!-- MODAL: cópias do produto -->
+<div class="dup-overlay" id="dupCopiasOverlay" onclick="if(event.target.id==='dupCopiasOverlay')fecharCopiasModal()">
+  <div class="dup-modal" style="max-width:680px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0">📋 Cópias do anúncio</h3>
+      <button type="button" onclick="fecharCopiasModal()" style="background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;width:28px;height:28px;cursor:pointer;font-weight:700">×</button>
+    </div>
+    <div style="font-size:12px;color:#6b7280;margin-bottom:14px" id="copiasOrigemNome">—</div>
+    <div id="copiasLista" style="max-height:60vh;overflow-y:auto"></div>
+  </div>
+</div>
+
 <!-- MODAL: progresso da duplicacao -->
 <div class="dup-overlay" id="dupProgressOverlay" onclick="if(event.target.id==='dupProgressOverlay')fecharDupProgress()">
   <div class="dup-modal">
@@ -5136,6 +5148,7 @@
     <div class="modal-v2-footer">
       <button class="modal-v2-btn modal-v2-btn-delete" id="prodDeleteBtn" onclick="excluirProduto()" style="display:none">🗑 Mover para lixeira</button>
       <div class="modal-v2-actions" style="margin-left:auto">
+        <button class="modal-v2-btn modal-v2-btn-secondary" id="prodRecuperarVarBtn" onclick="recuperarVariacoesDoML(_produtoEditandoId)" style="display:none;background:#fef3c7;color:#92400e;border-color:#f59e0b" title="Re-importa variações do ML para corrigir dados que se perderam">🔄 Recuperar variações ML</button>
         <button class="modal-v2-btn modal-v2-btn-secondary" id="prodAtualizarMktBtn" onclick="atualizarTodosVinculosDoProduto(_produtoEditandoId)" style="display:none;background:#3b82f6;color:white;border-color:#3b82f6">🔄 Atualizar nos marketplaces</button>
         <button class="modal-v2-btn modal-v2-btn-secondary" onclick="closeProduto()">Cancelar</button>
         <button class="modal-v2-btn modal-v2-btn-primary" onclick="salvarProduto()">💾 Salvar produto</button>
@@ -9289,6 +9302,16 @@
     };
     
     let filtrados = produtosErp.filter(p => {
+      // ESCONDE DUPLICADOS: produtos com duplicadoDeId não aparecem na lista
+      // principal — só são acessíveis pelo modal "Ver cópias" do pai.
+      // Exceção: se o pai foi excluído, mostra como produto normal (orfão).
+      if (p.duplicadoDeId) {
+        const paiExiste = produtosErp.some(pp => 
+          String(pp.id) === String(p.duplicadoDeId) && pp.status !== 'excluido'
+        );
+        if (paiExiste) return false;
+      }
+      
       // Filtros de status (botões)
       if (_filtroProdStatus === 'faltantes') {
         if (!temDadosFaltantes(p)) return false;
@@ -9440,6 +9463,14 @@
       if (qtdFaltantes > 0) {
         const tt = 'Faltam: ' + faltantes.join(', ');
         vincBadges += `<span class="prod-card-mkt-chip" style="background:#ea580c" title="${escapeHtml(tt)}">⚠ ${qtdFaltantes} falta</span>`;
+      }
+      
+      // Badge de duplicados (cópias deste produto)
+      const qtdCopias = produtosErp.filter(pc => 
+        String(pc.duplicadoDeId) === String(p.id) && pc.status !== 'excluido'
+      ).length;
+      if (qtdCopias > 0) {
+        vincBadges += `<span class="prod-card-mkt-chip" style="background:#7c3aed;cursor:pointer" title="Clique pra ver as ${qtdCopias} cópia(s)" onclick="event.stopPropagation();abrirCopiasDoProduto('${p.id}')">📋 ${qtdCopias} cópia${qtdCopias>1?'s':''}</span>`;
       }
       
       // Checkbox de seleção (canto superior esquerdo do card)
@@ -9987,10 +10018,12 @@ Responda APENAS a descrição nova, sem aspas.`;
         delete novo.criadoEm;
         novo.atualizadoEm = new Date().toISOString();
         novo.origem = 'duplicado';
+        novo.duplicadoDeId = p.id; // VINCULO ao pai: aparece agrupado no card
+        novo.duplicadoDeIdBanco = p.idBanco || null;
         // Limpa vínculos pra forçar nova exportação
         (novo.variacoes || []).forEach(v => { 
           v.vinculos = []; 
-          delete v.idBanco; // mesma logica
+          delete v.idBanco;
         });
         // Limpa marketplaces.exportado
         novo.marketplaces = {};
@@ -10146,10 +10179,39 @@ Responda APENAS a descrição nova, sem aspas.`;
             if (data.detalhes) {
               data.detalhes.slice(0, 5).forEach(d => dupLogStep(`    • ${d}`, 'err'));
             }
+            // ROLLBACK: produto duplicado nao exportou -> deleta do banco e local
+            // (evita poluir a tela com produtos "fantasma" sem anuncio)
+            dupLogStep(`  ↶ Rollback: removendo produto duplicado do sistema...`);
+            try {
+              if (novo.idBanco) {
+                await fetch(BACKEND_URL + '/api/produtos/' + novo.idBanco, {
+                  method: 'DELETE',
+                  headers: { 'x-api-token': getApiToken() }
+                });
+              }
+              // Remove do array local (busca por id local que setamos)
+              const idx = produtosErp.findIndex(x => String(x.id) === String(novo.id));
+              if (idx >= 0) produtosErp.splice(idx, 1);
+              dupLogStep(`  ✓ Rollback OK`, 'ok');
+            } catch(eR) {
+              dupLogStep(`  ⚠ Rollback falhou: ${eR.message} — produto pode ter ficado na lixeira`, 'err');
+            }
             errCopias++;
           }
         } catch(e) {
           dupLogStep(`  ✗ Erro de rede: ${e.message}`, 'err');
+          // Rollback tb em erro de rede
+          try {
+            if (novo.idBanco) {
+              await fetch(BACKEND_URL + '/api/produtos/' + novo.idBanco, {
+                method: 'DELETE',
+                headers: { 'x-api-token': getApiToken() }
+              });
+            }
+            const idx = produtosErp.findIndex(x => String(x.id) === String(novo.id));
+            if (idx >= 0) produtosErp.splice(idx, 1);
+            dupLogStep(`  ↶ Rollback OK`, 'ok');
+          } catch(_) {}
           errCopias++;
         }
         
@@ -10166,6 +10228,177 @@ Responda APENAS a descrição nova, sem aspas.`;
     const btnC = document.getElementById('dupBtnCancelar');
     if (btnC) { btnC.disabled = true; btnC.textContent = '✓ Concluído'; }
     showToast(`Duplicação concluída: ${okCopias} OK · ${errCopias} erro(s)`);
+  }
+  
+  function abrirCopiasDoProduto(produtoId) {
+    const pai = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!pai) { showToast('Produto pai não encontrado', true); return; }
+    
+    const copias = produtosErp.filter(p => 
+      String(p.duplicadoDeId) === String(produtoId) && p.status !== 'excluido'
+    );
+    
+    document.getElementById('copiasOrigemNome').innerHTML = 
+      '<strong>Original:</strong> ' + escapeHtml(pai.nome) + 
+      ' · ' + copias.length + ' cópia(s)';
+    
+    const lista = document.getElementById('copiasLista');
+    if (copias.length === 0) {
+      lista.innerHTML = '<div style="padding:20px;text-align:center;color:#9ca3af">Nenhuma cópia ainda. Use o botão "📋 Duplicar anúncio" no card pra criar.</div>';
+    } else {
+      lista.innerHTML = copias.map(c => {
+        const estoque = (c.variacoes || []).reduce((s,v) => s + (parseInt(v.estoque)||0), 0);
+        const foto = c.fotos && c.fotos[0] ? c.fotos[0] : '';
+        const fotoHtml = foto 
+          ? `<img src="${escapeHtml(foto)}" style="width:48px;height:48px;object-fit:cover;border-radius:6px">` 
+          : `<div style="width:48px;height:48px;background:#f3f4f6;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`;
+        
+        // Conta anuncios ML/SP/etc dessa cópia
+        const contMkt = contarVinculosPorMarketplace(c);
+        const mktTxt = Object.entries(contMkt).map(([mk, n]) => {
+          const sigla = {mercadolivre:'ML',shopee:'SP',tiktok:'TT',shein:'SH'}[mk] || mk;
+          return sigla + ' ' + n;
+        }).join(' · ') || '<span style="color:#9ca3af">sem anúncios</span>';
+        
+        return `<div style="display:flex;gap:12px;padding:10px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;align-items:center">
+          ${fotoHtml}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:700;color:#1e2a47;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.nome)}</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px">SKU: ${escapeHtml(c.skuPai||'—')} · ${estoque} un · R$ ${(parseFloat(c.preco)||0).toFixed(2)}</div>
+            <div style="font-size:11px;margin-top:4px">${mktTxt}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <button onclick="fecharCopiasModal();abrirEditarProduto('${c.id}')" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">✏️ Abrir</button>
+            <button onclick="excluirCopia('${c.id}','${produtoId}')" style="padding:6px 12px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">🗑 Excluir</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    
+    document.getElementById('dupCopiasOverlay').classList.add('active');
+  }
+  
+  function fecharCopiasModal() {
+    document.getElementById('dupCopiasOverlay').classList.remove('active');
+    renderProdutos();
+  }
+  
+  async function excluirCopia(copiaId, paiId) {
+    const c = produtosErp.find(x => String(x.id) === String(copiaId));
+    if (!c) return;
+    if (!confirm('Excluir a cópia "' + c.nome + '" do sistema?\n\n⚠ Isso NÃO remove o anúncio do marketplace — só desvincula do ERP.')) return;
+    
+    try {
+      if (c.idBanco) {
+        await fetch(BACKEND_URL + '/api/produtos/' + c.idBanco, {
+          method: 'DELETE',
+          headers: { 'x-api-token': getApiToken() }
+        });
+      }
+      const idx = produtosErp.findIndex(x => String(x.id) === String(copiaId));
+      if (idx >= 0) produtosErp.splice(idx, 1);
+      saveProdutosLocal();
+      showToast('✓ Cópia removida');
+      abrirCopiasDoProduto(paiId); // re-render
+    } catch(e) {
+      showToast('Erro: ' + e.message, true);
+    }
+  }
+  
+  // Re-importa variações de UM anúncio específico do ML para corrigir
+  // o caso de produto interno ter perdido variações.
+  async function recuperarVariacoesDoML(produtoId) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!p) { showToast('Produto não encontrado', true); return; }
+    
+    // Pega o primeiro anuncioId do ML vinculado
+    let anuncioId = null;
+    for (const v of (p.variacoes || [])) {
+      for (const vinc of (v.vinculos || [])) {
+        if (vinc.marketplace === 'mercadolivre' && vinc.anuncioId) {
+          anuncioId = vinc.anuncioId;
+          break;
+        }
+      }
+      if (anuncioId) break;
+    }
+    if (!anuncioId) {
+      showToast('Produto sem vínculo no Mercado Livre', true);
+      return;
+    }
+    
+    const lojaProduto = lojasErp.find(l => String(l.id) === String(p.lojaId));
+    if (!lojaProduto) { showToast('Loja não encontrada', true); return; }
+    const lojaIdBanco = await garantirLojaNoBanco(lojaProduto);
+    if (!lojaIdBanco) { showToast('Loja sem idBanco', true); return; }
+    
+    if (!confirm('Re-importar variações do anúncio ' + anuncioId + ' do ML?\n\nVai mesclar variações ausentes (não sobrescreve as existentes).')) return;
+    
+    showToast('🔄 Buscando anúncio no ML...');
+    try {
+      // Re-sincroniza a loja inteira (vai trazer todas as variacoes deste e outros anuncios)
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/sincronizar', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        showToast('Erro: ' + (data.erro || 'desconhecido'), true);
+        return;
+      }
+      
+      // Procura o anuncio especifico
+      const anuncio = (data.produtos || []).find(a => 
+        String(a.id) === String(anuncioId) || String(a.mlb) === String(anuncioId)
+      );
+      if (!anuncio) {
+        showToast('Anúncio não encontrado na resposta do ML', true);
+        return;
+      }
+      
+      // Mescla variações: adiciona as que faltam
+      const skusExistentes = new Set((p.variacoes || []).map(v => 
+        (v.cor || '').toLowerCase().trim() + '|' + (v.tamanho || '').toLowerCase().trim()
+      ));
+      let adicionadas = 0;
+      for (const varExt of (anuncio.variacoes || [])) {
+        const key = (varExt.cor || '').toLowerCase().trim() + '|' + (varExt.tamanho || '').toLowerCase().trim();
+        if (!skusExistentes.has(key)) {
+          // Adiciona variacao com vinculo ao anuncio
+          p.variacoes.push({
+            id: gerarId(),
+            cor: varExt.cor || '',
+            tamanho: varExt.tamanho || '',
+            nome: varExt.nome || '',
+            sku: varExt.sku || '',
+            ean: varExt.ean || '',
+            estoque: varExt.estoque || 0,
+            preco: varExt.preco || 0,
+            fotos: varExt.fotos || [],
+            vinculos: [{
+              marketplace: 'mercadolivre',
+              anuncioId: anuncio.id,
+              variacaoExternaId: varExt.id,
+              lojaIdBanco: lojaIdBanco,
+              lojaId: lojaProduto.id,
+            }]
+          });
+          adicionadas++;
+        }
+      }
+      
+      if (adicionadas > 0) {
+        p.atualizadoEm = new Date().toISOString();
+        await salvarProdutoNoBackend(p);
+        saveProdutosLocal();
+        renderProdutos();
+        showToast('✓ ' + adicionadas + ' variação(ões) recuperada(s)');
+      } else {
+        showToast('Nenhuma variação faltante — já está completo');
+      }
+    } catch(e) {
+      showToast('Erro: ' + e.message, true);
+    }
   }
   
   function abrirEditarProduto(id) {
@@ -10192,6 +10425,12 @@ Responda APENAS a descrição nova, sem aspas.`;
       const temVinc = contarVinculosProduto(p) > 0;
       btnAtu.style.display = temVinc ? 'inline-block' : 'none';
       btnAtu.textContent = '🔄 Atualizar ' + contarVinculosProduto(p) + ' anúncio(s)';
+    }
+    // Mostra "Recuperar variações ML" se tem vinculo ML
+    const btnRec = document.getElementById('prodRecuperarVarBtn');
+    if (btnRec) {
+      const contMk = contarVinculosPorMarketplace(p);
+      btnRec.style.display = (contMk.mercadolivre > 0) ? 'inline-block' : 'none';
     }
     popularSelectsProduto();
     document.getElementById('prodLoja').value = p.lojaId || '';
