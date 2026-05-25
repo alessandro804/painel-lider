@@ -4892,6 +4892,8 @@
             <button onclick="acaoMassaMudarStatus('rascunho')">📝 Marcar como Rascunho</button>
             <hr>
             <button onclick="acaoMassaMudarStatus('excluido')" style="color:#dc2626">🗑 Mover pra Lixeira</button>
+            <hr>
+            <button onclick="acaoMassaExcluirAnunciosML()" style="color:#dc2626;background:#fee2e2">🗑 Excluir anúncios do ML (irreversível)</button>
           </div>
         </div>
         
@@ -5724,6 +5726,7 @@
         💡 Vínculos amarelos têm SKU diferente do interno. Você pode corrigir o SKU interno ou ignorar a divergência.
       </div>
       <div class="modal-v2-actions">
+        <button class="modal-v2-btn modal-v2-btn-secondary" style="background:#dc2626;color:white;border:none" onclick="abrirExcluirTodosAnunciosML()" title="Excluir TODOS os anúncios deste produto no Mercado Livre">🗑 Excluir TODOS do ML</button>
         <button class="modal-v2-btn modal-v2-btn-secondary" onclick="closeVinculos()">Fechar</button>
       </div>
     </div>
@@ -8625,21 +8628,19 @@ Retorne JSON: {"ID": "valor", ...}`;
   let _demandaIdAtual = null; // setado em editarDemanda
   
   async function _persistirImagensNaDemanda() {
-    // Se a demanda já está salva no banco, atualiza as imagens dela imediatamente
+    // Se a demanda já está salva localmente, atualiza as imagens dela imediatamente
     if (!_demandaIdAtual) return;
-    const dem = demandasErp.find(d => String(d.id) === String(_demandaIdAtual));
-    if (!dem) return;
-    const urls = _imagensDemandaSessao.filter(i => i.url).map(i => ({ url: i.url, nome: i.nome }));
+    const dem = demandas.find(d => String(d.id) === String(_demandaIdAtual));
+    if (!dem) {
+      console.warn('[demanda] _persistirImagensNaDemanda: demanda não encontrada id=' + _demandaIdAtual);
+      return;
+    }
+    const urls = _imagensDemandaSessao
+      .filter(i => i.url && i.status === 'ok')
+      .map(i => ({ url: i.url, nome: i.nome }));
     dem.imagens = urls;
     saveDemandas();
-    // Persiste no backend se houver
-    try {
-      if (typeof salvarDemandaNoBackend === 'function' && dem.idBanco) {
-        await salvarDemandaNoBackend(dem);
-      }
-    } catch(e) {
-      console.warn('[demanda] falha persistir imagens no backend:', e.message);
-    }
+    console.log('[demanda] imagens persistidas:', urls.length, 'urls salvas em demanda', _demandaIdAtual);
   }
   
   async function adicionarImagensDemanda(files) {
@@ -9860,6 +9861,109 @@ Retorne JSON: {"ID": "valor", ...}`;
     _prodSelecionados.clear();
     atualizarBarraSelecao();
     renderProdutos();
+  }
+  
+  // AÇÃO EM MASSA: excluir TODOS os anúncios ML dos produtos selecionados
+  async function acaoMassaExcluirAnunciosML() {
+    fecharTodosDropdownsMassa();
+    const ids = Array.from(_prodSelecionados);
+    if (ids.length === 0) return;
+    
+    // Coleta TODOS os vínculos ML dos produtos selecionados
+    const todos = [];
+    ids.forEach(prodId => {
+      const p = produtosErp.find(x => String(x.id) === String(prodId));
+      if (!p) return;
+      (p.variacoes || []).forEach(v => {
+        (v.vinculos || []).forEach(vinc => {
+          if (vinc.marketplace === 'mercadolivre' || vinc.marketplace === 'mercado_livre') {
+            todos.push({ produto: p, variacao: v, vinc });
+          }
+        });
+      });
+    });
+    
+    if (todos.length === 0) {
+      alert('Nenhum dos produtos selecionados tem anúncios do Mercado Livre.');
+      return;
+    }
+    
+    const digitado = prompt(
+      '⚠ AÇÃO IRREVERSÍVEL EM MASSA ⚠\n\n' +
+      'Você está prestes a EXCLUIR ' + todos.length + ' anúncio(s) do Mercado Livre, ' +
+      'distribuídos em ' + ids.length + ' produto(s) selecionado(s).\n\n' +
+      'Cada anúncio será PAUSADO, FECHADO e DELETADO no ML.\n' +
+      'Esta operação não pode ser desfeita.\n\n' +
+      'Para confirmar, digite EXCLUIR TUDO (em maiúsculas):'
+    );
+    if (digitado !== 'EXCLUIR TUDO') {
+      if (digitado !== null) alert('❌ Confirmação incorreta. Nada foi feito.');
+      return;
+    }
+    
+    // Modal de progresso
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+    modal.innerHTML = `<div style="background:white;border-radius:14px;padding:24px;width:min(600px,90vw);max-height:80vh;overflow:auto">
+      <h3 style="margin:0 0 12px;font-size:16px;color:#1e2a47">🗑 Excluindo ${todos.length} anúncio(s) em ${ids.length} produto(s)...</h3>
+      <div id="excProg" style="font-size:12px;color:#374151;font-family:monospace;white-space:pre-wrap;background:#f9fafb;padding:10px;border-radius:8px;max-height:400px;overflow:auto">Iniciando...</div>
+      <div style="margin-top:14px;text-align:right">
+        <button id="excBtn" style="padding:8px 14px;background:#1e2a47;color:white;border:none;border-radius:8px;cursor:pointer;display:none">Fechar</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    const prog = modal.querySelector('#excProg');
+    const btn = modal.querySelector('#excBtn');
+    
+    let sucessos = 0, falhas = 0;
+    const ignorados = (() => { 
+      try { return JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]'); } 
+      catch(_) { return []; }
+    })();
+    
+    for (let i = 0; i < todos.length; i++) {
+      const { produto, variacao, vinc } = todos[i];
+      const linha = (i+1) + '/' + todos.length + ' [' + produto.nome.slice(0,20) + '] ' + (vinc.titulo || vinc.anuncioId).slice(0,30);
+      prog.textContent += '\n⏳ ' + linha;
+      prog.scrollTop = prog.scrollHeight;
+      
+      try {
+        if (!vinc.lojaId) { prog.textContent += ' ⚠ sem lojaId'; falhas++; continue; }
+        const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + vinc.lojaId + '/anuncio/' + vinc.anuncioId;
+        const resp = await fetch(url, { 
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + (currentUser && currentUser.token || '') }
+        });
+        const data = await resp.json();
+        if (resp.ok && data.ok) {
+          prog.textContent = prog.textContent.replace('⏳ ' + linha, '✓ ' + linha);
+          sucessos++;
+        } else {
+          prog.textContent = prog.textContent.replace('⏳ ' + linha, '✗ ' + linha + ' - ' + (data.erro||'falhou').slice(0,50));
+          falhas++;
+        }
+        // Sucesso OU falha: marca como ignorado e remove vínculo local
+        if (!ignorados.includes(String(vinc.anuncioId))) ignorados.push(String(vinc.anuncioId));
+        variacao.vinculos = variacao.vinculos.filter(v => String(v.id) !== String(vinc.id));
+      } catch(e) {
+        prog.textContent += ' ✗ ' + e.message.slice(0,40);
+        falhas++;
+      }
+      prog.scrollTop = prog.scrollHeight;
+    }
+    
+    localStorage.setItem('lc_anuncios_ignorados', JSON.stringify(ignorados));
+    saveProdutos();
+    
+    prog.textContent += '\n\n━━━━━━━━━━\n✓ ' + sucessos + ' excluído(s) | ✗ ' + falhas + ' falhou(aram)';
+    if (falhas > 0) prog.textContent += '\nFalhas foram marcadas como ignoradas — não voltam em sincronizações.';
+    btn.style.display = 'inline-block';
+    btn.onclick = () => {
+      modal.remove();
+      _prodSelecionados.clear();
+      atualizarBarraSelecao();
+      renderProdutos();
+    };
   }
   
   // === DROPDOWNS DAS AÇÕES EM MASSA ===
@@ -14979,6 +15083,121 @@ São o mesmo produto?`;
       // ERRO de rede — NÃO mexe no produto local
       alert('❌ Erro ao se comunicar com o backend:\n\n' + e.message + '\n\nO vínculo permanece como está.');
     }
+  }
+  
+  // EXCLUIR EM MASSA — todos os anúncios ML deste produto
+  async function abrirExcluirTodosAnunciosML() {
+    const produto = _produtoVinculosAtual;
+    if (!produto) return;
+    
+    // Coleta TODOS os vínculos ML deste produto
+    const vincsML = [];
+    (produto.variacoes || []).forEach(v => {
+      (v.vinculos || []).forEach(vinc => {
+        if (vinc.marketplace === 'mercadolivre' || vinc.marketplace === 'mercado_livre') {
+          vincsML.push({ variacao: v, vinc });
+        }
+      });
+    });
+    
+    if (vincsML.length === 0) {
+      alert('Este produto não tem nenhum anúncio do Mercado Livre vinculado.');
+      return;
+    }
+    
+    // Confirmação SEVERA com digitação obrigatória
+    const lista = vincsML.slice(0, 10).map(x => '• ' + (x.vinc.titulo || x.vinc.anuncioId)).join('\n');
+    const extras = vincsML.length > 10 ? '\n... e mais ' + (vincsML.length - 10) : '';
+    
+    const digitado = prompt(
+      '⚠ AÇÃO IRREVERSÍVEL EM MASSA ⚠\n\n' +
+      'Você está prestes a EXCLUIR ' + vincsML.length + ' anúncio(s) DIRETAMENTE no Mercado Livre:\n\n' +
+      lista + extras + '\n\n' +
+      'Cada anúncio será PAUSADO, FECHADO e DELETADO no ML.\n' +
+      'Esta operação não pode ser desfeita.\n\n' +
+      'Para confirmar, digite EXCLUIR TUDO (em maiúsculas):'
+    );
+    
+    if (digitado !== 'EXCLUIR TUDO') {
+      if (digitado !== null) {
+        alert('❌ Confirmação incorreta. Nenhuma ação foi feita.');
+      }
+      return;
+    }
+    
+    // Modal de progresso
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+    modal.innerHTML = `<div style="background:white;border-radius:14px;padding:24px;width:min(500px,90vw);max-height:80vh;overflow:auto">
+      <h3 style="margin:0 0 12px;font-size:16px;color:#1e2a47">🗑 Excluindo ${vincsML.length} anúncio(s)...</h3>
+      <div id="excProgresso" style="font-size:13px;color:#374151;font-family:monospace;white-space:pre-wrap;background:#f9fafb;padding:10px;border-radius:8px;max-height:300px;overflow:auto">Iniciando...</div>
+      <div style="margin-top:14px;text-align:right">
+        <button id="excFechar" style="padding:8px 14px;background:#1e2a47;color:white;border:none;border-radius:8px;cursor:pointer;display:none">Fechar</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    const progresso = modal.querySelector('#excProgresso');
+    const btnFechar = modal.querySelector('#excFechar');
+    
+    let sucessos = 0, falhas = 0;
+    const ignorados = (() => { 
+      try { return JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]'); } 
+      catch(_) { return []; }
+    })();
+    
+    for (let i = 0; i < vincsML.length; i++) {
+      const { variacao, vinc } = vincsML[i];
+      const linha = (i+1) + '/' + vincsML.length + ' ' + (vinc.titulo || vinc.anuncioId).slice(0, 40);
+      progresso.textContent += '\n⏳ ' + linha + '...';
+      progresso.scrollTop = progresso.scrollHeight;
+      
+      try {
+        if (!vinc.lojaId) {
+          progresso.textContent += ' ⚠ sem lojaId';
+          falhas++;
+          continue;
+        }
+        const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + vinc.lojaId + '/anuncio/' + vinc.anuncioId;
+        const resp = await fetch(url, { 
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + (currentUser && currentUser.token || '') }
+        });
+        const data = await resp.json();
+        if (resp.ok && data.ok) {
+          progresso.textContent = progresso.textContent.replace('⏳ ' + linha + '...', '✓ ' + linha);
+          sucessos++;
+          if (!ignorados.includes(String(vinc.anuncioId))) ignorados.push(String(vinc.anuncioId));
+          // Remove vínculo local
+          variacao.vinculos = variacao.vinculos.filter(v => String(v.id) !== String(vinc.id));
+        } else {
+          progresso.textContent = progresso.textContent.replace('⏳ ' + linha + '...', '✗ ' + linha + ' - ' + (data.erro || 'falhou').slice(0,60));
+          falhas++;
+          // Marca como ignorado também (não polui mais)
+          if (!ignorados.includes(String(vinc.anuncioId))) ignorados.push(String(vinc.anuncioId));
+          // Remove vínculo local mesmo se falhou
+          variacao.vinculos = variacao.vinculos.filter(v => String(v.id) !== String(vinc.id));
+        }
+      } catch(e) {
+        progresso.textContent += ' ✗ ' + e.message.slice(0,40);
+        falhas++;
+      }
+      progresso.scrollTop = progresso.scrollHeight;
+    }
+    
+    // Salva ignorados e produto
+    localStorage.setItem('lc_anuncios_ignorados', JSON.stringify(ignorados));
+    saveProdutos();
+    
+    progresso.textContent += '\n\n━━━━━━━━━━\n✓ ' + sucessos + ' excluído(s) | ✗ ' + falhas + ' falhou(aram)';
+    if (falhas > 0) {
+      progresso.textContent += '\n\nFalhas foram marcadas como ignoradas — não aparecem mais em sincronizações.';
+    }
+    btnFechar.style.display = 'inline-block';
+    btnFechar.onclick = () => {
+      modal.remove();
+      desenharVinculos();
+      renderProdutos();
+    };
   }
   
   // === Chat de melhoria do prompt da IA ===
@@ -23114,6 +23333,10 @@ ${JSON.stringify(metricas, null, 2)}`
         d.tamanhosInput = tamanhosInput;
         d.precoBase = precoBase;
         d.estoqueDefault = estoqueDefault;
+        // SEMPRE atualiza imagens da sessão (corrige bug de "imagem antiga voltava")
+        d.imagens = _imagensDemandaSessao
+          .filter(i => i.url && i.status === 'ok')
+          .map(i => ({ url: i.url, nome: i.nome }));
         if (d.fluxoId !== fluxoId) {
           d.fluxoId = fluxoId;
           d.passosConcluidos = [];
@@ -23137,11 +23360,17 @@ ${JSON.stringify(metricas, null, 2)}`
         tamanhosInput,
         precoBase,
         estoqueDefault,
+        // Imagens da sessão (já no Storage)
+        imagens: _imagensDemandaSessao
+          .filter(i => i.url && i.status === 'ok')
+          .map(i => ({ url: i.url, nome: i.nome })),
         criadoEm: new Date().toISOString(),
         atualizadoEm: new Date().toISOString(),
         concluidoEm: null
       };
       demandas.unshift(novaDemanda);
+      // Marca como demanda atual pra que próximas atualizações de foto persistam direto
+      _demandaIdAtual = novaDemanda.id;
       showToast('✓ Demanda criada');
       
       // Se marcou pra avisar cliente, abre o WhatsApp
