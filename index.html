@@ -9748,8 +9748,33 @@ Retorne JSON: {"ID": "valor", ...}`;
       });
       const data = await resp.json();
       if (data.ok && Array.isArray(data.produtos)) {
-        // o backend devolve com 'id' = id do banco; guardamos como idBanco
-        produtosErp = data.produtos.map(p => ({ ...p, idBanco: p.id, id: p.id }));
+        // Mapeia: id do banco vira idBanco. Pra preservar id local de cópias
+        // recém-criadas, faz merge com o cache atual usando idBanco como chave.
+        const cacheAtual = produtosErp || [];
+        const porIdBanco = {};
+        cacheAtual.forEach(p => {
+          if (p.idBanco != null) porIdBanco[String(p.idBanco)] = p;
+        });
+        
+        produtosErp = data.produtos.map(p => {
+          const existente = porIdBanco[String(p.id)];
+          if (existente) {
+            // Mantém id local + merge campos do backend (banco é fonte de verdade)
+            return { ...existente, ...p, id: existente.id, idBanco: p.id };
+          }
+          // Produto que NÃO está no cache local — usa idBanco como id também
+          return { ...p, idBanco: p.id, id: String(p.id) };
+        });
+        
+        // Mantém cópias locais que ainda não têm idBanco (recém-criadas)
+        const idsBancoVistos = new Set(data.produtos.map(p => String(p.id)));
+        cacheAtual.forEach(p => {
+          if (!p.idBanco) {
+            // Cópia local sem idBanco — preserva
+            produtosErp.push(p);
+          }
+        });
+        
         localStorage.setItem('lider_produtos_v1', JSON.stringify(produtosErp));
         if (typeof renderProdutos === 'function') renderProdutos();
         if (typeof renderCatalogoProdutos === 'function') renderCatalogoProdutos();
@@ -10110,6 +10135,9 @@ Retorne JSON: {"ID": "valor", ...}`;
               const salvo = await salvarProdutoNoBackend(novo);
               if (salvo && salvo.id) {
                 novo.idBanco = salvo.id;
+                // Merge: campos do backend podem ter URLs públicas (fotos), 
+                // guia_tamanhos normalizado, etc. Mantém id local.
+                Object.assign(novo, salvo, { id: novo.id, idBanco: salvo.id });
                 saveProdutos();
               }
             }
