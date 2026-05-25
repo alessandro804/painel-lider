@@ -13346,23 +13346,30 @@ REGRAS:
   // === Exportar produto para marketplace (estrutura — backend pluga aqui) ===
   async function exportarProdutoMarketplace(produtoId, marketplace, opts) {
     opts = opts || {};
-    // 1. Sincroniza o cache com o backend antes de exportar.
-    // Sem isso, podemos enviar fotos em base64 (do cache antigo) ao inves
-    // das URLs do Storage. O ML rejeita base64 com erro 413.
-    try {
-      await carregarProdutosDoBackend();
-    } catch (e) {
-      console.warn('Nao foi possivel sincronizar com o backend antes de exportar:', e);
+    // 1. Sincroniza o cache com o backend antes de exportar — MAS NÃO em modo silencioso
+    // (modo silencioso é usado em fluxos como duplicação em massa onde acabamos de
+    // criar a cópia localmente e o reload sobrescreveria nosso array)
+    if (!opts.silencioso) {
+      try {
+        await carregarProdutosDoBackend();
+      } catch (e) {
+        console.warn('Nao foi possivel sincronizar com o backend antes de exportar:', e);
+      }
     }
     
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
-    if (!p) return;
+    if (!p) {
+      const erro = 'Produto não encontrado no cache local (id=' + produtoId + ')';
+      if (!opts.silencioso) alert('❌ ' + erro);
+      return { ok: false, erro };
+    }
     
     // Verifica pré-requisitos
     const erros = validarProdutoParaExport(p, marketplace);
     if (erros.length > 0) {
-      alert('⚠️ Antes de exportar para ' + marketplace + ', resolva:\n\n• ' + erros.join('\n• '));
-      return;
+      const msg = '⚠️ Antes de exportar para ' + marketplace + ', resolva:\n\n• ' + erros.join('\n• ');
+      if (!opts.silencioso) alert(msg);
+      return { ok: false, erro: 'Validação falhou: ' + erros.join('; '), detalhes: erros };
     }
     
     // SHEIN: resolve SKUs duplicados ANTES de exportar (a Shein não aceita SKU repetido)
@@ -13377,7 +13384,9 @@ REGRAS:
           msg += '• ' + a.tipo + ': "' + a.de + '" → "' + a.para + '"\n';
         });
         msg += '\nContinuar com os SKUs novos?';
-        if (!confirm(msg)) return;
+        if (!opts.silencioso && !confirm(msg)) {
+          return { ok: false, erro: 'Cancelado pelo usuário (SKU duplicado na Shein)' };
+        }
       }
       produtoParaExportar = prep.produto;
     }
@@ -13400,15 +13409,18 @@ REGRAS:
         showToast('📏 Aplicando guia da biblioteca: ' + (guiaUsado.nome || 'Guia'));
         console.log('[exportarProdutoMarketplace] auto-aplicado guia da biblioteca:', guiaUsado);
       } else {
-        // Sem guia próprio E biblioteca vazia — avisa cedo, antes de cair no erro do ML
-        const confirma = confirm(
-          '⚠ Sem guia de tamanhos\n\n' +
-          'Este produto não tem guia próprio e a biblioteca da loja está vazia. ' +
-          'O Mercado Livre vai REJEITAR a publicação para categorias de moda/calçados.\n\n' +
-          'Quer continuar mesmo assim?\n' +
-          '(Recomendo: cancele, abra o produto, clique em "🤖 IA criar guia" e tente de novo)'
-        );
-        if (!confirma) return;
+        // Sem guia próprio E biblioteca vazia — em modo silencioso, prossegue
+        // (vai dar erro do ML mas pelo menos retorna o erro real)
+        if (!opts.silencioso) {
+          const confirma = confirm(
+            '⚠ Sem guia de tamanhos\n\n' +
+            'Este produto não tem guia próprio e a biblioteca da loja está vazia. ' +
+            'O Mercado Livre vai REJEITAR a publicação para categorias de moda/calçados.\n\n' +
+            'Quer continuar mesmo assim?\n' +
+            '(Recomendo: cancele, abra o produto, clique em "🤖 IA criar guia" e tente de novo)'
+          );
+          if (!confirma) return { ok: false, erro: 'Cancelado pelo usuário (sem guia de tamanhos)' };
+        }
       }
     }
     
@@ -13417,12 +13429,9 @@ REGRAS:
     
     const temBackend = !!configIntegracoes.backendUrl;
     if (!temBackend) {
-      alert('🔌 Estrutura pronta para exportar!\n\n' +
-        'O produto "' + p.nome + '" está preparado no formato da ' + marketplace + '.\n\n' +
-        'Para enviar de verdade, configure o endereço do backend em:\n' +
-        'Configurações → 🔌 Integrações de API\n\n' +
-        'Quando o backend estiver ativo, este botão envia o produto automaticamente.');
-      return;
+      const msg = '🔌 Backend não configurado. Configure em Integrações de API.';
+      if (!opts.silencioso) alert(msg);
+      return { ok: false, erro: 'Backend não configurado' };
     }
     
     // SHEIN: registra os SKUs usados (pra próxima vez detectar duplicata)
@@ -13438,8 +13447,9 @@ REGRAS:
     
     // O produto precisa estar SALVO no backend antes — usamos idBanco
     if (!produtoParaExportar.idBanco) {
-      alert('⚠️ Este produto ainda não foi sincronizado com o servidor.\n\nClique em Salvar produto antes de exportar.');
-      return;
+      const msg = '⚠️ Produto sem idBanco — não foi salvo no servidor ainda.';
+      if (!opts.silencioso) alert(msg);
+      return { ok: false, erro: msg };
     }
     
     // CHUNK 3.1 multi-loja: tenta usar a rota nova /loja/:lojaId/exportar.
