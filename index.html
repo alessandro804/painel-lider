@@ -8203,36 +8203,82 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     
     // DEFAULTS INTELIGENTES — pra atributos opcionais que a IA frequentemente esquece.
     // Aplicamos só se a categoria TEM o atributo (atributosCat) e a IA NÃO preencheu.
-    const temAttr = (id) => atributosCat.some(a => a.id === id);
+    // CRITICO: pra atributos com lista de valores fixos, USA value_id da categoria
+    // (ML rejeita value_name boolean ou strings livres em atributos type=list).
+    const acharAttr = (id) => atributosCat.find(a => a.id === id);
+    const acharValor = (attr, regex) => {
+      if (!attr || !attr.values) return null;
+      return attr.values.find(v => regex.test(v.name || ''));
+    };
+    const formatarValor = (attr, val) => {
+      if (!val) return null;
+      return { value_id: val.id, value_name: val.name };
+    };
     
-    if (temAttr('ALPHANUMERIC_MODEL') && !p.atributosMl.ALPHANUMERIC_MODEL) {
+    // ALPHANUMERIC_MODEL: texto livre, value_name
+    if (acharAttr('ALPHANUMERIC_MODEL') && !p.atributosMl.ALPHANUMERIC_MODEL) {
       const marcaLimpa = (p.marca || 'X').replace(/[^A-Za-z0-9]/g,'').toUpperCase().slice(0,4);
       const modeloLimpa = (p.atributosMl.MODEL || dadosConteudo.modelo || p.skuPai || 'M1')
         .replace(/[^A-Za-z0-9]/g,'').toUpperCase().slice(0,6);
       p.atributosMl.ALPHANUMERIC_MODEL = marcaLimpa + '-' + modeloLimpa;
     }
     
-    if (temAttr('WIDTH_TYPE') && !p.atributosMl.WIDTH_TYPE) {
-      // valor mais comum: "Estándar/Padrão"
-      const attr = atributosCat.find(a => a.id === 'WIDTH_TYPE');
-      const valores = (attr && attr.values) ? attr.values.map(v => v.name) : [];
-      // tenta achar "Padrão", "Médio", "Standard"
-      const padrao = valores.find(v => /padr[ãa]o|m[eé]dio|standard|normal|regular/i.test(v));
-      p.atributosMl.WIDTH_TYPE = padrao || valores[0] || 'Padrão';
+    // WIDTH_TYPE: lista — usa value_id obrigatoriamente
+    if (acharAttr('WIDTH_TYPE') && !p.atributosMl.WIDTH_TYPE) {
+      const attr = acharAttr('WIDTH_TYPE');
+      const val = acharValor(attr, /padr[ãa]o|m[eé]dio|standard|normal|regular|est[áa]ndar/i) 
+        || (attr.values && attr.values[0]);
+      const formatado = formatarValor(attr, val);
+      if (formatado) p.atributosMl.WIDTH_TYPE = formatado;
     }
     
-    if (temAttr('WITH_RECYCLED_MATERIALS') && p.atributosMl.WITH_RECYCLED_MATERIALS === undefined) {
-      p.atributosMl.WITH_RECYCLED_MATERIALS = false;
+    // WITH_RECYCLED_MATERIALS: boolean — usa value_id "Não"
+    if (acharAttr('WITH_RECYCLED_MATERIALS') && p.atributosMl.WITH_RECYCLED_MATERIALS === undefined) {
+      const attr = acharAttr('WITH_RECYCLED_MATERIALS');
+      const valNao = acharValor(attr, /^n[ãa]o$|^no$/i);
+      const formatado = formatarValor(attr, valNao);
+      if (formatado) {
+        p.atributosMl.WITH_RECYCLED_MATERIALS = formatado;
+      }
+      // Se não acha "Não" na lista, NÃO envia esse atributo (melhor faltar que rejeitar)
     }
     
-    if (temAttr('GENDER') && !p.atributosMl.GENDER) {
-      // tenta inferir do título
+    // GENDER: lista — usa value_id
+    if (acharAttr('GENDER') && !p.atributosMl.GENDER) {
+      const attr = acharAttr('GENDER');
       const ntit = (p.nome || '').toLowerCase();
-      if (ntit.includes('feminin')) p.atributosMl.GENDER = 'Feminino';
-      else if (ntit.includes('masculin')) p.atributosMl.GENDER = 'Masculino';
-      else if (ntit.includes('infant')) p.atributosMl.GENDER = 'Infantil';
-      else if (ntit.includes('unissex')) p.atributosMl.GENDER = 'Unissex';
+      let regex;
+      if (ntit.includes('feminin')) regex = /feminin/i;
+      else if (ntit.includes('masculin')) regex = /masculin/i;
+      else if (ntit.includes('infant')) regex = /infant|criança/i;
+      else if (ntit.includes('unissex')) regex = /unissex/i;
+      if (regex) {
+        const val = acharValor(attr, regex);
+        const formatado = formatarValor(attr, val);
+        if (formatado) p.atributosMl.GENDER = formatado;
+      }
     }
+    
+    // Também: pra QUALQUER atributo que a IA preencheu como string mas a categoria 
+    // tem values, tenta achar o value_id correto (mais seguro pro ML)
+    atributosCat.forEach(attr => {
+      const valorAtual = p.atributosMl[attr.id];
+      if (!valorAtual) return;
+      if (typeof valorAtual === 'object') return; // já é {value_id, value_name}
+      if (!attr.values || attr.values.length === 0) return; // texto livre, deixa como está
+      
+      // É string mas categoria tem lista — procura match
+      const strBusca = String(valorAtual).toLowerCase().trim();
+      const val = attr.values.find(v => 
+        (v.name || '').toLowerCase().trim() === strBusca
+      ) || attr.values.find(v => 
+        (v.name || '').toLowerCase().includes(strBusca) ||
+        strBusca.includes((v.name || '').toLowerCase())
+      );
+      if (val) {
+        p.atributosMl[attr.id] = { value_id: val.id, value_name: val.name };
+      }
+    });
     
     // Conta o que foi preenchido vs obrigatório
     const preenchidos = Object.keys(p.atributosMl).length;
