@@ -9929,7 +9929,14 @@ Retorne JSON: {"ID": "valor", ...}`;
       
       try {
         if (!vinc.lojaId) { prog.textContent += ' ⚠ sem lojaId'; falhas++; continue; }
-        const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + vinc.lojaId + '/anuncio/' + vinc.anuncioId;
+        const lojaIdNum = _resolverLojaIdNumerica(vinc.lojaId, vinc.marketplace);
+        if (!lojaIdNum) { 
+          prog.textContent += ' ⚠ loja "' + vinc.lojaId + '" não resolvida'; 
+          falhas++; 
+          continue; 
+        }
+        const anuncioLimpo = _limparAnuncioId(vinc.anuncioId);
+        const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + lojaIdNum + '/anuncio/' + anuncioLimpo;
         const resp = await fetch(url, { 
           method: 'DELETE',
           headers: { 'x-api-token': getApiToken() }
@@ -10708,8 +10715,14 @@ Retorne JSON: {"ID": "valor", ...}`;
     const estoqueDe = p => (p.variacoes || []).reduce((s,v)=>s+(parseInt(v.estoque)||0),0);
     // Helper: produto tem vínculo com marketplace X
     const temVincMkt = (p, mkt) => {
+      // Match por vínculo real
       for (const v of (p.variacoes || [])) {
         if ((v.vinculos || []).some(vi => vi.marketplace === mkt)) return true;
+      }
+      // Match por flag de exportado (anúncio criado mas vínculo não criado ainda
+      // — pode acontecer antes da primeira sincronização)
+      if (p.marketplaces && p.marketplaces[mkt] && p.marketplaces[mkt].exportado) {
+        return true;
       }
       return false;
     };
@@ -10931,6 +10944,86 @@ Retorne JSON: {"ID": "valor", ...}`;
       </div>`;
     }).join('') + '</div>';
   }
+  
+  // ========================================================================
+  // SUITE DE TESTES AUTOMÁTICOS — chame window.testarFiltrosProdutos() no F12
+  // ou pelo botão escondido (duplo-clique no título "Produtos")
+  // ========================================================================
+  window.testarFiltrosProdutos = function() {
+    console.group('🧪 Testes Automáticos — Filtros Produtos');
+    const linhas = [];
+    const ok = (nome, valor) => { linhas.push('✓ ' + nome + ': ' + valor); console.log('✓', nome, '=', valor); };
+    const warn = (nome, msg) => { linhas.push('⚠ ' + nome + ': ' + msg); console.warn('⚠', nome, msg); };
+    
+    const ativos = produtosErp.filter(p => p.status !== 'excluido');
+    ok('Total produtos (excl. lixeira)', ativos.length);
+    
+    // Status
+    ['ativo', 'inativo', 'rascunho', 'excluido'].forEach(s => {
+      const n = produtosErp.filter(p => p.status === s).length;
+      ok('Status "' + s + '"', n);
+    });
+    
+    // Duplicados
+    const duplicados = produtosErp.filter(p => p.duplicadoDeId).length;
+    ok('Duplicados (escondidos da lista principal)', duplicados);
+    
+    // Por marketplace - vínculos
+    ['mercadolivre','shopee','tiktok','shein'].forEach(mk => {
+      const comVinc = ativos.filter(p => 
+        (p.variacoes || []).some(v => (v.vinculos || []).some(vi => vi.marketplace === mk))
+      ).length;
+      const exportadoSemVinc = ativos.filter(p => 
+        p.marketplaces && p.marketplaces[mk] && p.marketplaces[mk].exportado &&
+        !(p.variacoes || []).some(v => (v.vinculos || []).some(vi => vi.marketplace === mk))
+      ).length;
+      const totalNoFiltro = comVinc + exportadoSemVinc;
+      ok(mk + ' — com vínculo', comVinc);
+      if (exportadoSemVinc > 0) {
+        warn(mk + ' — exportados SEM vínculo', exportadoSemVinc + ' (apareceriam só APÓS sincronização da loja)');
+      }
+      ok(mk + ' — total no filtro', totalNoFiltro);
+    });
+    
+    // Vínculos com problemas
+    let semLojaId = 0, lojaIdTexto = 0, anuncioIdComRow = 0;
+    ativos.forEach(p => {
+      (p.variacoes || []).forEach(v => {
+        (v.vinculos || []).forEach(vi => {
+          if (!vi.lojaId) semLojaId++;
+          else if (!/^\d+$/.test(String(vi.lojaId))) lojaIdTexto++;
+          if (vi.anuncioId && /:\d+$/.test(vi.anuncioId)) anuncioIdComRow++;
+        });
+      });
+    });
+    if (semLojaId > 0) warn('Vínculos sem lojaId', semLojaId);
+    if (lojaIdTexto > 0) warn('Vínculos com lojaId em TEXTO (antigos)', lojaIdTexto + ' — serão resolvidos pela função _resolverLojaIdNumerica()');
+    if (anuncioIdComRow > 0) warn('Vínculos com anuncioId tendo :N (row_id de chart)', anuncioIdComRow + ' — limpos automaticamente');
+    
+    // Filtro busca atual
+    const busca = (document.getElementById('prodBusca')?.value || '').toLowerCase().trim();
+    if (busca) ok('Busca ativa', '"' + busca + '"');
+    
+    // Anúncios ignorados
+    try {
+      const ign = JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]');
+      if (ign.length > 0) ok('Anúncios ignorados (não recriam produto na sync)', ign.length);
+    } catch(_) {}
+    
+    // Lojas conectadas
+    ok('Lojas conectadas', lojasErp.length);
+    lojasErp.forEach(l => console.log('  - ' + (l.nome || '?') + ' (id=' + l.id + ', idBanco=' + (l.idBanco||'?') + ', mk=' + l.marketplace + ')'));
+    
+    console.groupEnd();
+    alert('🧪 Testes dos filtros\n\n' + linhas.join('\n') + '\n\nVeja o console (F12) pra detalhes.');
+    return linhas;
+  };
+  
+  // Duplo-clique no título "Produtos" → roda testes
+  setTimeout(() => {
+    const titulo = document.querySelector('h2');
+    if (titulo) titulo.ondblclick = window.testarFiltrosProdutos;
+  }, 1000);
   
   // CHUNK 3.2: stats cards no topo de Produtos
   function renderProdutosStats() {
@@ -14990,6 +15083,42 @@ São o mesmo produto?`;
   }
   
   // EXCLUIR ANÚNCIO NO MARKETPLACE — irreversível, exige confirmação dupla
+  
+  // Normaliza lojaId que pode vir como texto (ex: "conta_mercadolivre") em vez do
+  // ID numérico do banco. Tenta resolver por nome/marketplace.
+  function _resolverLojaIdNumerica(lojaIdOuTexto, marketplace) {
+    if (lojaIdOuTexto === null || lojaIdOuTexto === undefined) return null;
+    // Já é número ou string numérica
+    if (typeof lojaIdOuTexto === 'number' || /^\d+$/.test(String(lojaIdOuTexto))) {
+      return parseInt(lojaIdOuTexto, 10);
+    }
+    // É texto — tenta achar loja
+    const txt = String(lojaIdOuTexto).toLowerCase();
+    // 1. Match por nome exato (case-insensitive)
+    let loja = lojasErp.find(l => 
+      (l.nome || '').toLowerCase() === txt || 
+      (l.nome || '').toLowerCase().replace(/\s+/g,'_') === txt
+    );
+    // 2. Match por marketplace (pega primeira loja desse mk)
+    if (!loja && marketplace) {
+      loja = lojasErp.find(l => l.marketplace === marketplace);
+    }
+    // 3. Match por id texto (ex: "conta_mercadolivre" pode ser slug)
+    if (!loja) {
+      loja = lojasErp.find(l => String(l.id) === String(lojaIdOuTexto));
+    }
+    if (loja) {
+      return loja.idBanco || loja.id;
+    }
+    return null;
+  }
+  
+  // Anuncio_id às vezes vem com ":N" no final (row_id de chart) — limpa
+  function _limparAnuncioId(id) {
+    if (!id) return id;
+    return String(id).replace(/:\d+$/, '');
+  }
+  
   async function abrirExcluirAnuncioML(variacaoId, vinculoId) {
     const produto = _produtoVinculosAtual;
     if (!produto) return;
@@ -15022,17 +15151,18 @@ São o mesmo produto?`;
       return;
     }
     
-    // Resolve loja
-    const lojaId = vinc.lojaId;
-    if (!lojaId) {
-      alert('⚠ Vínculo sem lojaId. Não consigo identificar a loja pra excluir.');
+    // Resolve loja (pode vir como texto antigo "conta_mercadolivre")
+    const lojaIdNum = _resolverLojaIdNumerica(vinc.lojaId, vinc.marketplace);
+    if (!lojaIdNum) {
+      alert('⚠ Não consegui identificar a loja deste anúncio.\n\nlojaId="' + vinc.lojaId + '" não foi reconhecido. Pode ser um vínculo antigo de antes da migração multi-loja.\n\nUse o painel do ML pra excluir manualmente.');
       return;
     }
+    const anuncioLimpo = _limparAnuncioId(vinc.anuncioId);
     
-    showToast('🗑 Excluindo anúncio ' + vinc.anuncioId + ' do ML...');
+    showToast('🗑 Excluindo anúncio ' + anuncioLimpo + ' do ML...');
     
     try {
-      const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + lojaId + '/anuncio/' + vinc.anuncioId;
+      const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + lojaIdNum + '/anuncio/' + anuncioLimpo;
       const resp = await fetch(url, { 
         method: 'DELETE',
         headers: { 'x-api-token': getApiToken() }
@@ -15157,7 +15287,14 @@ São o mesmo produto?`;
           falhas++;
           continue;
         }
-        const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + vinc.lojaId + '/anuncio/' + vinc.anuncioId;
+        const lojaIdNum = _resolverLojaIdNumerica(vinc.lojaId, vinc.marketplace);
+        if (!lojaIdNum) {
+          progresso.textContent += ' ⚠ loja "' + vinc.lojaId + '" não resolvida';
+          falhas++;
+          continue;
+        }
+        const anuncioLimpo = _limparAnuncioId(vinc.anuncioId);
+        const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + lojaIdNum + '/anuncio/' + anuncioLimpo;
         const resp = await fetch(url, { 
           method: 'DELETE',
           headers: { 'x-api-token': getApiToken() }
