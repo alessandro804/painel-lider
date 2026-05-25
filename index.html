@@ -10150,26 +10150,109 @@ Retorne JSON: {"ID": "valor", ...}`;
             log.textContent += '\n    ⏳ exportando pro ' + lojaDestino.marketplace + '...';
             log.scrollTop = log.scrollHeight;
             
-            // Pausa entre exports pra não floodar o marketplace
-            await new Promise(res => setTimeout(res, 500));
-            
-            // AGORA AGUARDA DE VERDADE (função retorna Promise)
-            const result = await exportarProdutoMarketplace(novo.id, lojaDestino.marketplace, { silencioso: true });
-            
-            if (result && result.ok) {
-              exportados++;
-              log.textContent = log.textContent.replace(
-                '    ⏳ exportando pro ' + lojaDestino.marketplace + '...',
-                '    ✓ EXPORTADO! itemId=' + (result.itemId || '?')
-              );
-            } else {
+            // FLUXO IDÊNTICO ao da duplicação individual (que sabidamente funciona):
+            // fetch direto no endpoint com payload montado por montarPayloadExport
+            try {
+              const lojaIdBanco = await garantirLojaNoBanco(lojaDestino);
+              if (!lojaIdBanco) throw new Error('Loja sem idBanco');
+              if (!novo.idBanco) throw new Error('Produto sem idBanco');
+              
+              const payload = montarPayloadExport(novo, lojaDestino.marketplace);
+              
+              const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + novo.idBanco;
+              const resp = await fetch(url, {
+                method: 'POST',
+                headers: {
+                  'x-api-token': getApiToken(),
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ payload })
+              });
+              const data = await resp.json();
+              
+              if (data.ok || data.success) {
+                exportados++;
+                const itemId = data.itemId || (data.dados && data.dados.itemId) || (data.dados && data.dados.id) || '?';
+                log.textContent = log.textContent.replace(
+                  '    ⏳ exportando pro ' + lojaDestino.marketplace + '...',
+                  '    ✓ EXPORTADO! itemId=' + itemId
+                );
+                
+                // Cria vínculos automaticamente (igual o exportar individual faz)
+                if (itemId && itemId !== '?') {
+                  if (!novo.marketplaces) novo.marketplaces = {};
+                  novo.marketplaces[lojaDestino.marketplace] = {
+                    exportado: true,
+                    exportadoEm: new Date().toISOString(),
+                    itemId,
+                    payload
+                  };
+                  (novo.variacoes || []).forEach(v => {
+                    if (!v.vinculos) v.vinculos = [];
+                    const jaTem = v.vinculos.some(vi => String(vi.anuncioId) === String(itemId));
+                    if (!jaTem) {
+                      v.vinculos.push({
+                        id: gerarId(),
+                        anuncioId: itemId,
+                        marketplace: lojaDestino.marketplace,
+                        lojaId: lojaIdBanco,
+                        titulo: novo.nome,
+                        skuExterno: v.sku || '',
+                        skuSuspeito: false,
+                        criadoPor: 'duplicacao-massa',
+                        criadoEm: new Date().toISOString()
+                      });
+                    }
+                  });
+                  saveProdutos();
+                }
+              } else {
+                falhas++;
+                const erroTxt = data.erro || JSON.stringify(data).slice(0, 100);
+                log.textContent = log.textContent.replace(
+                  '    ⏳ exportando pro ' + lojaDestino.marketplace + '...',
+                  '    ✗ FALHOU: ' + erroTxt.slice(0, 100)
+                );
+                if (data.detalhes && Array.isArray(data.detalhes)) {
+                  data.detalhes.slice(0, 3).forEach(d => {
+                    log.textContent += '\n      • ' + String(d).slice(0, 80);
+                  });
+                }
+                
+                // ROLLBACK: produto não exportou → remove do banco e local
+                try {
+                  if (novo.idBanco) {
+                    await fetch(BACKEND_URL + '/api/produtos/' + novo.idBanco, {
+                      method: 'DELETE',
+                      headers: { 'x-api-token': getApiToken() }
+                    });
+                  }
+                  const idx = produtosErp.findIndex(x => String(x.id) === String(novo.id));
+                  if (idx >= 0) produtosErp.splice(idx, 1);
+                  log.textContent += '\n    ↶ rollback OK';
+                } catch(_) {}
+              }
+            } catch (e) {
               falhas++;
-              const erroTxt = (result && result.erro) ? result.erro.slice(0, 80) : 'erro desconhecido';
               log.textContent = log.textContent.replace(
                 '    ⏳ exportando pro ' + lojaDestino.marketplace + '...',
-                '    ✗ FALHOU: ' + erroTxt
+                '    ✗ ERRO: ' + e.message.slice(0, 100)
               );
+              // Rollback em erro de rede
+              try {
+                if (novo.idBanco) {
+                  await fetch(BACKEND_URL + '/api/produtos/' + novo.idBanco, {
+                    method: 'DELETE',
+                    headers: { 'x-api-token': getApiToken() }
+                  });
+                }
+                const idx = produtosErp.findIndex(x => String(x.id) === String(novo.id));
+                if (idx >= 0) produtosErp.splice(idx, 1);
+              } catch(_) {}
             }
+            
+            // Pausa 800ms entre exports pra não floodar o ML
+            await new Promise(res => setTimeout(res, 800));
           } else {
             log.textContent += '\n    ✓ criada (não exportada)';
           }
