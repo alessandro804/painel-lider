@@ -11117,18 +11117,48 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     // Vínculos com problemas
     let semLojaId = 0, lojaIdTexto = 0, anuncioIdComRow = 0;
+    // Detecta MESMO anuncioId em produtos DIFERENTES (inflar contagem)
+    const anuncioParaProds = {}; // aid -> Set(prodId)
     ativos.forEach(p => {
       (p.variacoes || []).forEach(v => {
         (v.vinculos || []).forEach(vi => {
           if (!vi.lojaId) semLojaId++;
           else if (!/^\d+$/.test(String(vi.lojaId))) lojaIdTexto++;
           if (vi.anuncioId && /:\d+$/.test(vi.anuncioId)) anuncioIdComRow++;
+          if (vi.anuncioId) {
+            const aid = String(vi.anuncioId).replace(/:\d+$/, '');
+            if (!anuncioParaProds[aid]) anuncioParaProds[aid] = new Set();
+            anuncioParaProds[aid].add(p.id);
+          }
         });
       });
     });
+    
+    // Anúncios com vínculos em mais de 1 produto (excluindo pai/filho legítimo)
+    const anuncioMultiplo = [];
+    Object.entries(anuncioParaProds).forEach(([aid, setProdIds]) => {
+      if (setProdIds.size <= 1) return;
+      // Verifica se são pai+filhos legítimos
+      const prods = Array.from(setProdIds).map(id => produtosErp.find(p => p.id === id)).filter(Boolean);
+      const paiIds = new Set();
+      prods.forEach(p => {
+        paiIds.add(p.duplicadoDeId || p.id);
+      });
+      if (paiIds.size > 1) {
+        anuncioMultiplo.push({ aid, prods });
+      }
+    });
+    
     if (semLojaId > 0) warn('Vínculos sem lojaId', semLojaId);
     if (lojaIdTexto > 0) warn('Vínculos com lojaId em TEXTO (antigos)', lojaIdTexto + ' — serão resolvidos pela função _resolverLojaIdNumerica()');
     if (anuncioIdComRow > 0) warn('Vínculos com anuncioId tendo :N (row_id de chart)', anuncioIdComRow + ' — limpos automaticamente');
+    if (anuncioMultiplo.length > 0) {
+      warn('Anúncios em produtos NÃO agrupados', anuncioMultiplo.length + ' — esse é o motivo da contagem inflar!');
+      anuncioMultiplo.slice(0, 10).forEach(({aid, prods}) => {
+        console.warn('  ANÚNCIO ' + aid + ' aparece em:');
+        prods.forEach(p => console.warn('    - ' + p.nome + ' (id=' + p.id + ', skuPai=' + p.skuPai + ')'));
+      });
+    }
     
     // Filtro busca atual
     const busca = (document.getElementById('prodBusca')?.value || '').toLowerCase().trim();
@@ -11172,15 +11202,30 @@ Retorne JSON: {"ID": "valor", ...}`;
       return Object.values(mks).some(m => m && m.exportado);
     }).length;
     
-    // Quebra por marketplace — quantos têm vínculo REAL (anúncio existente)
-    const comVincReal = {};
+    // Quebra por marketplace — conta anúncios DISTINTOS globalmente
+    // (deduplica por anuncioId — se 2 produtos referenciam o mesmo MLB,
+    // conta como 1 anúncio só)
+    const anunciosPorMk = {};
     ['mercadolivre','shopee','tiktok','shein'].forEach(mk => {
-      comVincReal[mk] = produtosErp.filter(p => {
-        if (p.status === 'excluido') return false;
-        return (p.variacoes || []).some(v => 
-          (v.vinculos || []).some(vi => vi.marketplace === mk)
-        );
-      }).length;
+      anunciosPorMk[mk] = new Set();
+    });
+    produtosErp.forEach(p => {
+      if (p.status === 'excluido') return;
+      (p.variacoes || []).forEach(v => {
+        (v.vinculos || []).forEach(vi => {
+          if (!vi.marketplace || !vi.anuncioId) return;
+          const aid = String(vi.anuncioId).replace(/:\d+$/, '');
+          if (anunciosPorMk[vi.marketplace]) {
+            anunciosPorMk[vi.marketplace].add(aid);
+          }
+        });
+      });
+    });
+    const comVincReal = {};
+    let totalAnunciosReais = 0;
+    Object.keys(anunciosPorMk).forEach(mk => {
+      comVincReal[mk] = anunciosPorMk[mk].size;
+      totalAnunciosReais += anunciosPorMk[mk].size;
     });
     
     // Catálogo puro: ativos sem vínculo em nenhum mk
@@ -11215,8 +11260,8 @@ Retorne JSON: {"ID": "valor", ...}`;
         <div class="stat-trend-v2">Sem vínculo em nenhum mk</div>
       </div>
       <div class="stat-card-v2">
-        <div class="stat-label-v2">Com vínculo REAL</div>
-        <div class="stat-value-v2">${comVincReal.mercadolivre + comVincReal.shopee + comVincReal.tiktok + comVincReal.shein}</div>
+        <div class="stat-label-v2">Anúncios reais</div>
+        <div class="stat-value-v2">${totalAnunciosReais}</div>
         <div class="stat-trend-v2">${breakdownMk}</div>
       </div>
       <div class="stat-card-v2">
@@ -11919,19 +11964,60 @@ Responda APENAS a descrição nova, sem aspas.`;
           ? `<img src="${escapeHtml(foto)}" style="width:48px;height:48px;object-fit:cover;border-radius:6px">` 
           : `<div style="width:48px;height:48px;background:#f3f4f6;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`;
         
-        // Conta anuncios ML/SP/etc dessa cópia
-        const contMkt = contarVinculosPorMarketplace(c);
-        const mktTxt = Object.entries(contMkt).map(([mk, n]) => {
-          const sigla = {mercadolivre:'ML',shopee:'SP',tiktok:'TT',shein:'SH'}[mk] || mk;
-          return sigla + ' ' + n;
-        }).join(' · ') || '<span style="color:#9ca3af">sem anúncios</span>';
+        // Status interno
+        const statusBadges = {
+          'ativo':    { txt: '🟢 ATIVO',    bg: '#dcfce7', cor: '#166534' },
+          'rascunho': { txt: '📝 RASCUNHO', bg: '#fef3c7', cor: '#92400e' },
+          'inativo':  { txt: '⚪ INATIVO',  bg: '#f3f4f6', cor: '#4b5563' },
+          'excluido': { txt: '🗑 LIXEIRA', bg: '#fee2e2', cor: '#991b1b' },
+        };
+        const sb = statusBadges[c.status] || { txt: c.status, bg: '#e5e7eb', cor: '#374151' };
+        const statusHtml = `<span style="background:${sb.bg};color:${sb.cor};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:800">${sb.txt}</span>`;
         
-        return `<div style="display:flex;gap:12px;padding:10px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;align-items:center">
+        // Marketplaces — mostra ML/SP/etc com badge colorido e nome da loja
+        const vincs = [];
+        (c.variacoes || []).forEach(v => {
+          (v.vinculos || []).forEach(vi => {
+            if (!vi.marketplace || !vi.anuncioId) return;
+            const lojaIdNum = _resolverLojaIdNumerica(vi.lojaId, vi.marketplace);
+            const loja = lojasErp.find(l => 
+              String(l.idBanco || l.id) === String(lojaIdNum) ||
+              String(l.id) === String(vi.lojaId)
+            );
+            const nomeLoja = loja ? loja.nome : 'Loja ?';
+            if (!vincs.some(x => String(x.anuncioId) === String(vi.anuncioId))) {
+              vincs.push({ ...vi, nomeLoja });
+            }
+          });
+        });
+        
+        const MK_INFO_LOC = { 
+          mercadolivre: {sigla:'ML', cor:'#fff159', txt:'#1e2a47'}, 
+          shopee: {sigla:'SP', cor:'#ee4d2d', txt:'white'},
+          tiktok: {sigla:'TT', cor:'#000', txt:'white'},
+          shein: {sigla:'SH', cor:'#000', txt:'white'}
+        };
+        
+        let vincHtml = '';
+        if (vincs.length > 0) {
+          vincHtml = '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">' + 
+            vincs.map(vi => {
+              const info = MK_INFO_LOC[vi.marketplace] || {sigla:'?', cor:'#666', txt:'white'};
+              return `<span style="background:${info.cor};color:${info.txt};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700" title="${escapeHtml(vi.nomeLoja)} · ${escapeHtml(vi.anuncioId)}">${info.sigla} ${escapeHtml(vi.nomeLoja)}</span>`;
+            }).join('') + '</div>';
+        } else {
+          vincHtml = '<div style="font-size:10px;color:#9ca3af;margin-top:4px">⚠ sem vínculos com marketplace</div>';
+        }
+        
+        return `<div style="display:flex;gap:12px;padding:12px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;align-items:center">
           ${fotoHtml}
           <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:700;color:#1e2a47;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.nome)}</div>
-            <div style="font-size:11px;color:#6b7280;margin-top:2px">SKU: ${escapeHtml(c.skuPai||'—')} · ${estoque} un · R$ ${(parseFloat(c.preco)||0).toFixed(2)}</div>
-            <div style="font-size:11px;margin-top:4px">${mktTxt}</div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <div style="font-size:13px;font-weight:700;color:#1e2a47;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.nome)}</div>
+              ${statusHtml}
+            </div>
+            <div style="font-size:11px;color:#6b7280;margin-top:4px">SKU: ${escapeHtml(c.skuPai||'—')} · ${estoque} un · R$ ${(parseFloat(c.preco)||0).toFixed(2)}</div>
+            ${vincHtml}
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
             <button onclick="fecharCopiasModal();abrirEditarProduto('${c.id}')" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">✏️ Abrir</button>
