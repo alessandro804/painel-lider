@@ -8616,20 +8616,85 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (atual) sel.value = atual;
   }
   
-  // === Upload de imagens na demanda (só sessão, não salva na nuvem) ===
-  let _imagensDemandaSessao = []; // array de {nome, dataUrl}
+  // === Upload de imagens na demanda (sobe pro Storage IMEDIATAMENTE) ===
+  // Cada item: { nome, url, dataUrl?, demandaId?, status: 'subindo'|'ok'|'erro' }
+  // - url: URL pública (depois do upload)
+  // - dataUrl: usado só pra preview enquanto sobe
+  // - demandaId: se está editando demanda existente, salva direto na demanda no banco
+  let _imagensDemandaSessao = [];
+  let _demandaIdAtual = null; // setado em editarDemanda
   
-  function adicionarImagensDemanda(files) {
+  async function _persistirImagensNaDemanda() {
+    // Se a demanda já está salva no banco, atualiza as imagens dela imediatamente
+    if (!_demandaIdAtual) return;
+    const dem = demandasErp.find(d => String(d.id) === String(_demandaIdAtual));
+    if (!dem) return;
+    const urls = _imagensDemandaSessao.filter(i => i.url).map(i => ({ url: i.url, nome: i.nome }));
+    dem.imagens = urls;
+    saveDemandas();
+    // Persiste no backend se houver
+    try {
+      if (typeof salvarDemandaNoBackend === 'function' && dem.idBanco) {
+        await salvarDemandaNoBackend(dem);
+      }
+    } catch(e) {
+      console.warn('[demanda] falha persistir imagens no backend:', e.message);
+    }
+  }
+  
+  async function adicionarImagensDemanda(files) {
     if (!files || files.length === 0) return;
-    Array.from(files).forEach(file => {
-      if (!file.type.startsWith('image/')) return;
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        _imagensDemandaSessao.push({ nome: file.name, dataUrl: e.target.result });
-        renderImagensDemanda();
-      };
-      reader.readAsDataURL(file);
-    });
+    const arr = Array.from(files).filter(f => f.type.startsWith('image/'));
+    if (arr.length === 0) return;
+    
+    // Adiciona placeholders com status "subindo" e renderiza
+    const idxsAdicionados = [];
+    for (const file of arr) {
+      const item = { nome: file.name, dataUrl: null, url: null, status: 'subindo' };
+      _imagensDemandaSessao.push(item);
+      idxsAdicionados.push(_imagensDemandaSessao.length - 1);
+      // Lê dataUrl pra preview
+      try {
+        item.dataUrl = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = e => res(e.target.result);
+          r.onerror = () => rej(new Error('read'));
+          r.readAsDataURL(file);
+        });
+      } catch(_) {}
+    }
+    renderImagensDemanda();
+    
+    // Sobe cada uma pro Storage em sequência
+    for (const idx of idxsAdicionados) {
+      const item = _imagensDemandaSessao[idx];
+      if (!item || !item.dataUrl) continue;
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify({ dataUrl: item.dataUrl })
+        });
+        const data = await resp.json();
+        if (data.ok && data.url) {
+          item.url = data.url;
+          item.status = 'ok';
+          // Limpa dataUrl pra economizar memória (preview agora usa url)
+          item.dataUrl = null;
+        } else {
+          item.status = 'erro';
+          item.erro = data.erro || 'falha';
+        }
+      } catch(e) {
+        item.status = 'erro';
+        item.erro = e.message;
+      }
+      renderImagensDemanda();
+    }
+    
+    // Persiste no banco se a demanda já existe
+    await _persistirImagensNaDemanda();
+    
     // Limpa o input pra permitir subir o mesmo arquivo de novo
     const inp = document.getElementById('demandaUploadInput');
     if (inp) inp.value = '';
@@ -8638,21 +8703,49 @@ Retorne JSON: {"ID": "valor", ...}`;
   function renderImagensDemanda() {
     const grid = document.getElementById('demandaUploadGrid');
     if (!grid) return;
-    grid.innerHTML = _imagensDemandaSessao.map((img, i) => `
-      <div class="demanda-upload-item">
-        <img src="${img.dataUrl}" alt="${escapeHtml(img.nome)}" title="${escapeHtml(img.nome)}">
+    grid.innerHTML = _imagensDemandaSessao.map((img, i) => {
+      const src = img.url || img.dataUrl || '';
+      const borda = img.status === 'subindo' ? 'border:2px dashed #f59e0b' :
+                    img.status === 'erro' ? 'border:2px solid #dc2626' :
+                    'border:2px solid #10b981';
+      const overlay = img.status === 'subindo' 
+        ? '<div style="position:absolute;inset:0;background:rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#92400e">⏳ subindo...</div>'
+        : img.status === 'erro' 
+        ? '<div style="position:absolute;inset:0;background:rgba(255,255,255,0.85);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#dc2626;text-align:center;padding:4px" title="' + escapeHtml(img.erro||'erro') + '">⚠ erro</div>'
+        : '';
+      return `<div class="demanda-upload-item" style="${borda};position:relative">
+        ${src ? `<img src="${escapeHtml(src)}" alt="${escapeHtml(img.nome)}" title="${escapeHtml(img.nome)}">` : `<div style="background:#f3f4f6;width:100%;aspect-ratio:1">📷</div>`}
+        ${overlay}
         <button type="button" class="demanda-upload-del" onclick="removerImagemDemanda(${i})">✕</button>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   }
   
-  function removerImagemDemanda(i) {
+  async function removerImagemDemanda(i) {
     _imagensDemandaSessao.splice(i, 1);
     renderImagensDemanda();
+    await _persistirImagensNaDemanda();
   }
   
   function limparImagensDemanda() {
     _imagensDemandaSessao = [];
+    _demandaIdAtual = null;
+    renderImagensDemanda();
+  }
+  
+  // Chamado quando abre uma demanda existente — popula as imagens do banco
+  function carregarImagensDaDemanda(demanda) {
+    _demandaIdAtual = demanda && demanda.id ? demanda.id : null;
+    if (demanda && Array.isArray(demanda.imagens) && demanda.imagens.length > 0) {
+      _imagensDemandaSessao = demanda.imagens.map(im => ({
+        nome: im.nome || 'foto',
+        url: im.url || im,
+        dataUrl: null,
+        status: 'ok'
+      }));
+    } else {
+      _imagensDemandaSessao = [];
+    }
     renderImagensDemanda();
   }
   
@@ -12449,6 +12542,36 @@ Responda APENAS a descrição nova, sem aspas.`;
       produtoParaExportar = prep.produto;
     }
     
+    // AUTO-APLICA guia da biblioteca se produto não tem próprio (pra ML).
+    // Sem guia, o backend não cria chart customizado e o ML rejeita com
+    // "Attribute [SIZE_GRID_ID] is missing" em categorias de moda/calçados.
+    const mkML = (marketplace === 'mercadolivre' || marketplace === 'mercado_livre');
+    const semGuiaProprio = !produtoParaExportar.guiaTamanhos 
+      || !produtoParaExportar.guiaTamanhos.linhas 
+      || produtoParaExportar.guiaTamanhos.linhas.length === 0;
+    if (mkML && semGuiaProprio && produtoParaExportar.lojaId) {
+      const guiasDisponiveis = (typeof guiasDaLoja === 'function') 
+        ? guiasDaLoja(produtoParaExportar.lojaId) 
+        : [];
+      if (guiasDisponiveis.length > 0) {
+        // Pega o primeiro guia (ou o mais recente). Clona pra não mutar a biblioteca.
+        const guiaUsado = JSON.parse(JSON.stringify(guiasDisponiveis[0]));
+        produtoParaExportar = { ...produtoParaExportar, guiaTamanhos: guiaUsado };
+        showToast('📏 Aplicando guia da biblioteca: ' + (guiaUsado.nome || 'Guia'));
+        console.log('[exportarProdutoMarketplace] auto-aplicado guia da biblioteca:', guiaUsado);
+      } else {
+        // Sem guia próprio E biblioteca vazia — avisa cedo, antes de cair no erro do ML
+        const confirma = confirm(
+          '⚠ Sem guia de tamanhos\n\n' +
+          'Este produto não tem guia próprio e a biblioteca da loja está vazia. ' +
+          'O Mercado Livre vai REJEITAR a publicação para categorias de moda/calçados.\n\n' +
+          'Quer continuar mesmo assim?\n' +
+          '(Recomendo: cancele, abra o produto, clique em "🤖 IA criar guia" e tente de novo)'
+        );
+        if (!confirma) return;
+      }
+    }
+    
     // Monta o payload no formato do marketplace
     const payload = montarPayloadExport(produtoParaExportar, marketplace);
     
@@ -14338,10 +14461,27 @@ São o mesmo produto?`;
       total: anuncios.length
     };
     
+    // IDs de anúncios que o user já excluiu localmente — não recria nem cria produto
+    // novo a partir deles (evita poluir lista quando exclusão falhou ou houve dessync)
+    const anunciosIgnorados = new Set(
+      JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]')
+    );
+    
+    // Filtra fora os ignorados ANTES de qualquer processamento
+    const anunciosUteis = anuncios.filter(a => {
+      const aid = a.id || a.mlb || a.item_id;
+      if (aid && anunciosIgnorados.has(String(aid))) {
+        console.log('[importarAnunciosAutomatico] ignorando anuncio excluído:', aid);
+        return false;
+      }
+      return true;
+    });
+    stats.total = anunciosUteis.length;
+    
     // Set de IDs locais que precisam ser persistidos no backend ao final
     const produtosModificados = new Set();
     
-    anuncios.forEach(anuncio => {
+    anunciosUteis.forEach(anuncio => {
       // Normaliza pra ter ao menos uma "variação" mesmo se o anúncio for de produto único
       const variacoesExt = anuncio.variacoes && anuncio.variacoes.length > 0
         ? anuncio.variacoes
@@ -14675,7 +14815,8 @@ São o mesmo produto?`;
       ${vinc.skuSuspeito 
         ? `<button class="modal-v2-btn modal-v2-btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirCorrigirSku('${variacao.id}','${vinc.id}')" title="Corrigir SKU divergente">⚠ Corrigir</button>` 
         : ''}
-      <button class="modal-v2-btn modal-v2-btn-delete" style="font-size:11px;padding:6px 10px" onclick="removerVinculo('${variacao.id}','${vinc.id}')" title="Remover este vínculo">🗑</button>
+      <button class="modal-v2-btn modal-v2-btn-delete" style="font-size:11px;padding:6px 10px;background:#dc2626;color:white;border:none" onclick="abrirExcluirAnuncioML('${variacao.id}','${vinc.id}')" title="Excluir o anúncio definitivamente no marketplace">🗑 Excluir do ML</button>
+      <button class="modal-v2-btn modal-v2-btn-secondary" style="font-size:11px;padding:6px 10px" onclick="removerVinculo('${variacao.id}','${vinc.id}')" title="Apenas desfaz o vínculo (anúncio segue no marketplace)">🔗 Remover vínculo</button>
     </div>`;
   }
   
@@ -14742,6 +14883,102 @@ São o mesmo produto?`;
     showToast('✓ Vínculo removido');
     desenharVinculos();
     renderProdutos();
+  }
+  
+  // EXCLUIR ANÚNCIO NO MARKETPLACE — irreversível, exige confirmação dupla
+  async function abrirExcluirAnuncioML(variacaoId, vinculoId) {
+    const produto = _produtoVinculosAtual;
+    if (!produto) return;
+    const variacao = produto.variacoes.find(v => String(v.id) === String(variacaoId));
+    if (!variacao || !variacao.vinculos) return;
+    const vinc = variacao.vinculos.find(v => String(v.id) === String(vinculoId));
+    if (!vinc) return;
+    
+    if (vinc.marketplace !== 'mercadolivre' && vinc.marketplace !== 'mercado_livre') {
+      alert('⚠ Exclusão direta no marketplace ainda só está disponível para o Mercado Livre.');
+      return;
+    }
+    
+    // Confirmação SEVERA — pede pra digitar EXCLUIR
+    const titulo = vinc.titulo || vinc.anuncioId;
+    const digitado = prompt(
+      '⚠ AÇÃO IRREVERSÍVEL ⚠\n\n' +
+      'Você está prestes a EXCLUIR este anúncio DIRETAMENTE no Mercado Livre:\n\n' +
+      '"' + titulo + '"\n' +
+      'ID: ' + vinc.anuncioId + '\n\n' +
+      'O anúncio será PAUSADO, depois FECHADO e marcado como DELETADO no ML.\n' +
+      'Esta operação não pode ser desfeita.\n\n' +
+      'Para confirmar, digite EXCLUIR (em maiúsculas):'
+    );
+    
+    if (digitado !== 'EXCLUIR') {
+      if (digitado !== null) {
+        alert('❌ Confirmação incorreta. Nenhuma ação foi feita.');
+      }
+      return;
+    }
+    
+    // Resolve loja
+    const lojaId = vinc.lojaId;
+    if (!lojaId) {
+      alert('⚠ Vínculo sem lojaId. Não consigo identificar a loja pra excluir.');
+      return;
+    }
+    
+    showToast('🗑 Excluindo anúncio ' + vinc.anuncioId + ' do ML...');
+    
+    try {
+      const url = configIntegracoes.backendUrl + '/api/marketplaces/loja/' + lojaId + '/anuncio/' + vinc.anuncioId;
+      const resp = await fetch(url, { 
+        method: 'DELETE',
+        headers: { 'Authorization': 'Bearer ' + (currentUser && currentUser.token || '') }
+      });
+      const data = await resp.json();
+      
+      if (!resp.ok || !data.ok) {
+        // FALHOU EXCLUIR — não mexe no produto local
+        // Marca como IGNORADO localmente pra não voltar a aparecer em
+        // sincronizações futuras (item do feedback do user — "está poluindo")
+        try {
+          const ignorados = JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]');
+          if (!ignorados.includes(String(vinc.anuncioId))) {
+            ignorados.push(String(vinc.anuncioId));
+            localStorage.setItem('lc_anuncios_ignorados', JSON.stringify(ignorados));
+          }
+        } catch(_) {}
+        
+        const detalhe = data.erro || ('HTTP ' + resp.status);
+        const etapas = data.etapas ? '\n\nEtapas realizadas:\n• ' + data.etapas.join('\n• ') : '';
+        alert('❌ Não consegui excluir o anúncio no ML:\n\n' + detalhe + etapas + '\n\nO anúncio foi marcado como IGNORADO localmente — não aparecerá mais em sincronizações.\n\nVocê pode excluir manualmente pelo painel do ML quando quiser.');
+        // Remove o vínculo local mesmo se backend falhou (já que vamos ignorar)
+        variacao.vinculos = variacao.vinculos.filter(v => String(v.id) !== String(vinculoId));
+        saveProdutos();
+        desenharVinculos();
+        renderProdutos();
+        return;
+      }
+      
+      // SUCESSO — remove vínculo do produto local + marca ignorado
+      try {
+        const ignorados = JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]');
+        if (!ignorados.includes(String(vinc.anuncioId))) {
+          ignorados.push(String(vinc.anuncioId));
+          localStorage.setItem('lc_anuncios_ignorados', JSON.stringify(ignorados));
+        }
+      } catch(_) {}
+      variacao.vinculos = variacao.vinculos.filter(v => String(v.id) !== String(vinculoId));
+      saveProdutos();
+      
+      const msg = data.jaExcluido 
+        ? '✓ Anúncio já não existia no ML — vínculo removido'
+        : '✓ Anúncio excluído do ML' + (data.etapas ? ' (' + data.etapas.length + ' etapas)' : '');
+      showToast(msg);
+      desenharVinculos();
+      renderProdutos();
+    } catch (e) {
+      // ERRO de rede — NÃO mexe no produto local
+      alert('❌ Erro ao se comunicar com o backend:\n\n' + e.message + '\n\nO vínculo permanece como está.');
+    }
   }
   
   // === Chat de melhoria do prompt da IA ===
@@ -22714,6 +22951,9 @@ ${JSON.stringify(metricas, null, 2)}`
         document.getElementById('demandaModalTitle').textContent = '✎ Editar Demanda';
         document.getElementById('demandaCliente').value = d.cliente || '';
         document.getElementById('demandaProduto').value = d.produto || '';
+        
+        // Carrega imagens persistidas da demanda (mesmo se deu erro na execução)
+        carregarImagensDaDemanda(d);
         
         const tipoSalvo = d.tipo || 'anuncio_novo';
         const setorSalvo = d.setor || setorDoTipo(tipoSalvo);
