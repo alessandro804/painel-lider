@@ -4718,6 +4718,12 @@
       </div>
       
       <div class="form-group">
+        <label class="form-label">SKU Pai <span style="font-weight:400;color:var(--cinza-texto)">(opcional — IA gera se vazio)</span></label>
+        <input type="text" class="form-input" id="demandaSkuPai" placeholder="Ex: AMX001 — até 8 caracteres" maxlength="8" style="text-transform:uppercase">
+        <div class="settings-help" style="font-size:11px;margin-top:4px">SKUs das variações serão: {SKU_PAI}-{COR}-{TAMANHO}</div>
+      </div>
+      
+      <div class="form-group">
         <label class="form-label">Cores (separadas por vírgula)</label>
         <input type="text" class="form-input" id="demandaCoresInput" placeholder="Ex: Preto, Branco, Azul Marinho">
       </div>
@@ -7981,10 +7987,10 @@
       d._produtoTemp = {
         id: 'tmp-' + d.id,
         nome: d.produto || '',
-        skuPai: '',
+        skuPai: d.skuPai || '', // operador pode ter informado um SKU
         ean: '',
         preco: precoOk,
-        peso: 0.5, // default 500g pra calcado, validador aceita
+        peso: 0.5,
         descricao: d.descricao || '',
         marca: '',
         categoria: '',
@@ -7996,7 +8002,6 @@
         categoryIdMl: null,
         lojaId: d.lojaDestinoId || (d.contas && d.contas[0]),
         marketplaces: {},
-        // CRITICO: copia guia de tamanhos da demanda — ML exige no modelo novo
         guiaTamanhos: d.guiaTamanhos || null,
       };
     }
@@ -12532,6 +12537,48 @@ Responda APENAS a descrição nova, sem aspas.`;
     return erros;
   }
   
+  // Converte atributosMl do nosso formato { ID: valor } para o array do ML.
+  // Aceita varios formatos legados:
+  //   1) { BRAND: "AMX", GENDER: "Masculino" }                 (novo padrao)
+  //   2) [ { id: 'BRAND', value_name: 'AMX' } ]                (array nativo do ML)
+  //   3) Mistura: p.atributosML antigo + p.atributosMl novo
+  function _converterAtributosMlParaArray(p) {
+    const result = [];
+    const jaInclusos = new Set();
+    
+    // Formato novo: objeto {ID: valor}
+    const obj = p.atributosMl;
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      Object.entries(obj).forEach(([id, valor]) => {
+        if (valor === null || valor === undefined || valor === '') return;
+        if (jaInclusos.has(id)) return;
+        const item = { id };
+        if (typeof valor === 'boolean') {
+          item.value_name = valor ? 'Sim' : 'Não';
+        } else if (typeof valor === 'object' && valor.value_id) {
+          item.value_id = valor.value_id;
+          if (valor.value_name) item.value_name = valor.value_name;
+        } else {
+          item.value_name = String(valor);
+        }
+        result.push(item);
+        jaInclusos.add(id);
+      });
+    }
+    
+    // Formato legado: array p.atributosML
+    if (Array.isArray(p.atributosML)) {
+      p.atributosML.forEach(a => {
+        if (!a || !a.id) return;
+        if (jaInclusos.has(a.id)) return;
+        result.push(a);
+        jaInclusos.add(a.id);
+      });
+    }
+    
+    return result;
+  }
+  
   // Monta o payload no formato de cada marketplace
   function montarPayloadExport(p, marketplace) {
     const mapa = categoriasMapErp.find(c => c.categoriaInterna === p.categoria);
@@ -12582,13 +12629,24 @@ Responda APENAS a descrição nova, sem aspas.`;
       // Variações no formato ML: cada uma com price, available_quantity,
       // attribute_combinations e pictures (modelo novo = preço por variação)
       const variacoesML = (p.variacoes||[]).map(v => {
+        // attributes da variação: SELLER_SKU + GTIN (EAN) + outros que tiver
+        const attrsVar = [];
+        if (v.sku) attrsVar.push({ id: 'SELLER_SKU', value_name: String(v.sku) });
+        // EAN gerado em uso interno: vai como GTIN; se vazio, manda EMPTY_GTIN_REASON
+        if (v.ean && /^\d{8}$|^\d{12,14}$/.test(String(v.ean))) {
+          attrsVar.push({ id: 'GTIN', value_name: String(v.ean) });
+        } else {
+          attrsVar.push({ id: 'EMPTY_GTIN_REASON', value_id: '17055160' }); // "Não registrado"
+        }
+        
         const varObj = {
           // attribute_combinations: os atributos que definem a variação (cor, tamanho)
           attribute_combinations: montarAttrCombinations(v),
           available_quantity: parseInt(v.estoque) || 0,
           // pictures: fotos da variação (usa as do produto se a variação não tiver)
-          picture_ids: p.fotos || [],
-          seller_custom_field: v.sku || ''
+          picture_ids: (v.fotos && v.fotos.length > 0) ? v.fotos : (p.fotos || []),
+          seller_custom_field: v.sku || '',
+          attributes: attrsVar,
         };
         // No modelo NOVO, cada variação leva seu próprio preço
         if (modeloNovo) {
@@ -12596,6 +12654,22 @@ Responda APENAS a descrição nova, sem aspas.`;
         }
         return varObj;
       });
+      
+    // Converte atributosMl objeto → array
+    const attrsItem = _converterAtributosMlParaArray(p);
+    // Garante SELLER_SKU/GTIN no item-level (importante quando NÃO tem variações,
+    // mas o ML também aceita no item mesmo com variações)
+    const jaTemSeller = attrsItem.some(a => a.id === 'SELLER_SKU');
+    if (!jaTemSeller && p.skuPai) attrsItem.push({ id: 'SELLER_SKU', value_name: String(p.skuPai) });
+    const jaTemGtin = attrsItem.some(a => a.id === 'GTIN' || a.id === 'EMPTY_GTIN_REASON');
+    if (!jaTemGtin) {
+      if (p.ean && /^\d{8}$|^\d{12,14}$/.test(String(p.ean))) {
+        attrsItem.push({ id: 'GTIN', value_name: String(p.ean) });
+      } else if (!modeloNovo || (p.variacoes||[]).length === 0) {
+        // Só manda EMPTY_GTIN_REASON no item se não tem variações
+        attrsItem.push({ id: 'EMPTY_GTIN_REASON', value_id: '17055160' });
+      }
+    }
       
       const payloadML = {
         marketplace: 'mercadolivre',
@@ -12610,7 +12684,7 @@ Responda APENAS a descrição nova, sem aspas.`;
         description: { plain_text: p.descricao || '' },
         pictures: (p.fotos||[]).map(f => ({ source: f })),
         sale_terms: [],
-        attributes: p.atributosML || [],
+        attributes: attrsItem,
         variations: variacoesML,
         seller_custom_field: p.skuPai || '',
         // Guia de tamanhos — obrigatório no modelo novo para moda/calçados
@@ -22678,6 +22752,7 @@ ${JSON.stringify(metricas, null, 2)}`
     
     // Coleta inputs extras se for fluxo de anuncio novo
     const lojaDestinoId = (document.getElementById('demandaLojaDestino') || {}).value || '';
+    const skuPaiDemanda = ((document.getElementById('demandaSkuPai') || {}).value || '').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8);
     const coresInput = (document.getElementById('demandaCoresInput') || {}).value || '';
     const tamanhosInput = (document.getElementById('demandaTamanhosInput') || {}).value || '';
     const precoBase = parseFloat((document.getElementById('demandaPrecoBase') || {}).value) || 0;
@@ -22691,6 +22766,7 @@ ${JSON.stringify(metricas, null, 2)}`
         d.contas = contas; d.marketplace = marketplace; d.descricao = descricao;
         d.prioridade = _demandaPrio; d.avisarCliente = avisarCliente;
         d.lojaDestinoId = lojaDestinoId;
+        d.skuPai = skuPaiDemanda;
         d.coresInput = coresInput;
         d.tamanhosInput = tamanhosInput;
         d.precoBase = precoBase;
@@ -22713,6 +22789,7 @@ ${JSON.stringify(metricas, null, 2)}`
         fluxoId: fluxoId,
         passosConcluidos: [],
         lojaDestinoId,
+        skuPai: skuPaiDemanda,
         coresInput,
         tamanhosInput,
         precoBase,
