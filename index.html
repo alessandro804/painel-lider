@@ -7447,8 +7447,10 @@
   // ============================================================
   // TEMPLATE: Fluxo "Criar Anúncio Novo no ML"
   // ============================================================
-  // Cria um fluxo pronto com todos os passos necessarios. O operador
-  // só fornece fotos + variacoes + loja + preco; resto a equipe IA faz.
+  // Os pre-requisitos (fotos, variacoes, loja, preco) ja foram coletados
+  // no modal de criacao da demanda — entao NAO ha passos manuais de upload
+  // ou definicao de variacoes aqui. O fluxo so tem o trabalho da equipe IA
+  // e a revisao do gestor antes de publicar.
   function criarTemplateAnuncioNovoML() {
     // Evita duplicar
     const jaExiste = fluxosDemanda.find(f => 
@@ -7460,7 +7462,7 @@
     
     const idFluxo = gerarId();
     const ids = {};
-    ['inicio','upload','dados','ia','catml','sku','ean','revisao','decisao','retorno','salvar','publicar','fim']
+    ['inicio','ia','catml','sku','ean','salvar','revisao','decisao','publicar','fim']
       .forEach(k => ids[k] = gerarId());
     
     // Posicionamento horizontal no canvas
@@ -7471,7 +7473,7 @@
         tipo,
         titulo,
         desc: desc || '',
-        quem: quem || 'operador',
+        quem: quem || 'ia',
         x: x,
         y: 100,
       };
@@ -7492,9 +7494,7 @@
       versao: 1,
       criadoEm: new Date().toISOString(),
       passos: [
-        passo('inicio',   'inicio',      'Início',                    '',                                                  'ia'),
-        passo('upload',   'upload',      'Operador subiu fotos',      'Já vem da demanda (campo Imagens)',                  'operador'),
-        passo('dados',    'texto',       'Operador definiu variações', 'Cores, tamanhos, estoque e preço (campos extras)', 'operador'),
+        passo('inicio',   'inicio',      'Início',                    'Pré-requisitos coletados no modal',                  'ia'),
         passo('ia',       'ia',          'IA preenche descrição',     'Gera título, descrição, marca, atributos via IA',    'ia'),
         passo('catml',    'catml',       'Define categoria ML',       'Predictor do ML baseado no título',                  'ia'),
         passo('sku',      'sku',         'Gera SKUs variações',       'Padrão {SKU}-{COR}-{TAM}',                           'ia'),
@@ -7506,9 +7506,7 @@
         passo('fim',      'fim',         'Fim — anúncio publicado',   '',                                                   'ia'),
       ],
       conexoes: [
-        ligar('inicio',   'upload'),
-        ligar('upload',   'dados'),
-        ligar('dados',    'ia'),
+        ligar('inicio',   'ia'),
         ligar('ia',       'catml'),
         ligar('catml',    'sku'),
         ligar('sku',      'ean'),
@@ -7681,20 +7679,23 @@
   // Pega ou cria o produto-rascunho associado à demanda
   function _produtoDaDemanda(d) {
     if (!d._produtoTemp) {
+      const precoOk = parseFloat(d.precoBase) || 0.01;
       d._produtoTemp = {
         id: 'tmp-' + d.id,
         nome: d.produto || '',
         skuPai: '',
         ean: '',
-        preco: d.precoBase || 0,
+        preco: precoOk,
+        peso: 0.5, // default 500g pra calcado, validador aceita
         descricao: d.descricao || '',
         marca: '',
         categoria: '',
-        fotos: (d.imagens || []).map(im => im.url || im),
+        modeloPreco: 'variacao',
+        status: 'rascunho',
+        fotos: (d.imagens || []).map(im => im.url || im.dataUrl || im),
         variacoes: gerarVariacoesDaDemanda(d),
         atributosMl: {},
         categoryIdMl: null,
-        status: 'rascunho',
         lojaId: d.lojaDestinoId || (d.contas && d.contas[0]),
         marketplaces: {},
       };
@@ -7707,25 +7708,26 @@
     const cores = (d.coresInput || '').split(',').map(s => s.trim()).filter(Boolean);
     const tamanhos = (d.tamanhosInput || '').split(',').map(s => s.trim()).filter(Boolean);
     const estoqueDefault = parseInt(d.estoqueDefault) || 5;
+    const precoVar = parseFloat(d.precoBase) || 0.01; // garante minimo
     
     const vars = [];
     if (cores.length > 0 && tamanhos.length > 0) {
       for (const cor of cores) {
         for (const tam of tamanhos) {
           vars.push({
-            id: gerarId(), cor, tamanho: tam, nome: cor + ' ' + tam,
-            sku: '', ean: '', estoque: estoqueDefault, preco: 0,
+            id: gerarId(), cor, tamanho: tam, nome: (cor + ' ' + tam).trim(),
+            sku: '', ean: '', estoque: estoqueDefault, preco: precoVar,
             vinculos: [], fotos: []
           });
         }
       }
     } else if (cores.length > 0) {
       for (const cor of cores) {
-        vars.push({ id: gerarId(), cor, tamanho: '', nome: cor, sku: '', ean: '', estoque: estoqueDefault, preco: 0, vinculos: [], fotos: [] });
+        vars.push({ id: gerarId(), cor, tamanho: '', nome: cor, sku: '', ean: '', estoque: estoqueDefault, preco: precoVar, vinculos: [], fotos: [] });
       }
     } else if (tamanhos.length > 0) {
       for (const tam of tamanhos) {
-        vars.push({ id: gerarId(), cor: '', tamanho: tam, nome: tam, sku: '', ean: '', estoque: estoqueDefault, preco: 0, vinculos: [], fotos: [] });
+        vars.push({ id: gerarId(), cor: '', tamanho: tam, nome: tam, sku: '', ean: '', estoque: estoqueDefault, preco: precoVar, vinculos: [], fotos: [] });
       }
     }
     return vars;
@@ -7845,6 +7847,21 @@
   
   async function acaoSalvarProduto(d) {
     const p = _produtoDaDemanda(d);
+    
+    // Validações pre-flight pra dar erro claro
+    const errosPre = [];
+    if (!p.nome || p.nome.length < 3) errosPre.push('Nome muito curto (' + (p.nome||'').length + ' chars, mínimo 3)');
+    if (!p.preco || p.preco < 0.01) errosPre.push('Preço inválido (R$ ' + p.preco + ')');
+    if (!p.lojaId) errosPre.push('Sem lojaId');
+    if (!p.variacoes || p.variacoes.length === 0) errosPre.push('Sem variações');
+    (p.variacoes || []).forEach((v,i) => {
+      if (!v.nome || !v.nome.trim()) errosPre.push('Var ' + (i+1) + ' sem nome');
+      if (!v.sku || !v.sku.trim()) errosPre.push('Var ' + (i+1) + ' sem SKU');
+    });
+    if (errosPre.length > 0) {
+      throw new Error('Pré-validação falhou: ' + errosPre.join(' | '));
+    }
+    
     // Remove id temporario antes de salvar (backend gera o real)
     const limpo = JSON.parse(JSON.stringify(p));
     delete limpo.id;
@@ -7853,7 +7870,18 @@
     limpo.criadoEm = new Date().toISOString();
     limpo.origem = 'demanda';
     
-    const resp = await salvarProdutoNoBackend(limpo);
+    console.log('[acaoSalvarProduto] enviando:', limpo);
+    
+    let resp;
+    try {
+      resp = await salvarProdutoNoBackend(limpo);
+    } catch(e) {
+      console.error('[acaoSalvarProduto] erro raw:', e);
+      // salvarProdutoNoBackend joga Error com data.erro como msg, mas perde detalhes
+      // Tenta extrair detalhes da mensagem
+      throw new Error('Backend rejeitou: ' + e.message + ' (veja console F12 pra detalhes)');
+    }
+    
     if (resp && (resp.id || resp.idBanco)) {
       limpo.idBanco = resp.idBanco || resp.id;
     } else {
@@ -8992,7 +9020,12 @@
       body: JSON.stringify(produtoComUrls)
     });
     const data = await resp.json();
-    if (!data.ok) throw new Error(data.erro || 'Erro ao salvar produto no backend');
+    if (!data.ok) {
+      // Inclui DETALHES no erro pra debug
+      const detalhesTxt = Array.isArray(data.detalhes) ? ' — ' + data.detalhes.slice(0,5).join(' | ') : '';
+      console.error('[salvarProdutoNoBackend] backend rejeitou:', data, 'produto enviado:', produtoComUrls);
+      throw new Error((data.erro || 'Erro') + detalhesTxt);
+    }
     return data.produto;
   }
   
@@ -22204,17 +22237,33 @@ ${JSON.stringify(metricas, null, 2)}`
       return;
     }
     
-    // Valida inputs essenciais
+    // VALIDAÇÃO RIGOROSA dos pré-requisitos (todos OBRIGATÓRIOS)
+    const erros = [];
+    
     const lojaDestino = document.getElementById('demandaLojaDestino').value;
-    if (!lojaDestino) { showToast('Selecione a loja destino', true); return; }
+    if (!lojaDestino) erros.push('• Selecione a loja destino');
+    
+    const cores = (document.getElementById('demandaCoresInput').value || '').trim();
+    if (!cores) erros.push('• Informe pelo menos uma cor');
+    
+    const tamanhos = (document.getElementById('demandaTamanhosInput').value || '').trim();
+    if (!tamanhos) erros.push('• Informe pelo menos um tamanho');
+    
+    const precoBase = parseFloat(document.getElementById('demandaPrecoBase').value);
+    if (!precoBase || precoBase < 0.01) erros.push('• Informe um preço base válido (mínimo R$ 0,01)');
+    
+    const estoque = parseInt(document.getElementById('demandaEstoqueDefault').value);
+    if (!estoque || estoque < 1) erros.push('• Informe o estoque por variação (mínimo 1)');
     
     // Pega imagens da sessao (variavel correta: _imagensDemandaSessao)
     const imgs = (typeof _imagensDemandaSessao !== 'undefined' && Array.isArray(_imagensDemandaSessao)) 
       ? _imagensDemandaSessao.map(im => im.dataUrl || im.url || im) 
       : [];
+    if (imgs.length === 0) erros.push('• Sobe pelo menos 1 foto do produto (IA precisa pra analisar)');
     
-    if (imgs.length === 0) {
-      if (!confirm('Sem fotos da demanda. A IA não vai conseguir analisar visualmente — só usa o texto. Continuar mesmo assim?')) return;
+    if (erros.length > 0) {
+      alert('⚠ Pré-requisitos faltando pra executar o fluxo:\n\n' + erros.join('\n') + '\n\nPreencha tudo e tente de novo.');
+      return;
     }
     
     // Guarda se é edição (pra achar a demanda certa depois)
