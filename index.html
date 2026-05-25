@@ -5129,18 +5129,20 @@
         <div class="modal-v2-input-hint">Marca e material ajudam a montar o título no formato da Shein.</div>
         
         <div class="modal-v2-section-title">
-          <span class="icone-v2">📷</span>
-          Fotos do Produto
+          <span class="icone-v2">🎨</span>
+          Fotos por Cor
         </div>
         
         <div class="modal-v2-form-group">
-          <div class="demanda-upload-zona" onclick="document.getElementById('prodFotoInput').click()">
-            <input type="file" id="prodFotoInput" accept="image/*" multiple style="display:none" onchange="adicionarFotosProduto(this.files)">
-            <div class="demanda-upload-icone">📤</div>
-            <div class="demanda-upload-texto">Clique para adicionar fotos</div>
-            <div class="demanda-upload-aviso">JPG, PNG ou WebP · Limite por marketplace checado na exportação</div>
+          <div style="font-size:11px;color:#6b7280;margin-bottom:8px;line-height:1.4">
+            Cada cor pode ter suas próprias fotos. Variações com a mesma cor compartilham as fotos.
+            <br>O Mercado Livre exibe as fotos por cor quando o comprador troca a variação.
           </div>
-          <div class="demanda-upload-grid" id="prodFotoGrid"></div>
+          <div id="prodCoresList"></div>
+          <button type="button" onclick="adicionarCorProduto()" style="margin-top:10px;width:100%;padding:10px;background:#faf5ff;border:2px dashed #d8b4fe;border-radius:8px;color:#6b21a8;font-weight:700;cursor:pointer;font-size:12px">
+            + Adicionar Cor
+          </button>
+          <input type="file" id="prodFotoInput" accept="image/*" multiple style="display:none" onchange="_uploadFotosCor(this.files)">
         </div>
         
       </div>
@@ -9740,6 +9742,98 @@ Retorne JSON: {"ID": "valor", ...}`;
     return data.produto;
   }
   
+  // ============================================================
+  // ESTRUTURA DE CORES — fotos por variação de cor
+  // ============================================================
+  // produto.cores = [{ id, nome, fotos: [url1, url2, ...] }]
+  // Cada variação ganha `corId` apontando pra produto.cores[].id
+  // ML aceita várias fotos por cor; Shopee aceita 1 foto por variação.
+  // ============================================================
+  
+  // Slug estável a partir do nome da cor
+  function _slugCor(nome) {
+    return 'cor_' + (String(nome || 'padrao')).toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'padrao';
+  }
+  
+  // Retorna lista de cores do produto, garantindo pelo menos 1 cor (Padrão) com as fotos[] do produto.
+  function obterCoresDoProduto(p) {
+    if (Array.isArray(p.cores) && p.cores.length > 0) return p.cores;
+    return [{ id: 'cor_padrao', nome: 'Padrão', fotos: [...(p.fotos || [])] }];
+  }
+  
+  // Retorna as fotos de uma variação baseado em v.corId. Fallback: fotos[] do produto.
+  function fotosDaVariacao(v, produto) {
+    const cores = obterCoresDoProduto(produto);
+    if (v && v.corId) {
+      const cor = cores.find(c => c.id === v.corId);
+      if (cor && cor.fotos && cor.fotos.length > 0) return cor.fotos;
+    }
+    // Fallback: tenta achar cor pelo nome
+    if (v && v.cor) {
+      const cor = cores.find(c => 
+        String(c.nome).toLowerCase().trim() === String(v.cor).toLowerCase().trim()
+      );
+      if (cor && cor.fotos && cor.fotos.length > 0) return cor.fotos;
+    }
+    return produto.fotos || [];
+  }
+  
+  // Migra um produto antigo (sem cores[]) pro novo modelo.
+  // - Se já tem cores[] populado: pula
+  // - Se variações têm campo `cor`: agrupa por cor e cria cores[]
+  // - Senão cria 1 cor "Padrão" com as fotos[] do produto
+  // Retorna true se migrou.
+  function migrarProdutoParaCores(p) {
+    if (Array.isArray(p.cores) && p.cores.length > 0) return false;
+    
+    // Coleta cores únicas das variações
+    const variacoes = Array.isArray(p.variacoes) ? p.variacoes : [];
+    const coresUnicas = new Map(); // nome → { id, nome, fotos }
+    
+    variacoes.forEach(v => {
+      const corNome = String(v.cor || '').trim();
+      if (!corNome) return;
+      
+      const id = _slugCor(corNome);
+      if (!coresUnicas.has(id)) {
+        coresUnicas.set(id, { id, nome: corNome, fotos: [] });
+      }
+      v.corId = id;
+    });
+    
+    if (coresUnicas.size === 0) {
+      // Sem cores nas variações — cria 1 cor "Padrão" com TODAS fotos do produto
+      p.cores = [{ id: 'cor_padrao', nome: 'Padrão', fotos: [...(p.fotos || [])] }];
+      variacoes.forEach(v => { v.corId = 'cor_padrao'; });
+    } else {
+      // Tem cores nas variações — distribui as fotos[] do produto na PRIMEIRA cor
+      // (heurística: produto que tinha 1 set de fotos provavelmente é da primeira cor)
+      // Outras cores ficam sem fotos por enquanto (user vai preencher depois)
+      const cores = Array.from(coresUnicas.values());
+      if (cores.length > 0 && (p.fotos || []).length > 0) {
+        cores[0].fotos = [...p.fotos];
+      }
+      p.cores = cores;
+    }
+    
+    p._migradoCores = new Date().toISOString();
+    return true;
+  }
+  
+  // Aplica migração em lote — usado ao carregar produtos do backend
+  function _migrarTodosOsProdutos() {
+    if (!Array.isArray(produtosErp)) return;
+    let migrados = 0;
+    produtosErp.forEach(p => {
+      if (migrarProdutoParaCores(p)) migrados++;
+    });
+    if (migrados > 0) {
+      console.log('[cores] ' + migrados + ' produto(s) migrado(s) pro modelo de cores[]');
+    }
+  }
+  
   // Carrega os produtos do backend e atualiza o cache local
   async function carregarProdutosDoBackend() {
     try {
@@ -9774,6 +9868,9 @@ Retorne JSON: {"ID": "valor", ...}`;
             produtosErp.push(p);
           }
         });
+        
+        // Migra produtos sem cores[] pro novo modelo (idempotente — só roda se necessário)
+        _migrarTodosOsProdutos();
         
         localStorage.setItem('lider_produtos_v1', JSON.stringify(produtosErp));
         if (typeof renderProdutos === 'function') renderProdutos();
@@ -11475,6 +11572,24 @@ Retorne JSON: {"ID": "valor", ...}`;
           <div class="prod-card-nome">${escapeHtml(p.nome)}</div>
           <div class="prod-card-sku">SKU: ${escapeHtml(p.skuPai||'—')}</div>
           <div class="prod-card-mkts">${mktChips}${vincBadges || (mktChips ? '' : '<span style="font-size:10px;color:#9ca3af">Não publicado</span>')}</div>
+          ${(() => {
+            const cores = obterCoresDoProduto(p);
+            if (!cores || cores.length === 0) return '';
+            // Só mostra se tem MAIS de 1 cor (1 cor = padrão, não vale notar)
+            if (cores.length === 1 && cores[0].id === 'cor_padrao') return '';
+            const chips = cores.slice(0, 4).map(c => {
+              const primeira = (c.fotos && c.fotos[0]) || '';
+              const thumbStyle = primeira 
+                ? `background-image:url('${escapeHtml(primeira)}');background-size:cover;background-position:center`
+                : 'background:#f3f4f6;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:9px';
+              return `<div title="${escapeHtml(c.nome)} (${(c.fotos||[]).length} foto${(c.fotos||[]).length===1?'':'s'})" style="width:22px;height:22px;border-radius:4px;border:1.5px solid white;box-shadow:0 0 0 1px #e5e7eb;${thumbStyle}">${primeira?'':'?'}</div>`;
+            }).join('');
+            const extra = cores.length > 4 ? `<div style="font-size:10px;color:#6b7280;align-self:center;margin-left:2px">+${cores.length-4}</div>` : '';
+            return `<div style="display:flex;gap:3px;margin-top:4px;align-items:center">
+              <span style="font-size:9px;color:#6b7280;margin-right:2px">🎨</span>
+              ${chips}${extra}
+            </div>`;
+          })()}
           <div class="prod-card-footer">
             <div class="prod-card-preco">R$ ${(parseFloat(p.preco)||0).toFixed(2)}</div>
             <div class="prod-card-estoque ${estoqueCls}">${estoqueTotal} un.</div>
@@ -11698,6 +11813,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   function abrirNovoProduto() {
     _produtoEditandoId = null;
     _fotosProdutoSessao = [];
+    _coresProdutoSessao = [];
     _variacoesProduto = [];
     _guiaTamanhosProduto = null;
     document.getElementById('produtoModalTitulo').textContent = 'Novo Produto';
@@ -12685,7 +12801,11 @@ REGRAS:
     const p = produtosErp.find(x => String(x.id) === String(id));
     if (!p) return;
     _produtoEditandoId = p.id;
-    _fotosProdutoSessao = [...(p.fotos || [])];
+    // Garante migração caso não tenha rodado ainda
+    if (typeof migrarProdutoParaCores === 'function') migrarProdutoParaCores(p);
+    // Cópia editável das cores e variações
+    _coresProdutoSessao = JSON.parse(JSON.stringify(obterCoresDoProduto(p)));
+    _fotosProdutoSessao = [...(p.fotos || [])];  // legado: ainda sincronizado pra compat
     _variacoesProduto = JSON.parse(JSON.stringify(p.variacoes || []));
     _guiaTamanhosProduto = p.guiaTamanhos ? JSON.parse(JSON.stringify(p.guiaTamanhos)) : null;
     document.getElementById('produtoModalTitulo').textContent = 'Editar Produto';
@@ -12852,33 +12972,196 @@ REGRAS:
   }
   
   // === Fotos do produto ===
-  function adicionarFotosProduto(files) {
-    if (!files) return;
+  // ============================================================
+  // EDIÇÃO DE FOTOS POR COR (modal editar produto)
+  // ============================================================
+  // _coresProdutoSessao: cópia editável de produto.cores
+  // _corAtivaUpload: id da cor que está recebendo upload no momento
+  // ============================================================
+  let _coresProdutoSessao = [];
+  let _corAtivaUpload = null;
+  
+  function _slugCorUnico(nome) {
+    let base = _slugCor(nome);
+    let n = 1;
+    let final = base;
+    while (_coresProdutoSessao.some(c => c.id === final)) {
+      n++;
+      final = base + '-' + n;
+    }
+    return final;
+  }
+  
+  function adicionarCorProduto() {
+    const nome = prompt('Nome da nova cor:', 'Cor ' + (_coresProdutoSessao.length + 1));
+    if (!nome || !nome.trim()) return;
+    const nomeLimpo = nome.trim();
+    // Evita duplicar pelo nome
+    if (_coresProdutoSessao.some(c => c.nome.toLowerCase() === nomeLimpo.toLowerCase())) {
+      showToast('Já existe uma cor com esse nome', true); 
+      return;
+    }
+    _coresProdutoSessao.push({
+      id: _slugCorUnico(nomeLimpo),
+      nome: nomeLimpo,
+      fotos: []
+    });
+    renderCoresProduto();
+  }
+  
+  function renomearCorProduto(corId, novoNome) {
+    const cor = _coresProdutoSessao.find(c => c.id === corId);
+    if (!cor) return;
+    const limpo = String(novoNome || '').trim();
+    if (!limpo) {
+      showToast('Nome da cor não pode ficar vazio', true);
+      renderCoresProduto();
+      return;
+    }
+    cor.nome = limpo;
+    // Atualiza o cor.nome nas variações que apontam pra essa cor
+    _variacoesProduto.forEach(v => {
+      if (v.corId === corId) v.cor = limpo;
+    });
+    renderVariacoesProduto();
+  }
+  
+  function removerCorProduto(corId) {
+    const cor = _coresProdutoSessao.find(c => c.id === corId);
+    if (!cor) return;
+    const varsLigadas = _variacoesProduto.filter(v => v.corId === corId).length;
+    let msg = `Remover a cor "${cor.nome}" e suas ${(cor.fotos||[]).length} foto(s)?`;
+    if (varsLigadas > 0) {
+      msg += `\n\n⚠ ${varsLigadas} variação(ões) ficarão SEM cor associada.`;
+    }
+    if (!confirm(msg)) return;
+    _coresProdutoSessao = _coresProdutoSessao.filter(c => c.id !== corId);
+    // Desvincula variações dessa cor
+    _variacoesProduto.forEach(v => {
+      if (v.corId === corId) {
+        v.corId = '';
+        v.cor = '';
+      }
+    });
+    renderCoresProduto();
+    renderVariacoesProduto();
+  }
+  
+  function abrirUploadFotosCor(corId) {
+    _corAtivaUpload = corId;
+    const inp = document.getElementById('prodFotoInput');
+    if (inp) inp.click();
+  }
+  
+  function _uploadFotosCor(files) {
+    if (!files || files.length === 0) return;
+    const corId = _corAtivaUpload;
+    if (!corId) { 
+      showToast('Erro: nenhuma cor selecionada', true); 
+      return; 
+    }
+    const cor = _coresProdutoSessao.find(c => c.id === corId);
+    if (!cor) return;
+    
+    const totalAtual = _coresProdutoSessao.reduce((acc, c) => acc + (c.fotos||[]).length, 0);
+    const limite = 30;
+    let bloqueadas = 0;
+    
     Array.from(files).forEach(file => {
       if (!file.type.startsWith('image/')) return;
-      // Limite alto — cada marketplace tem sua regra, checada na exportação.
-      // Shopee usa até 9; Mercado Livre usa fotos por variação (pode passar de 9).
-      if (_fotosProdutoSessao.length >= 30) { showToast('Limite de 30 fotos por produto', true); return; }
+      if (totalAtual + cor.fotos.length - cor.fotos.length + 1 > limite) { 
+        bloqueadas++; 
+        return; 
+      }
       const reader = new FileReader();
-      reader.onload = e => { _fotosProdutoSessao.push(e.target.result); renderFotosProduto(); };
+      reader.onload = e => { 
+        cor.fotos.push(e.target.result); 
+        renderCoresProduto(); 
+      };
       reader.readAsDataURL(file);
     });
+    
+    if (bloqueadas > 0) {
+      showToast(`Limite de ${limite} fotos por produto. ${bloqueadas} foto(s) ignorada(s)`, true);
+    }
+    
     const inp = document.getElementById('prodFotoInput');
     if (inp) inp.value = '';
+    _corAtivaUpload = null;
   }
-  function renderFotosProduto() {
-    const grid = document.getElementById('prodFotoGrid');
-    if (!grid) return;
-    grid.innerHTML = _fotosProdutoSessao.map((src, i) => `
-      <div class="demanda-upload-item">
-        <img src="${src}" alt="">
-        <button type="button" class="demanda-upload-del" onclick="removerFotoProduto(${i})">✕</button>
-      </div>
-    `).join('');
+  
+  function removerFotoDaCor(corId, fotoIdx) {
+    const cor = _coresProdutoSessao.find(c => c.id === corId);
+    if (!cor) return;
+    cor.fotos.splice(fotoIdx, 1);
+    renderCoresProduto();
   }
+  
+  function moverFotoCor(corId, fotoIdx, direcao) {
+    const cor = _coresProdutoSessao.find(c => c.id === corId);
+    if (!cor) return;
+    const novoIdx = fotoIdx + direcao;
+    if (novoIdx < 0 || novoIdx >= cor.fotos.length) return;
+    const tmp = cor.fotos[fotoIdx];
+    cor.fotos[fotoIdx] = cor.fotos[novoIdx];
+    cor.fotos[novoIdx] = tmp;
+    renderCoresProduto();
+  }
+  
+  function renderCoresProduto() {
+    const cont = document.getElementById('prodCoresList');
+    if (!cont) return;
+    if (_coresProdutoSessao.length === 0) {
+      cont.innerHTML = `<div style="padding:20px;text-align:center;background:#f9fafb;border-radius:8px;color:#9ca3af;font-size:12px">
+        Nenhuma cor cadastrada. Clique em "+ Adicionar Cor" abaixo.
+      </div>`;
+      return;
+    }
+    cont.innerHTML = _coresProdutoSessao.map((c, ci) => {
+      const fotosHtml = (c.fotos || []).map((src, i) => `
+        <div style="position:relative;width:80px;height:80px;border-radius:6px;overflow:hidden;border:1px solid #e5e7eb;background:#f9fafb">
+          <img src="${escapeHtml(src)}" style="width:100%;height:100%;object-fit:cover">
+          <button type="button" onclick="removerFotoDaCor('${c.id}',${i})" style="position:absolute;top:2px;right:2px;width:18px;height:18px;background:rgba(220,38,38,0.9);color:white;border:none;border-radius:50%;cursor:pointer;font-size:10px;line-height:1;display:flex;align-items:center;justify-content:center" title="Remover">✕</button>
+          ${i > 0 ? `<button type="button" onclick="moverFotoCor('${c.id}',${i},-1)" style="position:absolute;bottom:2px;left:2px;width:18px;height:18px;background:rgba(30,42,71,0.85);color:white;border:none;border-radius:3px;cursor:pointer;font-size:10px;line-height:1" title="Mover pra esquerda">◀</button>` : ''}
+          ${i < c.fotos.length-1 ? `<button type="button" onclick="moverFotoCor('${c.id}',${i},1)" style="position:absolute;bottom:2px;right:2px;width:18px;height:18px;background:rgba(30,42,71,0.85);color:white;border:none;border-radius:3px;cursor:pointer;font-size:10px;line-height:1" title="Mover pra direita">▶</button>` : ''}
+          ${i === 0 ? '<div style="position:absolute;top:2px;left:2px;background:#fbbf24;color:#78350f;font-size:9px;font-weight:800;padding:1px 4px;border-radius:3px">CAPA</div>' : ''}
+        </div>
+      `).join('');
+      const varsCount = _variacoesProduto.filter(v => v.corId === c.id).length;
+      return `
+        <div style="background:#fafafa;border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <input type="text" value="${escapeHtml(c.nome)}" 
+              onchange="renomearCorProduto('${c.id}', this.value)" 
+              style="flex:1;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-weight:700;font-size:13px;color:#1e2a47" 
+              placeholder="Nome da cor">
+            <span style="font-size:10px;color:#6b7280">${(c.fotos||[]).length} foto${(c.fotos||[]).length===1?'':'s'}${varsCount>0 ? ' · '+varsCount+' var.' : ''}</span>
+            <button type="button" onclick="removerCorProduto('${c.id}')" style="padding:5px 8px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:5px;cursor:pointer;font-size:11px" title="Remover cor">🗑</button>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+            ${fotosHtml || '<div style="color:#9ca3af;font-size:11px;padding:10px">Sem fotos ainda</div>'}
+          </div>
+          <button type="button" onclick="abrirUploadFotosCor('${c.id}')" style="width:100%;padding:8px;background:white;border:1px dashed #d1d5db;border-radius:6px;color:#6b7280;font-size:11px;cursor:pointer">
+            📤 Adicionar fotos a "${escapeHtml(c.nome)}"
+          </button>
+        </div>
+      `;
+    }).join('');
+  }
+  
+  // === Compat: funções antigas redirecionam pra UI nova ===
+  function adicionarFotosProduto(files) {
+    // Compat: se chamado, joga fotos na primeira cor (ou cria cor "Padrão")
+    if (_coresProdutoSessao.length === 0) {
+      _coresProdutoSessao.push({ id: 'cor_padrao', nome: 'Padrão', fotos: [] });
+    }
+    _corAtivaUpload = _coresProdutoSessao[0].id;
+    _uploadFotosCor(files);
+  }
+  function renderFotosProduto() { renderCoresProduto(); }
   function removerFotoProduto(i) {
-    _fotosProdutoSessao.splice(i, 1);
-    renderFotosProduto();
+    // Compat: remove da primeira cor
+    if (_coresProdutoSessao[0]) removerFotoDaCor(_coresProdutoSessao[0].id, i);
   }
   
   // === Variações do produto ===
@@ -12897,18 +13180,36 @@ REGRAS:
       // Migração transparente: se variação antiga só tem `nome`, tenta separar
       if (!v.cor && !v.tamanho && v.nome) {
         const partes = String(v.nome).split(/[\s\-\/]+/).filter(Boolean);
-        // se uma das partes é número, é tamanho
         const tamIdx = partes.findIndex(p => /^\d+(\.\d+)?$/.test(p));
         if (tamIdx >= 0) {
           v.tamanho = partes[tamIdx];
           v.cor = partes.filter((_, idx) => idx !== tamIdx).join(' ');
         }
       }
+      // Garante corId baseado no nome da cor se cor existe mas corId não
+      if (v.cor && !v.corId) {
+        const cor = _coresProdutoSessao.find(c => 
+          String(c.nome).toLowerCase().trim() === String(v.cor).toLowerCase().trim()
+        );
+        if (cor) v.corId = cor.id;
+      }
+      // Select de cores cadastradas
+      const opcoesCor = _coresProdutoSessao.map(c => 
+        `<option value="${escapeHtml(c.id)}"${v.corId===c.id?' selected':''}>${escapeHtml(c.nome)}</option>`
+      ).join('');
+      const corSelectHtml = _coresProdutoSessao.length > 0 
+        ? `<select onchange="_selecionarCorVariacao(${i}, this.value)" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;flex:1">
+            <option value="">— sem cor —</option>
+            ${opcoesCor}
+            <option value="__nova__">+ Nova cor...</option>
+          </select>`
+        : `<input type="text" value="${escapeHtml(v.cor||'')}" placeholder="Cor (cadastre acima)" 
+            oninput="_variacoesProduto[${i}].cor = this.value; sincronizarNomeVariacao(${i})" style="flex:1">`;
+      
       return `
       <div class="var-item">
         <div class="var-item-row">
-          <input type="text" value="${escapeHtml(v.cor||'')}" placeholder="Cor (ex: Preto)"
-                 oninput="_variacoesProduto[${i}].cor = this.value; sincronizarNomeVariacao(${i})">
+          ${corSelectHtml}
           <input type="text" value="${escapeHtml(v.tamanho||'')}" placeholder="Tamanho (ex: 40)"
                  oninput="_variacoesProduto[${i}].tamanho = this.value; sincronizarNomeVariacao(${i})">
         </div>
@@ -12929,6 +13230,28 @@ REGRAS:
         </div>
       </div>
     `;}).join('');
+  }
+  // Atualiza cor + corId quando user seleciona no dropdown
+  function _selecionarCorVariacao(idx, valor) {
+    const v = _variacoesProduto[idx];
+    if (!v) return;
+    if (valor === '__nova__') {
+      adicionarCorProduto();
+      renderVariacoesProduto();
+      return;
+    }
+    if (!valor) {
+      v.cor = '';
+      v.corId = '';
+    } else {
+      const cor = _coresProdutoSessao.find(c => c.id === valor);
+      if (cor) {
+        v.cor = cor.nome;
+        v.corId = cor.id;
+      }
+    }
+    sincronizarNomeVariacao(idx);
+    renderCoresProduto();  // atualiza o contador "X var." nas cores
   }
   // Mantém o campo `nome` em sincronia (legado/compatibilidade)
   function sincronizarNomeVariacao(i) {
@@ -13330,6 +13653,13 @@ REGRAS:
     const nome = document.getElementById('prodNome').value.trim();
     if (!nome) { showToast('Informe o nome do produto', true); return; }
     
+    // Calcula fotos legadas como UNIÃO de todas as cores (compat com Shopee/legacy)
+    const fotosUniao = (() => {
+      const set = new Set();
+      _coresProdutoSessao.forEach(c => (c.fotos||[]).forEach(url => set.add(url)));
+      return Array.from(set);
+    })();
+    
     const dados = {
       nome,
       skuPai: document.getElementById('prodSku').value.trim(),
@@ -13342,7 +13672,8 @@ REGRAS:
       marca: document.getElementById('prodMarca').value.trim(),
       material: document.getElementById('prodMaterial').value.trim(),
       status: document.getElementById('prodStatus').value,
-      fotos: [..._fotosProdutoSessao],
+      fotos: fotosUniao.length > 0 ? fotosUniao : [..._fotosProdutoSessao],
+      cores: JSON.parse(JSON.stringify(_coresProdutoSessao)),
       variacoes: JSON.parse(JSON.stringify(_variacoesProduto)),
       guiaTamanhos: _guiaTamanhosProduto ? JSON.parse(JSON.stringify(_guiaTamanhosProduto)) : null,
       // Atributos do marketplace (qualidade do anuncio)
@@ -13855,12 +14186,20 @@ REGRAS:
           attrsVar.push({ id: 'EMPTY_GTIN_REASON', value_id: '17055160' }); // "Não registrado"
         }
         
+        // PICTURES POR COR: pega fotos da cor da variação (via corId)
+        // Em anúncios NOVOS, ML aceita `pictures: [{source: URL}]` na variação.
+        // (picture_ids só funciona quando as fotos JÁ foram baixadas pelo ML.)
+        const fotosDaCor = (typeof fotosDaVariacao === 'function') 
+          ? fotosDaVariacao(v, p) 
+          : (p.fotos || []);
+        const picturesVar = (fotosDaCor || []).map(url => ({ source: url }));
+        
         const varObj = {
           // attribute_combinations: os atributos que definem a variação (cor, tamanho)
           attribute_combinations: montarAttrCombinations(v),
           available_quantity: parseInt(v.estoque) || 0,
-          // pictures: fotos da variação (usa as do produto se a variação não tiver)
-          picture_ids: (v.fotos && v.fotos.length > 0) ? v.fotos : (p.fotos || []),
+          // pictures da variação — só fotos da SUA cor (não todas do produto)
+          pictures: picturesVar,
           seller_custom_field: v.sku || '',
           attributes: attrsVar,
         };
@@ -13913,7 +14252,16 @@ REGRAS:
         condition: 'new',
         listing_type_id: 'gold_special',
         description: { plain_text: p.descricao || '' },
-        pictures: (p.fotos||[]).map(f => ({ source: f })),
+        pictures: (() => {
+          // União de todas as fotos das cores (sem duplicar)
+          // Capa do anúncio = primeira foto da primeira cor (orden tradicional)
+          const set = new Set();
+          const cores = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : [];
+          cores.forEach(c => (c.fotos || []).forEach(url => set.add(url)));
+          // Fallback se cores vazias (compat com produtos antigos)
+          if (set.size === 0) (p.fotos || []).forEach(url => set.add(url));
+          return Array.from(set).map(url => ({ source: url }));
+        })(),
         sale_terms: [],
         attributes: attrsItem,
         variations: variacoesML,
