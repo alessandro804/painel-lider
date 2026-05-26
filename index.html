@@ -4810,6 +4810,7 @@
       <button class="prod-filtro-btn" data-status="sem-estoque" onclick="filtrarProdutos('sem-estoque')" title="Produtos com estoque zerado">📭 Sem estoque</button>
       <button class="prod-filtro-btn" data-status="sem-foto" onclick="filtrarProdutos('sem-foto')" title="Produtos sem foto">🖼️ Sem foto</button>
       <button class="prod-filtro-btn" data-status="excluido" onclick="filtrarProdutos('excluido')">🗑 Lixeira</button>
+      <button class="prod-filtro-btn" id="btnEsvaziarLixeira" onclick="esvaziarLixeiraDefinitivo()" style="background:#7f1d1d;color:white;border-color:#7f1d1d;display:none" title="Apaga DEFINITIVAMENTE todos os produtos da lixeira (do banco também). Não tem volta.">🔥 Esvaziar lixeira</button>
       <button class="prod-filtro-btn" onclick="limparFantasmasAgora()" style="background:#fef2f2;color:#991b1b;border-color:#fecaca" title="Re-sincroniza todas as lojas e move pra lixeira todos os produtos sem anúncio correspondente">🧹 Limpar fantasmas</button>
       <button class="prod-filtro-btn" onclick="acaoAgruparDuplicadosAgora()" style="background:#faf5ff;color:#6b21a8;border-color:#d8b4fe" title="Agrupa produtos com mesmo SKU pai como duplicados — o mais antigo vira pai">📋 Agrupar duplicados</button>
       <button class="prod-filtro-btn" id="btnLimparFiltros" onclick="limparTodosFiltros()" style="background:#fef3c7;color:#92400e;display:none">✕ Limpar filtros</button>
@@ -11551,7 +11552,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (selLoja) {
       const atual = selLoja.value;
       selLoja.innerHTML = '<option value="">Todas as lojas</option>' +
-        lojasErp.map(l => `<option value="${l.id}">${escapeHtml(l.nome)}</option>`).join('');
+        lojasErp.map(l => {
+          // Usa idBanco (estável entre navegadores) como value. Fallback pra id local.
+          const val = l.idBanco || l.id;
+          return `<option value="${val}">${escapeHtml(l.nome)}</option>`;
+        }).join('');
       if (atual) selLoja.value = atual;
     }
     
@@ -11647,7 +11652,26 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
       
       // Filtros do toolbar (selects)
-      if (filtroLoja && String(p.lojaId) !== String(filtroLoja)) return false;
+      if (filtroLoja) {
+        // Match robusto pela loja: 
+        // 1) Por id local do produto (lojaId)
+        // 2) Por idBanco da loja vinculada (sobrevive entre navegadores)
+        // 3) Por vínculo nas variações (produtos exportados pra essa loja)
+        const lojaDoFiltro = lojasErp.find(l => 
+          String(l.idBanco) === String(filtroLoja) || String(l.id) === String(filtroLoja)
+        );
+        const matchPorOrigem = lojaDoFiltro && (
+          String(p.lojaId) === String(lojaDoFiltro.id) ||
+          String(p.lojaId) === String(lojaDoFiltro.idBanco)
+        );
+        const matchPorVinculo = lojaDoFiltro && (p.variacoes || []).some(v =>
+          (v.vinculos || []).some(vinc => 
+            (vinc.lojaIdBanco && String(vinc.lojaIdBanco) === String(lojaDoFiltro.idBanco)) ||
+            (vinc.lojaId && String(vinc.lojaId) === String(lojaDoFiltro.id))
+          )
+        );
+        if (!matchPorOrigem && !matchPorVinculo) return false;
+      }
       if (filtroMkt && !temVincMkt(p, filtroMkt)) return false;
       if (filtroCat && p.categoria !== filtroCat) return false;
       if (filtroMarca && p.marca !== filtroMarca) return false;
@@ -12111,7 +12135,103 @@ Retorne JSON: {"ID": "valor", ...}`;
     document.querySelectorAll('.prod-filtro-btn').forEach(b => {
       b.classList.toggle('ativo', b.dataset.status === status);
     });
+    // Mostra o botão "Esvaziar lixeira" SÓ quando o filtro for "excluido"
+    const btnEsvaziar = document.getElementById('btnEsvaziarLixeira');
+    if (btnEsvaziar) btnEsvaziar.style.display = (status === 'excluido') ? 'inline-block' : 'none';
     renderProdutos();
+  }
+  
+  // Apaga DEFINITIVO todos os produtos na lixeira. Sem volta.
+  // Considera o filtro de loja atual: se o user filtrou por loja,
+  // apaga só os da lixeira DAQUELA loja.
+  async function esvaziarLixeiraDefinitivo() {
+    // Pega o filtro de loja ativo (se houver)
+    const filtroLoja = document.getElementById('prodFiltroLoja')?.value || '';
+    const lojaDoFiltro = filtroLoja ? lojasErp.find(l => 
+      String(l.idBanco) === String(filtroLoja) || String(l.id) === String(filtroLoja)
+    ) : null;
+    
+    // Filtra produtos na lixeira (e da loja, se filtro ativo)
+    const naLixeira = produtosErp.filter(p => {
+      if (p.status !== 'excluido') return false;
+      if (!lojaDoFiltro) return true; // sem filtro de loja: todos
+      // Match igual ao renderProdutos
+      const matchPorOrigem = 
+        String(p.lojaId) === String(lojaDoFiltro.id) ||
+        String(p.lojaId) === String(lojaDoFiltro.idBanco);
+      const matchPorVinculo = (p.variacoes || []).some(v =>
+        (v.vinculos || []).some(vinc => 
+          (vinc.lojaIdBanco && String(vinc.lojaIdBanco) === String(lojaDoFiltro.idBanco)) ||
+          (vinc.lojaId && String(vinc.lojaId) === String(lojaDoFiltro.id))
+        )
+      );
+      return matchPorOrigem || matchPorVinculo;
+    });
+    
+    if (naLixeira.length === 0) {
+      showToast('Lixeira já está vazia' + (lojaDoFiltro ? ' (loja: ' + lojaDoFiltro.nome + ')' : ''));
+      return;
+    }
+    
+    const escopo = lojaDoFiltro ? ' da loja "' + lojaDoFiltro.nome + '"' : '';
+    const palavra = 'EXCLUIR';
+    const resposta = prompt(
+      '⚠ ATENÇÃO: EXCLUSÃO DEFINITIVA\n\n' +
+      'Você está prestes a apagar ' + naLixeira.length + ' produto(s)' + escopo + ' da lixeira PERMANENTEMENTE.\n' +
+      '• Removidos do painel\n' +
+      '• Removidos do banco de dados (Supabase)\n' +
+      '• NÃO TEM VOLTA\n\n' +
+      'Para confirmar, digite "' + palavra + '" abaixo:'
+    );
+    if (resposta !== palavra) {
+      showToast('Cancelado — nada foi excluído');
+      return;
+    }
+    
+    showToast('🔥 Excluindo ' + naLixeira.length + ' produto(s)...');
+    
+    let okCount = 0, errCount = 0;
+    for (const p of naLixeira) {
+      // Apaga do banco SE tem idBanco
+      if (p.idBanco) {
+        try {
+          const resp = await fetch(BACKEND_URL + '/api/produtos/' + p.idBanco, {
+            method: 'DELETE',
+            headers: { 'x-api-token': getApiToken() }
+          });
+          if (resp.ok) okCount++;
+          else errCount++;
+        } catch(e) {
+          errCount++;
+          console.warn('[esvaziarLixeira] erro apagando idBanco=' + p.idBanco + ':', e.message);
+        }
+      } else {
+        okCount++;  // só local, conta como sucesso
+      }
+      // Remove do array local
+      const idx = produtosErp.findIndex(x => String(x.id) === String(p.id));
+      if (idx >= 0) produtosErp.splice(idx, 1);
+      
+      // Adiciona aos "anuncios_ignorados" pra não re-criar no próximo sync
+      const anuncioIds = new Set();
+      (p.variacoes || []).forEach(v => 
+        (v.vinculos || []).forEach(vinc => {
+          if (vinc.anuncioId) anuncioIds.add(String(vinc.anuncioId));
+        })
+      );
+      if (anuncioIds.size > 0) {
+        const ignorados = new Set(JSON.parse(localStorage.getItem('lc_anuncios_ignorados') || '[]'));
+        anuncioIds.forEach(id => ignorados.add(id));
+        localStorage.setItem('lc_anuncios_ignorados', JSON.stringify(Array.from(ignorados)));
+      }
+    }
+    
+    saveProdutos();
+    renderProdutos();
+    
+    let msg = '✓ ' + okCount + ' produto(s) excluído(s) definitivamente';
+    if (errCount > 0) msg += ' · ⚠ ' + errCount + ' falha(s)';
+    showToast(msg);
   }
   
   // === Modal de produto ===
@@ -16577,18 +16697,32 @@ São o mesmo produto?`;
         }
       }
       
-      // SINCRONIZA STATUS com o ML.
-      // Regras:
-      // - Se está com status 'excluido' (lixeira) → NÃO mexer (user decidiu excluir)
-      // - Se está banido → NÃO mexer (já tratado acima)
-      // - Senão atualiza pro status mapeado do ML (ativo/inativo/rascunho)
+      // SINCRONIZA STATUS com o ML — de forma CONSERVADORA pra não sobrescrever
+      // ajustes manuais do user.
+      // 
+      // SÓ atualiza o status se:
+      //   a) Produto está em 'rascunho' (nunca foi tocado pelo user)
+      //   OU
+      //   b) Status REAL do ML mudou desde a última sincronização
+      //      (ex: ativo→pausado no ML → atualiza no painel)
+      //
+      // Se está com status 'excluido' (lixeira) → NÃO mexer (user decidiu excluir)
+      // Se está banido → já tratado acima
       if (!ehBanimento && produtoInterno.status !== 'excluido') {
-        const novoStatus = _statusPainelDoStatusMl(anuncio.statusMl, subStatus);
-        if (produtoInterno.status !== novoStatus) {
-          console.log('[import] produto', produtoInterno.id, 'status mudou:', produtoInterno.status, '→', novoStatus, '(ML:', anuncio.statusMl, ')');
-          produtoInterno.status = novoStatus;
+        const ultimoStatusMl = produtoInterno.statusMl || '';
+        const novoStatusMl = anuncio.statusMl || '';
+        const aindaRascunho = produtoInterno.status === 'rascunho';
+        const mlRealmenteMudou = ultimoStatusMl && novoStatusMl && (ultimoStatusMl !== novoStatusMl);
+        
+        if (aindaRascunho || mlRealmenteMudou) {
+          const novoStatus = _statusPainelDoStatusMl(novoStatusMl, subStatus);
+          if (produtoInterno.status !== novoStatus) {
+            console.log('[import] produto', produtoInterno.id, 'status:', produtoInterno.status, '→', novoStatus, 
+              '(motivo:', aindaRascunho ? 'rascunho inicial' : 'ML mudou ' + ultimoStatusMl + '→' + novoStatusMl, ')');
+            produtoInterno.status = novoStatus;
+          }
         }
-        produtoInterno.statusMl = anuncio.statusMl || '';
+        produtoInterno.statusMl = novoStatusMl;
       }
       
       // Marca pra persistir no backend ao final
