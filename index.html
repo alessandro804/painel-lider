@@ -16333,6 +16333,22 @@ São o mesmo produto?`;
   // anuncios: lista vinda do marketplace via sincronização
   // loja: a loja local (com idBanco)
   // Retorna estatísticas: { vinculadosNovos, vinculadosAtualizados, produtosCriados, variacoesAdicionadas, suspeitos }
+  // Mapeia status do ML pro nosso status interno.
+  // - active → ativo
+  // - paused → inativo (pausado pelo vendedor)
+  // - closed → inativo (anúncio fechado/finalizado)
+  // - under_review → inativo (em revisão)
+  // - inactive → inativo
+  // - default (qualquer outro) → rascunho
+  function _statusPainelDoStatusMl(statusMl, subStatus) {
+    const s = String(statusMl || '').toLowerCase().trim();
+    if (s === 'active') return 'ativo';
+    if (s === 'paused' || s === 'closed' || s === 'under_review' || s === 'inactive') {
+      return 'inativo';
+    }
+    return 'rascunho';
+  }
+  
   async function importarAnunciosAutomatico(anuncios, loja) {
     const stats = {
       vinculadosNovos: 0,
@@ -16441,7 +16457,8 @@ São o mesmo produto?`;
           preco: anuncio.preco || 0,
           peso: anuncio.peso || 0,
           descricao: anuncio.descricao || '',
-          status: 'rascunho',
+          status: _statusPainelDoStatusMl(anuncio.statusMl, anuncio.subStatus),
+          statusMl: anuncio.statusMl || '',
           fotos: anuncio.fotos || [],
           cores: Array.isArray(anuncio.cores) ? JSON.parse(JSON.stringify(anuncio.cores)) : [],
           variacoes: [],
@@ -16558,6 +16575,20 @@ São o mesmo produto?`;
           produtoInterno.status = 'ativo';
           produtoInterno.excluidoTipo = null;
         }
+      }
+      
+      // SINCRONIZA STATUS com o ML.
+      // Regras:
+      // - Se está com status 'excluido' (lixeira) → NÃO mexer (user decidiu excluir)
+      // - Se está banido → NÃO mexer (já tratado acima)
+      // - Senão atualiza pro status mapeado do ML (ativo/inativo/rascunho)
+      if (!ehBanimento && produtoInterno.status !== 'excluido') {
+        const novoStatus = _statusPainelDoStatusMl(anuncio.statusMl, subStatus);
+        if (produtoInterno.status !== novoStatus) {
+          console.log('[import] produto', produtoInterno.id, 'status mudou:', produtoInterno.status, '→', novoStatus, '(ML:', anuncio.statusMl, ')');
+          produtoInterno.status = novoStatus;
+        }
+        produtoInterno.statusMl = anuncio.statusMl || '';
       }
       
       // Marca pra persistir no backend ao final
