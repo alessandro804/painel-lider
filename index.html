@@ -5390,6 +5390,66 @@
   </div>
 </div>
 
+<!-- ===== v31b MODAL C: Vincular anúncio existente ===== -->
+<div class="modal-overlay modal-v2-overlay" id="v31VincularOverlay" onclick="if(event.target===this)v31FecharModalVincular()" style="align-items:center;display:none">
+  <div class="modal-v2" style="max-width:760px">
+    <div class="modal-v2-header">
+      <h3 class="modal-v2-title">🔗 Vincular anúncio existente</h3>
+      <button class="modal-v2-close" onclick="v31FecharModalVincular()">✕</button>
+    </div>
+    <div class="modal-v2-body" style="display:block;padding:20px">
+      <div id="v31VincularInfo" style="background:#dbeafe;border:1px solid #3b82f6;border-radius:8px;padding:12px;margin-bottom:16px;font-size:13px;color:#1e3a8a">
+        Carregando...
+      </div>
+      
+      <!-- Seletor de loja -->
+      <div style="margin-bottom:14px">
+        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">Loja onde o anúncio existe</label>
+        <select id="v31VincLojaSel" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px" onchange="v31_OnTrocarLoja()">
+          <option value="">Selecione...</option>
+        </select>
+      </div>
+      
+      <!-- Modo 1: Cola MLB direto -->
+      <div style="margin-bottom:16px;padding:14px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px">📋 Opção A — Cole o ID do anúncio (MLB...)</div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="v31VincMlbInput" placeholder="MLB6845025284" 
+            style="flex:1;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;font-family:monospace">
+          <button onclick="v31BuscarPorId()" 
+            style="padding:8px 14px;background:#10b981;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer">
+            🔍 Buscar
+          </button>
+        </div>
+      </div>
+      
+      <!-- Modo 2: Busca por termo (achar órfãos) -->
+      <div style="padding:14px;background:#fef3c7;border-radius:8px;border:1px solid #f59e0b">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;color:#92400e">🔎 Opção B — Buscar órfãos no ML</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input type="text" id="v31VincBuscaInput" placeholder="Termo (ex: sandália atil) ou vazio = anúncios ativos" 
+            style="flex:1;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px">
+          <button onclick="v31BuscarOrfaosNoML()" 
+            style="padding:8px 14px;background:#f59e0b;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer">
+            🔎 Buscar
+          </button>
+        </div>
+        <div style="font-size:11px;color:#92400e">Mostra só anúncios da loja que NÃO estão vinculados a nenhum produto do painel.</div>
+      </div>
+      
+      <!-- Resultado -->
+      <div id="v31VincResultado" style="margin-top:16px;max-height:340px;overflow-y:auto"></div>
+      
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button onclick="v31FecharModalVincular()" 
+          style="flex:1;padding:10px;border:1px solid #d1d5db;background:white;border-radius:8px;font-weight:600;cursor:pointer">
+          Fechar
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== ESTOQUE ===== -->
 <div class="screen" id="estoqueScreen">
   <div class="app-header">
@@ -11933,18 +11993,20 @@ Retorne JSON: {"ID": "valor", ...}`;
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) { showToast('Produto não encontrado', true); return; }
     
-    // Coleta todos os vínculos do produto
-    const todosVinc = [];
+    // Agrupa vínculos por anuncioId+lojaIdBanco (mesma chave da lista detalhada)
+    const grupos = new Map();
     (p.variacoes || []).forEach((v, vi) => {
       (v.vinculos || []).forEach((vinc, vci) => {
-        if (vinc.anuncioId && vinc.marketplace) {
-          // Deduplica por anuncioId (várias variações podem apontar pro mesmo anúncio)
-          if (!todosVinc.find(t => String(t.vinc.anuncioId) === String(vinc.anuncioId))) {
-            todosVinc.push({ vinc, varIdx: vi, vincIdx: vci });
-          }
+        if (!vinc.anuncioId || !vinc.marketplace) return;
+        const chave = String(vinc.anuncioId) + '|' + (vinc.lojaIdBanco || vinc.lojaId || '');
+        if (!grupos.has(chave)) {
+          grupos.set(chave, { vinc, varIdx: vi, vincIdx: vci, variacoesDoErp: [] });
         }
+        grupos.get(chave).variacoesDoErp.push({ cor: v.cor, tamanho: v.tamanho });
       });
     });
+    
+    const todosVinc = Array.from(grupos.values());
     
     if (todosVinc.length === 0) {
       showToast('Este produto não tem vínculos pra propagar', true);
@@ -11964,22 +12026,34 @@ Retorne JSON: {"ID": "valor", ...}`;
       cb.checked = (cb.value === 'preco');
     });
     
-    // Lista de vínculos
+    // Lista de vínculos com nome da loja
     const lista = document.getElementById('v31PropagarLista');
     lista.innerHTML = todosVinc.map((t, i) => {
       const personalizado = v31_temPersonalizacao(t.vinc);
-      const cores = v31_coresAtivasDoVinculo(p, t.vinc);
       const tituloEfetivo = v31_valorEfetivo(p, t.vinc, 'titulo') || p.nome || '?';
-      // Por padrão DESMARCA se tem customização (preserva customização do user)
       const marcado = !personalizado;
+      
+      const loja = lojasErp.find(l => String(l.idBanco) === String(t.vinc.lojaIdBanco)) 
+                 || lojasErp.find(l => String(l.id) === String(t.vinc.lojaId));
+      const nomeLoja = loja ? loja.nome : '(loja ?)';
+      
+      const corTams = t.variacoesDoErp.map(x => (x.cor || '?') + '/' + (x.tamanho || '?')).join(' · ');
+      const resumoVar = t.variacoesDoErp.length === 1 
+        ? `1 variação: ${corTams}`
+        : `${t.variacoesDoErp.length} variações: ${corTams.slice(0,60)}${corTams.length > 60 ? '…' : ''}`;
+      
       return '<label style="display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid #f3f4f6;cursor:pointer">' +
         '<input type="checkbox" class="v31-prop-vinc" data-idx="' + i + '" ' + (marcado ? 'checked' : '') + '>' +
-        '<div style="flex:1">' +
-          '<div style="font-size:13px;font-weight:600">' + (MKT_EMOJI[t.vinc.marketplace]||'') + ' ' + escapeHtml(String(t.vinc.anuncioId)) + 
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:13px;font-weight:600;display:flex;align-items:center;flex-wrap:wrap">' + 
+            (MKT_EMOJI[t.vinc.marketplace]||'') + 
+            ' <span style="color:#3b82f6;margin:0 4px">' + escapeHtml(nomeLoja) + '</span>' +
+            '<span style="color:#6b7280">·</span>' +
+            ' <code style="margin-left:4px;font-size:11px;background:#f3f4f6;padding:1px 5px;border-radius:3px">' + escapeHtml(String(t.vinc.anuncioId)) + '</code>' +
             (personalizado ? '<span style="margin-left:6px;padding:1px 6px;background:#fef3c7;border-radius:3px;font-size:10px;color:#92400e">✏️ custom</span>' : '') +
           '</div>' +
-          '<div style="font-size:11px;color:#6b7280">' + escapeHtml(tituloEfetivo.slice(0,60)) + '</div>' +
-          '<div style="font-size:11px;color:#9ca3af">' + cores.length + ' cor(es): ' + cores.slice(0,3).map(escapeHtml).join(', ') + (cores.length > 3 ? '...' : '') + '</div>' +
+          '<div style="font-size:11px;color:#6b7280;text-overflow:ellipsis;overflow:hidden;white-space:nowrap" title="' + escapeHtml(tituloEfetivo) + '">' + escapeHtml(tituloEfetivo.slice(0,60)) + (tituloEfetivo.length > 60 ? '…' : '') + '</div>' +
+          '<div style="font-size:10px;color:#9ca3af">' + escapeHtml(resumoVar) + '</div>' +
         '</div>' +
       '</label>';
     }).join('');
@@ -12028,6 +12102,263 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
     
     v31FecharModalPropagar();
+  }
+  
+  // ---- MODAL C (vincular existente) ----
+  let _v31VincularProdId = null;
+  let _v31VincResultados = []; // cache da busca atual
+  
+  function v31AbrirModalVincular(produtoId) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!p) { showToast('Produto não encontrado', true); return; }
+    _v31VincularProdId = produtoId;
+    _v31VincResultados = [];
+    
+    document.getElementById('v31VincularInfo').innerHTML = 
+      '<strong>📦 ' + escapeHtml(p.nome || '?') + '</strong><br>' +
+      '<small>Use isso pra vincular anúncios que existem no ML mas não estão no painel (ex: exportações Catalog que perderam o vínculo).</small>';
+    
+    // Popula select de lojas (só lojas com idBanco — conectadas)
+    const sel = document.getElementById('v31VincLojaSel');
+    const opts = lojasErp.filter(l => l.idBanco).map(l => 
+      `<option value="${l.idBanco}" data-mkt="${l.marketplace}">${escapeHtml(l.nome)} [${l.marketplace}]</option>`
+    );
+    sel.innerHTML = '<option value="">Selecione a loja...</option>' + opts.join('');
+    
+    document.getElementById('v31VincMlbInput').value = '';
+    document.getElementById('v31VincBuscaInput').value = '';
+    document.getElementById('v31VincResultado').innerHTML = '';
+    
+    document.getElementById('v31VincularOverlay').style.display = 'flex';
+  }
+  
+  function v31FecharModalVincular() {
+    document.getElementById('v31VincularOverlay').style.display = 'none';
+    _v31VincularProdId = null;
+    _v31VincResultados = [];
+  }
+  
+  function v31_OnTrocarLoja() {
+    document.getElementById('v31VincResultado').innerHTML = '';
+  }
+  
+  // Opção A — busca por ID direto
+  async function v31BuscarPorId() {
+    const sel = document.getElementById('v31VincLojaSel');
+    const lojaIdBanco = sel.value;
+    if (!lojaIdBanco) { showToast('Selecione a loja primeiro', true); return; }
+    
+    const id = document.getElementById('v31VincMlbInput').value.trim();
+    if (!id) { showToast('Cole um ID de anúncio (MLB...)', true); return; }
+    
+    document.getElementById('v31VincResultado').innerHTML = '<div style="padding:14px;text-align:center;color:#6b7280">🔍 Buscando...</div>';
+    
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/anuncio/' + id + '/estado-atual', {
+        headers: { 'x-api-token': getApiToken() },
+      });
+      const data = await resp.json();
+      
+      if (!data.ok) {
+        document.getElementById('v31VincResultado').innerHTML = 
+          '<div style="padding:14px;background:#fee2e2;border:1px solid #ef4444;border-radius:8px;color:#991b1b;font-size:13px">❌ ' + escapeHtml(data.erro || 'Erro') + '</div>';
+        return;
+      }
+      
+      const sel2 = document.getElementById('v31VincLojaSel');
+      const opt = sel2.selectedOptions[0];
+      const mkt = opt ? opt.dataset.mkt : 'mercadolivre';
+      
+      _v31VincResultados = [{
+        id, titulo: data.dados.titulo, preco: data.dados.preco, 
+        coresAtivas: data.dados.coresAtivas, descricao: data.dados.descricao,
+        marketplace: mkt, lojaIdBanco
+      }];
+      v31_RenderResultadoVincular();
+    } catch(e) {
+      document.getElementById('v31VincResultado').innerHTML = 
+        '<div style="padding:14px;background:#fee2e2;border:1px solid #ef4444;border-radius:8px;color:#991b1b">❌ ' + escapeHtml(e.message) + '</div>';
+    }
+  }
+  
+  // Opção B — busca órfãos por termo
+  async function v31BuscarOrfaosNoML() {
+    const sel = document.getElementById('v31VincLojaSel');
+    const lojaIdBanco = sel.value;
+    if (!lojaIdBanco) { showToast('Selecione a loja primeiro', true); return; }
+    
+    const q = document.getElementById('v31VincBuscaInput').value.trim();
+    
+    document.getElementById('v31VincResultado').innerHTML = '<div style="padding:14px;text-align:center;color:#6b7280">🔎 Buscando anúncios no ML...</div>';
+    
+    try {
+      const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/buscar-anuncios?limit=50' + (q ? '&q=' + encodeURIComponent(q) : '');
+      const resp = await fetch(url, { headers: { 'x-api-token': getApiToken() } });
+      const data = await resp.json();
+      
+      if (!data.ok) {
+        document.getElementById('v31VincResultado').innerHTML = 
+          '<div style="padding:14px;background:#fee2e2;border:1px solid #ef4444;border-radius:8px;color:#991b1b">❌ ' + escapeHtml(data.erro || 'Erro') + '</div>';
+        return;
+      }
+      
+      const itens = (data.dados && data.dados.itens) || [];
+      
+      // Filtra os já-vinculados em QUALQUER produto do painel
+      const jaVinculados = new Set();
+      produtosErp.forEach(p => {
+        (p.variacoes || []).forEach(v => {
+          (v.vinculos || []).forEach(vi => {
+            if (vi.anuncioId) jaVinculados.add(String(vi.anuncioId));
+          });
+        });
+      });
+      
+      const orfaos = itens.filter(it => !jaVinculados.has(String(it.id)));
+      
+      const opt = sel.selectedOptions[0];
+      const mkt = opt ? opt.dataset.mkt : 'mercadolivre';
+      
+      _v31VincResultados = orfaos.map(it => ({ ...it, marketplace: mkt, lojaIdBanco }));
+      
+      if (orfaos.length === 0) {
+        document.getElementById('v31VincResultado').innerHTML = 
+          '<div style="padding:14px;background:#dcfce7;border:1px solid #10b981;border-radius:8px;color:#15803d;text-align:center">' +
+          '✅ Nenhum órfão! Todos os ' + itens.length + ' anúncios da busca já estão vinculados a algum produto.' +
+          '</div>';
+        return;
+      }
+      
+      document.getElementById('v31VincResultado').innerHTML = 
+        '<div style="padding:8px 4px;font-size:12px;color:#6b7280;margin-bottom:4px">' +
+        '🔍 Encontrei <strong>' + itens.length + '</strong> anúncio(s) na loja · ' +
+        '<strong>' + orfaos.length + '</strong> órfão(s) (sem vínculo no painel)' +
+        '</div>';
+      v31_RenderResultadoVincular();
+    } catch(e) {
+      document.getElementById('v31VincResultado').innerHTML = 
+        '<div style="padding:14px;background:#fee2e2;border:1px solid #ef4444;border-radius:8px;color:#991b1b">❌ ' + escapeHtml(e.message) + '</div>';
+    }
+  }
+  
+  function v31_RenderResultadoVincular() {
+    const container = document.getElementById('v31VincResultado');
+    if (_v31VincResultados.length === 0) {
+      container.innerHTML += '<div style="padding:14px;color:#6b7280;text-align:center">Nenhum resultado</div>';
+      return;
+    }
+    
+    const p = produtosErp.find(x => String(x.id) === String(_v31VincularProdId));
+    const variacoesProduto = p ? (p.variacoes || []) : [];
+    
+    const html = _v31VincResultados.map((r, i) => {
+      const corStr = Array.isArray(r.coresAtivas) ? r.coresAtivas.join(', ') : '?';
+      const ehCatalog = r.eCatalog ? '<span style="margin-left:6px;padding:1px 6px;background:#fef3c7;border-radius:3px;font-size:10px;color:#92400e">Catalog/UP</span>' : '';
+      
+      return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:8px;background:white">
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          ${r.thumbnail ? `<img src="${r.thumbnail}" style="width:50px;height:50px;object-fit:cover;border-radius:6px">` : ''}
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px">
+              <code style="background:#f3f4f6;padding:1px 5px;border-radius:3px">${escapeHtml(String(r.id))}</code>
+              ${ehCatalog}
+            </div>
+            <div style="font-size:12px;color:#374151;margin-top:2px">${escapeHtml((r.titulo || '').slice(0, 80))}</div>
+            <div style="font-size:11px;color:#6b7280">R$ ${r.preco || '?'} · Cores: ${escapeHtml(corStr)}</div>
+          </div>
+        </div>
+        
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6">
+          <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:4px">Vincular a quais variações do produto:</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;max-height:90px;overflow-y:auto">
+            ${variacoesProduto.length === 0 ? '<div style="font-size:11px;color:#9ca3af">Produto sem variações</div>' :
+              variacoesProduto.map((v, vi) => `
+                <label style="display:inline-flex;align-items:center;gap:4px;background:#f3f4f6;padding:3px 8px;border-radius:6px;font-size:11px;cursor:pointer">
+                  <input type="checkbox" class="v31-vinc-var-${i}" data-vi="${vi}">
+                  <span>${escapeHtml(v.cor || '?')}/${escapeHtml(v.tamanho || '?')}</span>
+                </label>
+              `).join('')}
+          </div>
+          <button onclick="v31VincularAnuncio(${i})" 
+            style="padding:6px 12px;background:#10b981;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">
+            🔗 Vincular este anúncio às variações marcadas
+          </button>
+          <button onclick="v31VincularAnuncioTodas(${i})" 
+            style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;margin-left:4px"
+            title="Útil pra anúncios legados com variations[] que cobrem todas variações do produto">
+            ⚡ Vincular a TODAS variações
+          </button>
+        </div>
+      </div>`;
+    }).join('');
+    
+    // Mantém info de cabeçalho se houver
+    const cabeca = container.querySelector('div[style*="margin-bottom:4px"]');
+    container.innerHTML = (cabeca ? cabeca.outerHTML : '') + html;
+  }
+  
+  function v31VincularAnuncioTodas(idxResultado) {
+    const p = produtosErp.find(x => String(x.id) === String(_v31VincularProdId));
+    if (!p) return;
+    // Marca todas as checkboxes desse anúncio
+    document.querySelectorAll('.v31-vinc-var-' + idxResultado).forEach(cb => cb.checked = true);
+    v31VincularAnuncio(idxResultado);
+  }
+  
+  function v31VincularAnuncio(idxResultado) {
+    const r = _v31VincResultados[idxResultado];
+    if (!r) return;
+    
+    const p = produtosErp.find(x => String(x.id) === String(_v31VincularProdId));
+    if (!p) { showToast('Produto não encontrado', true); return; }
+    
+    const checkboxes = Array.from(document.querySelectorAll('.v31-vinc-var-' + idxResultado + ':checked'));
+    if (checkboxes.length === 0) {
+      showToast('Marque ao menos 1 variação pra vincular', true);
+      return;
+    }
+    
+    let adicionados = 0;
+    checkboxes.forEach(cb => {
+      const vi = parseInt(cb.dataset.vi);
+      const variacao = p.variacoes[vi];
+      if (!variacao) return;
+      if (!Array.isArray(variacao.vinculos)) variacao.vinculos = [];
+      
+      // Evita duplicar
+      const jaTem = variacao.vinculos.some(x => 
+        String(x.anuncioId) === String(r.id) && 
+        String(x.lojaIdBanco) === String(r.lojaIdBanco)
+      );
+      if (jaTem) return;
+      
+      variacao.vinculos.push({
+        id: 'vinc-' + Date.now() + '-' + Math.random().toString(36).slice(2,6),
+        marketplace: r.marketplace,
+        anuncioId: r.id,
+        titulo: r.titulo,
+        lojaIdBanco: r.lojaIdBanco,
+        vinculadoEm: new Date().toISOString(),
+        ultimaAtualizacao: null,
+        // personalizado vazio — será populado na 1ª chamada de sincronizar-este
+      });
+      adicionados++;
+    });
+    
+    if (adicionados === 0) {
+      showToast('⚠ Esse anúncio já estava vinculado às variações escolhidas', true);
+      return;
+    }
+    
+    saveProdutos();
+    showToast('✅ ' + adicionados + ' vínculo(s) criado(s)');
+    
+    // Remove esse anúncio da lista de órfãos (já não é mais órfão)
+    _v31VincResultados.splice(idxResultado, 1);
+    v31_RenderResultadoVincular();
+    
+    // Re-renderiza a lista no modal de produto se estiver aberto
+    if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
   }
   
   // === Atualiza UM anúncio (usado individualmente E em massa) ===
@@ -13947,46 +14278,67 @@ REGRAS:
   }
   
   // v31b: monta HTML com cards de cada vínculo (1 anúncio por linha)
+  // Anúncio é único por anuncioId+lojaIdBanco. Se múltiplas variações apontam
+  // pro mesmo MLB, é UM anúncio só (legado com variations[]) — mostra "1 anúncio · N variações".
   function v31_montarListaDetalhadaVinculos(p) {
-    // Coleta TODOS os vínculos do produto deduplicados por anuncioId
-    const vincs = [];
+    // Agrupa vínculos por chave anuncioId+lojaIdBanco
+    const grupos = new Map();
     (p.variacoes || []).forEach((v, vi) => {
       (v.vinculos || []).forEach((vinc, vci) => {
-        if (vinc.anuncioId && vinc.marketplace) {
-          if (!vincs.find(x => String(x.vinc.anuncioId) === String(vinc.anuncioId))) {
-            vincs.push({ vinc, varIdx: vi, vincIdx: vci });
-          }
+        if (!vinc.anuncioId || !vinc.marketplace) return;
+        const chave = String(vinc.anuncioId) + '|' + (vinc.lojaIdBanco || vinc.lojaId || '');
+        if (!grupos.has(chave)) {
+          grupos.set(chave, { vinc, varIdx: vi, vincIdx: vci, variacoesDoErp: [] });
         }
+        grupos.get(chave).variacoesDoErp.push({ cor: v.cor, tamanho: v.tamanho, sku: v.sku });
       });
     });
     
-    if (vincs.length === 0) return '';
+    if (grupos.size === 0) {
+      return `<div style="margin-top:12px;padding:12px;border:1px dashed #d1d5db;border-radius:8px;text-align:center;color:#6b7280;font-size:12px">
+        Nenhum anúncio vinculado.
+        <button onclick="v31AbrirModalVincular('${p.id}')" style="margin-left:8px;padding:4px 10px;background:#10b981;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer">🔗 Vincular existente</button>
+      </div>`;
+    }
     
-    const linhas = vincs.map(({ vinc, varIdx, vincIdx }) => {
+    const linhas = Array.from(grupos.values()).map(({ vinc, varIdx, vincIdx, variacoesDoErp }) => {
       const personalizado = v31_temPersonalizacao(vinc);
       const migrado = vinc.personalizado && vinc.personalizado.migradoDoML;
-      const cores = v31_coresAtivasDoVinculo(p, vinc);
       const tituloEfetivo = v31_valorEfetivo(p, vinc, 'titulo') || p.nome || '?';
       const ultAtu = vinc.ultimaAtualizacao 
         ? new Date(vinc.ultimaAtualizacao).toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) 
         : 'nunca';
+      
+      // Nome da loja
+      const lojaIdBanco = vinc.lojaIdBanco;
+      const loja = lojasErp.find(l => String(l.idBanco) === String(lojaIdBanco)) 
+                 || lojasErp.find(l => String(l.id) === String(vinc.lojaId));
+      const nomeLoja = loja ? loja.nome : '(loja ?)';
       
       let badge;
       if (personalizado) badge = '<span style="padding:1px 6px;background:#dbeafe;border-radius:3px;font-size:10px;color:#1e3a8a;margin-left:6px">✏️ custom</span>';
       else if (migrado) badge = '<span style="padding:1px 6px;background:#fef3c7;border-radius:3px;font-size:10px;color:#92400e;margin-left:6px">🔄 migrado</span>';
       else badge = '<span style="padding:1px 6px;background:#dcfce7;border-radius:3px;font-size:10px;color:#15803d;margin-left:6px">↗️ herda</span>';
       
+      // Resumo das variações vinculadas (cor/tam)
+      const corTams = variacoesDoErp.map(v => (v.cor || '?') + '/' + (v.tamanho || '?')).join(' · ');
+      const resumoVar = variacoesDoErp.length === 1 
+        ? `1 variação: ${escapeHtml(corTams)}`
+        : `${variacoesDoErp.length} variações: ${escapeHtml(corTams.slice(0,60))}${corTams.length > 60 ? '…' : ''}`;
+      
       return `<div style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #f3f4f6">
         <div style="flex:1;min-width:0">
           <div style="font-size:12px;font-weight:600;display:flex;align-items:center;flex-wrap:wrap">
-            ${MKT_EMOJI[vinc.marketplace] || ''} ${escapeHtml(String(vinc.anuncioId))}
+            ${MKT_EMOJI[vinc.marketplace] || ''} <span style="color:#3b82f6;margin:0 4px">${escapeHtml(nomeLoja)}</span>
+            <span style="color:#6b7280">·</span>
+            <code style="margin-left:4px;font-size:11px;background:#f3f4f6;padding:1px 5px;border-radius:3px">${escapeHtml(String(vinc.anuncioId))}</code>
             ${badge}
           </div>
           <div style="font-size:11px;color:#6b7280;text-overflow:ellipsis;overflow:hidden;white-space:nowrap" title="${escapeHtml(tituloEfetivo)}">
-            ${escapeHtml(tituloEfetivo.slice(0, 50))}${tituloEfetivo.length > 50 ? '…' : ''}
+            ${escapeHtml(tituloEfetivo.slice(0, 60))}${tituloEfetivo.length > 60 ? '…' : ''}
           </div>
           <div style="font-size:10px;color:#9ca3af">
-            ${cores.length} cor(es) · atualizado: ${ultAtu}
+            ${resumoVar} · atualizado: ${ultAtu}
           </div>
         </div>
         <button onclick="v31AbrirModalEditar('${p.id}', ${varIdx}, ${vincIdx})" 
@@ -13997,10 +14349,13 @@ REGRAS:
       </div>`;
     });
     
+    const totalAnuncios = grupos.size;
     return `<div style="margin-top:12px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
-      <div style="background:#f9fafb;padding:8px 12px;font-weight:600;font-size:12px;color:#374151;border-bottom:1px solid #e5e7eb">
-        🔗 Anúncios vinculados (${vincs.length})
-        <span style="font-weight:normal;color:#6b7280;margin-left:6px">— customize cada um independente</span>
+      <div style="background:#f9fafb;padding:8px 12px;font-weight:600;font-size:12px;color:#374151;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
+        <span>🔗 ${totalAnuncios} anúncio(s) vinculado(s)</span>
+        <button onclick="v31AbrirModalVincular('${p.id}')" style="padding:3px 9px;background:#10b981;color:white;border:none;border-radius:5px;font-size:11px;cursor:pointer;font-weight:600">
+          + Vincular existente
+        </button>
       </div>
       ${linhas.join('')}
     </div>`;
