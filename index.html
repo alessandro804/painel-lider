@@ -9696,6 +9696,40 @@ Retorne JSON: {"ID": "valor", ...}`;
       console.log('[upload] ' + qtdEnviadas + ' foto(s) enviada(s) para o Storage');
     }
     
+    // CRITICAL: processa FOTOS POR COR (modelo novo produto.cores[].fotos[])
+    // Sem isso, base64 vaza pro backend → pro ML → 413 Payload Too Large
+    let qtdCoresEnviadas = 0;
+    if (Array.isArray(produto.cores)) {
+      for (const cor of produto.cores) {
+        if (!Array.isArray(cor.fotos)) continue;
+        for (let i = 0; i < cor.fotos.length; i++) {
+          const foto = cor.fotos[i];
+          if (!foto) continue;
+          if (typeof foto === 'string' && foto.startsWith('data:')) {
+            try {
+              const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+                body: JSON.stringify({ dataUrl: foto })
+              });
+              const data = await resp.json();
+              if (data.ok && data.url) {
+                cor.fotos[i] = data.url;
+                qtdCoresEnviadas++;
+              } else {
+                throw new Error(data.erro || 'erro no upload foto da cor ' + cor.nome);
+              }
+            } catch(err) {
+              throw new Error('Falha ao subir foto da cor "' + cor.nome + '": ' + err.message);
+            }
+          }
+        }
+      }
+    }
+    if (qtdCoresEnviadas > 0) {
+      console.log('[upload] ' + qtdCoresEnviadas + ' foto(s) de cor(es) enviada(s) para o Storage');
+    }
+    
     // Tambem processa fotos das variacoes (cada variacao pode ter sua propria foto)
     if (produto.variacoes && Array.isArray(produto.variacoes)) {
       for (let v = 0; v < produto.variacoes.length; v++) {
@@ -9717,7 +9751,19 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
     }
     
-    return { ...produto, fotos: fotosNovas };
+    // Re-sincroniza fotos como união das cores (caso novas URLs)
+    let fotosFinais = fotosNovas;
+    if (Array.isArray(produto.cores) && produto.cores.length > 0) {
+      const set = new Set();
+      produto.cores.forEach(c => (c.fotos || []).forEach(url => {
+        if (url && !String(url).startsWith('data:')) set.add(url);
+      }));
+      if (set.size > 0) {
+        fotosFinais = Array.from(set);
+      }
+    }
+    
+    return { ...produto, fotos: fotosFinais };
   }
   
   async function salvarProdutoNoBackend(produto) {
@@ -9832,6 +9878,83 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (migrados > 0) {
       console.log('[cores] ' + migrados + ' produto(s) migrado(s) pro modelo de cores[]');
     }
+  }
+  
+  // CRITICAL: garante que TODAS as fotos do produto são URLs públicas (não base64).
+  // Chamar antes de qualquer operação que envia produto pra backend/ML.
+  // Sobe base64 pro Storage e substitui pela URL retornada.
+  async function garantirFotosUrlsPublicas(produto) {
+    if (!produto) return 0;
+    let subiu = 0;
+    
+    // Sobe base64 das cores
+    if (Array.isArray(produto.cores)) {
+      for (const cor of produto.cores) {
+        if (!Array.isArray(cor.fotos)) continue;
+        for (let i = 0; i < cor.fotos.length; i++) {
+          if (String(cor.fotos[i] || '').startsWith('data:image')) {
+            try {
+              const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+                method: 'POST',
+                headers: { 
+                  'Content-Type': 'application/json',
+                  'x-api-token': getApiToken()
+                },
+                body: JSON.stringify({ dataUrl: cor.fotos[i] })
+              });
+              const data = await resp.json();
+              if (data.ok && data.url) {
+                cor.fotos[i] = data.url;
+                subiu++;
+              } else {
+                console.warn('[garantirFotosUrls] falha cor', cor.nome, ':', data.erro);
+              }
+            } catch(e) {
+              console.warn('[garantirFotosUrls] erro:', e.message);
+            }
+          }
+        }
+      }
+    }
+    
+    // Sobe base64 em produto.fotos (legado)
+    if (Array.isArray(produto.fotos)) {
+      for (let i = 0; i < produto.fotos.length; i++) {
+        if (String(produto.fotos[i] || '').startsWith('data:image')) {
+          try {
+            const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+              method: 'POST',
+              headers: { 
+                'Content-Type': 'application/json',
+                'x-api-token': getApiToken()
+              },
+              body: JSON.stringify({ dataUrl: produto.fotos[i] })
+            });
+            const data = await resp.json();
+            if (data.ok && data.url) {
+              produto.fotos[i] = data.url;
+              subiu++;
+            }
+          } catch(_) {}
+        }
+      }
+    }
+    
+    // Re-sincroniza produto.fotos como união (caso cores tenham URLs novas)
+    if (Array.isArray(produto.cores) && produto.cores.length > 0) {
+      const set = new Set();
+      produto.cores.forEach(c => (c.fotos || []).forEach(url => {
+        if (!String(url).startsWith('data:image')) set.add(url);
+      }));
+      if (set.size > 0) {
+        produto.fotos = Array.from(set);
+      }
+    }
+    
+    if (subiu > 0) {
+      console.log('[garantirFotosUrls] ' + subiu + ' base64(s) → URL(s) Storage');
+    }
+    return subiu;
   }
   
   // Carrega os produtos do backend e atualiza o cache local
@@ -10253,6 +10376,11 @@ Retorne JSON: {"ID": "valor", ...}`;
               const lojaIdBanco = await garantirLojaNoBanco(lojaDestino);
               if (!lojaIdBanco) throw new Error('Loja sem idBanco');
               if (!novo.idBanco) throw new Error('Produto sem idBanco');
+              
+              // CRITICAL: garante fotos das cores como URL pública (não base64)
+              if (typeof garantirFotosUrlsPublicas === 'function') {
+                try { await garantirFotosUrlsPublicas(novo); } catch(_) {}
+              }
               
               const payload = montarPayloadExport(novo, lojaDestino.marketplace);
               
@@ -12502,6 +12630,17 @@ REGRAS:
             continue;
           }
           
+          // CRITICAL: garante que TODAS as fotos das cores estão como URL pública
+          // (não base64). Se vazar base64, ML rejeita com 413 Payload Too Large.
+          try {
+            if (typeof garantirFotosUrlsPublicas === 'function') {
+              const subiu = await garantirFotosUrlsPublicas(novo);
+              if (subiu > 0) dupLogStep(`  ↑ ${subiu} foto(s) subida(s) ao Storage antes de exportar`);
+            }
+          } catch(e) {
+            dupLogStep('  ⚠ Falha hospedando fotos: ' + e.message, 'err');
+          }
+          
           // CRITICO: precisa MONTAR o payload no formato do marketplace 
           // (com title, category_id, price, listing_type_id etc.) — senao
           // ML rejeita com "body.required_fields".
@@ -13970,6 +14109,12 @@ REGRAS:
     }
     
     // Monta o payload no formato do marketplace
+    // CRITICAL: garante fotos das cores como URL pública (não base64)
+    // Sem isso o ML retorna 413 Payload Too Large.
+    if (typeof garantirFotosUrlsPublicas === 'function') {
+      try { await garantirFotosUrlsPublicas(produtoParaExportar); } catch(_) {}
+    }
+    
     const payload = montarPayloadExport(produtoParaExportar, marketplace);
     
     const temBackend = !!configIntegracoes.backendUrl;
