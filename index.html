@@ -14339,6 +14339,28 @@ REGRAS:
       }
     }
     
+    // CRITICAL: cada COR deve ter pelo menos 1 foto (ML exige fotos por variação)
+    // E no máximo 10 (limite do ML por categoria de calçados).
+    if (marketplace === 'mercadolivre' || marketplace === 'mercado_livre') {
+      const cores = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
+      const coresSemFoto = cores.filter(c => !c.fotos || c.fotos.length === 0);
+      if (coresSemFoto.length > 0 && cores.length > 1) {
+        // Só bloqueia se tem múltiplas cores E alguma sem fotos
+        // (com 1 cor única "Padrão", o fallback é p.fotos)
+        erros.push(
+          'Cor(es) "' + coresSemFoto.map(c => c.nome).join(', ') + '" sem fotos. ' +
+          'Adicione pelo menos 1 foto pra cada cor (recomendo 4-8 fotos por cor).'
+        );
+      }
+      const coresMuitasFotos = cores.filter(c => (c.fotos || []).length > 10);
+      if (coresMuitasFotos.length > 0) {
+        erros.push(
+          'Cor(es) "' + coresMuitasFotos.map(c => c.nome + ' (' + c.fotos.length + ' fotos)').join(', ') + 
+          '" passou de 10 fotos. ML aceita no máximo 10 por variação. Remova o excedente.'
+        );
+      }
+    }
+    
     // Categoria precisa ter vínculo com o marketplace
     const mapa = categoriasMapErp.find(c => c.categoriaInterna === p.categoria);
     if (!mapa || !mapa.vinculos || !mapa.vinculos[marketplace]) {
@@ -14515,7 +14537,13 @@ REGRAS:
         const fotosDaCor = (typeof fotosDaVariacao === 'function') 
           ? fotosDaVariacao(v, p) 
           : (p.fotos || []);
-        const picturesVar = (fotosDaCor || []).map(url => ({ source: url }));
+        // ML aceita ENTRE 1 E 10 fotos por variação. Corta excedente e garante pelo menos 1.
+        let fotosFinais = (fotosDaCor || []).slice(0, 10);
+        if (fotosFinais.length === 0) {
+          // Fallback derradeiro: usa fotos do produto (capa) se a cor está vazia
+          fotosFinais = (p.fotos || []).slice(0, 10);
+        }
+        const picturesVar = fotosFinais.map(url => ({ source: url }));
         
         const varObj = {
           // attribute_combinations: os atributos que definem a variação (cor, tamanho)
@@ -14578,12 +14606,14 @@ REGRAS:
         pictures: (() => {
           // União de todas as fotos das cores (sem duplicar)
           // Capa do anúncio = primeira foto da primeira cor (orden tradicional)
+          // ML aceita até 12 fotos no item, mas vamos manter 10 pra ficar coerente
+          // com o limite por variação.
           const set = new Set();
           const cores = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : [];
           cores.forEach(c => (c.fotos || []).forEach(url => set.add(url)));
           // Fallback se cores vazias (compat com produtos antigos)
           if (set.size === 0) (p.fotos || []).forEach(url => set.add(url));
-          return Array.from(set).map(url => ({ source: url }));
+          return Array.from(set).slice(0, 10).map(url => ({ source: url }));
         })(),
         sale_terms: [],
         attributes: attrsItem,
