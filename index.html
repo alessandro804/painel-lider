@@ -11134,6 +11134,76 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   // Variante "headless" que aplica direto no produto sem mexer na UI
+  // Gera SKU pai a partir do nome do produto (slug)
+  function gerarSkuPaiDoNome(nome) {
+    if (!nome) return '';
+    return String(nome)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .split('-')
+      .slice(0, 4)  // só primeiras 4 palavras pra não ficar enorme
+      .join('-');
+  }
+  
+  // Versão PROGRAMÁTICA de gerar SKUs/EANs — opera num objeto produto
+  // (não no modal). Usada pelo "preencher faltantes com IA" em massa.
+  // Só preenche o que está vazio (não sobrescreve).
+  function gerarSkusEansProduto(produto) {
+    let mudou = false;
+    
+    // SKU pai do produto
+    if (!produto.skuPai && produto.nome) {
+      produto.skuPai = gerarSkuPaiDoNome(produto.nome);
+      if (produto.skuPai) mudou = true;
+    }
+    
+    const skuPai = produto.skuPai || 'X';
+    const vars = produto.variacoes || [];
+    if (vars.length === 0) return mudou;
+    
+    // SKUs das variações
+    const skusJaUsados = new Set(vars.filter(v => v.sku).map(v => v.sku.trim()));
+    vars.forEach((v, i) => {
+      if (v.sku && v.sku.trim()) return; // já tem
+      const cor = String(v.cor || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+        .toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,3) || '';
+      const tam = String(v.tamanho || '').replace(/[^\w.\-]/g,'') || 'UN';
+      let novoSku = [skuPai, cor, tam].filter(Boolean).join('-');
+      
+      // Evita duplicar
+      if (skusJaUsados.has(novoSku)) {
+        let n = 2;
+        while (skusJaUsados.has(novoSku + '-' + n)) n++;
+        novoSku = novoSku + '-' + n;
+      }
+      skusJaUsados.add(novoSku);
+      v.sku = novoSku;
+      mudou = true;
+    });
+    
+    // EANs das variações
+    if (typeof gerarEAN13Brasil === 'function') {
+      const eansJaUsados = new Set(vars.filter(v => v.ean).map(v => v.ean.trim()));
+      vars.forEach((v, i) => {
+        if (v.ean && v.ean.trim()) return;
+        const seed = [skuPai, v.sku || '', v.cor || '', v.tamanho || '', i].join('|');
+        let novoEan = gerarEAN13Brasil(seed);
+        let tentativa = 0;
+        while (eansJaUsados.has(novoEan) && tentativa < 50) {
+          tentativa++;
+          novoEan = gerarEAN13Brasil(seed + '|retry' + tentativa);
+        }
+        eansJaUsados.add(novoEan);
+        v.ean = novoEan;
+        mudou = true;
+      });
+    }
+    
+    return mudou;
+  }
+  
   async function preencherFaltantesIAUmProduto(produto) {
     const variacoesTxt = (produto.variacoes || []).map(v => 
       [v.cor, v.tamanho, v.sku].filter(Boolean).join(' / ')).join(' | ') || '(sem variações)';
@@ -11187,6 +11257,12 @@ Retorne JSON: {"ID": "valor", ...}`;
       .forEach(k => {
         if (!at[k] && atRet[k]) at[k] = String(atRet[k]).trim();
       });
+    
+    // Preenche SKU pai + SKUs/EANs das variações que estão vazios.
+    // (IA não gera esses — são determinísticos baseados em nome/cor/tamanho)
+    if (typeof gerarSkusEansProduto === 'function') {
+      gerarSkusEansProduto(produto);
+    }
     
     produto.atualizadoEm = new Date().toISOString();
   }
@@ -16267,6 +16343,7 @@ São o mesmo produto?`;
           descricao: anuncio.descricao || '',
           status: 'rascunho',
           fotos: anuncio.fotos || [],
+          cores: Array.isArray(anuncio.cores) ? JSON.parse(JSON.stringify(anuncio.cores)) : [],
           variacoes: [],
           marketplaces: { 
             [loja.marketplace]: { exportado: true, importado: true } 
