@@ -5173,6 +5173,7 @@
           <div id="prodVariacoesList"></div>
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
             <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px" onclick="addVariacaoProduto()">+ Adicionar variação</button>
+            <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#f3e8ff;color:#6b21a8;border-color:#a855f7" onclick="autoCriarVariacoesPorCor()" title="Pra cada cor cadastrada, cria variações com os mesmos tamanhos das outras cores (matriz cor × tamanho)">🪄 Auto-criar variações</button>
             <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#fef3c7;color:#92400e;border-color:#f59e0b" onclick="gerarSkusVariacoesAutomatico()" title="Gera SKU pra cada variação combinando SKU do produto + cor + tamanho">🏷️ Gerar SKUs</button>
             <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#fef3c7;color:#92400e;border-color:#f59e0b" onclick="gerarEansVariacoesAutomatico()" title="Gera EAN-13 válido com prefixo 789 (Brasil) pra cada variação — só pra uso no ML">🔢 Gerar EANs</button>
           </div>
@@ -13451,6 +13452,68 @@ REGRAS:
   // Gera SKU pra cada variacao no formato {SKU_PAI}-{COR_ABREV}-{TAMANHO}
   // Ex: skuPai=AMX, cor=Preto, tamanho=40 -> AMX-PRT-40
   // Se variacao ja tem SKU preenchido, pergunta antes de sobrescrever.
+  // Cria matriz cor × tamanho automaticamente.
+  // Pra cada cor cadastrada que NÃO tem variações de tamanho, cria variações
+  // copiando os tamanhos que JÁ existem nas outras cores.
+  function autoCriarVariacoesPorCor() {
+    if (_coresProdutoSessao.length === 0) {
+      showToast('Cadastre cores primeiro na seção 🎨 Fotos por Cor', true);
+      return;
+    }
+    
+    // Coleta tamanhos únicos das variações existentes
+    const tamanhosExistentes = [...new Set(
+      (_variacoesProduto || [])
+        .map(v => String(v.tamanho || '').trim())
+        .filter(Boolean)
+    )].sort((a,b) => {
+      const na = parseFloat(a), nb = parseFloat(b);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return a.localeCompare(b);
+    });
+    
+    if (tamanhosExistentes.length === 0) {
+      const txt = prompt('Não tem nenhuma variação de tamanho ainda. Digite os tamanhos separados por vírgula\n(ex: 38, 39, 40, 41, 42):', '38,39,40,41,42,43,44');
+      if (!txt) return;
+      txt.split(',').map(t => t.trim()).filter(Boolean).forEach(t => tamanhosExistentes.push(t));
+    }
+    
+    let criadas = 0;
+    let jaExistentes = 0;
+    
+    _coresProdutoSessao.forEach(cor => {
+      tamanhosExistentes.forEach(tam => {
+        // Já existe variação com essa cor + tamanho?
+        const ja = _variacoesProduto.find(v => 
+          v.corId === cor.id && String(v.tamanho).trim() === tam
+        );
+        if (ja) { jaExistentes++; return; }
+        
+        _variacoesProduto.push({
+          id: gerarId(),
+          cor: cor.nome,
+          corId: cor.id,
+          tamanho: tam,
+          nome: cor.nome + ' ' + tam,
+          sku: '',
+          ean: '',
+          estoque: 0,
+          preco: ''
+        });
+        criadas++;
+      });
+    });
+    
+    renderVariacoesProduto();
+    renderCoresProduto();  // atualiza contador "X var."
+    
+    if (criadas > 0) {
+      showToast(`🪄 ${criadas} variação(ões) criada(s) (${jaExistentes} já existiam). Preencha SKU/EAN/estoque.`);
+    } else {
+      showToast('Todas as combinações já existem.', false);
+    }
+  }
+  
   function gerarSkusVariacoesAutomatico() {
     if (_variacoesProduto.length === 0) {
       showToast('Adicione pelo menos uma variação primeiro', true);
@@ -14258,6 +14321,22 @@ REGRAS:
     const base64s = todasFotos.filter(f => String(f || '').startsWith('data:image'));
     if (base64s.length > 0) {
       erros.push(base64s.length + ' foto(s) ainda subindo pro Storage — aguarde o ⏳ sumir');
+    }
+    
+    // CRITICAL: detecta cores sem variações de tamanho (ML rejeita)
+    // Se ALGUMA variação tem tamanho, TODAS devem ter.
+    const vars = p.variacoes || [];
+    if (vars.length > 0) {
+      const algumComTam = vars.some(v => v.tamanho);
+      const semTam = vars.filter(v => !v.tamanho);
+      if (algumComTam && semTam.length > 0) {
+        const coresSemTam = [...new Set(semTam.map(v => v.cor || '?').filter(Boolean))];
+        erros.push(
+          'Cor(es) "' + coresSemTam.join(', ') + '" sem variações de tamanho ' +
+          '(outras cores têm tamanho). Edite o produto e adicione tamanhos pra essas cores ' +
+          '(use 🪄 "Auto-criar variações")'
+        );
+      }
     }
     
     // Categoria precisa ter vínculo com o marketplace
