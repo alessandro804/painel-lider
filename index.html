@@ -13053,7 +13053,7 @@ REGRAS:
     if (inp) inp.click();
   }
   
-  function _uploadFotosCor(files) {
+  async function _uploadFotosCor(files) {
     if (!files || files.length === 0) return;
     const corId = _corAtivaUpload;
     if (!corId) { 
@@ -13063,31 +13063,78 @@ REGRAS:
     const cor = _coresProdutoSessao.find(c => c.id === corId);
     if (!cor) return;
     
-    const totalAtual = _coresProdutoSessao.reduce((acc, c) => acc + (c.fotos||[]).length, 0);
     const limite = 30;
+    const fotosAntes = _coresProdutoSessao.reduce((acc, c) => acc + (c.fotos||[]).length, 0);
+    
     let bloqueadas = 0;
+    let aSubir = [];
     
     Array.from(files).forEach(file => {
       if (!file.type.startsWith('image/')) return;
-      if (totalAtual + cor.fotos.length - cor.fotos.length + 1 > limite) { 
+      if (fotosAntes + aSubir.length >= limite) { 
         bloqueadas++; 
         return; 
       }
-      const reader = new FileReader();
-      reader.onload = e => { 
-        cor.fotos.push(e.target.result); 
-        renderCoresProduto(); 
-      };
-      reader.readAsDataURL(file);
+      aSubir.push(file);
     });
     
     if (bloqueadas > 0) {
-      showToast(`Limite de ${limite} fotos por produto. ${bloqueadas} foto(s) ignorada(s)`, true);
+      showToast(`Limite de ${limite} fotos. ${bloqueadas} ignorada(s)`, true);
     }
     
+    // Limpa input pro próximo upload funcionar
     const inp = document.getElementById('prodFotoInput');
     if (inp) inp.value = '';
     _corAtivaUpload = null;
+    
+    if (aSubir.length === 0) return;
+    
+    // Pra cada arquivo: 
+    // 1. Adiciona um placeholder com base64 + flag "subindo"
+    // 2. Sobe pro Storage
+    // 3. Substitui base64 pela URL pública retornada
+    for (const file of aSubir) {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = e => res(e.target.result);
+        r.onerror = () => rej(new Error('falha ao ler arquivo'));
+        r.readAsDataURL(file);
+      });
+      
+      // Adiciona placeholder com flag _subindo
+      const placeholder = { 
+        _subindo: true, 
+        _local: dataUrl, 
+        url: dataUrl 
+      };
+      cor.fotos.push(dataUrl);
+      const idxFoto = cor.fotos.length - 1;
+      renderCoresProduto();
+      
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-api-token': getApiToken()
+          },
+          body: JSON.stringify({ dataUrl })
+        });
+        const data = await resp.json();
+        if (data.ok && data.url) {
+          // Substitui base64 pela URL pública
+          cor.fotos[idxFoto] = data.url;
+        } else {
+          // Falhou — remove o placeholder
+          cor.fotos.splice(idxFoto, 1);
+          showToast('Falha ao subir foto: ' + (data.erro || 'erro'), true);
+        }
+      } catch(e) {
+        cor.fotos.splice(idxFoto, 1);
+        showToast('Falha ao subir foto: ' + e.message, true);
+      }
+      renderCoresProduto();
+    }
   }
   
   function removerFotoDaCor(corId, fotoIdx) {
@@ -13118,15 +13165,18 @@ REGRAS:
       return;
     }
     cont.innerHTML = _coresProdutoSessao.map((c, ci) => {
-      const fotosHtml = (c.fotos || []).map((src, i) => `
-        <div style="position:relative;width:80px;height:80px;border-radius:6px;overflow:hidden;border:1px solid #e5e7eb;background:#f9fafb">
+      const fotosHtml = (c.fotos || []).map((src, i) => {
+        const subindo = String(src).startsWith('data:image');
+        return `
+        <div style="position:relative;width:80px;height:80px;border-radius:6px;overflow:hidden;border:1px solid #e5e7eb;background:#f9fafb${subindo ? ';opacity:0.7' : ''}">
           <img src="${escapeHtml(src)}" style="width:100%;height:100%;object-fit:cover">
+          ${subindo ? '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);color:white;font-size:10px;font-weight:700">⏳ subindo</div>' : ''}
           <button type="button" onclick="removerFotoDaCor('${c.id}',${i})" style="position:absolute;top:2px;right:2px;width:18px;height:18px;background:rgba(220,38,38,0.9);color:white;border:none;border-radius:50%;cursor:pointer;font-size:10px;line-height:1;display:flex;align-items:center;justify-content:center" title="Remover">✕</button>
-          ${i > 0 ? `<button type="button" onclick="moverFotoCor('${c.id}',${i},-1)" style="position:absolute;bottom:2px;left:2px;width:18px;height:18px;background:rgba(30,42,71,0.85);color:white;border:none;border-radius:3px;cursor:pointer;font-size:10px;line-height:1" title="Mover pra esquerda">◀</button>` : ''}
-          ${i < c.fotos.length-1 ? `<button type="button" onclick="moverFotoCor('${c.id}',${i},1)" style="position:absolute;bottom:2px;right:2px;width:18px;height:18px;background:rgba(30,42,71,0.85);color:white;border:none;border-radius:3px;cursor:pointer;font-size:10px;line-height:1" title="Mover pra direita">▶</button>` : ''}
-          ${i === 0 ? '<div style="position:absolute;top:2px;left:2px;background:#fbbf24;color:#78350f;font-size:9px;font-weight:800;padding:1px 4px;border-radius:3px">CAPA</div>' : ''}
+          ${(!subindo && i > 0) ? `<button type="button" onclick="moverFotoCor('${c.id}',${i},-1)" style="position:absolute;bottom:2px;left:2px;width:18px;height:18px;background:rgba(30,42,71,0.85);color:white;border:none;border-radius:3px;cursor:pointer;font-size:10px;line-height:1" title="Mover pra esquerda">◀</button>` : ''}
+          ${(!subindo && i < c.fotos.length-1) ? `<button type="button" onclick="moverFotoCor('${c.id}',${i},1)" style="position:absolute;bottom:2px;right:2px;width:18px;height:18px;background:rgba(30,42,71,0.85);color:white;border:none;border-radius:3px;cursor:pointer;font-size:10px;line-height:1" title="Mover pra direita">▶</button>` : ''}
+          ${(!subindo && i === 0) ? '<div style="position:absolute;top:2px;left:2px;background:#fbbf24;color:#78350f;font-size:9px;font-weight:800;padding:1px 4px;border-radius:3px">CAPA</div>' : ''}
         </div>
-      `).join('');
+      `;}).join('');
       const varsCount = _variacoesProduto.filter(v => v.corId === c.id).length;
       return `
         <div style="background:#fafafa;border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:10px">
@@ -13649,9 +13699,55 @@ REGRAS:
   }
   
   // === Salvar / excluir ===
-  function salvarProduto() {
+  // Garante que todas as fotos do produto estão como URLs públicas (não base64).
+  // Faz upload das que ainda são base64 e atualiza _coresProdutoSessao em-place.
+  async function _garantirFotosNoStorage() {
+    let subindo = 0;
+    for (const cor of _coresProdutoSessao) {
+      for (let i = 0; i < (cor.fotos||[]).length; i++) {
+        if (String(cor.fotos[i] || '').startsWith('data:image')) {
+          subindo++;
+          try {
+            const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+              method: 'POST',
+              headers: { 
+                'Content-Type': 'application/json',
+                'x-api-token': getApiToken()
+              },
+              body: JSON.stringify({ dataUrl: cor.fotos[i] })
+            });
+            const data = await resp.json();
+            if (data.ok && data.url) {
+              cor.fotos[i] = data.url;
+            } else {
+              throw new Error(data.erro || 'upload falhou');
+            }
+          } catch(e) {
+            throw new Error('Falha ao subir foto da cor "' + cor.nome + '": ' + e.message);
+          }
+        }
+      }
+    }
+    if (subindo > 0) {
+      renderCoresProduto();
+      console.log('[salvarProduto] ' + subindo + ' foto(s) subida(s) pro Storage antes de salvar');
+    }
+    return subindo;
+  }
+  
+  async function salvarProduto() {
     const nome = document.getElementById('prodNome').value.trim();
     if (!nome) { showToast('Informe o nome do produto', true); return; }
+    
+    // CRITICAL: garante que todas as fotos viraram URLs públicas antes de salvar
+    // (senão envia base64 → 413 Payload Too Large)
+    try {
+      const subiu = await _garantirFotosNoStorage();
+      if (subiu > 0) showToast('✓ ' + subiu + ' foto(s) hospedada(s)');
+    } catch(e) {
+      showToast('❌ ' + e.message, true);
+      return;
+    }
     
     // Calcula fotos legadas como UNIÃO de todas as cores (compat com Shopee/legacy)
     const fotosUniao = (() => {
@@ -14016,6 +14112,16 @@ REGRAS:
     if (!p.preco || p.preco <= 0) erros.push('Preço base');
     if (!p.fotos || p.fotos.length === 0) erros.push('Pelo menos 1 foto');
     if (!p.categoria) erros.push('Categoria interna');
+    
+    // CRITICAL: bloqueia se tem foto em base64 que não subiu pro Storage.
+    // ML/Shopee rejeitam (e antes disso o backend retorna 413 Payload Too Large).
+    const todasFotos = [...(p.fotos || [])];
+    (p.cores || []).forEach(c => (c.fotos || []).forEach(url => todasFotos.push(url)));
+    const base64s = todasFotos.filter(f => String(f || '').startsWith('data:image'));
+    if (base64s.length > 0) {
+      erros.push(base64s.length + ' foto(s) ainda subindo pro Storage — aguarde o ⏳ sumir');
+    }
+    
     // Categoria precisa ter vínculo com o marketplace
     const mapa = categoriasMapErp.find(c => c.categoriaInterna === p.categoria);
     if (!mapa || !mapa.vinculos || !mapa.vinculos[marketplace]) {
