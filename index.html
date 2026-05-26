@@ -9264,18 +9264,62 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (!data.ok || !Array.isArray(data.lojas)) return;
       
       let mudou = false;
-      // Casa lojas locais com lojas do banco por nome+marketplace
+      
+      // 1. Casa lojas LOCAIS com lojas do banco (por nome+marketplace)
+      // → preenche idBanco e info de conta conectada
       lojasErp.forEach(local => {
-        if (local.idBanco) return; // já tem
         const correspondente = data.lojas.find(b => 
           b.nome === local.nome && b.marketplace === local.marketplace
         );
         if (correspondente) {
-          local.idBanco = correspondente.id;
-          mudou = true;
+          if (!local.idBanco) {
+            local.idBanco = correspondente.id;
+            mudou = true;
+          }
+          // Atualiza info de conta conectada (independente de já ter idBanco)
+          if (correspondente.contaConectada !== local.contaConectada) {
+            local.contaConectada = correspondente.contaConectada;
+            mudou = true;
+          }
+          if (correspondente.conta) {
+            local.contaInfo = correspondente.conta;
+          }
         }
       });
-      if (mudou) saveLojas();
+      
+      // 2. IMPORTA lojas do banco que NÃO existem localmente
+      // Isso resolve o caso de "outro navegador" — onde o localStorage não tem
+      // as lojas, mas elas existem no banco (conectadas em outro navegador).
+      data.lojas.forEach(banco => {
+        const jaTemLocal = lojasErp.some(l => 
+          String(l.idBanco) === String(banco.id) ||
+          (l.nome === banco.nome && l.marketplace === banco.marketplace)
+        );
+        if (!jaTemLocal) {
+          lojasErp.push({
+            id: gerarId(),
+            idBanco: banco.id,
+            nome: banco.nome,
+            marketplace: banco.marketplace,
+            contaConectada: banco.contaConectada,
+            contaInfo: banco.conta,
+            importadoDeOutroNavegador: true,
+          });
+          mudou = true;
+          console.log('[lojas] importada loja do banco:', banco.nome, '(' + banco.marketplace + ')');
+        }
+      });
+      
+      if (mudou) {
+        saveLojas();
+        // Re-renderiza se as telas relevantes estiverem abertas
+        if (typeof renderLojasConexoes === 'function') {
+          try { renderLojasConexoes(); } catch(_) {}
+        }
+        if (typeof renderProdutos === 'function') {
+          try { renderProdutos(); } catch(_) {}
+        }
+      }
     } catch (e) {
       // Backend offline - sem problema, continua usando ids locais
     }
@@ -11701,6 +11745,47 @@ Retorne JSON: {"ID": "valor", ...}`;
         }
       });
       
+      // SELO DE LOJA: mostra de qual conta o produto pertence/está vinculado.
+      // Coleta lojas únicas: loja de origem (p.lojaId) + lojas dos vínculos das variações
+      const nomesLojas = new Map(); // nome → { marketplace, count }
+      if (p.lojaId) {
+        const lojaOrigem = lojasErp.find(l => String(l.id) === String(p.lojaId));
+        if (lojaOrigem) {
+          nomesLojas.set(lojaOrigem.nome, { 
+            marketplace: lojaOrigem.marketplace, 
+            count: 0, 
+            origem: true 
+          });
+        }
+      }
+      (p.variacoes || []).forEach(v => {
+        (v.vinculos || []).forEach(vinc => {
+          const loja = lojasErp.find(l => 
+            (vinc.lojaIdBanco && String(l.idBanco) === String(vinc.lojaIdBanco)) ||
+            (vinc.lojaId && String(l.id) === String(vinc.lojaId))
+          );
+          if (loja) {
+            if (!nomesLojas.has(loja.nome)) {
+              nomesLojas.set(loja.nome, { marketplace: loja.marketplace, count: 0, origem: false });
+            }
+            nomesLojas.get(loja.nome).count++;
+          }
+        });
+      });
+      let lojaChips = '';
+      nomesLojas.forEach((info, nome) => {
+        const mkCores = {
+          mercadolivre: '#2D3277', shopee: '#EE4D2D', 
+          tiktok: '#000000', shein: '#000000'
+        };
+        const corBg = mkCores[info.marketplace] || '#6b7280';
+        const sufixo = info.count > 0 ? ' (' + info.count + ')' : '';
+        const tt = info.origem 
+          ? 'Produto criado na loja: ' + nome 
+          : 'Anúncio(s) nesta loja: ' + nome;
+        lojaChips += `<span class="prod-card-mkt-chip" style="background:${corBg};color:white;font-size:9px;padding:1px 6px" title="${escapeHtml(tt)}">🏪 ${escapeHtml(nome)}${sufixo}</span>`;
+      });
+      
       // FASE A/B: badges de vínculos e suspeitos (CLICÁVEIS — abrem modal)
       const totalVinc = contarVinculosProduto(p);
       const totalSusp = contarVinculosSuspeitos(p);
@@ -11777,6 +11862,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           <div class="prod-card-nome">${escapeHtml(p.nome)}</div>
           <div class="prod-card-sku">SKU: ${escapeHtml(p.skuPai||'—')}</div>
           <div class="prod-card-mkts">${mktChips}${vincBadges || (mktChips ? '' : '<span style="font-size:10px;color:#9ca3af">Não publicado</span>')}</div>
+          ${lojaChips ? `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px">${lojaChips}</div>` : ''}
           ${(() => {
             const cores = obterCoresDoProduto(p);
             if (!cores || cores.length === 0) return '';
