@@ -9119,9 +9119,10 @@ Retorne JSON: {"ID": "valor", ...}`;
   // CHUNK 3.1: agora trabalha com loja específica (multi-loja).
   // Se for chamado com integ (catálogo), pega a primeira loja daquele mk
   // ou cria automaticamente uma loja "padrão" pro mk.
-  async function abrirVinculoMarketplace(integ) {
-    // Acha a primeira loja local daquele marketplace
-    let loja = lojasErp.find(l => l.marketplace === integ.id);
+  async function abrirVinculoMarketplace(integ, lojaEspecifica) {
+    // Se foi passada uma loja específica (clique no card), usa ela.
+    // Senão, acha a primeira loja local daquele marketplace (fluxo legado).
+    let loja = lojaEspecifica || lojasErp.find(l => l.marketplace === integ.id);
     
     // Se não existe, cria uma loja padrão
     if (!loja) {
@@ -9157,14 +9158,18 @@ Retorne JSON: {"ID": "valor", ...}`;
         'Loja: ' + loja.nome + '\n' +
         (conta.user_id_marketplace ? 'Vendedor: ' + conta.user_id_marketplace + '\n' : '') +
         'Vinculado em: ' + (conta.vinculado_em ? new Date(conta.vinculado_em).toLocaleDateString('pt-BR') : '—') + '\n\n' +
-        'Deseja desvincular esta conta?';
+        'Esta loja JÁ tem uma conta vinculada. Para conectar uma conta DIFERENTE:\n' +
+        '1. Cancele aqui\n' +
+        '2. Clique em "+ Conectar outra conta ' + integ.nome + '" na tela de Lojas\n\n' +
+        'Quer desvincular ESTA loja "' + loja.nome + '"?';
       if (confirm(msg)) {
         await fetch(BACKEND_URL + '/api/vincular/loja/' + lojaIdBanco, {
           method: 'DELETE',
           headers: { 'x-api-token': getApiToken() }
         });
-        showToast(integ.nome + ' desvinculado');
+        showToast(loja.nome + ' desvinculado');
         renderIntegracoes();
+        if (typeof renderLojasConexoes === 'function') renderLojasConexoes();
       }
       return;
     }
@@ -9588,6 +9593,14 @@ Retorne JSON: {"ID": "valor", ...}`;
     closeAddLoja();
     showToast('✓ Loja "' + nome + '" criada');
     renderLojasConexoes();
+    
+    // Pergunta se quer conectar AGORA (fluxo natural: criou → conecta)
+    const info = MK_INFO[mk];
+    if (info && confirm('Loja "' + nome + '" criada com sucesso!\n\nDeseja conectar a conta do ' + info.nome + ' agora?\n\n' +
+      'IMPORTANTE: faça LOGOUT da conta atual no site do ' + info.nome + ' antes de continuar, ' +
+      'senão o OAuth vai usar a conta logada (não a nova que você quer vincular).')) {
+      await abrirVinculoMarketplace({ id: mk, nome: info.nome }, novaLoja);
+    }
   }
   
   async function acaoLojaConectar(lojaLocalId) {
@@ -9596,8 +9609,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     const info = MK_INFO[loja.marketplace];
     if (!info) return;
     
-    // Usa o fluxo existente de OAuth (que já lida com multi-loja desde chunk 3.1)
-    await abrirVinculoMarketplace({ id: loja.marketplace, nome: info.nome });
+    // Passa a loja ESPECÍFICA pro fluxo OAuth (sem isso, ele pegaria a 1ª loja
+    // do marketplace e mostraria "desvincular" da conta errada).
+    await abrirVinculoMarketplace({ id: loja.marketplace, nome: info.nome }, loja);
   }
   
   async function acaoLojaSincronizar(lojaLocalId) {
