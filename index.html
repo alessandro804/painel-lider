@@ -5993,6 +5993,10 @@
       <div id="sincronizarV2Footer" style="font-size:12px;color:#6b7280">Nenhuma loja selecionada</div>
       <div class="modal-v2-actions">
         <button class="modal-v2-btn modal-v2-btn-secondary" 
+          style="background:#fef3c7;color:#92400e;border-color:#fcd34d" 
+          onclick="v32d_mesclarDuplicadosAutomatico()"
+          title="Detecta produtos duplicados e mescla automaticamente (preview antes)">🔧 Mesclar duplicados</button>
+        <button class="modal-v2-btn modal-v2-btn-secondary" 
           style="background:#fee2e2;color:#991b1b;border-color:#fca5a5" 
           onclick="v32d_abrirLimparVinculos()"
           title="Remove TODOS os vínculos de um marketplace específico (útil pra recomeçar do zero)">🧹 Limpar vínculos</button>
@@ -12113,6 +12117,323 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     return contagem;
   }
+  
+  // ============================================================
+  // v32d.6 — MESCLAGEM AUTOMÁTICA DE PRODUTOS DUPLICADOS
+  // ============================================================
+  
+  // Normaliza nome pra comparação (remove acentos, espaços extras, lowercase)
+  function v32d_normNome(nome) {
+    return String(nome || '')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9 ]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  
+  // Pega "nome base" (primeiras 5 palavras) — útil pra agrupar nomes truncados
+  function v32d_nomeBase(nome) {
+    return v32d_normNome(nome).split(' ').slice(0, 6).join(' ');
+  }
+  
+  // Conta vínculos totais de um produto
+  function v32d_contarVinculosProduto(p) {
+    return (p.variacoes || []).reduce((s, v) => s + (v.vinculos || []).length, 0);
+  }
+  
+  // SKU pai é placeholder? (gerado automaticamente pela import)
+  function v32d_skuPaiPlaceholder(sku) {
+    return !sku || /^anuncio-/i.test(String(sku).trim());
+  }
+  
+  // Detecta produtos que devem ser mesclados.
+  // Retorna grupos onde cada grupo é [produtoBase, ...produtosParaMesclar]
+  function v32d_detectarGruposDuplicados() {
+    const ativos = produtosErp.filter(p => p.status !== 'excluido');
+    const grupos = new Map();  // chaveGrupo → array de produtos
+    
+    ativos.forEach(p => {
+      // Estratégia 1: agrupa por anúncioId compartilhado nos vínculos
+      // Se 2 produtos têm vínculo no MESMO anuncioId, são duplicação clara
+      const anuncioIds = new Set();
+      (p.variacoes || []).forEach(v => {
+        (v.vinculos || []).forEach(vi => {
+          if (vi.anuncioId) anuncioIds.add(vi.marketplace + ':' + vi.anuncioId);
+        });
+      });
+      
+      // Estratégia 2: agrupa por SKU pai real
+      const skuPaiReal = !v32d_skuPaiPlaceholder(p.skuPai) ? String(p.skuPai).toUpperCase().trim() : null;
+      
+      // Estratégia 3: agrupa por nome base
+      const nomeBase = v32d_nomeBase(p.nome);
+      
+      // Cria várias chaves possíveis pra mesma "identidade"
+      const chaves = new Set();
+      if (skuPaiReal) chaves.add('sku:' + skuPaiReal);
+      anuncioIds.forEach(aid => chaves.add('anuncio:' + aid));
+      if (nomeBase && nomeBase.length >= 10) chaves.add('nome:' + nomeBase);
+      
+      // Adiciona o produto em CADA chave (vamos colapsar depois)
+      chaves.forEach(ch => {
+        if (!grupos.has(ch)) grupos.set(ch, new Set());
+        grupos.get(ch).add(p);
+      });
+    });
+    
+    // Colapsa: produtos que compartilham QUALQUER chave estão no mesmo grupo
+    // Implementa union-find simples
+    const produtoParaGrupo = new Map();
+    let nextGroupId = 0;
+    
+    grupos.forEach(set => {
+      if (set.size < 2) return;
+      const produtosArr = Array.from(set);
+      
+      // Acha grupos existentes que esses produtos já pertencem
+      const gruposExistentes = new Set();
+      produtosArr.forEach(p => {
+        if (produtoParaGrupo.has(p)) gruposExistentes.add(produtoParaGrupo.get(p));
+      });
+      
+      let groupId;
+      if (gruposExistentes.size === 0) {
+        groupId = nextGroupId++;
+      } else {
+        groupId = Math.min(...gruposExistentes);
+        // Reassocia todos do grupo anterior pro novo
+        if (gruposExistentes.size > 1) {
+          produtoParaGrupo.forEach((g, prod) => {
+            if (gruposExistentes.has(g) && g !== groupId) {
+              produtoParaGrupo.set(prod, groupId);
+            }
+          });
+        }
+      }
+      
+      produtosArr.forEach(p => produtoParaGrupo.set(p, groupId));
+    });
+    
+    // Converte pra array de grupos
+    const gruposFinais = new Map();
+    produtoParaGrupo.forEach((groupId, p) => {
+      if (!gruposFinais.has(groupId)) gruposFinais.set(groupId, []);
+      gruposFinais.get(groupId).push(p);
+    });
+    
+    // Filtra: só grupos com 2+ produtos
+    const result = Array.from(gruposFinais.values()).filter(arr => arr.length >= 2);
+    
+    // Pra cada grupo, escolhe o produto BASE (o "mestre" pra onde vai mesclar)
+    return result.map(produtos => {
+      // Prioriza: skuPai real > mais vínculos > mais recente
+      produtos.sort((a, b) => {
+        const aPlace = v32d_skuPaiPlaceholder(a.skuPai);
+        const bPlace = v32d_skuPaiPlaceholder(b.skuPai);
+        if (aPlace !== bPlace) return aPlace ? 1 : -1;  // não-placeholder vem primeiro
+        
+        const vincA = v32d_contarVinculosProduto(a);
+        const vincB = v32d_contarVinculosProduto(b);
+        if (vincA !== vincB) return vincB - vincA;  // mais vínculos primeiro
+        
+        return 0;
+      });
+      
+      return {
+        base: produtos[0],
+        mesclar: produtos.slice(1),
+      };
+    });
+  }
+  
+  // Mescla produto `de` dentro de `para`
+  function v32d_mesclarProdutos(para, de) {
+    // 1. Junta variações: pra cada variação de `de`, procura match no `para`
+    (de.variacoes || []).forEach(varDe => {
+      const skuDe = varDe.sku ? normalizarSku(varDe.sku) : null;
+      
+      // Procura variação no `para` com mesmo SKU
+      let varPara = null;
+      if (skuDe) {
+        varPara = (para.variacoes || []).find(vp => vp.sku && normalizarSku(vp.sku) === skuDe);
+      }
+      // Se não achou por SKU, tenta por cor+tamanho
+      if (!varPara && (varDe.cor || varDe.tamanho)) {
+        varPara = (para.variacoes || []).find(vp => 
+          (vp.cor || '') === (varDe.cor || '') && 
+          (vp.tamanho || '') === (varDe.tamanho || '')
+        );
+      }
+      
+      if (varPara) {
+        // Variação existe — só adiciona os vínculos de varDe que não existem
+        if (!varPara.vinculos) varPara.vinculos = [];
+        (varDe.vinculos || []).forEach(vi => {
+          const jaTem = varPara.vinculos.some(vp =>
+            String(vp.anuncioId) === String(vi.anuncioId) && 
+            String(vp.variacaoExternaId||'') === String(vi.variacaoExternaId||'')
+          );
+          if (!jaTem) varPara.vinculos.push(vi);
+        });
+        // Atualiza SKU se varPara não tinha (preserva o real)
+        if (!varPara.sku && varDe.sku) varPara.sku = varDe.sku;
+        if (!varPara.cor && varDe.cor) varPara.cor = varDe.cor;
+        if (!varPara.tamanho && varDe.tamanho) varPara.tamanho = varDe.tamanho;
+      } else {
+        // Variação não existe — copia inteira
+        if (!para.variacoes) para.variacoes = [];
+        para.variacoes.push(JSON.parse(JSON.stringify(varDe)));
+      }
+    });
+    
+    // 2. Junta cores
+    if (Array.isArray(de.cores) && de.cores.length > 0) {
+      if (!Array.isArray(para.cores)) para.cores = [];
+      const nomesPara = new Set(para.cores.map(c => String(c.nome || '').toLowerCase()));
+      de.cores.forEach(c => {
+        if (!nomesPara.has(String(c.nome || '').toLowerCase())) {
+          para.cores.push(JSON.parse(JSON.stringify(c)));
+        }
+      });
+    }
+    
+    // 3. Junta fotos (se para não tem)
+    if ((!para.fotos || para.fotos.length === 0) && Array.isArray(de.fotos) && de.fotos.length > 0) {
+      para.fotos = [...de.fotos];
+    }
+    
+    // 4. Junta marketplaces
+    if (de.marketplaces) {
+      if (!para.marketplaces) para.marketplaces = {};
+      Object.keys(de.marketplaces).forEach(mk => {
+        if (!para.marketplaces[mk]) {
+          para.marketplaces[mk] = JSON.parse(JSON.stringify(de.marketplaces[mk]));
+        }
+      });
+    }
+    
+    // 5. Preserva preço (se para tava 0)
+    if ((!para.preco || para.preco === 0) && de.preco) para.preco = de.preco;
+    
+    // 6. Move `de` pra lixeira
+    de.status = 'excluido';
+    de._mescladoEm = new Date().toISOString();
+    de._mescladoParaId = para.id;
+  }
+  
+  // Detecta produtos de teste
+  function v32d_ehProdutoTeste(p) {
+    const nome = String(p.nome || '').toLowerCase();
+    return /\bteste\s+[a-z]\b|\bnao\s+comprar\b|\btest\s+/i.test(nome);
+  }
+  
+  // Função principal: faz análise + apresenta preview
+  async function v32d_mesclarDuplicadosAutomatico() {
+    const grupos = v32d_detectarGruposDuplicados();
+    const produtosTeste = produtosErp.filter(p => p.status !== 'excluido' && v32d_ehProdutoTeste(p));
+    
+    if (grupos.length === 0 && produtosTeste.length === 0) {
+      alert('✓ Não encontrei produtos duplicados nem de teste.\nO catálogo está limpo!');
+      return;
+    }
+    
+    // Monta preview
+    let preview = '🔧 MESCLAGEM AUTOMÁTICA — PRÉVIA\n\n';
+    
+    if (grupos.length > 0) {
+      let totalParaMesclar = 0;
+      grupos.forEach(g => totalParaMesclar += g.mesclar.length);
+      
+      preview += `📦 ${grupos.length} grupos de duplicados (${totalParaMesclar} produtos vão pra lixeira)\n\n`;
+      
+      grupos.slice(0, 10).forEach((g, i) => {
+        preview += `${i+1}) Mestre: "${(g.base.nome || '').slice(0,45)}" (sku: ${g.base.skuPai || '?'}, ${v32d_contarVinculosProduto(g.base)} vínculos)\n`;
+        g.mesclar.slice(0, 3).forEach(m => {
+          preview += `   ⬅ Mesclar: "${(m.nome || '').slice(0,45)}" (sku: ${m.skuPai || '?'}, ${v32d_contarVinculosProduto(m)} vínculos)\n`;
+        });
+        if (g.mesclar.length > 3) preview += `   ... +${g.mesclar.length - 3} outros\n`;
+        preview += '\n';
+      });
+      
+      if (grupos.length > 10) preview += `... +${grupos.length - 10} grupos\n\n`;
+    }
+    
+    if (produtosTeste.length > 0) {
+      preview += `\n🗑 ${produtosTeste.length} produtos de teste vão pra lixeira:\n`;
+      produtosTeste.slice(0, 6).forEach(p => {
+        preview += `   • ${(p.nome || '').slice(0,55)}\n`;
+      });
+      if (produtosTeste.length > 6) preview += `   ... +${produtosTeste.length - 6} outros\n`;
+    }
+    
+    preview += '\n⚠ Os produtos NÃO são apagados — vão pra lixeira (status=excluido).\nVocê pode restaurar depois se precisar.\n\nContinuar?';
+    
+    if (!confirm(preview)) return;
+    
+    // Confirmação 2 — digite mesclar
+    const conf2 = prompt('Pra confirmar, digite: MESCLAR');
+    if (!conf2 || conf2.trim().toUpperCase() !== 'MESCLAR') {
+      showToast('Cancelado', true);
+      return;
+    }
+    
+    showToast('🔧 Mesclando...');
+    
+    let mescladosCount = 0;
+    let testeMovidos = 0;
+    
+    // Mescla grupos
+    grupos.forEach(g => {
+      g.mesclar.forEach(p => {
+        v32d_mesclarProdutos(g.base, p);
+        mescladosCount++;
+      });
+    });
+    
+    // Move produtos de teste pra lixeira
+    produtosTeste.forEach(p => {
+      if (p.status !== 'excluido') {
+        p.status = 'excluido';
+        p._motivoExclusao = 'teste';
+        p._excluidoEm = new Date().toISOString();
+        testeMovidos++;
+      }
+    });
+    
+    // Persiste no backend
+    showToast('💾 Persistindo no banco...');
+    let salvos = 0;
+    let erros = 0;
+    
+    const produtosTocados = new Set();
+    grupos.forEach(g => {
+      produtosTocados.add(g.base);
+      g.mesclar.forEach(p => produtosTocados.add(p));
+    });
+    produtosTeste.forEach(p => produtosTocados.add(p));
+    
+    for (const p of produtosTocados) {
+      try {
+        await salvarProdutoNoBackend(p);
+        salvos++;
+      } catch(e) {
+        console.error('[v32d.6] erro salvando produto', p.id, e);
+        erros++;
+      }
+    }
+    
+    saveProdutos();
+    renderProdutos();
+    
+    showToast(
+      `✅ ${mescladosCount} mesclado(s), ${testeMovidos} teste(s) → lixeira, ${salvos} salvo(s) no banco` + 
+      (erros > 0 ? ` (${erros} erro(s))` : ''),
+      false
+    );
+  }
+  
+  // ============================================================
   
   // v32d.4: Limpar vínculos com proteção contra escolha acidental
   // Removida a opção "TODOS" (causou perda acidental de 4965 vínculos pelo Alessandro).
