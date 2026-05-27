@@ -5240,6 +5240,7 @@
     <div class="modal-v2-footer">
       <button class="modal-v2-btn modal-v2-btn-delete" id="prodDeleteBtn" onclick="excluirProduto()" style="display:none">🗑 Mover para lixeira</button>
       <div class="modal-v2-actions" style="margin-left:auto">
+        <button class="modal-v2-btn modal-v2-btn-secondary" id="prodMesclarBtn" onclick="v31AbrirModalMesclar(_produtoEditandoId)" style="display:none;background:#dc2626;color:white;border-color:#dc2626" title="Mescla este produto com outro duplicado (move vínculos)">🔀 Mesclar duplicado</button>
         <button class="modal-v2-btn modal-v2-btn-secondary" id="prodRecuperarVarBtn" onclick="recuperarVariacoesDoML(_produtoEditandoId)" style="display:none;background:#fef3c7;color:#92400e;border-color:#f59e0b" title="Re-importa variações do ML para corrigir dados que se perderam">🔄 Recuperar variações ML</button>
         <button class="modal-v2-btn modal-v2-btn-secondary" id="prodAtualizarMktBtn" onclick="v31AbrirModalPropagar(_produtoEditandoId)" style="display:none;background:#3b82f6;color:white;border-color:#3b82f6" title="Escolha quais campos e quais anúncios receber as mudanças (não espalha cegamente)">📤 Propagar para anúncios</button>
         <button class="modal-v2-btn modal-v2-btn-secondary" onclick="closeProduto()">Cancelar</button>
@@ -5442,6 +5443,30 @@
       
       <div style="display:flex;gap:10px;margin-top:20px">
         <button onclick="v31FecharModalVincular()" 
+          style="flex:1;padding:10px;border:1px solid #d1d5db;background:white;border-radius:8px;font-weight:600;cursor:pointer">
+          Fechar
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== v31b.2 MODAL D: Mesclar produtos duplicados ===== -->
+<div class="modal-overlay modal-v2-overlay" id="v31MesclarOverlay" onclick="if(event.target===this)v31FecharModalMesclar()" style="align-items:center;display:none">
+  <div class="modal-v2" style="max-width:680px">
+    <div class="modal-v2-header">
+      <h3 class="modal-v2-title">🔀 Mesclar produto duplicado</h3>
+      <button class="modal-v2-close" onclick="v31FecharModalMesclar()">✕</button>
+    </div>
+    <div class="modal-v2-body" style="display:block;padding:20px">
+      <div id="v31MesclarInfo" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin-bottom:16px;font-size:13px;color:#92400e">
+        Carregando...
+      </div>
+      
+      <div id="v31MesclarLista" style="max-height:400px;overflow-y:auto"></div>
+      
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button onclick="v31FecharModalMesclar()" 
           style="flex:1;padding:10px;border:1px solid #d1d5db;background:white;border-radius:8px;font-weight:600;cursor:pointer">
           Fechar
         </button>
@@ -12138,6 +12163,133 @@ Retorne JSON: {"ID": "valor", ...}`;
     _v31VincResultados = [];
   }
   
+  // ─── v31b.2 MESCLAGEM DE PRODUTOS DUPLICADOS ────────────────────────
+  // Bug v29a Catalog: exportação criou produtos duplicados no painel.
+  // Esta função permite mesclar dois produtos: move vínculos do "duplicado" 
+  // pro "destino" matcheando cor+tam, e apaga o duplicado.
+  
+  let _v31MesclarOrigemId = null;
+  
+  function v31AbrirModalMesclar(produtoDestinoId) {
+    const destino = produtosErp.find(x => String(x.id) === String(produtoDestinoId));
+    if (!destino) { showToast('Produto destino não encontrado', true); return; }
+    _v31MesclarOrigemId = produtoDestinoId;
+    
+    // Encontra duplicados potenciais: produtos com nome parecido (fuzzy simples)
+    // Heurística: primeiras 3 palavras em comum
+    const palavrasDestino = (destino.nome || '').toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+    const palavrasChave = palavrasDestino.slice(0, 3);
+    
+    const candidatos = produtosErp.filter(p => {
+      if (String(p.id) === String(produtoDestinoId)) return false;
+      const palavrasP = (p.nome || '').toLowerCase();
+      // Pelo menos 2 das 3 palavras-chave aparecem
+      const matches = palavrasChave.filter(w => palavrasP.includes(w)).length;
+      return matches >= 2;
+    });
+    
+    // Conta vínculos de cada candidato (mais útil mostrar os que tem vínculos)
+    candidatos.forEach(c => {
+      c._vincTotal = (c.variacoes || []).reduce((tot, v) => tot + (v.vinculos || []).length, 0);
+    });
+    candidatos.sort((a, b) => b._vincTotal - a._vincTotal);
+    
+    document.getElementById('v31MesclarInfo').innerHTML = 
+      '<strong>📦 Destino: ' + escapeHtml(destino.nome || '?') + '</strong><br>' +
+      '<small>Vínculos do produto duplicado serão MOVIDOS pra cá (matcheando cor+tam). O duplicado será APAGADO.</small><br>' +
+      '<small style="opacity:0.8">⚠ Isto NÃO afeta os anúncios no ML — só reorganiza no painel.</small>';
+    
+    const lista = document.getElementById('v31MesclarLista');
+    if (candidatos.length === 0) {
+      lista.innerHTML = '<div style="padding:14px;text-align:center;color:#6b7280">Nenhum produto com nome parecido encontrado.</div>';
+    } else {
+      lista.innerHTML = '<div style="font-size:11px;color:#6b7280;margin-bottom:8px">Encontrei ' + candidatos.length + ' produto(s) com nome parecido. Clique no que é DUPLICADO:</div>' +
+        candidatos.slice(0, 10).map(c => 
+          '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:6px;background:white;display:flex;align-items:center;gap:10px">' +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="font-weight:600;font-size:13px">' + escapeHtml(c.nome || '?') + '</div>' +
+              '<div style="font-size:11px;color:#6b7280">' + 
+                (c.variacoes || []).length + ' variação(ões) · <strong>' + c._vincTotal + ' vínculo(s)</strong> · id: ' + escapeHtml(String(c.id)) +
+              '</div>' +
+            '</div>' +
+            '<button onclick="v31ExecutarMesclar(\'' + c.id + '\')" style="padding:6px 12px;background:#dc2626;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">🔀 Mesclar este</button>' +
+          '</div>'
+        ).join('');
+    }
+    
+    document.getElementById('v31MesclarOverlay').style.display = 'flex';
+  }
+  
+  function v31FecharModalMesclar() {
+    document.getElementById('v31MesclarOverlay').style.display = 'none';
+    _v31MesclarOrigemId = null;
+  }
+  
+  function v31ExecutarMesclar(duplicadoId) {
+    const destino = produtosErp.find(x => String(x.id) === String(_v31MesclarOrigemId));
+    const duplicado = produtosErp.find(x => String(x.id) === String(duplicadoId));
+    if (!destino || !duplicado) { showToast('Produto não encontrado', true); return; }
+    
+    // Planeja a mesclagem
+    const planeja = [];
+    duplicado.variacoes.forEach(vDup => {
+      (vDup.vinculos || []).forEach(vinc => {
+        const norm = s => String(s || '').trim().toLowerCase();
+        const varDest = destino.variacoes.find(v => 
+          norm(v.cor) === norm(vDup.cor) && norm(v.tamanho) === norm(vDup.tamanho)
+        );
+        planeja.push({
+          vinc, 
+          vDup,
+          varDestino: varDest, 
+          jaTem: varDest ? (varDest.vinculos || []).some(x => String(x.anuncioId) === String(vinc.anuncioId)) : false
+        });
+      });
+    });
+    
+    const movidos = planeja.filter(p => p.varDestino && !p.jaTem).length;
+    const semMatch = planeja.filter(p => !p.varDestino).length;
+    const jaTem = planeja.filter(p => p.jaTem).length;
+    
+    const msg = '🔀 MESCLAGEM:\n\n' +
+      '📥 Destino: ' + destino.nome + '\n' +
+      '📤 Duplicado: ' + duplicado.nome + '\n\n' +
+      '• ' + movidos + ' vínculo(s) serão MOVIDOS\n' +
+      (jaTem > 0 ? '• ' + jaTem + ' vínculo(s) já existem no destino (ignorar)\n' : '') +
+      (semMatch > 0 ? '• ' + semMatch + ' vínculo(s) sem match cor+tam (variações novas serão CRIADAS)\n' : '') +
+      '• Produto duplicado será APAGADO\n\n' +
+      '⚠ Isto NÃO afeta os anúncios no ML.\n\nConfirma?';
+    
+    if (!confirm(msg)) return;
+    
+    // Executa
+    planeja.forEach(p => {
+      if (p.jaTem) return;
+      if (p.varDestino) {
+        if (!Array.isArray(p.varDestino.vinculos)) p.varDestino.vinculos = [];
+        p.varDestino.vinculos.push({ ...p.vinc });
+      } else {
+        // Cria variação nova no destino
+        const novaVar = JSON.parse(JSON.stringify(p.vDup));
+        novaVar.vinculos = [{ ...p.vinc }];
+        destino.variacoes.push(novaVar);
+      }
+    });
+    
+    // Apaga o duplicado
+    const idx = produtosErp.findIndex(x => String(x.id) === String(duplicadoId));
+    if (idx >= 0) produtosErp.splice(idx, 1);
+    
+    saveProdutos();
+    
+    showToast('✅ ' + movidos + ' vínculo(s) movido(s). Produto duplicado apagado.');
+    v31FecharModalMesclar();
+    
+    // Re-renderiza
+    if (typeof renderProdutos === 'function') renderProdutos();
+    if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
+  }
+  
   function v31_OnTrocarLoja() {
     document.getElementById('v31VincResultado').innerHTML = '';
   }
@@ -12205,16 +12357,21 @@ Retorne JSON: {"ID": "valor", ...}`;
       const itens = (data.dados && data.dados.itens) || [];
       
       // Filtra os já-vinculados em QUALQUER produto do painel
-      const jaVinculados = new Set();
+      // Mapeia: anuncioId → array de {produto, varCor, varTam}
+      const jaVinculados = new Map();
       produtosErp.forEach(p => {
         (p.variacoes || []).forEach(v => {
           (v.vinculos || []).forEach(vi => {
-            if (vi.anuncioId) jaVinculados.add(String(vi.anuncioId));
+            if (!vi.anuncioId) return;
+            const k = String(vi.anuncioId);
+            if (!jaVinculados.has(k)) jaVinculados.set(k, []);
+            jaVinculados.get(k).push({ produto: p.nome, prodId: p.id, cor: v.cor, tam: v.tamanho });
           });
         });
       });
       
       const orfaos = itens.filter(it => !jaVinculados.has(String(it.id)));
+      const jaVincNaBusca = itens.filter(it => jaVinculados.has(String(it.id)));
       
       const opt = sel.selectedOptions[0];
       const mkt = opt ? opt.dataset.mkt : 'mercadolivre';
@@ -12222,9 +12379,21 @@ Retorne JSON: {"ID": "valor", ...}`;
       _v31VincResultados = orfaos.map(it => ({ ...it, marketplace: mkt, lojaIdBanco }));
       
       if (orfaos.length === 0) {
+        let detalhe = '';
+        if (jaVincNaBusca.length > 0) {
+          detalhe = '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:11px;font-weight:600">Ver onde cada um está vinculado</summary>' +
+            '<div style="margin-top:6px;font-size:11px;background:white;padding:8px;border-radius:6px">' +
+            jaVincNaBusca.map(it => {
+              const vincs = jaVinculados.get(String(it.id)) || [];
+              const prodsUnicos = Array.from(new Set(vincs.map(v => v.produto)));
+              return '<div style="padding:4px 0;border-bottom:1px solid #f3f4f6"><code>' + escapeHtml(it.id) + '</code> → ' + prodsUnicos.map(escapeHtml).join(', ') + '</div>';
+            }).join('') +
+            '</div></details>';
+        }
         document.getElementById('v31VincResultado').innerHTML = 
-          '<div style="padding:14px;background:#dcfce7;border:1px solid #10b981;border-radius:8px;color:#15803d;text-align:center">' +
-          '✅ Nenhum órfão! Todos os ' + itens.length + ' anúncios da busca já estão vinculados a algum produto.' +
+          '<div style="padding:14px;background:#dcfce7;border:1px solid #10b981;border-radius:8px;color:#15803d">' +
+          '<div style="text-align:center">✅ Nenhum órfão! Todos os ' + itens.length + ' anúncios da busca já estão vinculados a algum produto.</div>' +
+          detalhe +
           '</div>';
         return;
       }
@@ -14179,6 +14348,18 @@ REGRAS:
     if (btnRec) {
       const contMk = contarVinculosPorMarketplace(p);
       btnRec.style.display = (contMk.mercadolivre > 0) ? 'inline-block' : 'none';
+    }
+    // v31b.2: Mostra "Mesclar duplicado" se tem produto com nome parecido no painel
+    const btnMesclar = document.getElementById('prodMesclarBtn');
+    if (btnMesclar) {
+      const palavrasChave = (p.nome || '').toLowerCase().split(/\s+/).filter(w => w.length >= 3).slice(0, 3);
+      const temDup = produtosErp.some(outro => {
+        if (String(outro.id) === String(p.id)) return false;
+        const palavras = (outro.nome || '').toLowerCase();
+        const matches = palavrasChave.filter(w => palavras.includes(w)).length;
+        return matches >= 2;
+      });
+      btnMesclar.style.display = temDup ? 'inline-block' : 'none';
     }
     popularSelectsProduto();
     document.getElementById('prodLoja').value = p.lojaId || '';
