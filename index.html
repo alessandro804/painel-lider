@@ -2981,12 +2981,13 @@
   .prod-card-v2 .prod-card-badge {
     position: absolute;
     top: 8px;
-    left: 8px;
+    right: 8px;
     padding: 3px 8px;
     border-radius: 6px;
     font-size: 10px;
     font-weight: 700;
     color: white;
+    z-index: 2;
   }
   .prod-card-v2 .prod-card-badge.ativo { background: #16a34a; }
   .prod-card-v2 .prod-card-badge.inativo { background: #6b7280; }
@@ -11780,6 +11781,53 @@ Retorne JSON: {"ID": "valor", ...}`;
     return null;
   }
   
+  // v31b.5: Persiste produto NO BACKEND (não só localStorage).
+  // saveProdutos() salva só local + Lidersync (app_data), NÃO atualiza tabela produtos.
+  // Esta função força o PUT no banco. Use SEMPRE após mexer em vínculos/personalizado.
+  async function v31_persistirProduto(produto) {
+    if (!produto) return { ok: false, erro: 'produto vazio' };
+    try {
+      if (typeof salvarProdutoNoBackend !== 'function') {
+        console.warn('[v31 persistir] salvarProdutoNoBackend não existe — só localStorage');
+        saveProdutos();
+        return { ok: false, erro: 'sem fn de salvar no backend' };
+      }
+      const salvo = await salvarProdutoNoBackend(produto);
+      // Atualiza idBanco se backend devolveu
+      if (salvo && salvo.idBanco && !produto.idBanco) {
+        produto.idBanco = salvo.idBanco;
+      }
+      saveProdutos();  // ainda salva local (cache)
+      return { ok: true, salvo };
+    } catch(e) {
+      console.error('[v31 persistir] FALHOU:', e.message, produto.id);
+      // Fallback: salva ao menos no localStorage
+      saveProdutos();
+      return { ok: false, erro: e.message };
+    }
+  }
+  
+  // v31b.5: Apaga produto NO BACKEND (move pra lixeira).
+  // Necessário pra mesclagem deletar o duplicado de verdade.
+  async function v31_apagarProdutoNoBackend(produto) {
+    if (!produto || !produto.idBanco) {
+      console.warn('[v31 apagar] produto sem idBanco, só remove local:', produto && produto.id);
+      return { ok: true, soLocal: true };
+    }
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/produtos/' + produto.idBanco, {
+        method: 'DELETE',
+        headers: { 'x-api-token': getApiToken() },
+      });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.erro || 'falha delete');
+      return { ok: true };
+    } catch(e) {
+      console.error('[v31 apagar] FALHOU:', e.message, produto.id);
+      return { ok: false, erro: e.message };
+    }
+  }
+  
   // Resolve lojaIdBanco do vínculo (migração transparente)
   async function v31_resolverLojaIdBanco(vinculo) {
     if (vinculo.lojaIdBanco) return vinculo.lojaIdBanco;
@@ -11999,7 +12047,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     return perso;
   }
   
-  function v31SalvarSemAtualizar() {
+  async function v31SalvarSemAtualizar() {
     if (!_v31EditandoProdId) return;
     const p = produtosErp.find(x => String(x.id) === String(_v31EditandoProdId));
     const vinc = p.variacoes[_v31EditandoVarIdx].vinculos[_v31EditandoVincIdx];
@@ -12011,10 +12059,16 @@ Retorne JSON: {"ID": "valor", ...}`;
       novoPerso.migradoEm = vinc.personalizado.migradoEm;
     }
     vinc.personalizado = novoPerso;
-    saveProdutos();
-    showToast('✅ Customização salva (não atualizou no ML)');
+    
+    // v31b.5: PERSISTE NO BACKEND
+    const r = await v31_persistirProduto(p);
+    if (!r.ok) {
+      showToast('⚠ Salvo só local: ' + r.erro, true);
+    } else {
+      showToast('✅ Customização salva (não atualizou no ML)');
+    }
+    
     v31FecharModalEditar();
-    // Re-renderiza a lista de vínculos se aberta
     if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
   }
   
@@ -12029,7 +12083,13 @@ Retorne JSON: {"ID": "valor", ...}`;
       novoPerso.migradoEm = vinc.personalizado.migradoEm;
     }
     vinc.personalizado = novoPerso;
-    saveProdutos();
+    
+    // v31b.5: PERSISTE NO BACKEND antes de chamar ML
+    const resSalvar = await v31_persistirProduto(p);
+    if (!resSalvar.ok) {
+      showToast('⚠ Falha ao salvar customização: ' + resSalvar.erro, true);
+      // Continua mesmo assim — ainda quer atualizar no ML
+    }
     
     // Pega flags de propagação
     const camposPropagar = [];
@@ -12301,7 +12361,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     _v31MesclarOrigemId = null;
   }
   
-  function v31ExecutarMesclar(duplicadoId) {
+  async function v31ExecutarMesclar(duplicadoId) {
     const destino = produtosErp.find(x => String(x.id) === String(_v31MesclarOrigemId));
     const duplicado = produtosErp.find(x => String(x.id) === String(duplicadoId));
     if (!destino || !duplicado) { showToast('Produto não encontrado', true); return; }
@@ -12333,12 +12393,12 @@ Retorne JSON: {"ID": "valor", ...}`;
       '• ' + movidos + ' vínculo(s) serão MOVIDOS\n' +
       (jaTem > 0 ? '• ' + jaTem + ' vínculo(s) já existem no destino (ignorar)\n' : '') +
       (semMatch > 0 ? '• ' + semMatch + ' vínculo(s) sem match cor+tam (variações novas serão CRIADAS)\n' : '') +
-      '• Produto duplicado será APAGADO\n\n' +
+      '• Produto duplicado será APAGADO (movido pra lixeira no banco)\n\n' +
       '⚠ Isto NÃO afeta os anúncios no ML.\n\nConfirma?';
     
     if (!confirm(msg)) return;
     
-    // Executa
+    // Executa em memória
     planeja.forEach(p => {
       if (p.jaTem) return;
       if (p.varDestino) {
@@ -12352,13 +12412,27 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
     });
     
-    // Apaga o duplicado
+    // v31b.5: PERSISTE NO BACKEND (antes só salvava local — bug!)
+    showToast('🔄 Salvando mesclagem no banco...');
+    
+    const resDest = await v31_persistirProduto(destino);
+    if (!resDest.ok) {
+      showToast('❌ Falha ao salvar destino: ' + resDest.erro, true);
+      return;
+    }
+    
+    const resApagar = await v31_apagarProdutoNoBackend(duplicado);
+    if (!resApagar.ok) {
+      showToast('⚠ Vínculos movidos mas falhou ao apagar duplicado: ' + resApagar.erro, true);
+      // não dá rollback — destino já tem os vínculos
+    }
+    
+    // Remove o duplicado da memória local
     const idx = produtosErp.findIndex(x => String(x.id) === String(duplicadoId));
     if (idx >= 0) produtosErp.splice(idx, 1);
-    
     saveProdutos();
     
-    showToast('✅ ' + movidos + ' vínculo(s) movido(s). Produto duplicado apagado.');
+    showToast('✅ ' + movidos + ' vínculo(s) movido(s). Duplicado apagado no banco.');
     v31FecharModalMesclar();
     
     // Re-renderiza
@@ -12542,15 +12616,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     container.innerHTML = (cabeca ? cabeca.outerHTML : '') + html;
   }
   
-  function v31VincularAnuncioTodas(idxResultado) {
-    const p = produtosErp.find(x => String(x.id) === String(_v31VincularProdId));
-    if (!p) return;
-    // Marca todas as checkboxes desse anúncio
-    document.querySelectorAll('.v31-vinc-var-' + idxResultado).forEach(cb => cb.checked = true);
-    v31VincularAnuncio(idxResultado);
-  }
-  
-  function v31VincularAnuncio(idxResultado) {
+  async function v31VincularAnuncio(idxResultado) {
     const r = _v31VincResultados[idxResultado];
     if (!r) return;
     
@@ -12585,7 +12651,6 @@ Retorne JSON: {"ID": "valor", ...}`;
         lojaIdBanco: r.lojaIdBanco,
         vinculadoEm: new Date().toISOString(),
         ultimaAtualizacao: null,
-        // personalizado vazio — será populado na 1ª chamada de sincronizar-este
       });
       adicionados++;
     });
@@ -12595,15 +12660,24 @@ Retorne JSON: {"ID": "valor", ...}`;
       return;
     }
     
-    saveProdutos();
-    showToast('✅ ' + adicionados + ' vínculo(s) criado(s)');
+    // v31b.5: PERSISTE NO BACKEND
+    const res = await v31_persistirProduto(p);
+    if (!res.ok) {
+      showToast('⚠ Vínculos criados mas falha ao salvar: ' + res.erro, true);
+    } else {
+      showToast('✅ ' + adicionados + ' vínculo(s) criado(s) e salvos no banco');
+    }
     
-    // Remove esse anúncio da lista de órfãos (já não é mais órfão)
+    // Remove esse anúncio da lista de órfãos
     _v31VincResultados.splice(idxResultado, 1);
     v31_RenderResultadoVincular();
     
-    // Re-renderiza a lista no modal de produto se estiver aberto
     if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
+  }
+  
+  async function v31VincularAnuncioTodas(idxResultado) {
+    document.querySelectorAll('.v31-vinc-var-' + idxResultado).forEach(cb => cb.checked = true);
+    await v31VincularAnuncio(idxResultado);
   }
   
   // === Atualiza UM anúncio (usado individualmente E em massa) ===
