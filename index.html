@@ -10012,8 +10012,73 @@ Retorne JSON: {"ID": "valor", ...}`;
   
   // saveProdutos: grava no cache local (rápido) e envia pro backend.
   function saveProdutos() {
-    localStorage.setItem('lider_produtos_v1', JSON.stringify(produtosErp));
-    LiderSync.schedulePush('produtos', () => LiderSync.pushAppData('produtos', produtosErp));
+    // v32d.10: proteção anti-quota
+    // 1. Tenta salvar tudo
+    // 2. Se estourar, filtra excluídos antigos (>7 dias) e tenta de novo
+    // 3. Se ainda estourar, filtra TODOS os excluídos
+    
+    const _tentarSalvar = (lista) => {
+      localStorage.setItem('lider_produtos_v1', JSON.stringify(lista));
+    };
+    
+    try {
+      _tentarSalvar(produtosErp);
+    } catch (e) {
+      if (!String(e.message || e.name || '').match(/quota|QuotaExceeded/i)) {
+        // Erro diferente de quota — propaga
+        throw e;
+      }
+      
+      console.warn('[saveProdutos] localStorage estourou. Tentando podar excluídos antigos...');
+      
+      // 1ª tentativa: remove excluídos com mais de 7 dias
+      const limiteAntigo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const semAntigos = produtosErp.filter(p => {
+        if (p.status !== 'excluido') return true;
+        const dataExc = p._excluidoEm || p._mescladoEm || p.atualizadoEm;
+        const ts = dataExc ? new Date(dataExc).getTime() : 0;
+        return ts >= limiteAntigo;  // mantém só recentes
+      });
+      
+      try {
+        _tentarSalvar(semAntigos);
+        // Sucesso → atualiza array em memória pra ficar consistente
+        const removidos = produtosErp.length - semAntigos.length;
+        if (removidos > 0) {
+          produtosErp.length = 0;
+          semAntigos.forEach(p => produtosErp.push(p));
+          console.log('[saveProdutos] podou', removidos, 'excluído(s) antigo(s)');
+        }
+        return;
+      } catch (e2) {
+        if (!String(e2.message || e2.name || '').match(/quota|QuotaExceeded/i)) throw e2;
+      }
+      
+      console.warn('[saveProdutos] ainda estourou. Removendo TODOS os excluídos...');
+      
+      // 2ª tentativa: remove TODOS os excluídos
+      const semExcluidos = produtosErp.filter(p => p.status !== 'excluido');
+      
+      try {
+        _tentarSalvar(semExcluidos);
+        const removidos = produtosErp.length - semExcluidos.length;
+        produtosErp.length = 0;
+        semExcluidos.forEach(p => produtosErp.push(p));
+        console.log('[saveProdutos] removeu', removidos, 'excluído(s) do localStorage (continuam no banco)');
+        showToast('⚠ Lixeira local limpa pra liberar espaço (lixeira do banco intacta)', false);
+      } catch (e3) {
+        // Última cartada: avisa user, NÃO joga exceção pra cima (senão pode travar fluxos)
+        console.error('[saveProdutos] mesmo sem excluídos, localStorage cheio. Cabe pra você decidir.');
+        showToast('❌ Armazenamento local cheio. Recarregue a página.', true);
+      }
+    }
+    
+    // Sync com nuvem (sempre roda, com array atual)
+    try {
+      LiderSync.schedulePush('produtos', () => LiderSync.pushAppData('produtos', produtosErp));
+    } catch (eSync) {
+      console.warn('[saveProdutos] sync nuvem falhou:', eSync.message);
+    }
   }
   
   // Salva UM produto no backend (cria se não tem id de banco, atualiza se tem).
@@ -16840,6 +16905,63 @@ REGRAS CRÍTICAS:
   // no que existe — especialmente a descrição (fonte principal).
   // Não sobrescreve campos já preenchidos manualmente.
   // ============================================================
+  
+  // v32e.1: Filtra categorias Shopee pra mandar pra IA.
+  // Shopee tem 2000+ categorias. Não dá pra mandar todas — IA estoura tokens.
+  // Estratégia: tokeniza nome+descrição+categoria interna, pega categorias
+  // folha (has_children=false, são as únicas válidas pra anúncio) que tenham
+  // match textual. Limita a 40 pra caber no prompt.
+  function filtrarCategoriasShopeeParaIA(nome, descricao, categoriaInterna, todasCats) {
+    if (!Array.isArray(todasCats) || todasCats.length === 0) return [];
+    
+    // Só folhas
+    const folhas = todasCats.filter(c => !c.has_children);
+    
+    // Tokens do produto
+    const texto = (nome + ' ' + descricao + ' ' + categoriaInterna)
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    
+    const tokens = new Set(texto.split(/[^a-z0-9]+/).filter(t => t.length >= 3));
+    
+    // Palavras-chave de calçados/moda (sempre incluir mesmo se IA usa termos sinônimos)
+    const sinonimos = {
+      'tenis': ['tenis', 'sneaker', 'calcado', 'esportivo'],
+      'sapato': ['sapato', 'calcado', 'social'],
+      'sandalia': ['sandalia', 'rasteira', 'rasteirinha', 'chinelo'],
+      'chuteira': ['chuteira', 'futebol', 'campo', 'society', 'futsal'],
+      'bota': ['bota', 'botina', 'coturno'],
+      'tamanco': ['tamanco', 'salto'],
+      'feminino': ['feminino', 'dama'],
+      'masculino': ['masculino', 'homem'],
+      'infantil': ['infantil', 'crianca', 'menino', 'menina'],
+    };
+    
+    // Expande tokens com sinônimos
+    const tokensExpandidos = new Set(tokens);
+    Object.entries(sinonimos).forEach(([chave, syns]) => {
+      if (tokens.has(chave)) syns.forEach(s => tokensExpandidos.add(s));
+    });
+    
+    // Pontua cada folha pelo overlap
+    const pontuadas = folhas.map(c => {
+      const nomeCat = (c.display_category_name || c.original_category_name || '')
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      
+      let score = 0;
+      tokensExpandidos.forEach(t => {
+        if (nomeCat.includes(t)) score += 1;
+      });
+      
+      return { cat: c, score, nome: nomeCat };
+    }).filter(x => x.score > 0);
+    
+    // Ordena por score desc, pega top 40
+    pontuadas.sort((a, b) => b.score - a.score);
+    return pontuadas.slice(0, 40).map(x => x.cat);
+  }
+  
   async function preencherAtributosAutomatico() {
     const nome = (document.getElementById('prodNome')||{}).value || '';
     const descricao = (document.getElementById('prodDescricao')||{}).value || '';
@@ -16912,6 +17034,33 @@ REGRAS CRÍTICAS:
       
       const system = getPrompt('preencher_produto_system');
       const promptTemplate = getPrompt('preencher_produto_user');
+      
+      // v32e.1: Adiciona contexto de categorias Shopee se a loja existe e o
+      // produto ainda não tem categoria Shopee definida.
+      let listaCategoriasShopeeTxt = '';
+      const _prodEdit = _produtoEditandoId 
+        ? produtosErp.find(x => String(x.id) === String(_produtoEditandoId))
+        : null;
+      const _lojaShopee = lojasErp.find(l => l.marketplace === 'shopee' && l.contaConectada && l.idBanco);
+      const _temCatShopee = _prodEdit && _prodEdit.categoryIdShopee;
+      
+      if (_lojaShopee && !_temCatShopee) {
+        try {
+          const todasCats = await carregarCategoriasShopee(_lojaShopee.idBanco);
+          const catsFiltradas = filtrarCategoriasShopeeParaIA(nome, descricao, categoria, todasCats);
+          if (catsFiltradas.length > 0) {
+            listaCategoriasShopeeTxt = '\n\nCATEGORIAS SHOPEE DISPONÍVEIS (escolha a MELHOR pra esse produto):\n' +
+              catsFiltradas.map(c => 
+                '- "' + c.category_id + '" → ' + (c.display_category_name || c.original_category_name)
+              ).join('\n') +
+              '\nNa resposta JSON, inclua "categoriaShopee": { "id": "ID_AQUI", "nome": "NOME_AQUI" }. ' +
+              'Use APENAS um dos IDs listados acima. Se nenhum encaixar bem, omita o campo.';
+          }
+        } catch(e) {
+          console.warn('[preencher] falha ao listar categorias Shopee:', e.message);
+        }
+      }
+      
       const prompt = renderTemplate(promptTemplate, {
         nome: nome || '(VAZIO — crie título descritivo, max 60 chars)',
         descricao: descricao || '(VAZIA — crie descrição persuasiva 300-500 chars)',
@@ -16921,7 +17070,7 @@ REGRAS CRÍTICAS:
         peso: peso || '(vazio — estimar: tênis 0.6-0.9, sapato 0.5-0.7, bota 1.0-1.5)',
         variacoesTxt: variacoesTxt,
         categoriasLista: cats.length > 0 ? cats.map(c => '- "' + c + '"').join('\n') : '(nenhuma categoria cadastrada)',
-        instrucaoImagem: (primeiraFoto ? 'ANALISE A IMAGEM ANEXADA pra identificar tipo de calçado, cor, materiais visíveis, tipo de ajuste e demais características.\n' : '') + listaAtributosTxt
+        instrucaoImagem: (primeiraFoto ? 'ANALISE A IMAGEM ANEXADA pra identificar tipo de calçado, cor, materiais visíveis, tipo de ajuste e demais características.\n' : '') + listaAtributosTxt + listaCategoriasShopeeTxt
       });
       
       // Se tem foto, manda no array de imagens (Claude vai analisar visualmente)
@@ -16946,6 +17095,43 @@ REGRAS CRÍTICAS:
       const catEl = document.getElementById('prodCategoria');
       if (catEl && !catEl.value && dados.categoria) {
         if (setSelectInteligente(catEl, dados.categoria, true)) preenchidos++;
+      }
+      
+      // v32e.1: Categoria Shopee — aplica se IA respondeu e produto não tem
+      if (dados.categoriaShopee && dados.categoriaShopee.id && _prodEdit && _lojaShopee && !_temCatShopee) {
+        const catIdSp = String(dados.categoriaShopee.id);
+        const catNomeSp = dados.categoriaShopee.nome || '';
+        
+        // Valida que o ID retornado está realmente na lista Shopee (evita IA inventar)
+        try {
+          const cats = await carregarCategoriasShopee(_lojaShopee.idBanco);
+          const catExiste = cats.find(c => String(c.category_id) === catIdSp);
+          if (catExiste) {
+            // Atualiza o produto interno
+            _prodEdit.categoryIdShopee = catIdSp;
+            
+            // Atualiza os campos do modal
+            const catEl = document.getElementById('prodShopeeCategoria');
+            const catIdEl = document.getElementById('prodShopeeCategoriaId');
+            const catSelEl = document.getElementById('prodShopeeCategoriaSelecionada');
+            const nomeReal = catExiste.display_category_name || catExiste.original_category_name || catNomeSp;
+            if (catEl) catEl.value = nomeReal;
+            if (catIdEl) catIdEl.value = catIdSp;
+            if (catSelEl) catSelEl.textContent = '✓ ' + nomeReal + ' (ID ' + catIdSp + ') — sugerido pela IA';
+            
+            // Carrega atributos da nova categoria (pra etapa 2 mostrar campos)
+            if (typeof carregarAtributosShopeeNoModal === 'function') {
+              carregarAtributosShopeeNoModal(_lojaShopee.idBanco, catIdSp);
+            }
+            
+            preenchidos++;
+            console.log('[preencher] categoria Shopee sugerida pela IA:', catIdSp, nomeReal);
+          } else {
+            console.warn('[preencher] IA sugeriu categoria Shopee inexistente:', catIdSp);
+          }
+        } catch(e) {
+          console.warn('[preencher] erro aplicando categoria Shopee:', e.message);
+        }
       }
       
       // ATRIBUTOS ML DINAMICOS: aplica direto em produto.atributosMl com IDs do ML
