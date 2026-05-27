@@ -11745,6 +11745,41 @@ Retorne JSON: {"ID": "valor", ...}`;
     return !!(p.titulo || p.descricao || p.preco || (Array.isArray(p.coresAtivas) && p.coresAtivas.length > 0));
   }
   
+  // v31b.4: Gera URL pública do anúncio (visão do comprador) por marketplace.
+  // Retorna null se não souber montar a URL.
+  function v31_urlAnuncioPublico(vinculo) {
+    if (!vinculo || !vinculo.anuncioId) return null;
+    const id = String(vinculo.anuncioId).trim();
+    
+    if (vinculo.marketplace === 'mercadolivre') {
+      // Formato canônico: https://produto.mercadolivre.com.br/MLB-123456789-...
+      // Aceita ID com ou sem prefixo MLB
+      const numero = id.replace(/^MLB/i, '');
+      return 'https://produto.mercadolivre.com.br/MLB-' + numero;
+    }
+    
+    if (vinculo.marketplace === 'shopee') {
+      // Shopee usa shop_id.item_id ou só item_id
+      // Se anuncioId tem formato "shopId.itemId" usa direto, senão pula
+      if (id.includes('.')) {
+        return 'https://shopee.com.br/product/' + id.replace('.', '/');
+      }
+      return null; // sem shop_id não dá pra montar
+    }
+    
+    if (vinculo.marketplace === 'tiktok') {
+      // TikTok Shop: https://shop.tiktok.com/view/product/{id}
+      return 'https://shop.tiktok.com/view/product/' + id;
+    }
+    
+    if (vinculo.marketplace === 'shein') {
+      // Shein: https://br.shein.com/...html?goods_id={id}
+      return 'https://br.shein.com/search?keywords=' + encodeURIComponent(id);
+    }
+    
+    return null;
+  }
+  
   // Resolve lojaIdBanco do vínculo (migração transparente)
   async function v31_resolverLojaIdBanco(vinculo) {
     if (vinculo.lojaIdBanco) return vinculo.lojaIdBanco;
@@ -13860,25 +13895,53 @@ Dúvidas frequentes:
 - Garantia contra defeitos de fabricação.
 - Atendimento personalizado.
 
-REGRAS:
+REGRAS CRÍTICAS:
+✗ ABSOLUTAMENTE PROIBIDO: emojis Unicode (✔ ✅ ❌ 🌟 ⭐ 👗 👠 🏆 ⏰ 💳 📦 📱 🎁 ✨ ✊ ❤ 🔥 e QUALQUER outro caractere fora ASCII básico latino-1)
 ✗ Sem markdown (sem **negrito**, sem # títulos)
 ✗ Sem aspas no início/fim
-✗ Sem emojis
+✗ Sem checkmarks, dingbats, símbolos coloridos
+✓ Pode usar HÍFEN (-) e ASTERISCO (*) pra bullets
+✓ Pode usar acentos do português (á é í ó ú ç) — esses são OK
 ✓ Responda APENAS a descrição no formato literal acima
 ✓ Mantenha as linhas separadoras de underscores
-✓ Use o tipo do produto correto no título dos blocos`;
+✓ Use o tipo do produto correto no título dos blocos
+✓ MOTIVO: Mercado Livre rejeita descrições com emojis Unicode complexos. Se você usar emoji, o produto não pode ser publicado.`;
     
     try {
       const resp = await chamarIA({ prompt, maxTokens: 1500 });
       let novo = String(resp || '').trim().replace(/^["']|["']$/g, '');
       // Remove markdown se IA escapou
       novo = novo.replace(/\*\*/g, '').replace(/^#+\s+/gm, '');
+      // v31b.4: sanitiza emojis (defesa em profundidade — ML rejeita)
+      novo = v31_sanitizarEmojis(novo);
       if (novo.length < 100) novo = descOrig;
       return novo;
     } catch(e) {
       console.warn('[duplicar] IA descrição falhou:', e.message);
       return descOrig;
     }
+  }
+  
+  // v31b.4: Remove emojis Unicode que o ML rejeita em descrições
+  // Mantém acentos latinos (á é í ó ú ç). Remove apenas dingbats/emojis/símbolos.
+  function v31_sanitizarEmojis(txt) {
+    if (!txt) return txt;
+    return String(txt)
+      // Zero-width chars + variation selectors
+      .replace(/[\u200B-\u200F\uFE00-\uFE0F\uFEFF]/g, '')
+      // Surrogate pairs (emoji 4 bytes — fora do BMP)
+      .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')
+      // Dingbats (✔ ✅ ❌ ✊ ❤ etc — U+2700..U+27BF)
+      .replace(/[\u2700-\u27BF]/g, '')
+      // Misc symbols (☀ ☎ ☑ ⭐ etc — U+2600..U+26FF)
+      .replace(/[\u2600-\u26FF]/g, '')
+      // Geometric shapes coloridos
+      .replace(/[\u25A0-\u25FF]/g, '')
+      // Espaços múltiplos
+      .replace(/[ \t]+/g, ' ')
+      // Linhas vazias múltiplas (deixa só 2 quebras)
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
   
   async function iniciarDuplicacao() {
@@ -14563,11 +14626,20 @@ REGRAS:
             ${resumoVar} · atualizado: ${ultAtu}
           </div>
         </div>
-        <button onclick="v31AbrirModalEditar('${p.id}', ${varIdx}, ${vincIdx})" 
-          style="padding:5px 10px;background:#3b82f6;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600"
-          title="Customizar SÓ este anúncio sem afetar os outros">
-          ✏️ Editar
-        </button>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          ${v31_urlAnuncioPublico(vinc) 
+            ? `<a href="${v31_urlAnuncioPublico(vinc)}" target="_blank" rel="noopener" 
+                 style="padding:5px 8px;background:#10b981;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600;text-decoration:none;display:inline-flex;align-items:center"
+                 title="Abrir o anúncio no marketplace (visão do comprador)">
+                 🔗
+               </a>`
+            : ''}
+          <button onclick="v31AbrirModalEditar('${p.id}', ${varIdx}, ${vincIdx})" 
+            style="padding:5px 10px;background:#3b82f6;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600"
+            title="Customizar SÓ este anúncio sem afetar os outros">
+            ✏️ Editar
+          </button>
+        </div>
       </div>`;
     });
     
