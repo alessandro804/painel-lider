@@ -10712,7 +10712,7 @@ Retorne JSON: {"ID": "valor", ...}`;
                   '    ✓ EXPORTADO! itemId=' + itemId
                 );
                 
-                // Cria vínculos automaticamente (igual o exportar individual faz)
+                // v31b.6: Cria vínculos detectando Catalog vs Legado
                 if (itemId && itemId !== '?') {
                   if (!novo.marketplaces) novo.marketplaces = {};
                   novo.marketplaces[lojaDestino.marketplace] = {
@@ -10721,24 +10721,68 @@ Retorne JSON: {"ID": "valor", ...}`;
                     itemId,
                     payload
                   };
-                  (novo.variacoes || []).forEach(v => {
-                    if (!v.vinculos) v.vinculos = [];
-                    const jaTem = v.vinculos.some(vi => String(vi.anuncioId) === String(itemId));
-                    if (!jaTem) {
-                      v.vinculos.push({
-                        id: gerarId(),
-                        anuncioId: itemId,
-                        marketplace: lojaDestino.marketplace,
-                        lojaId: lojaIdBanco,
-                        titulo: novo.nome,
-                        skuExterno: v.sku || '',
-                        skuSuspeito: false,
-                        criadoPor: 'duplicacao-massa',
-                        criadoEm: new Date().toISOString()
-                      });
+                  
+                  const eCatalog = !!(data.dados && data.dados.eCatalog);
+                  const criadosCatalog = (data.dados && Array.isArray(data.dados.criados)) ? data.dados.criados : [];
+                  
+                  if (eCatalog && criadosCatalog.length > 0) {
+                    // CATALOG: 1 vínculo por cor+tam
+                    const norm = s => String(s || '').trim().toLowerCase();
+                    criadosCatalog.forEach(c => {
+                      const varInterna = (novo.variacoes || []).find(v => 
+                        norm(v.cor) === norm(c.cor) && norm(v.tamanho) === norm(c.tamanho)
+                      );
+                      if (!varInterna) {
+                        console.warn('[massa-dup Catalog] sem match cor=' + c.cor + ' tam=' + c.tamanho);
+                        return;
+                      }
+                      if (!varInterna.vinculos) varInterna.vinculos = [];
+                      const jaTem = varInterna.vinculos.some(vi => String(vi.anuncioId) === String(c.itemId));
+                      if (!jaTem) {
+                        varInterna.vinculos.push({
+                          id: gerarId(),
+                          anuncioId: c.itemId,
+                          marketplace: lojaDestino.marketplace,
+                          lojaId: lojaIdBanco,
+                          lojaIdBanco: lojaIdBanco,
+                          titulo: novo.nome,
+                          skuExterno: varInterna.sku || '',
+                          skuSuspeito: false,
+                          criadoPor: 'duplicacao-massa-catalog',
+                          criadoEm: new Date().toISOString()
+                        });
+                      }
+                    });
+                  } else {
+                    // LEGADO
+                    (novo.variacoes || []).forEach(v => {
+                      if (!v.vinculos) v.vinculos = [];
+                      const jaTem = v.vinculos.some(vi => String(vi.anuncioId) === String(itemId));
+                      if (!jaTem) {
+                        v.vinculos.push({
+                          id: gerarId(),
+                          anuncioId: itemId,
+                          marketplace: lojaDestino.marketplace,
+                          lojaId: lojaIdBanco,
+                          lojaIdBanco: lojaIdBanco,
+                          titulo: novo.nome,
+                          skuExterno: v.sku || '',
+                          skuSuspeito: false,
+                          criadoPor: 'duplicacao-massa',
+                          criadoEm: new Date().toISOString()
+                        });
+                      }
+                    });
+                  }
+                  
+                  // v31b.5: persiste no backend de verdade
+                  try {
+                    if (typeof v31_persistirProduto === 'function') {
+                      await v31_persistirProduto(novo);
+                    } else {
+                      saveProdutos();
                     }
-                  });
-                  saveProdutos();
+                  } catch(e) { console.warn('[massa-dup] persist:', e.message); }
                 }
               } else {
                 falhas++;
@@ -15929,33 +15973,86 @@ REGRAS CRÍTICAS:
       };
       
       const itemIdCriado = data.dados && data.dados.itemId;
+      // v31b.6 FIX RAIZ: Catalog cria 1 anúncio por variação (cor+tam),
+      // cada um com itemId DIFERENTE. Antes vinculava o MESMO itemId em todas
+      // — criava 2 anúncios órfãos e o painel ficava confuso.
+      const eCatalog = !!(data.dados && data.dados.eCatalog);
+      const criadosCatalog = (data.dados && Array.isArray(data.dados.criados)) ? data.dados.criados : [];
+      
       if (itemIdCriado) {
         const lojaIdParaVinculo = lojaIdBanco || (lojasErp.find(l => l.marketplace === mkBackend) || {}).idBanco;
-        (p.variacoes || []).forEach(v => {
-          if (!v.vinculos) v.vinculos = [];
-          const jaTem = v.vinculos.some(vi => String(vi.anuncioId) === String(itemIdCriado));
-          if (!jaTem) {
-            v.vinculos.push({
+        
+        if (eCatalog && criadosCatalog.length > 0) {
+          // FLUXO CATALOG: 1 vínculo por (cor+tam), matcheando com a variação interna
+          console.log('[exportar Catalog] criando ' + criadosCatalog.length + ' vínculo(s), 1 por variação');
+          const norm = s => String(s || '').trim().toLowerCase();
+          let vinculadosOk = 0;
+          let semMatch = 0;
+          
+          criadosCatalog.forEach(c => {
+            // Encontra variação interna que matche cor+tam
+            const varInterna = (p.variacoes || []).find(v => 
+              norm(v.cor) === norm(c.cor) && norm(v.tamanho) === norm(c.tamanho)
+            );
+            
+            if (!varInterna) {
+              console.warn('[exportar Catalog] SEM MATCH pra cor=' + c.cor + ' tam=' + c.tamanho + ' itemId=' + c.itemId);
+              semMatch++;
+              return;
+            }
+            
+            if (!varInterna.vinculos) varInterna.vinculos = [];
+            const jaTem = varInterna.vinculos.some(vi => String(vi.anuncioId) === String(c.itemId));
+            if (jaTem) return;
+            
+            varInterna.vinculos.push({
               id: gerarId(),
-              anuncioId: itemIdCriado,
+              anuncioId: c.itemId,
               marketplace,
               lojaId: lojaIdParaVinculo,
+              lojaIdBanco: lojaIdParaVinculo,
               titulo: p.nome,
-              skuExterno: v.sku || '',
+              skuExterno: varInterna.sku || '',
               skuSuspeito: false,
-              criadoPor: 'exportacao-auto',
-              criadoEm: new Date().toISOString()
+              criadoPor: 'exportacao-catalog-auto',
+              criadoEm: new Date().toISOString(),
             });
-          }
-        });
-        console.log('[exportar] vínculos criados pra ' + (p.variacoes||[]).length + ' variação(ões), itemId=' + itemIdCriado);
+            vinculadosOk++;
+          });
+          
+          console.log('[exportar Catalog] ' + vinculadosOk + '/' + criadosCatalog.length + ' vínculo(s) criado(s) (sem match: ' + semMatch + ')');
+        } else {
+          // FLUXO LEGADO: 1 itemId só, vincula em todas as variações
+          (p.variacoes || []).forEach(v => {
+            if (!v.vinculos) v.vinculos = [];
+            const jaTem = v.vinculos.some(vi => String(vi.anuncioId) === String(itemIdCriado));
+            if (!jaTem) {
+              v.vinculos.push({
+                id: gerarId(),
+                anuncioId: itemIdCriado,
+                marketplace,
+                lojaId: lojaIdParaVinculo,
+                lojaIdBanco: lojaIdParaVinculo,
+                titulo: p.nome,
+                skuExterno: v.sku || '',
+                skuSuspeito: false,
+                criadoPor: 'exportacao-auto',
+                criadoEm: new Date().toISOString()
+              });
+            }
+          });
+          console.log('[exportar legado] vínculos criados pra ' + (p.variacoes||[]).length + ' variação(ões), itemId=' + itemIdCriado);
+        }
       }
       
       saveProdutos();
       
-      // Persiste no backend (CRITICAL pra vínculos sobreviverem a reload)
+      // v31b.5: PERSISTE NO BACKEND (CRITICAL pra vínculos sobreviverem a reload)
       try {
-        if (typeof salvarProdutoNoBackend === 'function') {
+        if (typeof v31_persistirProduto === 'function') {
+          const r = await v31_persistirProduto(p);
+          if (!r.ok) console.warn('[exportar] persistir backend falhou:', r.erro);
+        } else if (typeof salvarProdutoNoBackend === 'function') {
           await salvarProdutoNoBackend(p);
         }
       } catch(e) { console.warn('[exportar] falha persistir backend:', e.message); }
