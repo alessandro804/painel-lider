@@ -19126,20 +19126,47 @@ São o mesmo produto?`;
         if (produtoInterno) break;
       }
       
-      // b) Match por SKU de alguma variação
+      // b) Match por SKU PAI do anúncio (PRIORITÁRIO)
+      //    v32d.3: Shopee permite reanunciar o MESMO produto físico várias vezes
+      //    com títulos/fotos diferentes (estratégia de SEO). O elo entre esses
+      //    anúncios é o SKU PAI — deve mesclar pro mesmo produto interno.
+      if (!produtoInterno && anuncio.sku) {
+        const match = acharVariacaoPorSku(anuncio.sku);
+        if (match) produtoInterno = match.produto;
+      }
+      
+      // c) Match por SKU de alguma variação
+      //    Se chegou aqui, o SKU pai não bateu (talvez anúncio sem SKU pai).
+      //    Match por variação ainda é útil mas com cuidado: se o produto interno
+      //    achado tem MAIS DE 50% das variações com SKUs DIFERENTES dos nossos,
+      //    provavelmente é coincidência de SKU — não mescla.
       if (!produtoInterno) {
         for (const varExt of variacoesExt) {
           if (varExt.sku && String(varExt.sku).trim()) {
             const match = acharVariacaoPorSku(varExt.sku);
-            if (match) { produtoInterno = match.produto; break; }
+            if (match) { 
+              // Confere quantas das variações novas batem com as do produto interno achado
+              let acertos = 0;
+              const skusInternos = new Set();
+              (match.produto.variacoes || []).forEach(vi => {
+                if (vi.sku) skusInternos.add(String(vi.sku).toLowerCase().trim());
+              });
+              variacoesExt.forEach(ve => {
+                if (ve.sku && skusInternos.has(String(ve.sku).toLowerCase().trim())) acertos++;
+              });
+              const pctMatch = variacoesExt.length > 0 ? acertos / variacoesExt.length : 0;
+              
+              if (pctMatch >= 0.3) {
+                // 30%+ das variações batem → razoável mesclar
+                produtoInterno = match.produto; 
+                break; 
+              } else {
+                console.warn('[import] anúncio', anuncioId, 'não mesclou com produto', match.produto.id,
+                  '(apenas ' + acertos + '/' + variacoesExt.length + ' variações coincidem) — criando separado');
+              }
+            }
           }
         }
-      }
-      
-      // c) Match pelo SKU pai do anúncio
-      if (!produtoInterno && anuncio.sku) {
-        const match = acharVariacaoPorSku(anuncio.sku);
-        if (match) produtoInterno = match.produto;
       }
       
       // d) Não achou - CRIA UM PRODUTO NOVO PRA O ANÚNCIO INTEIRO
