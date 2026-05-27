@@ -5463,6 +5463,15 @@
         Carregando...
       </div>
       
+      <!-- Campo de busca -->
+      <div style="margin-bottom:12px;display:flex;gap:8px">
+        <input type="text" id="v31MesclarBuscaInput" placeholder="🔍 Filtrar por nome ou id..." 
+          oninput="v31_RenderListaMesclar()"
+          style="flex:1;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px">
+        <button onclick="document.getElementById('v31MesclarBuscaInput').value='';v31_RenderListaMesclar()" 
+          style="padding:8px 14px;background:#6b7280;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer">Limpar</button>
+      </div>
+      
       <div id="v31MesclarLista" style="max-height:400px;overflow-y:auto"></div>
       
       <div style="display:flex;gap:10px;margin-top:20px">
@@ -12174,51 +12183,83 @@ Retorne JSON: {"ID": "valor", ...}`;
     const destino = produtosErp.find(x => String(x.id) === String(produtoDestinoId));
     if (!destino) { showToast('Produto destino não encontrado', true); return; }
     _v31MesclarOrigemId = produtoDestinoId;
+    _v31MesclarCandidatos = produtosErp.filter(p => String(p.id) !== String(produtoDestinoId));
     
-    // Encontra duplicados potenciais: produtos com nome parecido (fuzzy simples)
-    // Heurística: primeiras 3 palavras em comum
-    const palavrasDestino = (destino.nome || '').toLowerCase().split(/\s+/).filter(w => w.length >= 3);
-    const palavrasChave = palavrasDestino.slice(0, 3);
-    
-    const candidatos = produtosErp.filter(p => {
-      if (String(p.id) === String(produtoDestinoId)) return false;
-      const palavrasP = (p.nome || '').toLowerCase();
-      // Pelo menos 2 das 3 palavras-chave aparecem
-      const matches = palavrasChave.filter(w => palavrasP.includes(w)).length;
-      return matches >= 2;
-    });
-    
-    // Conta vínculos de cada candidato (mais útil mostrar os que tem vínculos)
-    candidatos.forEach(c => {
+    // Conta vínculos de cada candidato pra ordenação
+    _v31MesclarCandidatos.forEach(c => {
       c._vincTotal = (c.variacoes || []).reduce((tot, v) => tot + (v.vinculos || []).length, 0);
     });
-    candidatos.sort((a, b) => b._vincTotal - a._vincTotal);
     
     document.getElementById('v31MesclarInfo').innerHTML = 
       '<strong>📦 Destino: ' + escapeHtml(destino.nome || '?') + '</strong><br>' +
       '<small>Vínculos do produto duplicado serão MOVIDOS pra cá (matcheando cor+tam). O duplicado será APAGADO.</small><br>' +
       '<small style="opacity:0.8">⚠ Isto NÃO afeta os anúncios no ML — só reorganiza no painel.</small>';
     
-    const lista = document.getElementById('v31MesclarLista');
-    if (candidatos.length === 0) {
-      lista.innerHTML = '<div style="padding:14px;text-align:center;color:#6b7280">Nenhum produto com nome parecido encontrado.</div>';
-    } else {
-      lista.innerHTML = '<div style="font-size:11px;color:#6b7280;margin-bottom:8px">Encontrei ' + candidatos.length + ' produto(s) com nome parecido. Clique no que é DUPLICADO:</div>' +
-        candidatos.slice(0, 10).map(c => 
-          '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:6px;background:white;display:flex;align-items:center;gap:10px">' +
-            '<div style="flex:1;min-width:0">' +
-              '<div style="font-weight:600;font-size:13px">' + escapeHtml(c.nome || '?') + '</div>' +
-              '<div style="font-size:11px;color:#6b7280">' + 
-                (c.variacoes || []).length + ' variação(ões) · <strong>' + c._vincTotal + ' vínculo(s)</strong> · id: ' + escapeHtml(String(c.id)) +
-              '</div>' +
-            '</div>' +
-            '<button onclick="v31ExecutarMesclar(\'' + c.id + '\')" style="padding:6px 12px;background:#dc2626;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">🔀 Mesclar este</button>' +
-          '</div>'
-        ).join('');
-    }
+    // Pré-popula busca com palavras-chave do produto destino
+    const palavrasChave = (destino.nome || '').toLowerCase().split(/\s+/).filter(w => w.length >= 4).slice(0, 2).join(' ');
+    document.getElementById('v31MesclarBuscaInput').value = palavrasChave;
     
+    v31_RenderListaMesclar();
     document.getElementById('v31MesclarOverlay').style.display = 'flex';
   }
+  
+  // Renderiza lista de candidatos aplicando filtro de busca
+  function v31_RenderListaMesclar() {
+    const destino = produtosErp.find(x => String(x.id) === String(_v31MesclarOrigemId));
+    if (!destino) return;
+    
+    const termo = (document.getElementById('v31MesclarBuscaInput').value || '').toLowerCase().trim();
+    const palavrasTermo = termo.split(/\s+/).filter(w => w.length >= 2);
+    
+    // Filtra: cada palavra do termo deve aparecer no nome do candidato OU no id
+    let candidatos = _v31MesclarCandidatos.filter(p => {
+      if (!termo) return true;  // sem termo = mostra todos
+      const alvo = (p.nome || '').toLowerCase() + ' ' + String(p.id).toLowerCase();
+      return palavrasTermo.every(w => alvo.includes(w));
+    });
+    
+    // Ordena: com mais vínculos primeiro
+    candidatos.sort((a, b) => (b._vincTotal || 0) - (a._vincTotal || 0));
+    
+    const lista = document.getElementById('v31MesclarLista');
+    
+    if (candidatos.length === 0) {
+      lista.innerHTML = '<div style="padding:14px;text-align:center;color:#6b7280;font-size:13px">' +
+        (termo ? '🔍 Nenhum produto encontrado com "' + escapeHtml(termo) + '"' : 'Nenhum produto cadastrado.') +
+        '</div>';
+      return;
+    }
+    
+    const limite = 30;
+    const mostrados = candidatos.slice(0, limite);
+    
+    lista.innerHTML = 
+      '<div style="font-size:11px;color:#6b7280;margin-bottom:8px">' +
+        'Mostrando <strong>' + mostrados.length + '</strong> de <strong>' + candidatos.length + '</strong> produto(s)' +
+        (candidatos.length > limite ? ' — refine a busca pra ver mais' : '') +
+      '</div>' +
+      mostrados.map(c => {
+        const fotoUrl = (c.fotos && c.fotos[0]) 
+          || (c.cores && c.cores[0] && c.cores[0].fotos && c.cores[0].fotos[0])
+          || null;
+        return '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:6px;background:white;display:flex;align-items:center;gap:10px">' +
+          (fotoUrl 
+            ? '<img src="' + escapeHtml(fotoUrl) + '" style="width:48px;height:48px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.display=\'none\'">' 
+            : '<div style="width:48px;height:48px;background:#f3f4f6;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#9ca3af;flex-shrink:0">📦</div>') +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-weight:600;font-size:13px;line-height:1.3">' + escapeHtml(c.nome || '?') + '</div>' +
+            '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + 
+              (c.variacoes || []).length + ' variação(ões) · ' +
+              '<strong style="color:' + ((c._vincTotal || 0) > 0 ? '#3b82f6' : '#9ca3af') + '">' + (c._vincTotal || 0) + ' vínculo(s)</strong>' +
+              ' · <code style="font-size:10px;background:#f3f4f6;padding:0 4px;border-radius:3px">' + escapeHtml(String(c.id)) + '</code>' +
+            '</div>' +
+          '</div>' +
+          '<button onclick="v31ExecutarMesclar(\'' + c.id + '\')" style="padding:6px 12px;background:#dc2626;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">🔀 Mesclar</button>' +
+        '</div>';
+      }).join('');
+  }
+  
+  let _v31MesclarCandidatos = [];
   
   function v31FecharModalMesclar() {
     document.getElementById('v31MesclarOverlay').style.display = 'none';
