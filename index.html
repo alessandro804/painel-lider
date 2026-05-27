@@ -11646,27 +11646,53 @@ Retorne JSON: {"ID": "valor", ...}`;
     let okAnuncios = 0, errosAnuncios = 0;
     showToast('🔄 Atualizando ' + totalVinc + ' anúncio(s) ' + txtMkt + '...');
     
+    // v31b.7: usa rota /propagar (paralelo) em vez de N requests sequenciais
+    // Agrupa por produto — cada produto faz 1 chamada propagar com seus N anúncios
+    const camposPadrao = ['titulo','descricao','preco','cores','fotos','atributos'];
+    
     for (const id of ids) {
       const p = produtosErp.find(x => String(x.id) === String(id));
       if (!p) continue;
       
+      // Coleta vínculos desse produto que batem com o filtro
+      const vincDoProd = [];
       for (const variacao of (p.variacoes || [])) {
         for (const vinc of (variacao.vinculos || [])) {
           if (mktFiltro !== 'todos' && vinc.marketplace !== mktFiltro) continue;
-          try {
-            const resultado = await atualizarUmAnuncio(p, vinc);
-            if (resultado.ok) okAnuncios++;
-            else errosAnuncios++;
-          } catch(e) {
-            errosAnuncios++;
-            console.warn('[massa atualizar] falhou pra anuncio', vinc.anuncioId, e.message);
+          vincDoProd.push(vinc);
+        }
+      }
+      
+      if (vincDoProd.length === 0) continue;
+      
+      // Chunks de 50 (limite da rota propagar)
+      for (let i = 0; i < vincDoProd.length; i += 50) {
+        const chunk = vincDoProd.slice(i, i + 50);
+        try {
+          const r = await v31_propagarParaAnuncios(p, camposPadrao, chunk);
+          if (r.dados && Array.isArray(r.dados.resultados)) {
+            okAnuncios += r.dados.sucesso || 0;
+            errosAnuncios += r.dados.falhas || 0;
+            if (r.dados.falhas > 0) {
+              console.warn('[massa propagar] falhas em ' + p.nome + ':', 
+                r.dados.resultados.filter(x => !x.ok).map(x => x.anuncioId + ': ' + x.erro));
+            }
+          } else if (!r.ok) {
+            errosAnuncios += chunk.length;
+            console.warn('[massa propagar] erro geral em ' + p.nome + ':', r.erro);
           }
+        } catch(e) {
+          errosAnuncios += chunk.length;
+          console.warn('[massa propagar] exceção em ' + p.nome + ':', e.message);
         }
       }
     }
     
-    showToast('✓ ' + okAnuncios + ' atualizado(s) · ' + errosAnuncios + ' falha(s)');
-    if (errosAnuncios > 0) console.warn('[massa atualizar] verifique o console pra detalhes');
+    if (errosAnuncios === 0) {
+      showToast('✅ ' + okAnuncios + ' anúncio(s) atualizado(s) com sucesso!');
+    } else {
+      showToast('⚠ ' + okAnuncios + ' OK · ' + errosAnuncios + ' falha(s) — veja console', true);
+    }
   }
   
   // Atualiza só vinculos de UMA loja especifica
@@ -12316,36 +12342,65 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   async function v31ExecutarPropagar() {
-    if (!_v31PropagarProdId) return;
-    const p = produtosErp.find(x => String(x.id) === String(_v31PropagarProdId));
-    if (!p) return;
+    // v31b.7: trava anti-duplo-click — se já está rodando, ignora
+    if (v31ExecutarPropagar._rodando) {
+      console.log('[v31 propagar] já tá rodando, ignorando clique duplicado');
+      return;
+    }
+    v31ExecutarPropagar._rodando = true;
     
-    const campos = Array.from(document.querySelectorAll('.v31-prop-campo:checked')).map(c => c.value);
-    const idxSelecionados = Array.from(document.querySelectorAll('.v31-prop-vinc:checked')).map(c => parseInt(c.dataset.idx));
-    
-    if (idxSelecionados.length === 0) {
-      showToast('Selecione pelo menos 1 anúncio', true); return;
+    // Desabilita botão visualmente
+    const btn = event && event.target;
+    let btnTextoOrig = null;
+    if (btn) {
+      btnTextoOrig = btn.textContent;
+      btn.disabled = true;
+      btn.style.opacity = '0.6';
+      btn.style.cursor = 'wait';
+      btn.textContent = '⏳ Propagando...';
     }
     
-    const vinculos = idxSelecionados.map(i => _v31PropagarVinculos[i].vinc);
-    
-    showToast('🔄 Propagando pra ' + vinculos.length + ' anúncio(s)...');
-    const r = await v31_propagarParaAnuncios(p, campos, vinculos);
-    
-    if (r.dados && Array.isArray(r.dados.resultados)) {
-      const ok = r.dados.sucesso || 0;
-      const fail = r.dados.falhas || 0;
-      if (fail === 0) {
-        showToast('✅ ' + ok + '/' + r.dados.total + ' anúncio(s) atualizados!');
-      } else {
-        showToast('⚠ ' + ok + ' OK · ' + fail + ' falha(s) — veja console', true);
-        console.warn('[v31 propagar] falhas:', r.dados.resultados.filter(x => !x.ok));
+    try {
+      if (!_v31PropagarProdId) return;
+      const p = produtosErp.find(x => String(x.id) === String(_v31PropagarProdId));
+      if (!p) return;
+      
+      const campos = Array.from(document.querySelectorAll('.v31-prop-campo:checked')).map(c => c.value);
+      const idxSelecionados = Array.from(document.querySelectorAll('.v31-prop-vinc:checked')).map(c => parseInt(c.dataset.idx));
+      
+      if (idxSelecionados.length === 0) {
+        showToast('Selecione pelo menos 1 anúncio', true); return;
       }
-    } else {
-      showToast('❌ ' + (r.erro || 'Erro'), true);
+      
+      const vinculos = idxSelecionados.map(i => _v31PropagarVinculos[i].vinc);
+      
+      showToast('🔄 Propagando pra ' + vinculos.length + ' anúncio(s)...');
+      const r = await v31_propagarParaAnuncios(p, campos, vinculos);
+      
+      if (r.dados && Array.isArray(r.dados.resultados)) {
+        const ok = r.dados.sucesso || 0;
+        const fail = r.dados.falhas || 0;
+        if (fail === 0) {
+          showToast('✅ ' + ok + '/' + r.dados.total + ' anúncio(s) atualizados!');
+        } else {
+          showToast('⚠ ' + ok + ' OK · ' + fail + ' falha(s) — veja console', true);
+          console.warn('[v31 propagar] falhas:', r.dados.resultados.filter(x => !x.ok));
+        }
+      } else {
+        showToast('❌ ' + (r.erro || 'Erro'), true);
+      }
+      
+      v31FecharModalPropagar();
+    } finally {
+      // Libera trava SEMPRE (inclusive em caso de erro)
+      v31ExecutarPropagar._rodando = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        btn.style.cursor = '';
+        btn.textContent = btnTextoOrig || '🚀 Propagar agora';
+      }
     }
-    
-    v31FecharModalPropagar();
   }
   
   // ---- MODAL C (vincular existente) ----
@@ -14853,6 +14908,7 @@ REGRAS CRÍTICAS:
   
   // Atualiza todos os vínculos do produto que sejam de UM marketplace específico
   // Usado pelo botão "🔄 Atualizar" na seção "Situação nos marketplaces" do modal
+  // v31b.7: agora usa /propagar (paralelo) em vez de N requests sequenciais
   async function atualizarVinculosDeUmMarketplace(produtoId, marketplace) {
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) { showToast('Produto não encontrado', true); return; }
@@ -14870,23 +14926,32 @@ REGRAS CRÍTICAS:
       return;
     }
     
-    if (!confirm('Atualizar ' + vincs.length + ' anúncio(s) no ' + marketplace + ' com os dados atuais do ERP?\n\nIsso vai sobrescrever nome, preço, fotos, atributos e estoque no marketplace.')) return;
+    if (!confirm('Atualizar ' + vincs.length + ' anúncio(s) no ' + marketplace + ' com os dados atuais do ERP?\n\nIsso vai sobrespirar nome, preço, fotos, atributos e estoque no marketplace.')) return;
     
-    let ok = 0, erros = 0;
-    const erroDetalhes = [];
     showToast('🔄 Atualizando ' + vincs.length + ' anúncio(s)...');
     
-    for (const vinc of vincs) {
+    // v31b.7: usa rota /propagar (paralelo). Chunks de 50.
+    const camposPadrao = ['titulo','descricao','preco','cores','fotos','atributos'];
+    let ok = 0, erros = 0;
+    const erroDetalhes = [];
+    
+    for (let i = 0; i < vincs.length; i += 50) {
+      const chunk = vincs.slice(i, i + 50);
       try {
-        const r = await atualizarUmAnuncio(p, vinc);
-        if (r.ok) ok++;
-        else { 
-          erros++; 
-          erroDetalhes.push(vinc.anuncioId + ': ' + r.erro);
+        const r = await v31_propagarParaAnuncios(p, camposPadrao, chunk);
+        if (r.dados && Array.isArray(r.dados.resultados)) {
+          ok += r.dados.sucesso || 0;
+          erros += r.dados.falhas || 0;
+          r.dados.resultados.filter(x => !x.ok).forEach(x => {
+            erroDetalhes.push(x.anuncioId + ': ' + x.erro);
+          });
+        } else if (!r.ok) {
+          erros += chunk.length;
+          erroDetalhes.push('Erro geral: ' + r.erro);
         }
       } catch(e) {
-        erros++;
-        erroDetalhes.push(vinc.anuncioId + ': ' + e.message);
+        erros += chunk.length;
+        erroDetalhes.push('Exceção: ' + e.message);
       }
     }
     
