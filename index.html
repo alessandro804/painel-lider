@@ -10284,6 +10284,44 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (statusCorrigidos > 0 || vincStatusMigrados > 0) {
       saveProdutos();
     }
+    
+    // v32d.9: Recalcula status agregado de TODOS os produtos baseado nos vínculos atuais.
+    // Lógica OR: se qualquer vínculo é NORMAL/active → produto = ativo.
+    // Roda no carregamento pra corrigir produtos onde o status agregado ficou
+    // desalinhado com os vínculos reais (ex.: import parcial deixou status='inativo'
+    // num produto que tem alguns anúncios NORMAL).
+    let statusRecalculados = 0;
+    produtosErp.forEach(p => {
+      if (p.status === 'excluido' || p.status === 'rascunho') return;
+      
+      // Coleta todos statusMl dos vínculos (pra qualquer marketplace)
+      const todosStatus = [];
+      (p.variacoes || []).forEach(v => {
+        (v.vinculos || []).forEach(vi => {
+          if (vi.statusMl) todosStatus.push(vi.statusMl);
+        });
+      });
+      
+      if (todosStatus.length === 0) return;  // sem vínculos, não mexe
+      
+      const temAtivo = todosStatus.some(sm => {
+        const ss = String(sm).toLowerCase();
+        return ss === 'active' || ss === 'normal';
+      });
+      
+      const novoStatus = temAtivo ? 'ativo' : 'inativo';
+      
+      if (p.status !== novoStatus) {
+        console.log('[v32d.9 recalc] produto', p.id, '"' + (p.nome || '').slice(0,40) + '" status:', p.status, '→', novoStatus,
+          '(' + todosStatus.length + ' vínculo(s), ativos:', todosStatus.filter(s => /normal|active/i.test(s)).length + ')');
+        p.status = novoStatus;
+        statusRecalculados++;
+      }
+    });
+    if (statusRecalculados > 0) {
+      console.log('[v32d.9] ' + statusRecalculados + ' produto(s) tiveram status agregado recalculado');
+      saveProdutos();
+    }
   }
   
   // CRITICAL: garante que TODAS as fotos do produto são URLs públicas (não base64).
