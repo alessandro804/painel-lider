@@ -10231,11 +10231,31 @@ Retorne JSON: {"ID": "valor", ...}`;
   function _migrarTodosOsProdutos() {
     if (!Array.isArray(produtosErp)) return;
     let migrados = 0;
+    let statusCorrigidos = 0;
     produtosErp.forEach(p => {
       if (migrarProdutoParaCores(p)) migrados++;
+      
+      // v32b.3: Corrige produtos Shopee que vieram como 'rascunho' por bug do mapeamento
+      // antigo do _statusPainelDoStatusMl. Olha statusMl direto e re-mapeia se for Shopee.
+      if (!p._statusShopeeMigrado && p.statusMl) {
+        const sm = String(p.statusMl).toUpperCase();
+        const eShopee = (sm === 'NORMAL' || sm === 'UNLIST' || sm === 'BANNED' || sm === 'DELETED');
+        if (eShopee && p.status === 'rascunho') {
+          if (sm === 'NORMAL') p.status = 'ativo';
+          else if (sm === 'UNLIST' || sm === 'BANNED') p.status = 'inativo';
+          else if (sm === 'DELETED') p.status = 'excluido';
+          statusCorrigidos++;
+        }
+        p._statusShopeeMigrado = true;
+      }
     });
     if (migrados > 0) {
       console.log('[cores] ' + migrados + ' produto(s) migrado(s) pro modelo de cores[]');
+    }
+    if (statusCorrigidos > 0) {
+      console.log('[status Shopee] ' + statusCorrigidos + ' produto(s) Shopee corrigido(s) de rascunho pro status real');
+      // Persiste no banco
+      saveProdutos();
     }
   }
   
@@ -10395,6 +10415,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   let _produtoEditandoId = null;
   let _fotosProdutoSessao = []; // fotos no modal
   let _variacoesProduto = [];   // variações no modal
+  let _esquemaVariacoesSessao = null;  // v32c: { dimensoes: ['Cor', 'Tamanho', 'Voltagem'] }
   let _guiaTamanhosProduto = null; // guia de tamanhos no modal
   
   // === Renderização da tela ===
@@ -14754,6 +14775,10 @@ REGRAS CRÍTICAS:
     _fotosProdutoSessao = [...(p.fotos || [])];  // legado: ainda sincronizado pra compat
     _variacoesProduto = JSON.parse(JSON.stringify(p.variacoes || []));
     _guiaTamanhosProduto = p.guiaTamanhos ? JSON.parse(JSON.stringify(p.guiaTamanhos)) : null;
+    // v32c: clona esquema de variações (dimensões customizadas)
+    _esquemaVariacoesSessao = p.esquemaVariacoes 
+      ? JSON.parse(JSON.stringify(p.esquemaVariacoes)) 
+      : { dimensoes: [] };
     document.getElementById('produtoModalTitulo').textContent = 'Editar Produto';
     document.getElementById('prodNome').value = p.nome || '';
     document.getElementById('prodSku').value = p.skuPai || '';
@@ -15599,7 +15624,56 @@ REGRAS CRÍTICAS:
       cont.innerHTML = '<div style="font-size:12px;color:var(--cinza-texto)">Nenhuma variação. Produtos com tamanho/cor precisam de variações.</div>';
       return;
     }
-    cont.innerHTML = _variacoesProduto.map((v, i) => {
+    
+    // v32c: descobre dimensões EXTRAS (além de Cor e Tamanho)
+    // Lê de _esquemaVariacoesSessao OU varre as variações pra ver se tem `valores`
+    const dimsConhecidas = ['cor', 'tamanho', 'color', 'size'];  // normalizadas
+    const dimsExtra = new Set();
+    
+    // Se tem esquemaVariacoes definido, usa ele
+    if (_esquemaVariacoesSessao && Array.isArray(_esquemaVariacoesSessao.dimensoes)) {
+      _esquemaVariacoesSessao.dimensoes.forEach(d => {
+        const dn = String(d || '').toLowerCase().trim();
+        if (!dimsConhecidas.some(c => dn.includes(c)) && 
+            !/tamanho|numero|numera|size|num\b/i.test(d)) {
+          dimsExtra.add(d);
+        }
+      });
+    }
+    
+    // Também varre `valores` das variações pra captar dims dinâmicas
+    _variacoesProduto.forEach(v => {
+      if (v.valores && typeof v.valores === 'object') {
+        Object.keys(v.valores).forEach(d => {
+          const dn = String(d).toLowerCase().trim();
+          if (!dimsConhecidas.some(c => dn.includes(c)) &&
+              !/tamanho|numero|numera|size|num\b/i.test(d)) {
+            dimsExtra.add(d);
+          }
+        });
+      }
+    });
+    
+    const dimsExtraArr = Array.from(dimsExtra);
+    const temDimsExtra = dimsExtraArr.length > 0;
+    
+    // Banner de dimensões customizadas
+    let bannerHtml = '';
+    if (temDimsExtra) {
+      bannerHtml = `
+        <div style="margin-bottom:10px;padding:10px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:6px;font-size:11px;color:#1e3a8a">
+          <strong>📐 Dimensões customizadas neste produto:</strong> 
+          ${dimsExtraArr.map(d => `<code style="background:#fff;padding:1px 6px;border-radius:4px;margin-right:4px">${escapeHtml(d)}</code>`).join('')}
+          <button type="button" onclick="adicionarDimensaoExtra()" style="float:right;font-size:10px;padding:3px 8px;background:#3b82f6;color:white;border:none;border-radius:4px;cursor:pointer">+ Nova dimensão</button>
+        </div>`;
+    } else {
+      bannerHtml = `
+        <div style="margin-bottom:8px;font-size:11px;color:#6b7280;text-align:right">
+          <button type="button" onclick="adicionarDimensaoExtra()" style="font-size:10px;padding:3px 8px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;color:#374151">+ Adicionar dimensão extra</button>
+        </div>`;
+    }
+    
+    cont.innerHTML = bannerHtml + _variacoesProduto.map((v, i) => {
       // Migração transparente: se variação antiga só tem `nome`, tenta separar
       if (!v.cor && !v.tamanho && v.nome) {
         const partes = String(v.nome).split(/[\s\-\/]+/).filter(Boolean);
@@ -15616,6 +15690,9 @@ REGRAS CRÍTICAS:
         );
         if (cor) v.corId = cor.id;
       }
+      // Garante v.valores existe
+      if (!v.valores) v.valores = {};
+      
       // Select de cores cadastradas
       const opcoesCor = _coresProdutoSessao.map(c => 
         `<option value="${escapeHtml(c.id)}"${v.corId===c.id?' selected':''}>${escapeHtml(c.nome)}</option>`
@@ -15629,6 +15706,20 @@ REGRAS CRÍTICAS:
         : `<input type="text" value="${escapeHtml(v.cor||'')}" placeholder="Cor (cadastre acima)" 
             oninput="_variacoesProduto[${i}].cor = this.value; sincronizarNomeVariacao(${i})" style="flex:1">`;
       
+      // v32c: Inputs pra dimensões customizadas
+      const dimsExtraHtml = dimsExtraArr.length > 0 ? `
+        <div class="var-item-row" style="background:#eff6ff;padding:6px;border-radius:6px;margin-top:4px">
+          ${dimsExtraArr.map(d => `
+            <div style="flex:1">
+              <div style="font-size:10px;color:#1e40af;margin-bottom:2px;font-weight:600">${escapeHtml(d)}</div>
+              <input type="text" value="${escapeHtml(v.valores[d] || '')}" 
+                placeholder="${escapeHtml(d)}"
+                oninput="_setarDimensaoExtra(${i}, '${escapeHtml(d).replace(/'/g, '&#39;')}', this.value)"
+                style="width:100%;padding:5px;border:1px solid #93c5fd;border-radius:4px;font-size:12px">
+            </div>
+          `).join('')}
+        </div>` : '';
+      
       return `
       <div class="var-item">
         <div class="var-item-row">
@@ -15636,6 +15727,7 @@ REGRAS CRÍTICAS:
           <input type="text" value="${escapeHtml(v.tamanho||'')}" placeholder="Tamanho (ex: 40)"
                  oninput="_variacoesProduto[${i}].tamanho = this.value; sincronizarNomeVariacao(${i})">
         </div>
+        ${dimsExtraHtml}
         <div class="var-item-row">
           <input type="text" value="${escapeHtml(v.sku||'')}" placeholder="SKU da variação (ex: 100-preto-40)"
                  oninput="_variacoesProduto[${i}].sku = this.value">
@@ -15653,6 +15745,53 @@ REGRAS CRÍTICAS:
         </div>
       </div>
     `;}).join('');
+  }
+  
+  // v32c: setter pra dimensão extra
+  function _setarDimensaoExtra(idx, dimNome, valor) {
+    const v = _variacoesProduto[idx];
+    if (!v) return;
+    if (!v.valores) v.valores = {};
+    v.valores[dimNome] = valor;
+    sincronizarNomeVariacao(idx);
+  }
+  
+  // v32c: adiciona uma dimensão extra a TODAS as variações do produto
+  function adicionarDimensaoExtra() {
+    const nome = prompt('Nome da nova dimensão (ex: Voltagem, Sabor, Material, Bateria):\n\nObs: você vai precisar preencher o valor dessa dimensão em cada variação.');
+    if (!nome || !nome.trim()) return;
+    const nomeLimpo = nome.trim();
+    
+    if (!_esquemaVariacoesSessao) _esquemaVariacoesSessao = { dimensoes: [] };
+    if (!_esquemaVariacoesSessao.dimensoes) _esquemaVariacoesSessao.dimensoes = [];
+    
+    // Já existe?
+    if (_esquemaVariacoesSessao.dimensoes.some(d => d.toLowerCase() === nomeLimpo.toLowerCase())) {
+      showToast('Dimensão "' + nomeLimpo + '" já existe', true);
+      return;
+    }
+    
+    // Garante que tem Cor e Tamanho como dimensões base (se houver variações com elas)
+    const temCor = _variacoesProduto.some(v => v.cor);
+    const temTam = _variacoesProduto.some(v => v.tamanho);
+    if (temCor && !_esquemaVariacoesSessao.dimensoes.some(d => /cor/i.test(d))) {
+      _esquemaVariacoesSessao.dimensoes.unshift('Cor');
+    }
+    if (temTam && !_esquemaVariacoesSessao.dimensoes.some(d => /tamanho|size/i.test(d))) {
+      _esquemaVariacoesSessao.dimensoes.push('Tamanho');
+    }
+    
+    // Adiciona a nova
+    _esquemaVariacoesSessao.dimensoes.push(nomeLimpo);
+    
+    // Inicializa valor vazio em todas as variações
+    _variacoesProduto.forEach(v => {
+      if (!v.valores) v.valores = {};
+      if (!v.valores[nomeLimpo]) v.valores[nomeLimpo] = '';
+    });
+    
+    renderVariacoesProduto();
+    showToast('Dimensão "' + nomeLimpo + '" adicionada. Preencha o valor em cada variação.');
   }
   // Atualiza cor + corId quando user seleciona no dropdown
   function _selecionarCorVariacao(idx, valor) {
@@ -16206,6 +16345,10 @@ REGRAS CRÍTICAS:
       fotos: fotosUniao.length > 0 ? fotosUniao : [..._fotosProdutoSessao],
       cores: JSON.parse(JSON.stringify(_coresProdutoSessao)),
       variacoes: JSON.parse(JSON.stringify(_variacoesProduto)),
+      // v32c: persiste esquema de variações (dimensões livres)
+      esquemaVariacoes: _esquemaVariacoesSessao 
+        ? JSON.parse(JSON.stringify(_esquemaVariacoesSessao)) 
+        : null,
       guiaTamanhos: _guiaTamanhosProduto ? JSON.parse(JSON.stringify(_guiaTamanhosProduto)) : null,
       // Atributos do marketplace (qualidade do anuncio)
       atributosMl: (function() {
@@ -18524,10 +18667,22 @@ São o mesmo produto?`;
   // - default (qualquer outro) → rascunho
   function _statusPainelDoStatusMl(statusMl, subStatus) {
     const s = String(statusMl || '').toLowerCase().trim();
+    
+    // ML (Mercado Livre)
     if (s === 'active') return 'ativo';
     if (s === 'paused' || s === 'closed' || s === 'under_review' || s === 'inactive') {
       return 'inativo';
     }
+    
+    // Shopee
+    // - NORMAL  = anúncio ativo na loja
+    // - UNLIST  = pausado/oculto (pode reativar)
+    // - BANNED  = banido pela plataforma
+    // - DELETED = excluído permanentemente
+    if (s === 'normal') return 'ativo';
+    if (s === 'unlist' || s === 'banned') return 'inativo';
+    if (s === 'deleted') return 'excluido';
+    
     return 'rascunho';
   }
   
@@ -18635,6 +18790,9 @@ São o mesmo produto?`;
           lojaId: loja.id,
           categoria: anuncio.categoria || '',
           categoryIdMl: anuncio.categoryIdMl || anuncio.categoria || null,
+          // v32c: campos específicos Shopee preservados
+          categoryIdShopee: anuncio.categoryIdShopee || null,
+          esquemaVariacoes: anuncio.esquemaVariacoes ? JSON.parse(JSON.stringify(anuncio.esquemaVariacoes)) : null,
           atributosMl: anuncio.atributosMl || {},
           preco: anuncio.preco || 0,
           peso: anuncio.peso || 0,
@@ -18653,6 +18811,13 @@ São o mesmo produto?`;
         produtosErp.push(produtoInterno);
         stats.produtosCriados++;
         isProdutoNovo = true;
+      } else if (anuncio.esquemaVariacoes && Array.isArray(anuncio.esquemaVariacoes.dimensoes) && anuncio.esquemaVariacoes.dimensoes.length > 0) {
+        // v32c: produto existente — só ENRIQUECE esquema se ainda não tem ou se o do anúncio é mais completo
+        const dimsAtuais = (produtoInterno.esquemaVariacoes?.dimensoes || []).length;
+        const dimsNovas = anuncio.esquemaVariacoes.dimensoes.length;
+        if (dimsNovas > dimsAtuais) {
+          produtoInterno.esquemaVariacoes = JSON.parse(JSON.stringify(anuncio.esquemaVariacoes));
+        }
       }
       
       // ==========================================================
@@ -18713,7 +18878,9 @@ São o mesmo produto?`;
             tamanho: varExt.tamanho || '',
             sku: skuExterno,
             estoque: varExt.estoque || 0,
-            preco: varExt.preco || produtoInterno.preco || ''
+            preco: varExt.preco || produtoInterno.preco || '',
+            // v32c: preserva valores das dimensões customizadas
+            valores: varExt.valores ? JSON.parse(JSON.stringify(varExt.valores)) : {},
           };
           aplicarVinculoNaVariacao(novaVar, infoVinculo);
           produtoInterno.variacoes.push(novaVar);
