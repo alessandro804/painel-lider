@@ -10232,6 +10232,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!Array.isArray(produtosErp)) return;
     let migrados = 0;
     let statusCorrigidos = 0;
+    let vincStatusMigrados = 0;
     produtosErp.forEach(p => {
       if (migrarProdutoParaCores(p)) migrados++;
       
@@ -10248,13 +10249,31 @@ Retorne JSON: {"ID": "valor", ...}`;
         }
         p._statusShopeeMigrado = true;
       }
+      
+      // v32d: herda statusMl do produto pros vínculos que não tem (legado antes da v32d)
+      if (!p._statusMlVincMigrado && p.statusMl) {
+        (p.variacoes || []).forEach(v => {
+          (v.vinculos || []).forEach(vi => {
+            if (!vi.statusMl) {
+              // Sem info melhor, herda do produto. Próxima sincronização atualiza com real.
+              vi.statusMl = p.statusMl;
+              vincStatusMigrados++;
+            }
+          });
+        });
+        p._statusMlVincMigrado = true;
+      }
     });
     if (migrados > 0) {
       console.log('[cores] ' + migrados + ' produto(s) migrado(s) pro modelo de cores[]');
     }
     if (statusCorrigidos > 0) {
       console.log('[status Shopee] ' + statusCorrigidos + ' produto(s) Shopee corrigido(s) de rascunho pro status real');
-      // Persiste no banco
+    }
+    if (vincStatusMigrados > 0) {
+      console.log('[v32d] ' + vincStatusMigrados + ' vínculo(s) ganharam statusMl herdado');
+    }
+    if (statusCorrigidos > 0 || vincStatusMigrados > 0) {
       saveProdutos();
     }
   }
@@ -11895,6 +11914,204 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   // Tem alguma personalização?
+  // ============================================================
+  // v32d — STATUS DE VÍNCULO (ativo/pausado/banido) + AÇÕES
+  // ============================================================
+  
+  // Resolve status normalizado do vínculo: 'ativo' | 'pausado' | 'banido' | 'fechado' | 'desconhecido'
+  function v32d_statusVinculo(vinc) {
+    if (!vinc) return 'desconhecido';
+    const sm = String(vinc.statusMl || vinc.statusAnuncio || '').toLowerCase();
+    
+    // ML
+    if (sm === 'active') return 'ativo';
+    if (sm === 'paused') return 'pausado';
+    if (sm === 'closed') return 'fechado';
+    if (sm === 'under_review') return 'em_revisao';
+    if (sm === 'inactive') return 'inativo';
+    
+    // Shopee
+    if (sm === 'normal') return 'ativo';
+    if (sm === 'unlist') return 'pausado';
+    if (sm === 'banned') return 'banido';
+    if (sm === 'deleted') return 'fechado';
+    
+    return 'desconhecido';
+  }
+  
+  // HTML da tag de status
+  function v32d_htmlTagStatus(status) {
+    const cfg = {
+      'ativo':       { txt:'🟢 ATIVO',     bg:'#dcfce7', fg:'#15803d' },
+      'pausado':     { txt:'⏸ PAUSADO',   bg:'#fef3c7', fg:'#92400e' },
+      'fechado':     { txt:'⚫ FECHADO',   bg:'#e5e7eb', fg:'#374151' },
+      'banido':      { txt:'🚫 BANIDO',    bg:'#fee2e2', fg:'#991b1b' },
+      'em_revisao':  { txt:'👁 REVISÃO',   bg:'#dbeafe', fg:'#1e3a8a' },
+      'inativo':     { txt:'⏸ INATIVO',   bg:'#fef3c7', fg:'#92400e' },
+      'desconhecido':{ txt:'? STATUS',    bg:'#f3f4f6', fg:'#6b7280' },
+    };
+    const c = cfg[status] || cfg.desconhecido;
+    return `<span style="padding:2px 7px;background:${c.bg};color:${c.fg};border-radius:4px;font-size:10px;font-weight:700;margin-left:6px">${c.txt}</span>`;
+  }
+  
+  // Confirma pausar/ativar — 1x/dia segundo escolha do user
+  function v32d_pedirConfirmacao(acao, vinc) {
+    const hoje = new Date().toISOString().slice(0, 10);
+    const ultimaChave = 'v32d_confirma_pausar_ultima';
+    const ultima = localStorage.getItem(ultimaChave);
+    if (ultima === hoje) return true;   // já confirmou hoje
+    
+    const txtAcao = acao === 'pausar' ? 'PAUSAR' : 'ATIVAR';
+    const ok = confirm(
+      `${txtAcao} anúncio ${vinc.anuncioId} no ${vinc.marketplace}?\n\n` +
+      `Esta ação será aplicada DIRETAMENTE no marketplace.\n\n` +
+      `Hoje só pediremos esta confirmação 1x — depois as próximas ações serão silenciosas.`
+    );
+    if (ok) localStorage.setItem(ultimaChave, hoje);
+    return ok;
+  }
+  
+  // Pausa um anúncio (chama backend, atualiza vínculo local, re-renderiza)
+  async function v32d_pausarAnuncio(produtoId, varIdx, vincIdx) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!p) return;
+    const v = (p.variacoes || [])[varIdx];
+    const vinc = v && (v.vinculos || [])[vincIdx];
+    if (!vinc) { showToast('Vínculo não encontrado', true); return; }
+    
+    if (!v32d_pedirConfirmacao('pausar', vinc)) return;
+    
+    const lojaIdBanco = vinc.lojaIdBanco;
+    if (!lojaIdBanco) { showToast('Vínculo sem lojaIdBanco — não dá pra agir', true); return; }
+    
+    showToast('⏸ Pausando ' + vinc.anuncioId + '…');
+    
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/anuncio/' + encodeURIComponent(vinc.anuncioId) + '/pausar', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        showToast('❌ ' + (data.erro || 'erro'), true);
+        return;
+      }
+      
+      // Atualiza TODOS os vínculos do mesmo anúncio (pode ter várias variações apontando)
+      (p.variacoes || []).forEach(vv => {
+        (vv.vinculos || []).forEach(viv => {
+          if (String(viv.anuncioId) === String(vinc.anuncioId)) {
+            viv.statusMl = vinc.marketplace === 'shopee' ? 'UNLIST' : 'paused';
+          }
+        });
+      });
+      
+      saveProdutos();
+      v32d_recalcularStatusAgregadoProduto(p);
+      showToast('✓ Pausado!');
+      
+      // Re-renderiza modal + lista
+      if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
+      renderProdutos();
+    } catch (e) {
+      showToast('❌ ' + e.message, true);
+    }
+  }
+  
+  // Ativa um anúncio
+  async function v32d_ativarAnuncio(produtoId, varIdx, vincIdx) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!p) return;
+    const v = (p.variacoes || [])[varIdx];
+    const vinc = v && (v.vinculos || [])[vincIdx];
+    if (!vinc) { showToast('Vínculo não encontrado', true); return; }
+    
+    if (!v32d_pedirConfirmacao('ativar', vinc)) return;
+    
+    const lojaIdBanco = vinc.lojaIdBanco;
+    if (!lojaIdBanco) { showToast('Vínculo sem lojaIdBanco — não dá pra agir', true); return; }
+    
+    showToast('▶ Ativando ' + vinc.anuncioId + '…');
+    
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/anuncio/' + encodeURIComponent(vinc.anuncioId) + '/ativar', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        showToast('❌ ' + (data.erro || 'erro'), true);
+        return;
+      }
+      
+      (p.variacoes || []).forEach(vv => {
+        (vv.vinculos || []).forEach(viv => {
+          if (String(viv.anuncioId) === String(vinc.anuncioId)) {
+            viv.statusMl = vinc.marketplace === 'shopee' ? 'NORMAL' : 'active';
+          }
+        });
+      });
+      
+      saveProdutos();
+      v32d_recalcularStatusAgregadoProduto(p);
+      showToast('✓ Ativado!');
+      
+      if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
+      renderProdutos();
+    } catch (e) {
+      showToast('❌ ' + e.message, true);
+    }
+  }
+  
+  // Recalcula status agregado do produto (OR de todos vínculos)
+  function v32d_recalcularStatusAgregadoProduto(p) {
+    if (!p || p.status === 'excluido') return;
+    
+    const statusList = [];
+    (p.variacoes || []).forEach(v => {
+      (v.vinculos || []).forEach(vi => {
+        if (vi.statusMl) statusList.push(vi.statusMl);
+      });
+    });
+    
+    if (statusList.length === 0) return;
+    
+    const temAtivo = statusList.some(sm => {
+      const ss = String(sm).toLowerCase();
+      return ss === 'active' || ss === 'normal';
+    });
+    
+    p.status = temAtivo ? 'ativo' : 'inativo';
+    p.statusMl = temAtivo 
+      ? (statusList.find(s => /normal|active/i.test(s)) || statusList[0])
+      : statusList[0];
+  }
+  
+  // Conta vínculos por status pra um marketplace específico
+  function v32d_contarPorStatus(produto, marketplace) {
+    const contagem = { ativos: 0, pausados: 0, outros: 0, total: 0 };
+    const anunciosVistos = new Set();
+    
+    (produto.variacoes || []).forEach(v => {
+      (v.vinculos || []).forEach(vi => {
+        if (vi.marketplace !== marketplace) return;
+        const chave = String(vi.anuncioId);
+        if (anunciosVistos.has(chave)) return;
+        anunciosVistos.add(chave);
+        
+        const st = v32d_statusVinculo(vi);
+        contagem.total++;
+        if (st === 'ativo') contagem.ativos++;
+        else if (st === 'pausado' || st === 'inativo') contagem.pausados++;
+        else contagem.outros++;
+      });
+    });
+    
+    return contagem;
+  }
+  
+  // ============================================================
+  
   function v31_temPersonalizacao(vinculo) {
     const p = vinculo && vinculo.personalizado;
     if (!p) return false;
@@ -13276,8 +13493,8 @@ Retorne JSON: {"ID": "valor", ...}`;
       const estoqueTotal = (p.variacoes || []).reduce((s,v) => s + (parseInt(v.estoque)||0), 0);
       const fotoUrl = p.fotos && p.fotos[0] ? p.fotos[0] : '';
       
-      // Chips de marketplaces COM CONTAGEM de anuncios vinculados
-      // Ex: produto pode ter 4 anuncios no ML, 3 na Shopee, etc.
+      // Chips de marketplaces COM CONTAGEM de anuncios vinculados + status detalhado (v32d)
+      // Ex: produto pode ter 4 anuncios no ML (3 ativos, 1 pausado), etc.
       let mktChips = '';
       const contVincPorMk = contarVinculosPorMarketplace(p);
       ['mercadolivre','shopee','tiktok','shein'].forEach(mk => {
@@ -13286,9 +13503,29 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (qtd > 0 || exportado) {
           const sigla = {mercadolivre:'ML',shopee:'SP',tiktok:'TT',shein:'SH'}[mk];
           const cssClass = mk === 'mercadolivre' ? 'ml' : mk;
-          // Se tem vinculos, mostra contagem; senao, so a sigla
-          const txt = qtd > 0 ? sigla + ' <strong>' + qtd + '</strong>' : sigla;
-          const tt = qtd > 0 ? qtd + ' anúncio(s) vinculado(s) no ' + sigla : 'Marcado como exportado no ' + sigla;
+          
+          // v32d: conta ativos e pausados por status
+          let txt, tt;
+          if (qtd > 0 && typeof v32d_contarPorStatus === 'function') {
+            const c = v32d_contarPorStatus(p, mk);
+            // Exibe formato "ML 3🟢 1⏸" se tem mix; só contagem se tudo ativo
+            if (c.ativos > 0 && c.pausados > 0) {
+              txt = sigla + ' <strong>' + c.ativos + '</strong>🟢 <strong>' + c.pausados + '</strong>⏸';
+              tt = sigla + ': ' + c.ativos + ' ativo(s), ' + c.pausados + ' pausado(s)' + (c.outros ? ', ' + c.outros + ' outros' : '');
+            } else if (c.pausados > 0 && c.ativos === 0) {
+              txt = sigla + ' <strong>' + c.pausados + '</strong>⏸';
+              tt = sigla + ': ' + c.pausados + ' pausado(s)';
+            } else if (c.outros > 0 && c.ativos === 0) {
+              txt = sigla + ' <strong>' + c.outros + '</strong>?';
+              tt = sigla + ': ' + c.outros + ' anúncio(s) sem status conhecido';
+            } else {
+              txt = sigla + ' <strong>' + qtd + '</strong>';
+              tt = qtd + ' anúncio(s) ativo(s) no ' + sigla;
+            }
+          } else {
+            txt = qtd > 0 ? sigla + ' <strong>' + qtd + '</strong>' : sigla;
+            tt = qtd > 0 ? qtd + ' anúncio(s) vinculado(s) no ' + sigla : 'Marcado como exportado no ' + sigla;
+          }
           mktChips += `<span class="prod-card-mkt-chip ${cssClass}" title="${tt}" style="cursor:pointer" onclick="event.stopPropagation();abrirVinculos('${p.id}')">${txt}</span>`;
         }
       });
@@ -15267,6 +15504,7 @@ REGRAS CRÍTICAS:
             ${MKT_EMOJI[vinc.marketplace] || ''} <span style="color:#3b82f6;margin:0 4px">${escapeHtml(nomeLoja)}</span>
             <span style="color:#6b7280">·</span>
             <code style="margin-left:4px;font-size:11px;background:#f3f4f6;padding:1px 5px;border-radius:3px">${escapeHtml(String(vinc.anuncioId))}</code>
+            ${v32d_htmlTagStatus(v32d_statusVinculo(vinc))}
             ${badge}
           </div>
           <div style="font-size:11px;color:#6b7280;text-overflow:ellipsis;overflow:hidden;white-space:nowrap" title="${escapeHtml(tituloEfetivo)}">
@@ -15289,6 +15527,22 @@ REGRAS CRÍTICAS:
             title="Customizar SÓ este anúncio sem afetar os outros">
             ✏️ Editar
           </button>
+          ${(() => {
+            // v32d: botão pausar/ativar segundo status atual
+            const st = v32d_statusVinculo(vinc);
+            if (st === 'ativo') {
+              return `<button onclick="v32d_pausarAnuncio('${p.id}', ${varIdx}, ${vincIdx})" 
+                style="padding:5px 10px;background:#f59e0b;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600"
+                title="Pausar este anúncio no marketplace">⏸ Pausar</button>`;
+            }
+            if (st === 'pausado' || st === 'inativo') {
+              return `<button onclick="v32d_ativarAnuncio('${p.id}', ${varIdx}, ${vincIdx})" 
+                style="padding:5px 10px;background:#10b981;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600"
+                title="Reativar este anúncio no marketplace">▶ Ativar</button>`;
+            }
+            // Fechado/banido/em_revisao: sem botão
+            return '';
+          })()}
         </div>
       </div>`;
     });
@@ -18642,7 +18896,15 @@ São o mesmo produto?`;
       skuSuspeito: !info.skuExatoBate,
       titulo: info.titulo,
       vinculadoEm: idx >= 0 ? variacao.vinculos[idx].vinculadoEm : new Date().toISOString(),
-      atualizadoEm: new Date().toISOString()
+      atualizadoEm: new Date().toISOString(),
+      // v32b: shopId + permalink (Shopee)
+      shopId: info.shopId || (idx >= 0 ? variacao.vinculos[idx].shopId : null),
+      permalink: info.permalink || (idx >= 0 ? variacao.vinculos[idx].permalink : ''),
+      // v32d: statusMl do anúncio (NORMAL/UNLIST pra Shopee, active/paused pra ML)
+      statusMl: info.statusMl || (idx >= 0 ? variacao.vinculos[idx].statusMl : ''),
+      // v32b: preserva personalizado se já existia
+      personalizado: idx >= 0 ? variacao.vinculos[idx].personalizado : null,
+      ultimaAtualizacao: idx >= 0 ? variacao.vinculos[idx].ultimaAtualizacao : null
     };
     
     if (idx >= 0) {
@@ -18842,7 +19104,9 @@ São o mesmo produto?`;
           titulo: anuncio.nome || anuncio.title || '?',
           // v32b: pra Shopee, guarda shopId + permalink direto vindos do backend
           shopId: anuncio.shopId || null,
-          permalink: anuncio.permalink || ''
+          permalink: anuncio.permalink || '',
+          // v32d: status do anúncio neste marketplace (NORMAL/UNLIST pra Shopee, active/paused pra ML)
+          statusMl: anuncio.statusMl || ''
         };
         
         // Procura variação INTERNA correspondente (DENTRO do produto escolhido)
@@ -18937,28 +19201,61 @@ São o mesmo produto?`;
       //   OU
       //   b) Status REAL do ML mudou desde a última sincronização
       //      (ex: ativo→pausado no ML → atualiza no painel)
-      //
       // Se está com status 'excluido' (lixeira) → NÃO mexer (user decidiu excluir)
       // Se está banido → já tratado acima
       if (!ehBanimento && produtoInterno.status !== 'excluido') {
-        const ultimoStatusMl = produtoInterno.statusMl || '';
         const novoStatusMl = anuncio.statusMl || '';
-        const aindaRascunho = produtoInterno.status === 'rascunho';
-        const mlRealmenteMudou = ultimoStatusMl && novoStatusMl && (ultimoStatusMl !== novoStatusMl);
         
-        if (aindaRascunho || mlRealmenteMudou) {
-          const novoStatus = _statusPainelDoStatusMl(novoStatusMl, subStatus);
-          if (produtoInterno.status !== novoStatus) {
-            console.log('[import] produto', produtoInterno.id, 'status:', produtoInterno.status, '→', novoStatus, 
-              '(motivo:', aindaRascunho ? 'rascunho inicial' : 'ML mudou ' + ultimoStatusMl + '→' + novoStatusMl, ')');
-            produtoInterno.status = novoStatus;
-          }
+        // v32c.2: NÃO sobrescrever direto. Em vez disso:
+        // Rastreamos os statusMl de TODOS os vínculos deste produto.
+        // No final da sincronização, decidimos o status agregado (OR).
+        if (!produtoInterno._statusMlPorAnuncio) produtoInterno._statusMlPorAnuncio = {};
+        if (novoStatusMl) {
+          produtoInterno._statusMlPorAnuncio[anuncioId] = novoStatusMl;
         }
-        produtoInterno.statusMl = novoStatusMl;
       }
       
       // Marca pra persistir no backend ao final
       produtosModificados.add(produtoInterno.id);
+    });
+    
+    // v32c.2: Após processar TODOS os anúncios, calcula status agregado por produto.
+    // Lógica OR: se QUALQUER anúncio está NORMAL/active → produto = ativo
+    //            se TODOS inativos → produto = inativo
+    //            se nenhum tem status → mantém o atual
+    produtosModificados.forEach(prodId => {
+      const p = produtosErp.find(x => String(x.id) === String(prodId));
+      if (!p || p.status === 'excluido') return;
+      
+      const statusPorAnuncio = p._statusMlPorAnuncio || {};
+      const todosStatus = Object.values(statusPorAnuncio);
+      
+      if (todosStatus.length === 0) {
+        delete p._statusMlPorAnuncio;
+        return;
+      }
+      
+      // Algum ativo (NORMAL/active)? produto fica ativo
+      const temAtivo = todosStatus.some(sm => {
+        const ss = String(sm).toLowerCase();
+        return ss === 'active' || ss === 'normal';
+      });
+      
+      const novoStatusAgregado = temAtivo ? 'ativo' : 'inativo';
+      
+      if (p.status !== novoStatusAgregado) {
+        console.log('[import] produto', p.id, 'status agregado:', p.status, '→', novoStatusAgregado,
+          '(' + todosStatus.length + ' vínculo(s):', todosStatus.join(','), ')');
+        p.status = novoStatusAgregado;
+      }
+      
+      // Atualiza statusMl pro mais "ativo" disponível (compat com filtros antigos)
+      p.statusMl = temAtivo 
+        ? (todosStatus.find(s => /normal|active/i.test(s)) || todosStatus[0])
+        : todosStatus[0];
+      
+      // Limpa map temporário (não persiste no banco)
+      delete p._statusMlPorAnuncio;
     });
     
     // Persiste no localStorage
