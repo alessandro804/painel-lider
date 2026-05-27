@@ -11872,6 +11872,77 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   
+  // v31b.7: Re-cria vínculos a partir de produto.marketplaces.X.lojas.Y.dados.criados.
+  // Útil quando o backend gravou os MLBs mas o painel não criou os vínculos
+  // (ex: bug do escopo lojaIdBanco em v31b.6).
+  // Procura por TODOS os produtos do painel com `marketplaces.mercadolivre.lojas[N].dados.criados`
+  // e cria os vínculos correspondentes. Não duplica se já existe.
+  async function v31_reconciliarVinculosCatalog() {
+    let totalCriados = 0;
+    let produtosAfetados = 0;
+    const norm = s => String(s || '').trim().toLowerCase();
+    
+    for (const p of produtosErp) {
+      if (!p.marketplaces) continue;
+      let mudou = false;
+      
+      for (const mk of Object.keys(p.marketplaces)) {
+        const mkData = p.marketplaces[mk] || {};
+        const lojas = mkData.lojas || {};
+        
+        for (const lojaIdBanco of Object.keys(lojas)) {
+          const loja = lojas[lojaIdBanco] || {};
+          const dados = loja.dados || {};
+          
+          if (!dados.eCatalog) continue;  // só Catalog
+          const criados = Array.isArray(dados.criados) ? dados.criados : [];
+          if (criados.length === 0) continue;
+          
+          // Pra cada item criado, tenta vincular na variação interna
+          for (const c of criados) {
+            if (!c.itemId || !c.cor || !c.tamanho) continue;
+            
+            const varInterna = (p.variacoes || []).find(v => 
+              norm(v.cor) === norm(c.cor) && norm(v.tamanho) === norm(c.tamanho)
+            );
+            if (!varInterna) continue;
+            
+            if (!Array.isArray(varInterna.vinculos)) varInterna.vinculos = [];
+            
+            // Já tem esse vínculo?
+            const jaTem = varInterna.vinculos.some(vi => 
+              String(vi.anuncioId) === String(c.itemId)
+            );
+            if (jaTem) continue;
+            
+            varInterna.vinculos.push({
+              id: gerarId(),
+              anuncioId: c.itemId,
+              marketplace: mk,
+              lojaId: lojaIdBanco,
+              lojaIdBanco: parseInt(lojaIdBanco) || lojaIdBanco,
+              titulo: p.nome,
+              skuExterno: varInterna.sku || '',
+              skuSuspeito: false,
+              criadoPor: 'reconciliacao-catalog',
+              criadoEm: new Date().toISOString(),
+            });
+            totalCriados++;
+            mudou = true;
+          }
+        }
+      }
+      
+      if (mudou) {
+        produtosAfetados++;
+        // Persiste no backend imediatamente
+        await v31_persistirProduto(p);
+      }
+    }
+    
+    return { totalCriados, produtosAfetados };
+  }
+  
   // Resolve lojaIdBanco do vínculo (migração transparente)
   async function v31_resolverLojaIdBanco(vinculo) {
     if (vinculo.lojaIdBanco) return vinculo.lojaIdBanco;
@@ -15932,16 +16003,22 @@ REGRAS CRÍTICAS:
     // Acha a loja do produto e garante que tem idBanco. Se nao conseguir,
     // cai pra rota legada (que usa a 1a loja conectada do marketplace).
     let urlExportar;
+    let lojaIdBanco = null;  // v31b.7: declara no escopo da função pra disponível no try{} depois
     const lojaProduto = lojasErp.find(l => String(l.id) === String(p.lojaId));
     if (lojaProduto) {
-      const lojaIdBanco = await garantirLojaNoBanco(lojaProduto);
+      lojaIdBanco = await garantirLojaNoBanco(lojaProduto);
       if (lojaIdBanco) {
         urlExportar = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + produtoParaExportar.idBanco;
       }
     }
     if (!urlExportar) {
-      // Fallback: rota legada (funciona se houver só 1 loja conectada do mk)
+      // Fallback: rota legada
       urlExportar = BACKEND_URL + '/api/marketplaces/' + mkBackend + '/exportar/' + produtoParaExportar.idBanco;
+      // Tenta deduzir lojaIdBanco pelo marketplace (1ª loja conectada)
+      if (!lojaIdBanco) {
+        const lojaFallback = lojasErp.find(l => l.marketplace === mkBackend && l.idBanco);
+        if (lojaFallback) lojaIdBanco = lojaFallback.idBanco;
+      }
     }
     
     // Chama o backend pra exportar de verdade
