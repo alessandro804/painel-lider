@@ -12406,19 +12406,55 @@ Retorne JSON: {"ID": "valor", ...}`;
     let salvos = 0;
     let erros = 0;
     
-    const produtosTocados = new Set();
-    grupos.forEach(g => {
-      produtosTocados.add(g.base);
-      g.mesclar.forEach(p => produtosTocados.add(p));
-    });
-    produtosTeste.forEach(p => produtosTocados.add(p));
-    
-    for (const p of produtosTocados) {
+    // Pra cada grupo: salva o BASE (PUT com dados mesclados) e DELETE nos duplicados
+    for (const g of grupos) {
+      // Salva o mestre com vínculos mesclados
       try {
-        await salvarProdutoNoBackend(p);
+        await salvarProdutoNoBackend(g.base);
         salvos++;
       } catch(e) {
-        console.error('[v32d.6] erro salvando produto', p.id, e);
+        console.error('[v32d.6] erro salvando mestre', g.base.id, e);
+        erros++;
+      }
+      
+      // DELETE nos duplicados (soft-delete, status='excluido', sem validator)
+      for (const p of g.mesclar) {
+        try {
+          if (p.idBanco) {
+            const resp = await fetch(BACKEND_URL + '/api/produtos/' + p.idBanco, {
+              method: 'DELETE',
+              headers: { 'x-api-token': getApiToken() }
+            });
+            const data = await resp.json();
+            if (data.ok) salvos++;
+            else { console.warn('[v32d.6] DELETE falhou:', p.id, data.erro); erros++; }
+          } else {
+            // Sem idBanco — só local
+            salvos++;
+          }
+        } catch(e) {
+          console.error('[v32d.6] erro deletando', p.id, e);
+          erros++;
+        }
+      }
+    }
+    
+    // DELETE produtos de teste
+    for (const p of produtosTeste) {
+      try {
+        if (p.idBanco) {
+          const resp = await fetch(BACKEND_URL + '/api/produtos/' + p.idBanco, {
+            method: 'DELETE',
+            headers: { 'x-api-token': getApiToken() }
+          });
+          const data = await resp.json();
+          if (data.ok) salvos++;
+          else erros++;
+        } else {
+          salvos++;
+        }
+      } catch(e) {
+        console.error('[v32d.6] erro deletando teste', p.id, e);
         erros++;
       }
     }
