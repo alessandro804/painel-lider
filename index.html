@@ -11830,12 +11830,22 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
     
     if (vinculo.marketplace === 'shopee') {
-      // Shopee usa shop_id.item_id ou só item_id
-      // Se anuncioId tem formato "shopId.itemId" usa direto, senão pula
-      if (id.includes('.')) {
-        return 'https://shopee.com.br/product/' + id.replace('.', '/');
+      // Shopee: precisa shop_id + item_id. shop_id vem do user_id_marketplace da loja
+      // ou pode estar no próprio vínculo.
+      const lojaIdBanco = vinculo.lojaIdBanco;
+      let shopId = vinculo.shopId;
+      
+      // Tenta pegar da loja correspondente em lojasErp
+      if (!shopId && lojaIdBanco) {
+        const loja = lojasErp.find(l => l.idBanco == lojaIdBanco || l.id == lojaIdBanco);
+        if (loja && loja.userIdMarketplace) shopId = loja.userIdMarketplace;
       }
-      return null; // sem shop_id não dá pra montar
+      
+      if (shopId) {
+        return 'https://shopee.com.br/product/' + shopId + '/' + id;
+      }
+      // Fallback: busca por id
+      return 'https://shopee.com.br/search?keyword=' + id;
     }
     
     if (vinculo.marketplace === 'tiktok') {
@@ -16422,24 +16432,52 @@ REGRAS CRÍTICAS:
     
     // Cada marketplace pode ter ajustes no formato
     if (marketplace === 'shopee') {
-      // Payload no formato da Shopee Open Platform (add_item)
+      // v32b: Payload no formato que o adapter Shopee v32 entende.
+      // O adapter cuida do pre-upload de fotos, init_tier_variation,
+      // mapeamento de atributos e logística automática.
+      
+      // Coleta fotos por cor pro tier_variation
+      const cores = (p.cores || []).map(c => ({
+        nome: c.nome,
+        fotos: (c.fotos || []).filter(Boolean),
+      }));
+      
+      // Sanitiza texto removendo emojis (Shopee é igual ML — não aceita)
+      const sanit = (txt) => typeof v31_sanitizarEmojis === 'function' 
+        ? v31_sanitizarEmojis(txt || '') 
+        : String(txt || '');
+      
       return {
         marketplace: 'shopee',
-        category_id: categoriaMkt,
-        item_name: p.nome,
-        item_sku: p.skuPai,
-        description: p.descricao,
-        original_price: p.preco,
-        weight: p.peso,
-        images: p.fotos,
-        variations: base.variacoes,
-        // attributes: a Shopee exige atributos obrigatórios que VARIAM por categoria.
-        // A lista exata vem da API (get_attributes). Guardamos o que o produto tem.
-        attributes: p.atributosShopee || [],
-        // logistics: canais de envio. A lista vem da API (get_logistics).
-        logistics: p.logisticaShopee || [],
-        // controle interno do que ainda falta preencher
-        _pendencias: pendenciasShopee(p, categoriaMkt)
+        // Categoria (escolhida pelo user OU vinda do mapeamento erp→shopee)
+        category_id: p.categoriaShopee || categoriaMkt,
+        // Texto
+        nome: sanit(p.nome).slice(0, 100),
+        descricao: sanit(p.descricao).slice(0, 3000),
+        skuPai: p.skuPai,
+        // Preço (Shopee aceita mas o adapter sobrescreve nas variações)
+        preco: parseFloat(p.preco) || 0,
+        // Logística
+        peso: parseFloat(p.peso) || 0.5,    // kg, default 500g
+        comprimento: parseInt(p.comprimento) || 30,
+        largura: parseInt(p.largura) || 20,
+        altura: parseInt(p.altura) || 10,
+        // Fotos capa (todas as URLs)
+        fotos: (p.fotos || []).filter(Boolean),
+        // Cores com fotos próprias (pro tier_variation images)
+        cores,
+        // Variações (cor + tam + preço + estoque)
+        variacoes: (p.variacoes || []).map(v => ({
+          cor: v.cor || '',
+          tamanho: v.tamanho || '',
+          sku: v.sku || '',
+          estoque: parseInt(v.estoque) || 0,
+          preco: parseFloat(v.preco) || parseFloat(p.preco) || 0,
+        })),
+        // Atributos manuais se o user já configurou
+        atributosShopee: p.atributosShopee || [],
+        // Marca
+        marca: p.marca || '',
       };
     }
     // === MERCADO LIVRE — novo modelo (preço por variação + guia de tamanhos) ===
