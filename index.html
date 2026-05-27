@@ -12114,57 +12114,77 @@ Retorne JSON: {"ID": "valor", ...}`;
     return contagem;
   }
   
-  // v32d.1: Pergunta marketplace + confirma + chama backend pra limpar todos vínculos
+  // v32d.4: Limpar vínculos com proteção contra escolha acidental
+  // Removida a opção "TODOS" (causou perda acidental de 4965 vínculos pelo Alessandro).
+  // Agora pede confirmação digitando NOME do marketplace.
   async function v32d_abrirLimparVinculos() {
-    const mks = [
-      { id: 'shopee',       nome: '🟠 Shopee' },
-      { id: 'mercadolivre', nome: '🟡 Mercado Livre' },
-      { id: 'tiktok',       nome: '⚫ TikTok' },
-      { id: 'shein',        nome: '⬛ Shein' },
-      { id: 'todos',        nome: '☢️ TODOS os marketplaces' },
-    ];
-    
-    const escolha = prompt(
-      '🧹 LIMPAR VÍNCULOS\n\n' +
-      'Isso vai REMOVER TODOS os vínculos do marketplace escolhido em TODOS os produtos.\n' +
-      'Útil quando a importação ficou bagunçada e você quer recomeçar do zero.\n\n' +
-      'Os produtos NÃO são apagados — só os vínculos.\n\n' +
-      'Digite o número da opção:\n\n' +
-      mks.map((m, i) => '  ' + (i + 1) + ') ' + m.nome).join('\n') +
-      '\n  0) Cancelar'
-    );
-    
-    const idx = parseInt(escolha, 10);
-    if (!escolha || idx === 0 || isNaN(idx) || idx < 1 || idx > mks.length) {
-      return;
-    }
-    
-    const mk = mks[idx - 1];
-    
-    // Conta quantos vínculos serão removidos pra confirmar
-    let totalVinc = 0;
+    // Conta vínculos atuais por marketplace (mostra na tela só os que existem)
+    const contVinc = { mercadolivre: 0, shopee: 0, tiktok: 0, shein: 0 };
     produtosErp.forEach(p => {
       (p.variacoes || []).forEach(v => {
         (v.vinculos || []).forEach(vi => {
-          if (mk.id === 'todos' || vi.marketplace === mk.id) totalVinc++;
+          if (contVinc[vi.marketplace] !== undefined) contVinc[vi.marketplace]++;
         });
       });
     });
     
-    if (totalVinc === 0) {
-      showToast('Nenhum vínculo de ' + mk.nome + ' encontrado', true);
+    const mks = [
+      { id: 'shopee',       nome: 'Shopee',         emoji: '🟠', palavra: 'SHOPEE' },
+      { id: 'mercadolivre', nome: 'Mercado Livre',  emoji: '🟡', palavra: 'MERCADO LIVRE' },
+      { id: 'tiktok',       nome: 'TikTok',         emoji: '⚫', palavra: 'TIKTOK' },
+      { id: 'shein',        nome: 'Shein',          emoji: '⬛', palavra: 'SHEIN' },
+    ];
+    
+    const opcoesVisiveis = mks.filter(m => contVinc[m.id] > 0);
+    if (opcoesVisiveis.length === 0) {
+      showToast('Não há vínculos pra limpar', true);
       return;
     }
     
-    const conf = confirm(
-      '⚠ Você está prestes a remover ' + totalVinc + ' vínculo(s) de ' + mk.nome + '.\n\n' +
-      'Isso NÃO afeta os anúncios no marketplace — só remove a "ligação" do nosso painel com eles.\n' +
-      'Depois você pode re-sincronizar pra recriar os vínculos limpos.\n\n' +
-      'Confirmar?'
+    // Lista só os marketplaces que têm vínculos atualmente
+    const escolha = prompt(
+      '🧹 LIMPAR VÍNCULOS\n\n' +
+      'Quais vínculos você quer remover?\n' +
+      '(NÃO afeta os anúncios no marketplace — só remove a ligação no painel)\n\n' +
+      'Digite o número:\n\n' +
+      opcoesVisiveis.map((m, i) => 
+        '  ' + (i + 1) + ') ' + m.emoji + ' ' + m.nome + ' — ' + contVinc[m.id] + ' vínculo(s)'
+      ).join('\n') +
+      '\n  0) Cancelar\n\n' +
+      '⚠ Pra evitar erros, NÃO existe opção "todos". Limpe um marketplace por vez.'
     );
-    if (!conf) return;
     
-    showToast('🧹 Limpando vínculos ' + mk.nome + '…');
+    const idx = parseInt(escolha, 10);
+    if (!escolha || idx === 0 || isNaN(idx) || idx < 1 || idx > opcoesVisiveis.length) {
+      return;
+    }
+    
+    const mk = opcoesVisiveis[idx - 1];
+    const totalVinc = contVinc[mk.id];
+    
+    // Confirmação 1: confirmar visualmente
+    const conf1 = confirm(
+      '⚠ CONFIRMAÇÃO 1/2\n\n' +
+      'Vou remover ' + totalVinc + ' vínculo(s) de ' + mk.emoji + ' ' + mk.nome + '.\n\n' +
+      'Os ANÚNCIOS continuam intactos no marketplace.\n' +
+      'Os PRODUTOS também ficam. Só a ligação é removida.\n\n' +
+      'Continuar?'
+    );
+    if (!conf1) return;
+    
+    // Confirmação 2: digitar o nome do marketplace (evita engano)
+    const digitado = prompt(
+      '⚠ CONFIRMAÇÃO 2/2\n\n' +
+      'Pra confirmar, digite EXATAMENTE o texto abaixo:\n\n' +
+      mk.palavra + '\n\n' +
+      '(você precisa digitar pra ter certeza que é esse marketplace)'
+    );
+    if (!digitado || digitado.trim().toUpperCase() !== mk.palavra) {
+      showToast('Cancelado — texto não bate com ' + mk.palavra, true);
+      return;
+    }
+    
+    showToast('🧹 Limpando vínculos ' + mk.emoji + ' ' + mk.nome + '…');
     
     try {
       const resp = await fetch(BACKEND_URL + '/api/produtos/limpar-vinculos', {
@@ -12182,17 +12202,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       produtosErp.forEach(p => {
         (p.variacoes || []).forEach(v => {
           if (!Array.isArray(v.vinculos)) return;
-          v.vinculos = v.vinculos.filter(vi => {
-            return mk.id === 'todos' ? false : vi.marketplace !== mk.id;
-          });
+          v.vinculos = v.vinculos.filter(vi => vi.marketplace !== mk.id);
         });
-        // Limpa também produto.marketplaces[mk]
-        if (p.marketplaces) {
-          if (mk.id === 'todos') {
-            p.marketplaces = {};
-          } else if (p.marketplaces[mk.id]) {
-            delete p.marketplaces[mk.id];
-          }
+        if (p.marketplaces && p.marketplaces[mk.id]) {
+          delete p.marketplaces[mk.id];
         }
       });
       saveProdutos();
