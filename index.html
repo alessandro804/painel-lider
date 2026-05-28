@@ -5063,6 +5063,17 @@
     
     <div class="modal-v2-body">
       
+      <!-- v32f.7: Botão de preenchimento total no TOPO (atalho principal) -->
+      <div style="grid-column:1/-1;margin-bottom:4px">
+        <button type="button" class="modal-v2-btn modal-v2-btn-primary"
+          style="width:100%;background:linear-gradient(135deg,#7c3aed,#a855f7);font-size:14px;padding:12px;font-weight:700"
+          onclick="preencherAtributosAutomatico()"
+          title="Preenche com IA tudo que estiver vazio: campos, categoria Shopee, atributos, SKUs e EANs das variações. Não sobrescreve o que já está preenchido.">
+          ✨ Preencher tudo automaticamente (IA)
+        </button>
+        <div style="font-size:10px;color:#6b7280;text-align:center;margin-top:3px">Completa campos, categoria, atributos, SKUs e EANs vazios. Gerar variações é um botão separado.</div>
+      </div>
+      
       <!-- ===== COLUNA ESQUERDA ===== -->
       <div class="modal-v2-section">
         
@@ -16909,6 +16920,50 @@ REGRAS CRÍTICAS:
     showToast('✓ ' + _variacoesProduto.length + ' EAN(s) gerado(s). Uso INTERNO apenas.');
   }
   
+  // v32f.7: Versões SILENCIOSAS — preenchem só os VAZIOS, sem confirm nem toast.
+  // Usadas pelo "Preencher tudo" pra completar SKU/EAN faltantes num clique só.
+  // Retornam quantos foram preenchidos.
+  function gerarSkusVariacoesSomenteVazios() {
+    if (!_variacoesProduto.length) return 0;
+    const skuPai = (document.getElementById('prodSku')||{}).value.trim();
+    if (!skuPai) return 0;
+    function abrevCor(cor) {
+      if (!cor) return '';
+      return String(cor).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,3) || 'COR';
+    }
+    const usados = new Set(_variacoesProduto.map(v => v.sku && v.sku.trim()).filter(Boolean));
+    let n = 0;
+    _variacoesProduto.forEach(v => {
+      if (v.sku && v.sku.trim()) return; // já tem
+      const cor = abrevCor(v.cor);
+      const tam = String(v.tamanho || '').trim().replace(/[^\w.\-]/g, '') || 'UN';
+      let novo = [skuPai, cor, tam].filter(Boolean).join('-');
+      if (usados.has(novo)) { let k = 2; while (usados.has(novo + '-' + k)) k++; novo = novo + '-' + k; }
+      usados.add(novo);
+      v.sku = novo;
+      n++;
+    });
+    return n;
+  }
+  
+  function gerarEansVariacoesSomenteVazios() {
+    if (!_variacoesProduto.length) return 0;
+    const skuPai = (document.getElementById('prodSku')||{}).value.trim() || 'X';
+    const usados = new Set(_variacoesProduto.map(v => v.ean && v.ean.trim()).filter(Boolean));
+    let n = 0;
+    _variacoesProduto.forEach((v, i) => {
+      if (v.ean && v.ean.trim()) return; // já tem
+      const seed = [skuPai, v.sku || '', v.cor || '', v.tamanho || '', i].join('|');
+      let novo = gerarEAN13Brasil(seed);
+      let t = 0;
+      while (usados.has(novo) && t < 50) { t++; novo = gerarEAN13Brasil(seed + '|retry' + t); }
+      usados.add(novo);
+      v.ean = novo;
+      n++;
+    });
+    return n;
+  }
+  
   // ============================================================
   // PREENCHIMENTO COMPLETO COM IA (Claude)
   // Manda TODO o contexto pra IA e pede preenchimento de TODOS os campos.
@@ -17012,6 +17067,15 @@ REGRAS CRÍTICAS:
       } else if (/tamanho do pacote|package size|tamanho.*pacote/.test(nomeNorm) && (!a.valores || a.valores.length === 0)) {
         produto.atributosShopee[a.attribute_id] = String(pesoProduto).replace('.', ',');
         nDefaults++;
+      } else if (/^condi(ç|c)(ã|a)o$|condition/.test(nomeNorm)) {
+        // Condição: sempre Novo. Se tem lista, casa com a opção "Novo"; senão texto.
+        if (Array.isArray(a.valores) && a.valores.length > 0) {
+          const novo = a.valores.find(v => /novo|new/i.test(v.nome));
+          if (novo) { produto.atributosShopee[a.attribute_id] = novo.nome; nDefaults++; }
+        } else {
+          produto.atributosShopee[a.attribute_id] = 'Novo';
+          nDefaults++;
+        }
       }
     });
     
@@ -17287,6 +17351,28 @@ REGRAS CRÍTICAS:
         await renderAtributosDinamicos(prodAlvo);
       }
       
+      // v32f.6: Peso + dimensões Shopee por tipo de calçado (se vazios).
+      // Bases: tênis 0.7kg 32x25x15 | sandália/chinelo 0.4kg 30x20x10 | bota 0.8kg 32x30x15
+      if (_lojaShopee) {
+        const txtTipo = (nome + ' ' + categoria + ' ' + descricao).toLowerCase()
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        let base = null;
+        if (/\bbota|botina|coturno/.test(txtTipo))                          base = { peso: 0.8, c: 32, l: 30, a: 15 };
+        else if (/\bsandalia|chinelo|rasteir|slide|tamanco|papete/.test(txtTipo)) base = { peso: 0.4, c: 30, l: 20, a: 10 };
+        else if (/\btenis|sapatenis|sneaker/.test(txtTipo))                 base = { peso: 0.7, c: 32, l: 25, a: 15 };
+        else base = { peso: 0.7, c: 32, l: 25, a: 15 }; // default tênis
+        
+        const setSeVazioNum = (id, val) => {
+          const el = document.getElementById(id);
+          if (el && !el.value) { el.value = val; return true; }
+          return false;
+        };
+        if (setSeVazioNum('prodShopeePeso', base.peso)) preenchidos++;
+        if (setSeVazioNum('prodShopeeComprimento', base.c)) preenchidos++;
+        if (setSeVazioNum('prodShopeeLargura', base.l)) preenchidos++;
+        if (setSeVazioNum('prodShopeeAltura', base.a)) preenchidos++;
+      }
+      
       // v32f.1: Atributos Shopee — se loja Shopee conectada e produto tem categoria,
       // pede pra IA preencher os atributos (Material, Gênero, etc) com base nos
       // valores possíveis da categoria. Roda DEPOIS da categoria já estar definida.
@@ -17300,6 +17386,20 @@ REGRAS CRÍTICAS:
             console.warn('[preencher] atributos Shopee IA falhou:', e.message);
           }
         }
+      }
+      
+      // v32f.7: Gera SKUs e EANs das variações que ainda não têm (silencioso).
+      // Assim o "Preencher tudo" completa também esses campos num clique só.
+      try {
+        const nSku = gerarSkusVariacoesSomenteVazios();
+        const nEan = gerarEansVariacoesSomenteVazios();
+        if (nSku > 0 || nEan > 0) {
+          renderVariacoesProduto();
+          preenchidos += nSku + nEan;
+          console.log('[preencher] gerados ' + nSku + ' SKU(s) e ' + nEan + ' EAN(s)');
+        }
+      } catch(e) {
+        console.warn('[preencher] geração SKU/EAN falhou:', e.message);
       }
       
       if (preenchidos > 0) {
@@ -23916,7 +24016,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'chunk-3.4 + diag';
+  const _DIAG_VERSAO_PAINEL = 'v32f.7-preencher-tudo-sku-ean';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
