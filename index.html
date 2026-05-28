@@ -7789,8 +7789,33 @@
     localStorage.setItem('lider_demandas_v1', JSON.stringify(demandas));
   }
   function saveDemandas() {
-    localStorage.setItem('lider_demandas_v1', JSON.stringify(demandas));
-    LiderSync.schedulePush('demandas', () => LiderSync.pushTable('demandas', demandas, LiderSync._toDbDemanda.bind(LiderSync)));
+    // v32g.5: Proteção contra QuotaExceededError. Antes o salvar morria
+    // silenciosamente quando alguma demanda tinha base64 grande no fotosPorCor.
+    // Agora: 1) sanitiza fotosPorCor pra só URLs strings, 2) se ainda estourar,
+    // mostra erro ao usuário em vez de falhar mudo.
+    try {
+      // Sanitização defensiva (caso algum lugar tenha guardado base64 sem querer)
+      demandas.forEach(d => {
+        if (d.fotosPorCor && typeof d.fotosPorCor === 'object') {
+          Object.keys(d.fotosPorCor).forEach(cor => {
+            d.fotosPorCor[cor] = (d.fotosPorCor[cor] || [])
+              .filter(f => typeof f === 'string' && f.startsWith('http'));
+          });
+        }
+      });
+      localStorage.setItem('lider_demandas_v1', JSON.stringify(demandas));
+      LiderSync.schedulePush('demandas', () => LiderSync.pushTable('demandas', demandas, LiderSync._toDbDemanda.bind(LiderSync)));
+    } catch(e) {
+      console.error('[saveDemandas] FALHOU:', e.message);
+      if (e.name === 'QuotaExceededError' || /quota/i.test(e.message)) {
+        if (typeof showToast === 'function') {
+          showToast('⚠ Storage cheio — alguma foto não foi convertida. Tente reabrir a demanda.', true);
+        }
+      } else {
+        if (typeof showToast === 'function') showToast('Erro ao salvar: ' + e.message, true);
+      }
+      throw e;  // re-lança pra quem chamou tratar (não engole silenciosamente)
+    }
   }
 
   // ============ CONFIG GERAIS — Vínculos + Fluxos ============
@@ -8406,10 +8431,13 @@
       const coresInput = (d.coresInput || '').split(',').map(s => s.trim()).filter(Boolean);
       const cores = [];
       coresInput.forEach(nomeCor => {
+        // v32g.5: aceita só URLs prontas (strings que começam com http);
+        // ignora objetos placeholder de upload em andamento.
+        const fotosOk = (fotosPorCor[nomeCor] || []).filter(f => typeof f === 'string' && f.startsWith('http'));
         cores.push({
           id: _slugCor(nomeCor),
           nome: nomeCor,
-          fotos: [...(fotosPorCor[nomeCor] || [])],
+          fotos: fotosOk,
         });
       });
       // Se não há cores mas há fotos globais, cria 1 cor Padrão
@@ -8487,15 +8515,22 @@
     list.innerHTML = arr.map(cor => {
       const fotos = window._demandaFotosPorCor[cor] || [];
       const corEsc = cor.replace(/'/g, "\\'");
-      const thumbs = fotos.map((url, i) => 
-        '<div style="position:relative;display:inline-block">' +
-          '<img src="' + url + '" style="width:50px;height:50px;object-fit:cover;border-radius:6px;border:1px solid #ddd">' +
-          '<button onclick="removerFotoCorDemanda(\'' + corEsc + '\',' + i + ')" style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:white;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:1">×</button>' +
-        '</div>'
-      ).join('');
+      // v32g.5: fotos podem ser string (URL final) ou objeto { _status: 'subindo', _dataUrl }
+      const thumbs = fotos.map((f, i) => {
+        const subindo = typeof f === 'object' && f && f._status === 'subindo';
+        const src = typeof f === 'string' ? f : (f && f._dataUrl) || '';
+        const overlay = subindo ? '<div style="position:absolute;inset:0;background:rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:9px;color:#7c3aed;font-weight:700">↑↑↑</div>' : '';
+        return '<div style="position:relative;display:inline-block">' +
+          (src ? '<img src="' + src + '" style="width:50px;height:50px;object-fit:cover;border-radius:6px;border:1px solid #ddd">' : '<div style="width:50px;height:50px;background:#f3f4f6;border-radius:6px"></div>') +
+          overlay +
+          (subindo ? '' : '<button onclick="removerFotoCorDemanda(\'' + corEsc + '\',' + i + ')" style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:white;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:1">×</button>') +
+        '</div>';
+      }).join('');
       const inputId = 'demUpCor_' + _slugCor(cor);
+      const numFotos = fotos.filter(f => typeof f === 'string').length;
+      const numSubindo = fotos.length - numFotos;
       return '<div style="margin-bottom:10px;padding:8px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px">' +
-        '<div style="font-size:12px;font-weight:600;color:#7c3aed;margin-bottom:6px">🎨 ' + escapeHtml(cor) + ' <span style="font-weight:400;color:#999">(' + fotos.length + ' foto' + (fotos.length !== 1 ? 's' : '') + ')</span></div>' +
+        '<div style="font-size:12px;font-weight:600;color:#7c3aed;margin-bottom:6px">🎨 ' + escapeHtml(cor) + ' <span style="font-weight:400;color:#999">(' + numFotos + ' foto' + (numFotos !== 1 ? 's' : '') + (numSubindo > 0 ? ' · ' + numSubindo + ' subindo' : '') + ')</span></div>' +
         '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' +
           thumbs +
           '<button onclick="document.getElementById(\'' + inputId + '\').click()" style="width:50px;height:50px;border:2px dashed #c4b5fd;background:white;border-radius:6px;font-size:20px;color:#7c3aed;cursor:pointer">+</button>' +
@@ -8508,7 +8543,17 @@
   async function adicionarFotoCorDemanda(cor, files) {
     if (!files || !files.length) return;
     if (!window._demandaFotosPorCor[cor]) window._demandaFotosPorCor[cor] = [];
+    
+    // v32g.5: Sobe IMEDIATAMENTE pro Storage e guarda só a URL.
+    // Antes guardávamos dataUrl direto, e ao salvar a demanda o localStorage
+    // estourava (QuotaExceededError). Com URL fica leve e o backend Shopee
+    // consegue baixar (faz fetch das URLs no upload de capa).
     for (const file of files) {
+      // Placeholder "subindo" com dataUrl pra preview imediato
+      const placeholder = { _status: 'subindo', _dataUrl: null };
+      window._demandaFotosPorCor[cor].push(placeholder);
+      renderUploadFotosPorCor();
+      
       try {
         const dataUrl = await new Promise((res, rej) => {
           const r = new FileReader();
@@ -8516,10 +8561,31 @@
           r.onerror = rej;
           r.readAsDataURL(file);
         });
-        window._demandaFotosPorCor[cor].push(dataUrl);
-      } catch(e) { console.warn('[demanda] erro foto cor:', e); }
+        placeholder._dataUrl = dataUrl;
+        renderUploadFotosPorCor();
+        
+        const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify({ dataUrl })
+        });
+        const data = await resp.json();
+        if (data.ok && data.url) {
+          // Substitui o objeto placeholder pela URL final (string).
+          const i = window._demandaFotosPorCor[cor].indexOf(placeholder);
+          if (i >= 0) window._demandaFotosPorCor[cor][i] = data.url;
+        } else {
+          throw new Error(data.erro || 'upload falhou');
+        }
+      } catch(e) {
+        console.warn('[demanda] erro foto cor:', e);
+        // Remove o placeholder em caso de erro
+        const i = window._demandaFotosPorCor[cor].indexOf(placeholder);
+        if (i >= 0) window._demandaFotosPorCor[cor].splice(i, 1);
+        showToast('Erro ao subir foto: ' + e.message, true);
+      }
+      renderUploadFotosPorCor();
     }
-    renderUploadFotosPorCor();
   }
   
   function removerFotoCorDemanda(cor, idx) {
@@ -24393,7 +24459,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32g.4-demanda-fotos-por-cor';
+  const _DIAG_VERSAO_PAINEL = 'v32g.5-fotos-upload-imediato';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29783,7 +29849,11 @@ ${JSON.stringify(metricas, null, 2)}`
         d.skuPai = skuPaiDemanda;
         d.coresInput = coresInput;
         d.tamanhosInput = tamanhosInput;
-        d.fotosPorCor = JSON.parse(JSON.stringify(window._demandaFotosPorCor || {}));  // v32g.4
+        // v32g.5: salva só URLs (strings http), nunca placeholders ou base64
+        d.fotosPorCor = {};
+        Object.entries(window._demandaFotosPorCor || {}).forEach(([cor, fotos]) => {
+          d.fotosPorCor[cor] = (fotos || []).filter(f => typeof f === 'string' && f.startsWith('http'));
+        });
         d.precoBase = precoBase;
         d.estoqueDefault = estoqueDefault;
         // SEMPRE atualiza imagens da sessão (corrige bug de "imagem antiga voltava")
@@ -29811,7 +29881,14 @@ ${JSON.stringify(metricas, null, 2)}`
         skuPai: skuPaiDemanda,
         coresInput,
         tamanhosInput,
-        fotosPorCor: JSON.parse(JSON.stringify(window._demandaFotosPorCor || {})),  // v32g.4
+        // v32g.5: só URLs (strings http), nunca placeholders ou base64
+        fotosPorCor: (function() {
+          const out = {};
+          Object.entries(window._demandaFotosPorCor || {}).forEach(([cor, fotos]) => {
+            out[cor] = (fotos || []).filter(f => typeof f === 'string' && f.startsWith('http'));
+          });
+          return out;
+        })(),
         precoBase,
         estoqueDefault,
         // Imagens da sessão (já no Storage)
