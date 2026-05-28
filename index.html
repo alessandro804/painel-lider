@@ -4730,7 +4730,14 @@
       
       <div class="form-group">
         <label class="form-label">Cores (separadas por vírgula)</label>
-        <input type="text" class="form-input" id="demandaCoresInput" placeholder="Ex: Preto, Branco, Azul Marinho">
+        <input type="text" class="form-input" id="demandaCoresInput" placeholder="Ex: Preto, Branco, Azul Marinho" oninput="renderUploadFotosPorCor()">
+      </div>
+      
+      <!-- v32g.4: Upload de fotos POR COR (igual criação manual de produto) -->
+      <div class="form-group" id="demandaFotosPorCorGrupo" style="display:none">
+        <label class="form-label">📷 Fotos por cor</label>
+        <div class="settings-help" style="font-size:11px;margin-bottom:8px">Adicione as fotos de cada cor. A 1ª foto de cada cor vira a capa da variação na Shopee.</div>
+        <div id="demandaFotosPorCorList"></div>
       </div>
       
       <div class="form-group">
@@ -8392,6 +8399,41 @@
   function _produtoDaDemanda(d) {
     if (!d._produtoTemp) {
       const precoOk = parseFloat(d.precoBase) || 0.01;
+      
+      // v32g.4: Monta produto.cores[] a partir das fotos por cor da demanda
+      // (espelha a criação manual). Cada cor: { id, nome, fotos: [...] }.
+      const fotosPorCor = d.fotosPorCor || window._demandaFotosPorCor || {};
+      const coresInput = (d.coresInput || '').split(',').map(s => s.trim()).filter(Boolean);
+      const cores = [];
+      coresInput.forEach(nomeCor => {
+        cores.push({
+          id: _slugCor(nomeCor),
+          nome: nomeCor,
+          fotos: [...(fotosPorCor[nomeCor] || [])],
+        });
+      });
+      // Se não há cores mas há fotos globais, cria 1 cor Padrão
+      const fotosGlobais = (d.imagens || []).map(im => im.url || im.dataUrl || im);
+      if (cores.length === 0 && fotosGlobais.length > 0) {
+        cores.push({ id: 'cor_padrao', nome: 'Padrão', fotos: [...fotosGlobais] });
+      }
+      
+      // Variações com corId ligado à cor correspondente
+      const variacoes = gerarVariacoesDaDemanda(d);
+      variacoes.forEach(v => {
+        if (v.cor) {
+          const corObj = cores.find(c => c.nome.toLowerCase().trim() === String(v.cor).toLowerCase().trim());
+          if (corObj) v.corId = corObj.id;
+        } else if (cores.length === 1) {
+          v.corId = cores[0].id;
+        }
+      });
+      
+      // fotos globais do produto = todas as fotos da primeira cor (capa) + fallback
+      const fotosCapaProduto = cores.length > 0 && cores[0].fotos.length > 0
+        ? [...cores[0].fotos]
+        : fotosGlobais;
+      
       d._produtoTemp = {
         id: 'tmp-' + d.id,
         nome: d.produto || '',
@@ -8404,16 +8446,87 @@
         categoria: '',
         modeloPreco: 'variacao',
         status: 'rascunho',
-        fotos: (d.imagens || []).map(im => im.url || im.dataUrl || im),
-        variacoes: gerarVariacoesDaDemanda(d),
+        fotos: fotosCapaProduto,
+        cores: cores,            // v32g.4: estrutura por cor (igual criação manual)
+        variacoes: variacoes,
         atributosMl: {},
+        atributosShopee: {},
         categoryIdMl: null,
+        categoryIdShopee: null,
         lojaId: d.lojaDestinoId || (d.contas && d.contas[0]),
         marketplaces: {},
         guiaTamanhos: d.guiaTamanhos || null,
       };
     }
     return d._produtoTemp;
+  }
+  
+  // ============================================================
+  // v32g.4: FOTOS POR COR NA DEMANDA (espelha criação manual)
+  // ============================================================
+  // Guarda as fotos por cor da sessão de demanda: { "Preto": [url,...], ... }
+  window._demandaFotosPorCor = window._demandaFotosPorCor || {};
+  
+  // Renderiza uma zona de upload pra cada cor digitada
+  function renderUploadFotosPorCor() {
+    const grupo = document.getElementById('demandaFotosPorCorGrupo');
+    const list = document.getElementById('demandaFotosPorCorList');
+    if (!grupo || !list) return;
+    
+    const cores = (document.getElementById('demandaCoresInput') || {}).value || '';
+    const arr = cores.split(',').map(s => s.trim()).filter(Boolean);
+    
+    if (arr.length === 0) { grupo.style.display = 'none'; return; }
+    grupo.style.display = 'block';
+    
+    // Limpa fotos de cores que não existem mais
+    Object.keys(window._demandaFotosPorCor).forEach(c => {
+      if (!arr.includes(c)) delete window._demandaFotosPorCor[c];
+    });
+    
+    list.innerHTML = arr.map(cor => {
+      const fotos = window._demandaFotosPorCor[cor] || [];
+      const corEsc = cor.replace(/'/g, "\\'");
+      const thumbs = fotos.map((url, i) => 
+        '<div style="position:relative;display:inline-block">' +
+          '<img src="' + url + '" style="width:50px;height:50px;object-fit:cover;border-radius:6px;border:1px solid #ddd">' +
+          '<button onclick="removerFotoCorDemanda(\'' + corEsc + '\',' + i + ')" style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:white;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:1">×</button>' +
+        '</div>'
+      ).join('');
+      const inputId = 'demUpCor_' + _slugCor(cor);
+      return '<div style="margin-bottom:10px;padding:8px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px">' +
+        '<div style="font-size:12px;font-weight:600;color:#7c3aed;margin-bottom:6px">🎨 ' + escapeHtml(cor) + ' <span style="font-weight:400;color:#999">(' + fotos.length + ' foto' + (fotos.length !== 1 ? 's' : '') + ')</span></div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' +
+          thumbs +
+          '<button onclick="document.getElementById(\'' + inputId + '\').click()" style="width:50px;height:50px;border:2px dashed #c4b5fd;background:white;border-radius:6px;font-size:20px;color:#7c3aed;cursor:pointer">+</button>' +
+          '<input type="file" id="' + inputId + '" accept="image/*" multiple style="display:none" onchange="adicionarFotoCorDemanda(\'' + corEsc + '\', this.files)">' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+  
+  async function adicionarFotoCorDemanda(cor, files) {
+    if (!files || !files.length) return;
+    if (!window._demandaFotosPorCor[cor]) window._demandaFotosPorCor[cor] = [];
+    for (const file of files) {
+      try {
+        const dataUrl = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = rej;
+          r.readAsDataURL(file);
+        });
+        window._demandaFotosPorCor[cor].push(dataUrl);
+      } catch(e) { console.warn('[demanda] erro foto cor:', e); }
+    }
+    renderUploadFotosPorCor();
+  }
+  
+  function removerFotoCorDemanda(cor, idx) {
+    if (window._demandaFotosPorCor[cor]) {
+      window._demandaFotosPorCor[cor].splice(idx, 1);
+      renderUploadFotosPorCor();
+    }
   }
   
   // Combina cores x tamanhos da demanda em variações
@@ -22769,12 +22882,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (btnExec) btnExec.style.display = ehAnuncioNovo ? 'block' : 'none';
     
     if (ehAnuncioNovo) {
-      // Popula select de lojas destino
-      const sel = document.getElementById('demandaLojaDestino');
-      if (sel) {
-        sel.innerHTML = lojasErp.map(l => 
-          `<option value="${l.id}">${escapeHtml(l.nome)} [${l.marketplace}]</option>`
-        ).join('') || '<option value="">⚠ Nenhuma loja conectada</option>';
+      // v32g.3: sincroniza a loja destino com as contas marcadas em cima
+      // (esconde o campo se só 1 conta, evitando pergunta redundante).
+      if (typeof sincronizarLojaDestinoDemanda === 'function') {
+        sincronizarLojaDestinoDemanda();
+      } else {
+        const sel = document.getElementById('demandaLojaDestino');
+        if (sel) {
+          sel.innerHTML = lojasErp.map(l => 
+            `<option value="${l.id}">${escapeHtml(l.nome)} [${l.marketplace}]</option>`
+          ).join('') || '<option value="">⚠ Nenhuma loja conectada</option>';
+        }
       }
     }
   }
@@ -24275,7 +24393,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32g.1-demanda-shopee';
+  const _DIAG_VERSAO_PAINEL = 'v32g.4-demanda-fotos-por-cor';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29442,6 +29560,7 @@ ${JSON.stringify(metricas, null, 2)}`
     setDemandaPrio('media');
     
     _demandaContasSel = [];
+    window._demandaFotosPorCor = {};  // v32g.4: zera fotos por cor
     
     // Popula dropdown de fluxos disponíveis
     popularDropdownFluxos();
@@ -29487,6 +29606,15 @@ ${JSON.stringify(metricas, null, 2)}`
         setDemandaPrio(d.prioridade || 'media');
         document.getElementById('demandaDeleteBtn').style.display = 'block';
         renderChecklistDemanda(d.id);
+        
+        // v32g.4: restaura campos do fluxo + fotos por cor
+        const cIn = document.getElementById('demandaCoresInput'); if (cIn) cIn.value = d.coresInput || '';
+        const tIn = document.getElementById('demandaTamanhosInput'); if (tIn) tIn.value = d.tamanhosInput || '';
+        const skIn = document.getElementById('demandaSkuPai'); if (skIn) skIn.value = d.skuPai || '';
+        const pbIn = document.getElementById('demandaPrecoBase'); if (pbIn) pbIn.value = d.precoBase || '';
+        const edIn = document.getElementById('demandaEstoqueDefault'); if (edIn) edIn.value = d.estoqueDefault || '';
+        window._demandaFotosPorCor = d.fotosPorCor ? JSON.parse(JSON.stringify(d.fotosPorCor)) : {};
+        renderUploadFotosPorCor();
       }
     } else {
       document.getElementById('demandaModalTitle').textContent = '+ Nova Demanda';
@@ -29514,23 +29642,62 @@ ${JSON.stringify(metricas, null, 2)}`
       return;
     }
     
+    // v32g.3: badge de marketplace + comparação de id robusta (string)
+    const mktBadge = (mk) => {
+      const nome = (typeof MKT_NOMES !== 'undefined' && MKT_NOMES[mk]) || mk || '?';
+      const cor = mk === 'shopee' ? '#ee4d2d' : (mk === 'mercadolivre' ? '#ffe600' : '#999');
+      const txtCor = mk === 'mercadolivre' ? '#333' : '#fff';
+      return '<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;background:' + cor + ';color:' + txtCor + ';margin-left:6px">' + escapeHtml(nome) + '</span>';
+    };
+    
     cont.innerHTML = lista.map(l => {
-      const sel = _demandaContasSel.includes(l.id);
+      const sel = _demandaContasSel.map(String).includes(String(l.id));
       return `
         <label class="demanda-conta-item ${sel ? 'sel' : ''}">
           <input type="checkbox" ${sel ? 'checked' : ''} onchange="toggleDemandaConta('${l.id}')">
           <span>${escapeHtml(l.nome)}</span>
+          ${mktBadge(l.marketplace)}
         </label>
       `;
     }).join('');
   }
   
   function toggleDemandaConta(id) {
-    const i = _demandaContasSel.indexOf(id);
+    // v32g.3: comparação por string (id pode vir número ou string)
+    const i = _demandaContasSel.map(String).indexOf(String(id));
     if (i >= 0) _demandaContasSel.splice(i, 1);
     else _demandaContasSel.push(id);
     renderDemandaContas();
     atualizarProdutosDaDemanda();
+    // v32g.3: sincroniza a "Loja destino" automaticamente com a seleção
+    if (typeof sincronizarLojaDestinoDemanda === 'function') sincronizarLojaDestinoDemanda();
+  }
+  
+  // v32g.3: A "Loja destino" do fluxo é redundante quando o usuário já escolheu
+  // contas em cima. Esta função preenche/esconde o campo automaticamente:
+  //  - 1 conta marcada → seleciona ela e esconde o campo
+  //  - várias → mostra o select limitado às contas marcadas
+  //  - nenhuma → mostra todas (fallback)
+  function sincronizarLojaDestinoDemanda() {
+    const sel = document.getElementById('demandaLojaDestino');
+    if (!sel) return;
+    const wrap = sel.closest('.form-group') || sel.parentElement;
+    const marcadas = _demandaContasSel.map(String);
+    const todas = lojasErp.filter(l => l.contaConectada);
+    const fonte = marcadas.length > 0 ? todas.filter(l => marcadas.includes(String(l.id))) : todas;
+    
+    sel.innerHTML = fonte.map(l => {
+      const mk = (typeof MKT_NOMES !== 'undefined' && MKT_NOMES[l.marketplace]) || l.marketplace || '';
+      return '<option value="' + l.id + '">' + escapeHtml(l.nome) + ' — ' + escapeHtml(mk) + '</option>';
+    }).join('');
+    
+    // Se só uma conta marcada, já seleciona e esconde (redundante)
+    if (marcadas.length === 1) {
+      sel.value = marcadas[0];
+      if (wrap) wrap.style.display = 'none';
+    } else {
+      if (wrap) wrap.style.display = '';
+    }
   }
   
   // Atualiza o seletor de produtos conforme as contas escolhidas
@@ -29616,6 +29783,7 @@ ${JSON.stringify(metricas, null, 2)}`
         d.skuPai = skuPaiDemanda;
         d.coresInput = coresInput;
         d.tamanhosInput = tamanhosInput;
+        d.fotosPorCor = JSON.parse(JSON.stringify(window._demandaFotosPorCor || {}));  // v32g.4
         d.precoBase = precoBase;
         d.estoqueDefault = estoqueDefault;
         // SEMPRE atualiza imagens da sessão (corrige bug de "imagem antiga voltava")
@@ -29643,6 +29811,7 @@ ${JSON.stringify(metricas, null, 2)}`
         skuPai: skuPaiDemanda,
         coresInput,
         tamanhosInput,
+        fotosPorCor: JSON.parse(JSON.stringify(window._demandaFotosPorCor || {})),  // v32g.4
         precoBase,
         estoqueDefault,
         // Imagens da sessão (já no Storage)
