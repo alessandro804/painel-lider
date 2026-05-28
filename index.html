@@ -15919,6 +15919,8 @@ REGRAS CRÍTICAS:
         
         // Se tem lista pré-definida, faz select
         if (Array.isArray(a.valores) && a.valores.length > 0) {
+          const normSel = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+          const valAtualNorm = normSel(valAtual);
           return `
             <div style="margin-bottom:8px">
               <label style="font-size:11px;color:#9a3412;font-weight:600">${escapeHtml(nome)} ${obrigatorio}</label>
@@ -15926,7 +15928,7 @@ REGRAS CRÍTICAS:
                 style="width:100%;padding:6px;border:1px solid #fed7aa;border-radius:6px;font-size:12px">
                 <option value="">— escolher —</option>
                 ${a.valores.slice(0,200).map(v => 
-                  `<option value="${escapeHtml(v.nome)}" ${valAtual === v.nome ? 'selected' : ''}>${escapeHtml(v.nome)}</option>`
+                  `<option value="${escapeHtml(v.nome)}" ${normSel(v.nome) === valAtualNorm && valAtual ? 'selected' : ''}>${escapeHtml(v.nome.trim())}</option>`
                 ).join('')}
               </select>
             </div>
@@ -17020,6 +17022,13 @@ REGRAS CRÍTICAS:
     catch(e) { console.warn('[atrShopee] IA não retornou JSON:', raw.slice(0,100)); return 0; }
     
     // Aplica: casa o nome do atributo respondido com o attribute_id
+    // v32f.2: comparação tolerante — a Shopee às vezes tem valores com espaço
+    // extra (ex: " Sandália") ou variação de acento. Normaliza antes de comparar.
+    const normalizar = s => String(s || '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    
     let n = 0;
     for (const a of pendentes) {
       const respValor = dadosSp[a.nome] || dadosSp[a.nomeOriginal];
@@ -17027,9 +17036,15 @@ REGRAS CRÍTICAS:
       
       // Se tem lista, valida que o valor existe (evita IA inventar)
       if (Array.isArray(a.valores) && a.valores.length > 0) {
-        const existe = a.valores.find(v => v.nome.toLowerCase() === String(respValor).toLowerCase());
+        const alvo = normalizar(respValor);
+        const existe = a.valores.find(v => normalizar(v.nome) === alvo)
+          // fallback: match parcial (um contém o outro)
+          || a.valores.find(v => {
+            const vn = normalizar(v.nome);
+            return vn && alvo && (vn.includes(alvo) || alvo.includes(vn));
+          });
         if (!existe) { console.warn('[atrShopee] valor inválido pra', a.nome, ':', respValor); continue; }
-        produto.atributosShopee[a.attribute_id] = existe.nome;
+        produto.atributosShopee[a.attribute_id] = existe.nome;  // usa o nome EXATO da Shopee (com espaço se tiver)
       } else {
         produto.atributosShopee[a.attribute_id] = String(respValor);
       }
