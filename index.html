@@ -9015,7 +9015,13 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
         );
         if (mapaInv) p.categoria = mapaInv.categoriaInterna;
       }
-      return { _msg: 'via predictor: ' + p.categoryIdMl + ' (' + (data.sugestoes[0].nome||'?') + ')' };
+      // v32g.8: garante categoria interna vinculada (reusa similar ou cria nova)
+      let msgCatInt = '';
+      try {
+        const r = await garantirCategoriaInterna(p, 'mercadolivre', p.categoryIdMl, partesTitulo);
+        if (r && r._msg) msgCatInt = ' · ' + r._msg;
+      } catch(e) { console.warn('[acaoCategoriaML] garantirCategoriaInterna:', e.message); }
+      return { _msg: 'via predictor: ' + p.categoryIdMl + ' (' + (data.sugestoes[0].nome||'?') + ')' + msgCatInt };
     }
     throw new Error('Predictor ML não retornou sugestão pra "' + partesTitulo.slice(0,40) + '..."');
   }
@@ -9023,6 +9029,120 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
   // v32g.1: Define categoria + atributos Shopee pro produto da demanda (headless).
   // Análoga à acaoCategoriaML, mas pra Shopee. Reusa a infra de categorias e
   // atributos Shopee. Preenche p.categoryIdShopee e p.atributosShopee.
+  // v32g.8: Garante que o produto tenha categoria interna vinculada ao marketplace.
+  // Fluxo: 1) tenta achar por nome exato → 2) tenta achar pelo categoryId já vinculado
+  // → 3) pergunta pra IA qual categoria EXISTENTE é a mais similar → 4) se nada bate,
+  // CRIA categoria nova e vincula o categoryId no marketplace.
+  // Sempre atualiza p.categoria pra apontar pra categoria escolhida/criada.
+  async function garantirCategoriaInterna(p, marketplace, categoryId, contextoTexto) {
+    if (!categoryId) return { ok: false, _msg: 'sem categoryId pra vincular' };
+    const mktKey = marketplace; // 'mercadolivre' | 'shopee' | 'tiktok'
+    
+    // 1. Já tem categoria? Garante o vínculo no marketplace e sai.
+    if (p.categoria) {
+      const mapa = categoriasMapErp.find(c => 
+        String(c.categoriaInterna).toLowerCase().trim() === String(p.categoria).toLowerCase().trim()
+      );
+      if (mapa) {
+        if (!mapa.vinculos) mapa.vinculos = {};
+        const atual = mapa.vinculos[mktKey];
+        const atualId = typeof atual === 'string' ? atual : (atual && (atual.categoryId || atual.id));
+        if (atualId !== String(categoryId)) {
+          mapa.vinculos[mktKey] = String(categoryId);
+          saveCategoriasMap();
+          return { ok: true, _msg: 'vínculo ' + mktKey + ' atualizado em "' + p.categoria + '"' };
+        }
+        return { ok: true, _msg: 'categoria interna já vinculada' };
+      }
+    }
+    
+    // 2. Tem alguma categoria interna já vinculada a esse categoryId no mesmo marketplace?
+    const jaVinculada = categoriasMapErp.find(c => {
+      if (!c.vinculos || !c.vinculos[mktKey]) return false;
+      const v = c.vinculos[mktKey];
+      const vid = typeof v === 'string' ? v : (v && (v.categoryId || v.id));
+      return String(vid) === String(categoryId);
+    });
+    if (jaVinculada) {
+      p.categoria = jaVinculada.categoriaInterna;
+      return { ok: true, _msg: 'reusou "' + jaVinculada.categoriaInterna + '" (já vinculada ao ' + mktKey + ')' };
+    }
+    
+    // 3. Pergunta pra IA: dentre as categorias internas existentes, qual é a mais similar?
+    //    (evita criar "Botinha academia" quando já tem "Tênis para Treino")
+    const nomesExistentes = categoriasMapErp.map(c => c.categoriaInterna).filter(Boolean);
+    if (nomesExistentes.length > 0) {
+      try {
+        const promptSim = 'Você organiza categorias de produtos de calçados.\n\n' +
+          'PRODUTO: ' + (contextoTexto || p.nome || '').slice(0, 200) + '\n\n' +
+          'CATEGORIAS INTERNAS JÁ EXISTENTES:\n' + nomesExistentes.map(n => '- ' + n).join('\n') + '\n\n' +
+          'Alguma categoria EXISTENTE acima encaixa neste produto (mesmo tipo de calçado)?\n' +
+          'Responda APENAS um JSON: { "encaixa": true, "nome": "<nome EXATO da lista>" } OU { "encaixa": false }.\n' +
+          'Seja conservador: só responda true se for praticamente a mesma coisa (ex: "Tênis treino" e "Tênis para Treino" são iguais; "Tênis" e "Sandália" NÃO são).';
+        const respSim = await chamarIA({ prompt: promptSim, system: 'Responde só JSON.', maxTokens: 120 });
+        let raw = String(respSim || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+        const dados = JSON.parse(raw);
+        if (dados.encaixa && dados.nome) {
+          const nomeExato = nomesExistentes.find(n => n.toLowerCase().trim() === String(dados.nome).toLowerCase().trim());
+          if (nomeExato) {
+            const mapa = categoriasMapErp.find(c => c.categoriaInterna === nomeExato);
+            if (mapa) {
+              if (!mapa.vinculos) mapa.vinculos = {};
+              mapa.vinculos[mktKey] = String(categoryId);
+              p.categoria = nomeExato;
+              saveCategoriasMap();
+              return { ok: true, _msg: 'IA reusou "' + nomeExato + '" + vinculou ' + mktKey };
+            }
+          }
+        }
+      } catch(e) { console.warn('[catInterna] busca similar falhou:', e.message); }
+    }
+    
+    // 4. Cria categoria interna nova com nome sugerido pela IA
+    let nomeNovo = '';
+    try {
+      const promptCria = 'Você está cadastrando uma categoria interna pra um e-commerce de calçados.\n\n' +
+        'PRODUTO: ' + (contextoTexto || p.nome || '').slice(0, 200) + '\n\n' +
+        'Sugira um NOME CURTO E PADRONIZADO de categoria interna pra este produto (2-4 palavras).\n' +
+        'Exemplos bons: "Tênis Casual", "Sandália Plataforma", "Botinha Academia", "Chinelo Slide".\n' +
+        'Responda APENAS um JSON: { "nome": "<nome curto>" }.';
+      const respCria = await chamarIA({ prompt: promptCria, system: 'Responde só JSON.', maxTokens: 80 });
+      let raw = String(respCria || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      const dados = JSON.parse(raw);
+      nomeNovo = String(dados.nome || '').trim().slice(0, 60);
+    } catch(e) { console.warn('[catInterna] nome novo falhou:', e.message); }
+    
+    // Fallback: usa as primeiras palavras do nome do produto
+    if (!nomeNovo) {
+      nomeNovo = String(p.nome || contextoTexto || 'Categoria nova').split(/\s+/).slice(0, 3).join(' ').slice(0, 60);
+    }
+    
+    // Evita duplicata exata se a IA sugeriu um nome que já existe
+    const jaExiste = categoriasMapErp.find(c => 
+      String(c.categoriaInterna).toLowerCase().trim() === nomeNovo.toLowerCase().trim()
+    );
+    if (jaExiste) {
+      if (!jaExiste.vinculos) jaExiste.vinculos = {};
+      jaExiste.vinculos[mktKey] = String(categoryId);
+      p.categoria = jaExiste.categoriaInterna;
+      saveCategoriasMap();
+      return { ok: true, _msg: 'vinculou ' + mktKey + ' em "' + nomeNovo + '" (já existia)' };
+    }
+    
+    // Cria nova
+    const nova = {
+      id: typeof gerarId === 'function' ? gerarId() : ('cat_' + Date.now()),
+      categoriaInterna: nomeNovo,
+      vinculos: { [mktKey]: String(categoryId) },
+      criadoEm: new Date().toISOString(),
+      criadoPorIA: true,
+    };
+    categoriasMapErp.push(nova);
+    saveCategoriasMap();
+    p.categoria = nomeNovo;
+    return { ok: true, _msg: '✨ criou "' + nomeNovo + '" + vinculou ' + mktKey };
+  }
+  
   async function acaoCategoriaShopee(d) {
     const p = _produtoDaDemanda(d);
     
@@ -9072,6 +9192,13 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     
     p.categoryIdShopee = String(catValida.category_id);
     const nomeCategoriaSp = catValida.display_category_name || catValida.original_category_name;
+    
+    // v32g.8: garante categoria interna vinculada (reusa similar ou cria nova)
+    let msgCatInt = '';
+    try {
+      const r = await garantirCategoriaInterna(p, 'shopee', p.categoryIdShopee, contexto);
+      if (r && r._msg) msgCatInt = ' · ' + r._msg;
+    } catch(e) { console.warn('[acaoCategoriaShopee] garantirCategoriaInterna:', e.message); }
     
     // 2. Busca atributos e pede pra IA preencher (headless)
     let nAttrs = 0;
@@ -9129,7 +9256,7 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
       console.warn('[demanda Shopee] erro atributos:', e.message);
     }
     
-    return { _msg: 'Cat Shopee: ' + p.categoryIdShopee + ' (' + nomeCategoriaSp + ') · ' + nAttrs + ' atributos' };
+    return { _msg: 'Cat Shopee: ' + p.categoryIdShopee + ' (' + nomeCategoriaSp + ') · ' + nAttrs + ' atributos' + msgCatInt };
   }
   
   async function acaoGerarSKUs(d) {
@@ -24609,7 +24736,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32g.7-completo-fotos-guia-IA';
+  const _DIAG_VERSAO_PAINEL = 'v32g.8-categoria-interna-auto';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
