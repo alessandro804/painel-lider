@@ -16995,8 +16995,33 @@ REGRAS CRÍTICAS:
     
     // Atributos que ainda não têm valor
     if (!produto.atributosShopee) produto.atributosShopee = {};
+    
+    // v32f.5: Defaults conhecidos pra atributos comuns de calçados.
+    // Se a categoria TEM o atributo e está vazio, preenche com o padrão.
+    // (Quantidade=1, Tamanho do Pacote=peso do produto ou 0.5kg).
+    // Atributos regulatórios tipo FDA NÃO entram aqui — ficam vazios de propósito.
+    let nDefaults = 0;
+    const pesoProduto = parseFloat(document.getElementById('prodShopeePeso')?.value) 
+      || parseFloat(document.getElementById('prodPeso')?.value) || 0.5;
+    attrs.forEach(a => {
+      if (produto.atributosShopee[a.attribute_id]) return; // já preenchido
+      const nomeNorm = (a.nome || '').toLowerCase();
+      if (/quantidade/.test(nomeNorm) && (!a.valores || a.valores.length === 0)) {
+        produto.atributosShopee[a.attribute_id] = '1';
+        nDefaults++;
+      } else if (/tamanho do pacote|package size|tamanho.*pacote/.test(nomeNorm) && (!a.valores || a.valores.length === 0)) {
+        produto.atributosShopee[a.attribute_id] = String(pesoProduto).replace('.', ',');
+        nDefaults++;
+      }
+    });
+    
     const pendentes = attrs.filter(a => !produto.atributosShopee[a.attribute_id]);
-    if (pendentes.length === 0) return 0;
+    if (pendentes.length === 0) {
+      if (nDefaults > 0 && typeof carregarAtributosShopeeNoModal === 'function') {
+        await carregarAtributosShopeeNoModal(lojaIdBanco, catId);
+      }
+      return nDefaults;
+    }
     
     // Monta o prompt: lista cada atributo com seus valores possíveis
     const listaAttrsTxt = pendentes.map(a => {
@@ -17059,12 +17084,12 @@ REGRAS CRÍTICAS:
     }
     
     // Re-renderiza os campos no modal pra mostrar os valores preenchidos
-    if (n > 0 && typeof carregarAtributosShopeeNoModal === 'function') {
+    if ((n > 0 || nDefaults > 0) && typeof carregarAtributosShopeeNoModal === 'function') {
       await carregarAtributosShopeeNoModal(lojaIdBanco, catId);
     }
     
-    console.log('[atrShopee] IA preencheu', n, 'atributos Shopee');
-    return n;
+    console.log('[atrShopee] IA preencheu', n, 'atributos Shopee (+ ' + nDefaults + ' defaults)');
+    return n + nDefaults;
   }
   
   async function preencherAtributosAutomatico() {
@@ -18087,6 +18112,8 @@ REGRAS CRÍTICAS:
           sku: v.sku || '',
           estoque: parseInt(v.estoque) || 0,
           preco: parseFloat(v.preco) || parseFloat(p.preco) || 0,
+          // v32f.5: EAN/GTIN por variação (pro gtin_code do model na Shopee)
+          ean: v.ean || '',
         })),
         // Atributos manuais se o user já configurou
         atributosShopee: p.atributosShopee || [],
