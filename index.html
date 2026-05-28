@@ -4682,8 +4682,9 @@
     <div class="demanda-checklist-area" id="demandaChecklistArea" style="display:none"></div>
     
     <!-- Upload de imagens da demanda -->
-    <div class="form-group">
-      <label class="form-label">📷 Imagens da demanda</label>
+    <!-- v32g.7: bloco com id pra esconder quando for SÓ ML (que não usa fotos gerais) -->
+    <div class="form-group" id="demandaFotosGeraisGrupo">
+      <label class="form-label">📷 Imagens da demanda <span id="demandaFotosGeraisAviso" style="font-weight:400;color:#7c3aed;font-size:11px"></span></label>
       <div class="demanda-upload-zona" id="demandaUploadZona" onclick="document.getElementById('demandaUploadInput').click()">
         <input type="file" id="demandaUploadInput" accept="image/*" multiple style="display:none" onchange="adicionarImagensDemanda(this.files)">
         <div class="demanda-upload-icone">📤</div>
@@ -4693,17 +4694,7 @@
       <div class="demanda-upload-grid" id="demandaUploadGrid"></div>
     </div>
     
-    <!-- Guia de tamanhos em CM (para demandas de anúncio) -->
-    <div class="form-group" id="demandaGuiaGrupo">
-      <label class="form-label">📏 Guia de tamanhos em centímetros</label>
-      <div id="demandaGuiaInfo"></div>
-      <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-        <button type="button" class="toolbar-btn" onclick="abrirBibliotecaGuiasDemanda()">📚 Usar da biblioteca</button>
-        <button type="button" class="toolbar-btn" onclick="editarGuiaDemanda()">✏️ Criar / editar guia</button>
-        <button type="button" class="toolbar-btn" onclick="limparGuiaDemanda()">🗑 Limpar</button>
-      </div>
-      <div class="settings-help">Informe as variações e suas medidas em CM. O guia serve para ML, Shopee e TikTok.</div>
-    </div>
+    <!-- v32g.7: Guia de tamanhos MOVIDO pra baixo das variações (dentro do bloco Anúncio Novo) -->
     
     <div class="form-group" style="background:var(--cinza-claro);padding:12px;border-radius:10px">
       <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;color:var(--azul);font-weight:600">
@@ -4743,6 +4734,19 @@
       <div class="form-group">
         <label class="form-label">Tamanhos (separados por vírgula)</label>
         <input type="text" class="form-input" id="demandaTamanhosInput" placeholder="Ex: 38, 39, 40, 41, 42">
+      </div>
+      
+      <!-- v32g.7: Guia de tamanhos LOGO APÓS as variações, com botão IA -->
+      <div class="form-group" id="demandaGuiaGrupo" style="background:white;padding:10px;border-radius:8px;border:1px solid #e9d5ff">
+        <label class="form-label" style="color:#7c3aed">📏 Guia de tamanhos em centímetros</label>
+        <div id="demandaGuiaInfo" style="font-size:11px;color:#666;margin-top:4px"></div>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+          <button type="button" class="toolbar-btn" style="background:#7c3aed;color:white;border:none" onclick="gerarGuiaTamanhosIADemanda()" title="Cria o guia com base nos tamanhos digitados acima + nome do produto">✨ Gerar com IA</button>
+          <button type="button" class="toolbar-btn" onclick="abrirBibliotecaGuiasDemanda()">📚 Da biblioteca</button>
+          <button type="button" class="toolbar-btn" onclick="editarGuiaDemanda()">✏️ Editar</button>
+          <button type="button" class="toolbar-btn" onclick="limparGuiaDemanda()">🗑 Limpar</button>
+        </div>
+        <div class="settings-help" style="font-size:11px;margin-top:4px">Use o "Gerar com IA" depois de preencher os tamanhos. Edite depois se precisar ajustar.</div>
       </div>
       
       <div class="form-group" style="display:flex;gap:8px">
@@ -8504,6 +8508,54 @@
   // Guarda as fotos por cor da sessão de demanda: { "Preto": [url,...], ... }
   window._demandaFotosPorCor = window._demandaFotosPorCor || {};
   
+  // v32g.7: Detecta o marketplace destino com base nas contas marcadas.
+  // Retorna: 'shopee', 'mercadolivre', 'ambos' ou null (nenhuma marcada).
+  function marketplaceDestinoDemanda() {
+    const ids = _demandaContasSel.map(String);
+    if (ids.length === 0) return null;
+    const mkts = new Set();
+    ids.forEach(id => {
+      const l = lojasErp.find(x => String(x.id) === id);
+      if (l && l.marketplace) mkts.add(l.marketplace);
+    });
+    if (mkts.size === 0) return null;
+    if (mkts.size === 1) return [...mkts][0];
+    if (mkts.has('shopee') && mkts.has('mercadolivre')) return 'ambos';
+    return [...mkts][0];
+  }
+  
+  // Limite de fotos por cor: só-Shopee = 1 (1 capa por variação); resto = 10 (ML/ambos)
+  function limiteFotosPorCor() {
+    const mkt = marketplaceDestinoDemanda();
+    return mkt === 'shopee' ? 1 : 10;
+  }
+  
+  // Mostra bloco de fotos gerais (galeria) só quando Shopee está envolvido
+  // (ML não usa galeria geral — só fotos por cor)
+  function mostraBlocoFotosGerais() {
+    const mkt = marketplaceDestinoDemanda();
+    return mkt === 'shopee' || mkt === 'ambos';
+  }
+  
+  // v32g.7: Aplica a visibilidade do bloco de fotos gerais E o aviso sobre limite.
+  // Chamada quando muda a seleção de contas ou abre o modal.
+  function aplicarVisibilidadeFotosGerais() {
+    const grupo = document.getElementById('demandaFotosGeraisGrupo');
+    const aviso = document.getElementById('demandaFotosGeraisAviso');
+    if (!grupo) return;
+    const mkt = marketplaceDestinoDemanda();
+    if (mostraBlocoFotosGerais()) {
+      grupo.style.display = '';
+      if (aviso) aviso.textContent = '🛒 Shopee: até 9 fotos gerais';
+    } else if (mkt === 'mercadolivre') {
+      grupo.style.display = 'none';
+    } else {
+      // Sem marketplace selecionado: mostra mas sem aviso
+      grupo.style.display = '';
+      if (aviso) aviso.textContent = '';
+    }
+  }
+  
   // Renderiza uma zona de upload pra cada cor digitada
   function renderUploadFotosPorCor() {
     const grupo = document.getElementById('demandaFotosPorCorGrupo');
@@ -8538,12 +8590,16 @@
       const inputId = 'demUpCor_' + _slugCor(cor);
       const numFotos = fotos.filter(f => typeof f === 'string').length;
       const numSubindo = fotos.length - numFotos;
+      const limite = limiteFotosPorCor();
+      const noLimite = numFotos >= limite;
+      const btnAdd = noLimite ? '' :
+        '<button onclick="document.getElementById(\'' + inputId + '\').click()" style="width:50px;height:50px;border:2px dashed #c4b5fd;background:white;border-radius:6px;font-size:20px;color:#7c3aed;cursor:pointer">+</button>' +
+        '<input type="file" id="' + inputId + '" accept="image/*" multiple style="display:none" onchange="adicionarFotoCorDemanda(\'' + corEsc + '\', this.files)">';
       return '<div style="margin-bottom:10px;padding:8px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px">' +
-        '<div style="font-size:12px;font-weight:600;color:#7c3aed;margin-bottom:6px">🎨 ' + escapeHtml(cor) + ' <span style="font-weight:400;color:#999">(' + numFotos + ' foto' + (numFotos !== 1 ? 's' : '') + (numSubindo > 0 ? ' · ' + numSubindo + ' subindo' : '') + ')</span></div>' +
+        '<div style="font-size:12px;font-weight:600;color:#7c3aed;margin-bottom:6px">🎨 ' + escapeHtml(cor) + ' <span style="font-weight:400;color:#999">(' + numFotos + '/' + limite + (numSubindo > 0 ? ' · ' + numSubindo + ' subindo' : '') + ')</span></div>' +
         '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' +
           thumbs +
-          '<button onclick="document.getElementById(\'' + inputId + '\').click()" style="width:50px;height:50px;border:2px dashed #c4b5fd;background:white;border-radius:6px;font-size:20px;color:#7c3aed;cursor:pointer">+</button>' +
-          '<input type="file" id="' + inputId + '" accept="image/*" multiple style="display:none" onchange="adicionarFotoCorDemanda(\'' + corEsc + '\', this.files)">' +
+          btnAdd +
         '</div>' +
       '</div>';
     }).join('');
@@ -8552,6 +8608,17 @@
   async function adicionarFotoCorDemanda(cor, files) {
     if (!files || !files.length) return;
     if (!window._demandaFotosPorCor[cor]) window._demandaFotosPorCor[cor] = [];
+    
+    // v32g.7: aplica limite por marketplace (Shopee=1, ML=10)
+    const limite = limiteFotosPorCor();
+    const atuais = window._demandaFotosPorCor[cor].length;
+    const podeAdicionar = Math.max(0, limite - atuais);
+    if (podeAdicionar === 0) {
+      const mkt = marketplaceDestinoDemanda() === 'shopee' ? 'Shopee' : 'este marketplace';
+      showToast('⚠ ' + mkt + ' permite só ' + limite + ' foto' + (limite > 1 ? 's' : '') + ' por cor. Remova uma antes de adicionar.', true);
+      return;
+    }
+    files = Array.from(files).slice(0, podeAdicionar);
     
     // v32g.5: Sobe IMEDIATAMENTE pro Storage e guarda só a URL.
     // Antes guardávamos dataUrl direto, e ao salvar a demanda o localStorage
@@ -9356,9 +9423,22 @@ Retorne JSON: {"ID": "valor", ...}`;
     const arr = Array.from(files).filter(f => f.type.startsWith('image/'));
     if (arr.length === 0) return;
     
+    // v32g.7: limite de 9 fotos gerais (Shopee usa como galeria do anúncio)
+    const LIMITE_GERAL = 9;
+    const atuais = _imagensDemandaSessao.filter(i => i.status !== 'erro').length;
+    const podeAdicionar = Math.max(0, LIMITE_GERAL - atuais);
+    if (podeAdicionar === 0) {
+      showToast('⚠ Máximo de ' + LIMITE_GERAL + ' fotos gerais. Remova uma antes de adicionar.', true);
+      return;
+    }
+    const arrLimitado = arr.slice(0, podeAdicionar);
+    if (arrLimitado.length < arr.length) {
+      showToast('⚠ ' + (arr.length - arrLimitado.length) + ' foto(s) ignorada(s) — limite ' + LIMITE_GERAL, true);
+    }
+    
     // Adiciona placeholders com status "subindo" e renderiza
     const idxsAdicionados = [];
-    for (const file of arr) {
+    for (const file of arrLimitado) {
       const item = { nome: file.name, dataUrl: null, url: null, status: 'subindo' };
       _imagensDemandaSessao.push(item);
       idxsAdicionados.push(_imagensDemandaSessao.length - 1);
@@ -16780,15 +16860,18 @@ REGRAS CRÍTICAS:
     const cor = _coresProdutoSessao.find(c => c.id === corId);
     if (!cor) return;
     
-    const limite = 30;
-    const fotosAntes = _coresProdutoSessao.reduce((acc, c) => acc + (c.fotos||[]).length, 0);
+    // v32g.7: limite de 10 fotos POR COR (ML máx 10, Shopee usa só a 1ª como capa).
+    // Antes era 30 no total — agora 10 por cor é mais alinhado com o que cada
+    // marketplace aceita e dá feedback mais claro.
+    const LIMITE_POR_COR = 10;
+    const fotosAntesNaCor = (cor.fotos || []).length;
     
     let bloqueadas = 0;
     let aSubir = [];
     
     Array.from(files).forEach(file => {
       if (!file.type.startsWith('image/')) return;
-      if (fotosAntes + aSubir.length >= limite) { 
+      if (fotosAntesNaCor + aSubir.length >= LIMITE_POR_COR) { 
         bloqueadas++; 
         return; 
       }
@@ -16796,7 +16879,7 @@ REGRAS CRÍTICAS:
     });
     
     if (bloqueadas > 0) {
-      showToast(`Limite de ${limite} fotos. ${bloqueadas} ignorada(s)`, true);
+      showToast(`Limite de ${LIMITE_POR_COR} fotos por cor. ${bloqueadas} ignorada(s)`, true);
     }
     
     // Limpa input pro próximo upload funcionar
@@ -19399,6 +19482,64 @@ Use medidas coerentes com o tipo de produto. Para calçados, use a numeração b
   function limparGuiaDemanda() {
     _guiaDemandaSessao = null;
     renderGuiaDemanda();
+  }
+  
+  // v32g.7: Gera guia de tamanhos em CM via IA, baseado nos tamanhos digitados
+  // + nome do produto. Categoria/tipo é inferida do nome.
+  async function gerarGuiaTamanhosIADemanda() {
+    const tamanhosTxt = (document.getElementById('demandaTamanhosInput') || {}).value || '';
+    const tamanhos = tamanhosTxt.split(',').map(s => s.trim()).filter(Boolean);
+    if (tamanhos.length === 0) {
+      showToast('Preencha os tamanhos antes (ex: 34, 35, 36, 37, 38)', true);
+      return;
+    }
+    
+    const nome = (document.getElementById('demandaProduto') || {}).value || '';
+    const descricao = (document.getElementById('demandaDescricao') || {}).value || '';
+    const contexto = [nome, descricao].filter(Boolean).join(' — ').slice(0, 250);
+    if (!contexto.trim()) {
+      showToast('Preencha o nome do produto também pra IA saber o tipo', true);
+      return;
+    }
+    
+    const btn = (typeof event !== 'undefined' && event) ? event.target : null;
+    const txtOrig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Gerando...'; }
+    
+    try {
+      const prompt = 'Você é um especialista em moda e calçados. Gere um guia de tamanhos em CENTÍMETROS pra este produto.\n\n' +
+        'PRODUTO: ' + contexto + '\n' +
+        'TAMANHOS QUE TEM: ' + tamanhos.join(', ') + '\n\n' +
+        'Pra cada tamanho, dê:\n' +
+        '- Comprimento em CM (medida do calcanhar até a ponta do dedão, padrão Brasil)\n' +
+        '- Largura em CM (medida na parte mais larga do pé)\n\n' +
+        'Pode estimar por alto baseado em padrões da indústria. Valores podem ter casas decimais (ex: 22.5).\n\n' +
+        'Responda APENAS um JSON no formato:\n' +
+        '{ "linhas": [ { "tamanho": "34", "comprimento": 22.5, "largura": 8.5 }, ... ] }\n\n' +
+        'Sem markdown, sem texto fora do JSON. Use exatamente os tamanhos que listei.';
+      
+      const resp = await chamarIA({ prompt, system: 'Você responde só com JSON válido.', maxTokens: 600 });
+      let raw = String(resp || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      const dados = JSON.parse(raw);
+      
+      if (!Array.isArray(dados.linhas) || !dados.linhas.length) throw new Error('IA não retornou linhas válidas');
+      
+      const colunas = ['Tamanho', 'Comprimento (cm)', 'Largura (cm)'];
+      const linhas = dados.linhas.map(l => ({
+        'Tamanho': String(l.tamanho || ''),
+        'Comprimento (cm)': String(l.comprimento ?? l.compr ?? ''),
+        'Largura (cm)': String(l.largura ?? l.larg ?? ''),
+      })).filter(l => l['Tamanho']);
+      
+      _guiaDemandaSessao = { nome: 'Guia gerado por IA', colunas, linhas, criadoPorIA: true };
+      renderGuiaDemanda();
+      showToast('✨ Guia gerado pela IA — revise e edite se precisar');
+    } catch(e) {
+      console.error('[guia IA]', e);
+      showToast('IA falhou: ' + (e.message || 'erro desconhecido'), true);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = txtOrig; }
+    }
   }
   
   // Biblioteca de guias na criação de demanda
@@ -24468,7 +24609,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32g.6-fix-fotos-cliente-rascunho';
+  const _DIAG_VERSAO_PAINEL = 'v32g.7-completo-fotos-guia-IA';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29701,6 +29842,8 @@ ${JSON.stringify(metricas, null, 2)}`
     
     renderDemandaContas();
     atualizarProdutosDaDemanda();
+    if (typeof aplicarVisibilidadeFotosGerais === 'function') aplicarVisibilidadeFotosGerais();  // v32g.7
+    if (typeof renderUploadFotosPorCor === 'function') renderUploadFotosPorCor();  // v32g.7
     document.getElementById('demandaOverlay').classList.add('active');
     
     // v32g.6: ativa auto-save e oferece restaurar rascunho não-salvo (só pra NOVA demanda)
@@ -29764,6 +29907,9 @@ ${JSON.stringify(metricas, null, 2)}`
     atualizarProdutosDaDemanda();
     // v32g.3: sincroniza a "Loja destino" automaticamente com a seleção
     if (typeof sincronizarLojaDestinoDemanda === 'function') sincronizarLojaDestinoDemanda();
+    // v32g.7: ajusta visibilidade de bloco de fotos gerais + limites
+    if (typeof aplicarVisibilidadeFotosGerais === 'function') aplicarVisibilidadeFotosGerais();
+    if (typeof renderUploadFotosPorCor === 'function') renderUploadFotosPorCor();
   }
   
   // v32g.3: A "Loja destino" do fluxo é redundante quando o usuário já escolheu
@@ -29815,6 +29961,33 @@ ${JSON.stringify(metricas, null, 2)}`
     if (p) {
       document.getElementById('demandaProduto').value = p.nome;
     }
+  }
+  
+  // ============================================================
+  // v32g.7: Marketplace destino da demanda + limites de foto por marketplace
+  // ============================================================
+  // Regras:
+  //   Shopee: 1 foto por cor (capa variação) + até 9 fotos gerais
+  //   ML:    até 10 fotos por cor (sem bloco de fotos gerais)
+  //   Se múltiplos marketplaces selecionados: usa o MAIS restritivo (Shopee).
+  function marketplaceDestinoDemanda() {
+    const marcadas = _demandaContasSel.map(String);
+    if (!marcadas.length) return null;
+    const lojas = lojasErp.filter(l => marcadas.includes(String(l.id)));
+    if (!lojas.length) return null;
+    // Normaliza ML pra forma única
+    const mks = lojas.map(l => l.marketplace === 'mercado_livre' ? 'mercadolivre' : l.marketplace);
+    if (mks.includes('shopee')) return 'shopee';  // mais restritivo
+    if (mks.includes('mercadolivre')) return 'mercadolivre';
+    return mks[0];
+  }
+  
+  function limiteFotosPorCor() {
+    return marketplaceDestinoDemanda() === 'shopee' ? 1 : 10;
+  }
+  
+  function mostraBlocoFotosGerais() {
+    return marketplaceDestinoDemanda() === 'shopee';  // só Shopee usa galeria geral
   }
   
   function closeDemandaModal() { document.getElementById('demandaOverlay').classList.remove('active'); }
