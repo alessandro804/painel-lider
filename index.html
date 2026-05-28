@@ -15908,23 +15908,25 @@ REGRAS CRÍTICAS:
     const p = produtosErp.find(x => String(x.id) === String(_produtoEditandoId));
     const valoresAtuais = (p && p.atributosShopee) || {};
     
+    // v32f.1: backend agora retorna formato normalizado:
+    //   { attribute_id, nome, mandatory, inputType, valores: [{value_id, nome}] }
     cont.innerHTML = '<div style="color:#9a3412;font-size:11px;font-weight:600;margin-bottom:8px">Atributos desta categoria</div>' +
       attrs.slice(0, 15).map(a => {
-        const nome = a.display_attribute_name || a.original_attribute_name;
-        const obrigatorio = a.is_mandatory ? '<span style="color:#dc2626">*</span>' : '';
+        const nome = a.nome || a.nomeOriginal || ('Atributo ' + a.attribute_id);
+        const obrigatorio = a.mandatory ? '<span style="color:#dc2626">*</span>' : '';
         const aid = a.attribute_id;
         const valAtual = valoresAtuais[aid] || '';
         
         // Se tem lista pré-definida, faz select
-        if (Array.isArray(a.attribute_value_list) && a.attribute_value_list.length > 0) {
+        if (Array.isArray(a.valores) && a.valores.length > 0) {
           return `
             <div style="margin-bottom:8px">
               <label style="font-size:11px;color:#9a3412;font-weight:600">${escapeHtml(nome)} ${obrigatorio}</label>
               <select class="prod-shopee-attr-input" data-attr-id="${aid}" 
                 style="width:100%;padding:6px;border:1px solid #fed7aa;border-radius:6px;font-size:12px">
                 <option value="">— escolher —</option>
-                ${a.attribute_value_list.slice(0,200).map(v => 
-                  `<option value="${escapeHtml(v.original_value_name)}" ${valAtual === v.original_value_name ? 'selected' : ''}>${escapeHtml(v.display_value_name || v.original_value_name)}</option>`
+                ${a.valores.slice(0,200).map(v => 
+                  `<option value="${escapeHtml(v.nome)}" ${valAtual === v.nome ? 'selected' : ''}>${escapeHtml(v.nome)}</option>`
                 ).join('')}
               </select>
             </div>
@@ -16962,6 +16964,87 @@ REGRAS CRÍTICAS:
     return pontuadas.slice(0, 40).map(x => x.cat);
   }
   
+  // v32f.1: Pede pra IA preencher os atributos Shopee de uma categoria.
+  // Busca os atributos via backend (get_attribute_tree normalizado), monta um
+  // prompt com os valores possíveis, e aplica a resposta no produto.atributosShopee.
+  // Só preenche atributos AINDA VAZIOS (não sobrescreve escolha manual).
+  // Retorna quantos atributos foram preenchidos.
+  async function preencherAtributosShopeeComIA(produto, lojaIdBanco, catId, contexto) {
+    // Busca atributos da categoria (usa cache se já tiver)
+    const key = lojaIdBanco + ':' + catId;
+    let attrs = _cacheShopeeAtributos[key];
+    if (!attrs) {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/shopee/atributos/' + catId, {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const data = await resp.json();
+      if (!data.ok) { console.warn('[atrShopee] backend erro:', data.erro); return 0; }
+      attrs = data.dados || [];
+      _cacheShopeeAtributos[key] = attrs;
+    }
+    if (!attrs.length) return 0;
+    
+    // Atributos que ainda não têm valor
+    if (!produto.atributosShopee) produto.atributosShopee = {};
+    const pendentes = attrs.filter(a => !produto.atributosShopee[a.attribute_id]);
+    if (pendentes.length === 0) return 0;
+    
+    // Monta o prompt: lista cada atributo com seus valores possíveis
+    const listaAttrsTxt = pendentes.map(a => {
+      if (Array.isArray(a.valores) && a.valores.length > 0) {
+        const ops = a.valores.map(v => '"' + v.nome + '"').join(', ');
+        return '- ' + a.nome + (a.mandatory ? ' (OBRIGATÓRIO)' : '') + ' [escolha UM dentre: ' + ops + ']';
+      }
+      return '- ' + a.nome + (a.mandatory ? ' (OBRIGATÓRIO)' : '') + ' [texto livre — ex: número, modelo]';
+    }).join('\n');
+    
+    const promptSp = 'Você está preenchendo atributos de um produto de calçados na Shopee.\n\n' +
+      'PRODUTO:\n' +
+      'Nome: ' + (contexto.nome || '') + '\n' +
+      'Descrição: ' + (contexto.descricao || '').slice(0, 600) + '\n' +
+      'Marca: ' + (contexto.marca || '') + '\n' +
+      'Material: ' + (contexto.material || '') + '\n' +
+      'Categoria interna: ' + (contexto.categoria || '') + '\n\n' +
+      'ATRIBUTOS PRA PREENCHER (escolha o valor mais adequado pra cada um):\n' +
+      listaAttrsTxt + '\n\n' +
+      'Responda APENAS um JSON no formato { "NomeDoAtributo": "valor escolhido", ... }. ' +
+      'Para atributos com lista, use EXATAMENTE um dos valores entre aspas oferecidos. ' +
+      'Para texto livre, use um valor curto e plausível. ' +
+      'Se não souber ou não se aplicar, OMITA o atributo (não invente). ' +
+      'Não inclua markdown nem texto fora do JSON.';
+    
+    const respIA = await chamarIA({ prompt: promptSp, system: 'Você responde só com JSON válido.', maxTokens: 800 });
+    let raw = String(respIA || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    let dadosSp;
+    try { dadosSp = JSON.parse(raw); }
+    catch(e) { console.warn('[atrShopee] IA não retornou JSON:', raw.slice(0,100)); return 0; }
+    
+    // Aplica: casa o nome do atributo respondido com o attribute_id
+    let n = 0;
+    for (const a of pendentes) {
+      const respValor = dadosSp[a.nome] || dadosSp[a.nomeOriginal];
+      if (!respValor) continue;
+      
+      // Se tem lista, valida que o valor existe (evita IA inventar)
+      if (Array.isArray(a.valores) && a.valores.length > 0) {
+        const existe = a.valores.find(v => v.nome.toLowerCase() === String(respValor).toLowerCase());
+        if (!existe) { console.warn('[atrShopee] valor inválido pra', a.nome, ':', respValor); continue; }
+        produto.atributosShopee[a.attribute_id] = existe.nome;
+      } else {
+        produto.atributosShopee[a.attribute_id] = String(respValor);
+      }
+      n++;
+    }
+    
+    // Re-renderiza os campos no modal pra mostrar os valores preenchidos
+    if (n > 0 && typeof carregarAtributosShopeeNoModal === 'function') {
+      await carregarAtributosShopeeNoModal(lojaIdBanco, catId);
+    }
+    
+    console.log('[atrShopee] IA preencheu', n, 'atributos Shopee');
+    return n;
+  }
+  
   async function preencherAtributosAutomatico() {
     const nome = (document.getElementById('prodNome')||{}).value || '';
     const descricao = (document.getElementById('prodDescricao')||{}).value || '';
@@ -17155,6 +17238,21 @@ REGRAS CRÍTICAS:
         }
         // Re-renderiza campos dinamicos pra mostrar novos valores
         await renderAtributosDinamicos(prodAlvo);
+      }
+      
+      // v32f.1: Atributos Shopee — se loja Shopee conectada e produto tem categoria,
+      // pede pra IA preencher os atributos (Material, Gênero, etc) com base nos
+      // valores possíveis da categoria. Roda DEPOIS da categoria já estar definida.
+      if (_lojaShopee && _prodEdit) {
+        const catSpAtual = _prodEdit.categoryIdShopee || (dados.categoriaShopee && dados.categoriaShopee.id);
+        if (catSpAtual) {
+          try {
+            const nPreenchidosSp = await preencherAtributosShopeeComIA(_prodEdit, _lojaShopee.idBanco, String(catSpAtual), { nome, descricao, marca, material, categoria });
+            preenchidos += nPreenchidosSp;
+          } catch(e) {
+            console.warn('[preencher] atributos Shopee IA falhou:', e.message);
+          }
+        }
       }
       
       if (preenchidos > 0) {
