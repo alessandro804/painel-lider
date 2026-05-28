@@ -4624,11 +4624,11 @@
     <div class="modal-title" id="demandaModalTitle">+ Nova Demanda</div>
     <div class="modal-subtitle">Cadastre uma demanda na central de operações</div>
 
-    <div class="form-group">
-      <label class="form-label">Cliente</label>
-      <input type="text" class="form-input" id="demandaCliente" list="demandaClienteList" placeholder="Nome do cliente">
-      <datalist id="demandaClienteList"></datalist>
-    </div>
+    <!-- v32g.6: campo Cliente removido da UI (irrelevante quando a loja já é selecionada).
+         Input mantido oculto pra compatibilidade com código antigo que lê este id. -->
+    <input type="hidden" id="demandaCliente" value="">
+    <datalist id="demandaClienteList"></datalist>
+    
     <div class="form-group">
       <label class="form-label">Contas / Lojas</label>
       <div id="demandaContasList" class="demanda-contas-list"></div>
@@ -8457,10 +8457,19 @@
         }
       });
       
-      // fotos globais do produto = todas as fotos da primeira cor (capa) + fallback
-      const fotosCapaProduto = cores.length > 0 && cores[0].fotos.length > 0
-        ? [...cores[0].fotos]
-        : fotosGlobais;
+      // v32g.6: junta fotos GERAIS (galeria do anúncio) + fotos por cor.
+      // Antes pegava SÓ as da primeira cor, e as gerais sumiam — causou bug de
+      // "Apenas 1 foto" no QA. Agora: galeria = gerais primeiro + capas das cores.
+      const fotosGlobaisOk = fotosGlobais.filter(f => typeof f === 'string' && f.startsWith('http'));
+      const capasDeCores = cores.flatMap(c => c.fotos.slice(0, 1));
+      const fotosGaleria = [];
+      const seen = new Set();
+      [...fotosGlobaisOk, ...capasDeCores].forEach(u => {
+        if (u && !seen.has(u)) { seen.add(u); fotosGaleria.push(u); }
+      });
+      // Fallback: se vazio, usa o que tiver
+      const fotosCapaProduto = fotosGaleria.length > 0 ? fotosGaleria
+        : (cores.length > 0 && cores[0].fotos.length > 0 ? [...cores[0].fotos] : fotosGlobais);
       
       d._produtoTemp = {
         id: 'tmp-' + d.id,
@@ -24459,7 +24468,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32g.5-fotos-upload-imediato';
+  const _DIAG_VERSAO_PAINEL = 'v32g.6-fix-fotos-cliente-rascunho';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29693,6 +29702,24 @@ ${JSON.stringify(metricas, null, 2)}`
     renderDemandaContas();
     atualizarProdutosDaDemanda();
     document.getElementById('demandaOverlay').classList.add('active');
+    
+    // v32g.6: ativa auto-save e oferece restaurar rascunho não-salvo (só pra NOVA demanda)
+    _attachAutoSaveDemanda();
+    if (!editingDemanda) {
+      const rasc = carregarRascunhoDemanda();
+      if (rasc && rasc.ts) {
+        const idadeMin = Math.floor((Date.now() - rasc.ts) / 60000);
+        // Só oferece se foi há menos de 24h e tem conteúdo significativo
+        if (idadeMin < 60*24) {
+          const resumo = [rasc.produto, rasc.coresInput, rasc.tamanhosInput].filter(Boolean).join(' · ').slice(0, 60);
+          if (confirm('📝 Encontrei um rascunho não-salvo de ' + (idadeMin < 1 ? 'agora há pouco' : idadeMin + ' min atrás') + ':\n\n' + resumo + '\n\nDeseja restaurar?')) {
+            aplicarRascunhoNoModal(rasc);
+          } else {
+            limparRascunhoDemanda();
+          }
+        }
+      }
+    }
   }
   
   // Renderiza a lista de contas conectadas como checkboxes
@@ -29793,6 +29820,112 @@ ${JSON.stringify(metricas, null, 2)}`
   function closeDemandaModal() { document.getElementById('demandaOverlay').classList.remove('active'); }
   function closeDemandaIfOverlay(e) { if (e.target.id === 'demandaOverlay') closeDemandaModal(); }
   
+  // ============================================================
+  // v32g.6: AUTO-SAVE EM RASCUNHO (protege contra perda de trabalho)
+  // ============================================================
+  // Salva o estado do modal a cada 2s de inatividade num rascunho temporário
+  // (sessionStorage, com fallback memória se localStorage cheio). Restaura ao
+  // reabrir o modal se ainda não foi salvo de verdade. Limpa após salvar com sucesso.
+  const RASCUNHO_KEY = 'lider_demanda_rascunho_v1';
+  let _rascunhoTimer = null;
+  let _rascunhoMem = null;
+  
+  function coletarRascunhoDemanda() {
+    const get = id => (document.getElementById(id) || {}).value || '';
+    return {
+      ts: Date.now(),
+      produto: get('demandaProduto'),
+      setor: get('demandaSetor'),
+      tipo: get('demandaTipo'),
+      tipoOutro: get('demandaTipoOutro'),
+      descricao: get('demandaDescricao'),
+      contas: [..._demandaContasSel],
+      fluxoId: get('demandaFluxo'),
+      lojaDestinoId: get('demandaLojaDestino'),
+      skuPai: get('demandaSkuPai'),
+      coresInput: get('demandaCoresInput'),
+      tamanhosInput: get('demandaTamanhosInput'),
+      precoBase: get('demandaPrecoBase'),
+      estoqueDefault: get('demandaEstoqueDefault'),
+      prioridade: _demandaPrio,
+      // só URLs já subidas pro Storage (nada de base64)
+      fotosPorCor: (function() {
+        const out = {};
+        Object.entries(window._demandaFotosPorCor || {}).forEach(([cor, fotos]) => {
+          out[cor] = (fotos || []).filter(f => typeof f === 'string' && f.startsWith('http'));
+        });
+        return out;
+      })(),
+    };
+  }
+  
+  function salvarRascunhoDemanda() {
+    try {
+      const r = coletarRascunhoDemanda();
+      // Não salva rascunho vazio (todos os campos em branco)
+      const temConteudo = r.produto || r.coresInput || r.tamanhosInput || r.descricao 
+        || Object.keys(r.fotosPorCor).length > 0 || r.contas.length > 0;
+      if (!temConteudo) return;
+      const json = JSON.stringify(r);
+      try {
+        sessionStorage.setItem(RASCUNHO_KEY, json);
+        _rascunhoMem = null;
+      } catch(e) {
+        // session cheio — guarda em memória como fallback
+        _rascunhoMem = r;
+      }
+    } catch(e) { console.warn('[rascunho] erro:', e.message); }
+  }
+  
+  function carregarRascunhoDemanda() {
+    try {
+      const json = sessionStorage.getItem(RASCUNHO_KEY);
+      if (json) return JSON.parse(json);
+    } catch(_) {}
+    return _rascunhoMem;
+  }
+  
+  function limparRascunhoDemanda() {
+    try { sessionStorage.removeItem(RASCUNHO_KEY); } catch(_) {}
+    _rascunhoMem = null;
+  }
+  
+  function aplicarRascunhoNoModal(r) {
+    if (!r) return;
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+    set('demandaProduto', r.produto);
+    if (r.setor) set('demandaSetor', r.setor);
+    if (typeof atualizarTiposPorSetor === 'function') atualizarTiposPorSetor(r.tipo);
+    set('demandaTipo', r.tipo);
+    set('demandaTipoOutro', r.tipoOutro);
+    set('demandaDescricao', r.descricao);
+    set('demandaFluxo', r.fluxoId);
+    set('demandaSkuPai', r.skuPai);
+    set('demandaCoresInput', r.coresInput);
+    set('demandaTamanhosInput', r.tamanhosInput);
+    set('demandaPrecoBase', r.precoBase);
+    set('demandaEstoqueDefault', r.estoqueDefault);
+    if (r.contas) _demandaContasSel = [...r.contas];
+    if (r.prioridade) setDemandaPrio(r.prioridade);
+    if (r.fotosPorCor) window._demandaFotosPorCor = JSON.parse(JSON.stringify(r.fotosPorCor));
+    if (typeof renderDemandaContas === 'function') renderDemandaContas();
+    if (typeof renderUploadFotosPorCor === 'function') renderUploadFotosPorCor();
+    if (typeof atualizarProdutosDaDemanda === 'function') atualizarProdutosDaDemanda();
+  }
+  
+  // Listener global de auto-save (debounce 2s) em qualquer input do modal
+  function _attachAutoSaveDemanda() {
+    const overlay = document.getElementById('demandaOverlay');
+    if (!overlay || overlay._autoSaveAttached) return;
+    overlay._autoSaveAttached = true;
+    const handler = () => {
+      clearTimeout(_rascunhoTimer);
+      _rascunhoTimer = setTimeout(salvarRascunhoDemanda, 2000);
+    };
+    overlay.addEventListener('input', handler, true);
+    overlay.addEventListener('change', handler, true);
+  }
+  
   function setDemandaPrio(p) {
     _demandaPrio = p;
     document.querySelectorAll('[data-prio]').forEach(b => {
@@ -29801,8 +29934,8 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   
   function salvarDemanda() {
-    const cliente = document.getElementById('demandaCliente').value.trim();
-    if (!cliente) { showToast('Informe o cliente', true); return; }
+    const cliente = (document.getElementById('demandaCliente')||{}).value || '';
+    // v32g.6: cliente é opcional agora (campo removido da UI)
     
     const produto = document.getElementById('demandaProduto').value.trim();
     const setor = document.getElementById('demandaSetor').value;
@@ -29910,9 +30043,25 @@ ${JSON.stringify(metricas, null, 2)}`
       }
     }
     
-    saveDemandas();
-    closeDemandaModal();
-    renderOperacao();
+    // v32g.6: salva com try/catch — em caso de erro, MANTÉM o modal aberto
+    // com os dados preservados (não fecha) e mostra a mensagem.
+    try {
+      saveDemandas();
+      limparRascunhoDemanda();
+      closeDemandaModal();
+      renderOperacao();
+      return true;
+    } catch(e) {
+      // Não fecha o modal — dados ficam preservados na tela e no rascunho
+      console.error('[salvarDemanda] erro:', e);
+      // showToast já é chamado dentro do saveDemandas em caso de quota
+      if (!/quota/i.test(e.message)) {
+        showToast('Erro ao salvar: ' + e.message + ' (dados preservados)', true);
+      }
+      // Garante que o rascunho está atualizado pra próxima abertura
+      salvarRascunhoDemanda();
+      return false;
+    }
   }
   
   // Salva demanda e dispara o motor de execução do fluxo em seguida
@@ -29996,8 +30145,12 @@ ${JSON.stringify(metricas, null, 2)}`
     // Guarda se é edição (pra achar a demanda certa depois)
     const idEditando = editingDemanda;
     
-    // Salva os campos
-    salvarDemanda();
+    // Salva os campos — v32g.6: para se falhar (preserva o que está na tela)
+    const okSalvou = salvarDemanda();
+    if (okSalvou === false) {
+      console.warn('[exec] salvarDemanda falhou — abortando execução');
+      return;
+    }
     
     // Acha a demanda certa: se era edição, busca por id; senão pega a primeira (unshift)
     let d;
