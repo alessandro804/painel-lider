@@ -11162,7 +11162,29 @@ Retorne JSON: {"ID": "valor", ...}`;
   // - Senão cria 1 cor "Padrão" com as fotos[] do produto
   // Retorna true se migrou.
   function migrarProdutoParaCores(p) {
-    if (Array.isArray(p.cores) && p.cores.length > 0) return false;
+    // v32j.5 FIX: antes abortava direto se cores[] tinha algum item, mesmo todas
+    // vazias. Cenário real: produto Shopee importado vinha com cores=[{nome:'Caramelo',fotos:[]}]
+    // e p.fotos=[3 URLs] — abortava sem sincronizar e o modal mostrava "0 fotos".
+    // Agora: se TODAS as cores estão sem fotos E o produto tem p.fotos[],
+    // distribui as fotos do produto na primeira cor (mesma heurística do caso novo).
+    if (Array.isArray(p.cores) && p.cores.length > 0) {
+      const totalFotosEmCores = p.cores.reduce((s, c) => s + ((c.fotos||[]).length), 0);
+      const temFotosGlobais = (p.fotos || []).length > 0;
+      if (totalFotosEmCores === 0 && temFotosGlobais) {
+        // Cores existem mas vazias — popula a primeira com as fotos do produto
+        p.cores[0].fotos = [...p.fotos];
+        // Garante que variações tenham corId apontando pras cores certas (caso falte)
+        (p.variacoes || []).forEach(v => {
+          if (v.corId) return;
+          const corNome = String(v.cor || '').trim();
+          if (!corNome) return;
+          const cor = p.cores.find(c => c.nome === corNome || c.id === _slugCor(corNome));
+          if (cor) v.corId = cor.id;
+        });
+        return true; // alterou
+      }
+      return false; // cores existem e estão preenchidas, nada a fazer
+    }
     
     // Coleta cores únicas das variações
     const variacoes = Array.isArray(p.variacoes) ? p.variacoes : [];
@@ -14921,6 +14943,14 @@ Retorne JSON: {"ID": "valor", ...}`;
       // Substitui produtosErp pela página atual
       produtosErp.length = 0;
       (dados.produtos || []).forEach(p => produtosErp.push(p));
+      
+      // v32j.4 FIX: migra produtos pro modelo cores[] após carregar do backend.
+      // Sem isso: produtos vêm com `fotos[]` (galeria) mas `cores[]` vazio →
+      // modal de edição mostra "0 fotos" e duplicação clona produto sem fotos.
+      // A migração é idempotente — só roda nos que ainda não foram migrados.
+      if (typeof _migrarTodosOsProdutos === 'function') {
+        _migrarTodosOsProdutos();
+      }
       
       est.paginaAtual = filtros.page;
       est.total = dados.total || 0;
@@ -25397,7 +25427,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32j.3-duplicacao-demanda';
+  const _DIAG_VERSAO_PAINEL = 'v32j.5-fix-cores-vazias';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
