@@ -8906,16 +8906,17 @@ ${contextoFotos}
 REGRAS DO ML:
 - Título: EXATAMENTE entre 50 e 60 caracteres. Comece com tipo do produto + marca + diferencial + público.
   Ex: "Tênis Esportivo AMX Voxel Corrida Masculino Casual"
-- Descrição: NO MÍNIMO 400 caracteres. Estruture com:
-  ✅ Parágrafo inicial (oferta, benefício principal)
-  ✅ Lista com ✔ destacando 5-7 características técnicas
-  ✅ Quem usa esse produto / para que serve
-  ✅ Garantia e qualidade
-  ✅ Chamada final pra ação (compre agora, frete grátis, etc.)
+- Descrição: NO MÍNIMO 400 caracteres. Comece com o TÍTULO numa linha sozinha, deixe uma linha em branco, depois 3-5 parágrafos curtos de storytelling (use sentidos, situações reais, linguagem natural). Sem emojis, sem markdown.
+  Exemplo de início:
+  Tênis Esportivo Feminino Leve Confortável
+  
+  Imagine acordar e calçar um tênis que já começa o dia certo. Aquele que acompanha você da academia até o café com amigas, sem cansar nem um pouco. O conforto que você sente a cada passo — levinho, macio — faz toda diferença.
 - Marca: identifique pela foto ou pelo nome
 - Modelo: nome específico do produto
 - Peso: estime em KG (calçados ficam entre 0.4 e 1.2 kg geralmente)
 - skuPai: até 8 chars maiúsculos, sem espaço
+
+PROIBIDO: emojis (✅ ✔ 🌟 etc), markdown (**negrito**, # títulos), "BLOCO N", aspas no início/fim.
 
 RETORNE APENAS JSON nesse formato exato (sem \`\`\`json):
 {
@@ -16246,10 +16247,14 @@ ${marca ? 'MARCA: ' + marca : ''}
 ${genderAttr ? 'GÊNERO: ' + genderAttr : ''}
 ${tipoAttr ? 'TIPO: ' + tipoAttr : ''}
 
+REGRAS DURAS (não negociáveis):
+✗ JAMAIS troque o gênero. ${genderAttr ? 'Esse produto é "' + genderAttr + '" — o título NOVO deve mencionar "' + genderAttr.toLowerCase() + '" ou termo equivalente. NUNCA mude pra outro gênero.' : 'Se o nome original menciona gênero (masculino/feminino/unissex/infantil), MANTENHA o mesmo no novo título.'}
+✗ JAMAIS troque o tipo do produto (se é tênis, fica tênis — não vira sapatênis nem outro tipo)
+✗ JAMAIS troque a marca
+
 Crie um NOVO título de no máximo 60 caracteres que:
-✓ MANTENHA marca (se houver), tipo do produto, gênero
-✓ Use palavras-chave de busca relevantes pra esse produto (exemplos pra calçados: "leve", "confortável", "antiderrapante", "macio", "esportivo", "casual", "trabalho", "lançamento", "premium")
-✓ Tenha uma abordagem DIFERENTE do original — não seja uma simples reordenação de palavras
+✓ Use palavras-chave de busca relevantes (exemplos pra calçados: "leve", "confortável", "antiderrapante", "macio", "esportivo", "casual", "trabalho", "lançamento", "premium")
+✓ Tenha uma abordagem DIFERENTE do original — não seja simples reordenação
 ✓ Use linguagem natural, sem CAPS LOCK, sem emojis, sem aspas
 ✓ Pense em como um comprador buscaria esse produto
 
@@ -16259,6 +16264,28 @@ Responda APENAS o título novo. Nada mais.`;
       const resp = await chamarIA({ prompt, maxTokens: 100 });
       let novo = String(resp || '').trim().replace(/^["']|["']$/g, '').slice(0, 60);
       if (novo.length < 10) novo = nome;
+      
+      // v32j.6: validação de gênero — se o original era masculino e a IA gerou feminino
+      // (ou vice-versa), rejeita e mantém o original. Detecta por palavras-chave em PT-BR.
+      const masculino = /\b(masculino|masc\.?|homem|menino|garoto|man)\b/i;
+      const feminino = /\b(feminino|fem\.?|mulher|menina|garota|woman)\b/i;
+      const origIsMasc = masculino.test(nome);
+      const origIsFem = feminino.test(nome);
+      const novoIsMasc = masculino.test(novo);
+      const novoIsFem = feminino.test(novo);
+      
+      if ((origIsMasc && novoIsFem) || (origIsFem && novoIsMasc)) {
+        console.warn('[título IA] IA trocou gênero! orig:', nome, '→ novo:', novo, '— mantendo original');
+        return nome; // segurança máxima: mantém o original ao detectar troca
+      }
+      
+      // Se original tinha gênero e novo perdeu, força anexar
+      if (origIsMasc && !novoIsMasc) {
+        if (novo.length + 11 <= 60) novo += ' Masculino';
+      } else if (origIsFem && !novoIsFem) {
+        if (novo.length + 9 <= 60) novo += ' Feminino';
+      }
+      
       return novo;
     } catch(e) {
       console.warn('[duplicar] IA título falhou:', e.message);
@@ -16315,43 +16342,43 @@ Responda APENAS o título novo. Nada mais.`;
     // Guia de tamanhos pré-gerado (se houver variações)
     const guiaTam = _gerarGuiaTamanhos(p);
     
-    const prompt = `Você escreve descrições de produtos pra Mercado Livre Brasil.
+    const prompt = `Você escreve descrições de produtos pra Mercado Livre Brasil. Sua resposta vai DIRETO pro anúncio — qualquer palavra extra vira erro.
 
 PRODUTO: ${nome}
 ${marca ? 'MARCA: ' + marca : ''}
 ${tipo ? 'TIPO: ' + tipo : ''}
-${gender ? 'GÊNERO: ' + gender : ''}
-${descOrig ? 'DESCRIÇÃO ORIGINAL (use como base, NÃO copie):\n"""\n' + descOrig.slice(0, 1500) + '\n"""' : ''}
+${gender ? 'GÊNERO: ' + gender + ' (NUNCA mude o gênero — mantenha exato)' : ''}
+${descOrig ? 'DESCRIÇÃO ORIGINAL (use só pra entender o produto — REFAÇA do zero):\n"""\n' + descOrig.slice(0, 1500) + '\n"""' : ''}
 
-Gere uma descrição NOVA seguindo EXATAMENTE este formato (incluindo as linhas separadoras com underscores):
+ESTRUTURA EXATA que você deve seguir (mesma ordem, mesmos separadores, sem marcações em colchetes):
 
-[BLOCO 1 — STORYTELLING DE DESEJO]
-Escreva 3 a 5 parágrafos curtos que façam o cliente IMAGINAR usando o produto.
-- Use sentidos (conforto, leveza, beleza)
-- Cite situações reais (trabalho, festa, dia a dia, esporte)
-- Linguagem natural, calorosa, evite clichês como "qualidade premium"
-- Termine com algo que crie urgência ou desejo
+PRIMEIRO: o título do produto numa linha (idêntico ao PRODUTO acima)
 
-___________________________
+DEPOIS, uma linha em branco
 
+DEPOIS, 3 a 5 parágrafos curtos de storytelling que façam o cliente imaginar usando o produto. Use sentidos (conforto, leveza, beleza), cite situações reais (academia, trabalho, dia a dia, passeio), linguagem natural e calorosa. Termine com algo que crie desejo.
+
+DEPOIS, uma linha em branco e a separação: ___________________________
+
+DEPOIS, esta seção literal:
 Especificações do ${tipo}:
-- [Liste 6 a 10 especificações técnicas em bullets com hífen]
-- [Materiais, tecnologias, características]
+- (6 a 10 bullets com hífen sobre materiais, tecnologias, características)
 - Produto nacional
-- Gênero ${gender ? gender.toLowerCase() : '(deduzir do produto)'}
+${gender ? '- Gênero ' + gender.toLowerCase() : '- (deduzir gênero do produto)'}
 
 Acompanha:
 - 1 ${tipo}
 - 1 caixa
-- [outros itens se fizer sentido pro produto]
 
-___________________________
+DEPOIS, linha em branco e separação: ___________________________
 
+DEPOIS, esta seção literal:
 Guia de tamanhos em centímetros:
-${guiaTam || '[gerar guia de tamanhos baseado nas variações]'}
+${guiaTam || '(gerar guia baseado nas variações)'}
 
-___________________________
+DEPOIS, linha em branco e separação: ___________________________
 
+DEPOIS, esta seção literal:
 Dúvidas frequentes:
 - Produto disponível a pronta entrega.
 - Após a confirmação da compra o envio é imediato.
@@ -16360,23 +16387,35 @@ Dúvidas frequentes:
 - Garantia contra defeitos de fabricação.
 - Atendimento personalizado.
 
-REGRAS CRÍTICAS:
-✗ ABSOLUTAMENTE PROIBIDO: emojis Unicode (✔ ✅ ❌ 🌟 ⭐ 👗 👠 🏆 ⏰ 💳 📦 📱 🎁 ✨ ✊ ❤ 🔥 e QUALQUER outro caractere fora ASCII básico latino-1)
-✗ Sem markdown (sem **negrito**, sem # títulos)
-✗ Sem aspas no início/fim
-✗ Sem checkmarks, dingbats, símbolos coloridos
-✓ Pode usar HÍFEN (-) e ASTERISCO (*) pra bullets
-✓ Pode usar acentos do português (á é í ó ú ç) — esses são OK
-✓ Responda APENAS a descrição no formato literal acima
-✓ Mantenha as linhas separadoras de underscores
-✓ Use o tipo do produto correto no título dos blocos
-✓ MOTIVO: Mercado Livre rejeita descrições com emojis Unicode complexos. Se você usar emoji, o produto não pode ser publicado.`;
+EXEMPLO de como deve começar (apenas pra você ver o formato — NÃO copie esse texto):
+"""
+Tênis Polo Feminino Leve Confortável Esportivo
+
+Imagine acordar e calçar um tênis que já começa o dia certo. Aquele que acompanha você da academia até o café com amigas, sem cansar nem um pouco. O conforto que você sente a cada passo — levinho, macio, respirando junto com você — faz toda diferença quando você está sempre em movimento.
+"""
+
+REGRAS DURAS:
+✗ PROIBIDO escrever "BLOCO", "STORYTELLING", "DESEJO" ou qualquer marcação de seção em colchetes — sua resposta começa DIRETO pelo título do produto
+✗ PROIBIDO emojis Unicode (✔ ✅ ❌ 🌟 ⭐ 👗 👠 🏆 ⏰ 💳 📦 📱 🎁 ✨ ❤ 🔥 e qualquer outro fora ASCII latino-1 — o ML rejeita)
+✗ PROIBIDO markdown (sem **negrito**, sem # títulos)
+✗ PROIBIDO aspas no início/fim da resposta
+✗ PROIBIDO mudar o gênero do produto
+✓ Pode usar hífen (-) pra bullets
+✓ Pode usar acentos do português (á é í ó ú ç)
+✓ Linhas separadoras de underscores idênticas ao formato pedido
+✓ Responda APENAS a descrição. Nada antes, nada depois.`;
     
     try {
       const resp = await chamarIA({ prompt, maxTokens: 1500 });
       let novo = String(resp || '').trim().replace(/^["']|["']$/g, '');
       // Remove markdown se IA escapou
       novo = novo.replace(/\*\*/g, '').replace(/^#+\s+/gm, '');
+      // v32j.6: sanitização pós-IA — remove marcações de bloco que a IA às vezes vaza
+      // Padrões tipo "[BLOCO 1 — STORYTELLING DE DESEJO]" ou "BLOCO 2:" no início de linha
+      novo = novo
+        .replace(/^\s*\[?BLOCO\s*\d+\s*[—\-:]*[^\]\n]*\]?\s*\n?/gim, '')  // [BLOCO N — TEXTO] ou BLOCO N:
+        .replace(/^\s*STORYTELLING[^\n]*\n?/gim, '')  // STORYTELLING DE DESEJO
+        .trim();
       // v31b.4: sanitiza emojis (defesa em profundidade — ML rejeita)
       novo = v31_sanitizarEmojis(novo);
       if (novo.length < 100) novo = descOrig;
@@ -16417,6 +16456,14 @@ REGRAS CRÍTICAS:
     const produtoId = usarParams ? params.produtoId : _dupProdutoId;
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) { showToast('Produto não encontrado', true); return; }
+    
+    // v32j.6 FIX: garante que o produto tenha cores[] populado antes de clonar.
+    // Cenário: produto criado pelo fluxo automatizado (acaoExportar) nunca passa
+    // por abrirEditarProduto, então a migração de cores não rodou. A duplicação
+    // clonava p.cores=[{fotos:[]}] e cópias saíam sem fotos.
+    if (typeof migrarProdutoParaCores === 'function') {
+      migrarProdutoParaCores(p);
+    }
     
     const qtd = usarParams ? parseInt(params.qtd || 0) : (parseInt(document.getElementById('dupQuantidade').value) || 0);
     if (qtd < 1 || qtd > 50) { showToast('Quantidade entre 1 e 50', true); return; }
@@ -25427,7 +25474,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32j.5-fix-cores-vazias';
+  const _DIAG_VERSAO_PAINEL = 'v32j.6-fix-ia-3-bugs';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
