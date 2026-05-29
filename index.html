@@ -8543,7 +8543,10 @@
         atributosShopee: {},
         categoryIdMl: null,
         categoryIdShopee: null,
-        lojaId: d.lojaDestinoId || (d.contas && d.contas[0]),
+        // v32j.10: PRIORIZA d.contas[0] (a primeira marcada AGORA) em vez de
+        // d.lojaDestinoId (que pode estar stale). Bug anterior: marcou Shopee mas
+        // exportava pra ML porque lojaDestinoId apontava pra loja ML antiga.
+        lojaId: (d.contas && d.contas[0]) || d.lojaDestinoId,
         marketplaces: {},
         guiaTamanhos: d.guiaTamanhos || null,
       };
@@ -9636,50 +9639,117 @@ Retorne JSON: {"ID": "valor", ...}`;
     const p = _produtoDaDemanda(d);
     if (!p.idBanco) throw new Error('Produto sem idBanco — passo "Salvar" não rodou?');
     
-    const lojaId = p.lojaId || d.lojaDestinoId;
-    const loja = lojasErp.find(l => String(l.id) === String(lojaId));
-    if (!loja) throw new Error('Loja destino não encontrada');
-    
-    const lojaIdBanco = await garantirLojaNoBanco(loja);
-    if (!lojaIdBanco) throw new Error('Loja sem idBanco');
-    
-    // Atualiza objeto local pra montarPayloadExport funcionar
-    const pLocal = produtosErp.find(x => String(x.idBanco) === String(p.idBanco));
-    if (pLocal) {
-      // garante que campos atualizados estao no objeto
-      pLocal.atributosMl = p.atributosMl;
-      pLocal.categoryIdMl = p.categoryIdMl;
-      pLocal.marca = p.marca;
-      pLocal.categoria = p.categoria;
+    // v32j.10 FIX ARQUITETURAL: usa as CONTAS MARCADAS na demanda (d.contas),
+    // não a p.lojaId (que pode estar stale de uma demanda anterior).
+    // Cenário do bug: usuário marcou só Thell (Shopee, loja=8), mas p.lojaId
+    // estava com loja=3 (Trende ML) → tentava exportar pro ML e falhava.
+    // Agora: pega TODAS as contas marcadas e exporta pra CADA uma.
+    const contasMarcadas = (d.contas || []).filter(Boolean);
+    if (contasMarcadas.length === 0) {
+      throw new Error('Nenhuma conta marcada na demanda — selecione ao menos uma loja');
     }
     
-    const payload = montarPayloadExport(pLocal || p, loja.marketplace);
-    const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + p.idBanco;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ payload })
-    });
-    const data = await resp.json();
-    if (!data.ok && !data.success) {
-      const detalhes = data.detalhes ? ': ' + data.detalhes.slice(0,3).join(' | ') : '';
-      throw new Error((data.erro || 'erro desconhecido') + detalhes);
+    const lojasDestino = contasMarcadas
+      .map(id => lojasErp.find(l => String(l.id) === String(id)))
+      .filter(Boolean);
+    if (lojasDestino.length === 0) {
+      throw new Error('Contas marcadas não foram encontradas no sistema');
     }
-    const anuncioId = data.itemId || (data.dados && data.dados.id) || '?';
     
-    // v32j.3: dispara duplicação automática se a demanda tem essa opção ativa.
-    // Roda EM BACKGROUND (sem await) pra não bloquear o retorno do passo do fluxo —
-    // o overlay de duplicação aparece sozinho com seu próprio progress.
+    const resultados = [];
+    let okCount = 0, erroCount = 0;
+    
+    for (const loja of lojasDestino) {
+      const sufixoLog = lojasDestino.length > 1 ? `[${loja.nome} - ${loja.marketplace}] ` : '';
+      
+      // Valida campos críticos POR MARKETPLACE (a categoria certa)
+      const erros = [];
+      if (loja.marketplace === 'mercadolivre' && !p.categoryIdMl) {
+        erros.push('Categoria do Mercado Livre não definida (passo "Categoria ML" do fluxo deve rodar antes)');
+      }
+      if (loja.marketplace === 'shopee' && !p.categoryIdShopee && !p.categoriaShopee) {
+        erros.push('Categoria da Shopee não definida (passo "Categoria Shopee" do fluxo deve rodar antes)');
+      }
+      if (!p.nome || p.nome.length < 10) {
+        erros.push('Título muito curto ou vazio (mínimo 10 caracteres)');
+      }
+      if (!p.preco || parseFloat(p.preco) <= 0) {
+        erros.push('Preço inválido (deve ser maior que zero)');
+      }
+      if (!p.fotos || p.fotos.length === 0) {
+        const temFotosEmCores = (p.cores || []).some(c => (c.fotos||[]).length > 0);
+        if (!temFotosEmCores) erros.push('Produto sem fotos');
+      }
+      if (erros.length > 0) {
+        const msg = sufixoLog + 'pulado: ' + erros.join(' | ');
+        console.warn('[acaoExportar]', msg);
+        resultados.push('⚠ ' + msg);
+        erroCount++;
+        continue; // pula essa loja, tenta as próximas
+      }
+      
+      try {
+        const lojaIdBanco = await garantirLojaNoBanco(loja);
+        if (!lojaIdBanco) {
+          resultados.push('✗ ' + sufixoLog + 'loja sem idBanco');
+          erroCount++;
+          continue;
+        }
+        
+        // Atualiza p.lojaId pra refletir loja atual (importante pra duplicação)
+        const pLocal = produtosErp.find(x => String(x.idBanco) === String(p.idBanco));
+        if (pLocal) {
+          pLocal.atributosMl = p.atributosMl;
+          pLocal.categoryIdMl = p.categoryIdMl;
+          pLocal.marca = p.marca;
+          pLocal.categoria = p.categoria;
+          pLocal.lojaId = loja.id; // marca essa loja como atual
+        }
+        
+        const payload = montarPayloadExport(pLocal || p, loja.marketplace);
+        const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + p.idBanco;
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload })
+        });
+        const data = await resp.json();
+        if (!data.ok && !data.success) {
+          const detalhes = data.detalhes ? ': ' + data.detalhes.slice(0,3).join(' | ') : '';
+          resultados.push('✗ ' + sufixoLog + (data.erro || 'erro desconhecido') + detalhes);
+          erroCount++;
+          continue;
+        }
+        const anuncioId = data.itemId || (data.dados && data.dados.id) || '?';
+        resultados.push('✓ ' + sufixoLog + 'anúncio ' + anuncioId + ' (' + loja.marketplace + ')');
+        okCount++;
+        
+        // v32j.3: dispara duplicação automática (uma vez por loja exportada)
+        if (d && d.duplicacao && d.duplicacao.ativo) {
+          // dispara mas não espera (background)
+          _dispararDupDemanda(d, pLocal || p).catch(err => {
+            console.error('[acaoExportar→dup] falhou:', err);
+          });
+        }
+      } catch(err) {
+        resultados.push('✗ ' + sufixoLog + err.message);
+        erroCount++;
+      }
+    }
+    
+    // Monta mensagem final
     let _msgDup = '';
-    if (d && d.duplicacao && d.duplicacao.ativo) {
+    if (d && d.duplicacao && d.duplicacao.ativo && okCount > 0) {
       _msgDup = ' · 🔁 duplicação iniciada (' + (d.duplicacao.qtd || 3) + ' cópia' + ((d.duplicacao.qtd||3) > 1 ? 's' : '') + ')';
-      // dispara mas não espera (background)
-      _dispararDupDemanda(d, pLocal || p).catch(err => {
-        console.error('[acaoExportar→dup] falhou:', err);
-      });
     }
     
-    return { _msg: `Anúncio criado: ${anuncioId} (${loja.marketplace})` + _msgDup };
+    if (erroCount > 0 && okCount === 0) {
+      // Tudo falhou — lança erro
+      throw new Error(resultados.join('\n'));
+    }
+    
+    const resumo = okCount + ' exportado(s)' + (erroCount > 0 ? ', ' + erroCount + ' falha(s)' : '');
+    return { _msg: resumo + ' · ' + resultados.join(' | ') + _msgDup };
   }
   
   // === Fluxo dentro da demanda ===
@@ -11142,19 +11212,39 @@ Retorne JSON: {"ID": "valor", ...}`;
   
   // Retorna as fotos de uma variação baseado em v.corId. Fallback: fotos[] do produto.
   function fotosDaVariacao(v, produto) {
+    // v32j.8 FIX: une fotos da cor (específicas) + fotos gerais (universais),
+    // sem duplicar. Antes, se a cor tinha 1 foto e o produto 4 gerais, a variação
+    // só pegava a foto da cor — anúncio saía com 1 foto só. Agora junta tudo,
+    // mantendo as da cor primeiro (capa da variação preserva).
     const cores = obterCoresDoProduto(produto);
+    const gerais = (produto.fotos || []).filter(Boolean);
+    
+    const unir = (fotosDaCor) => {
+      const out = [];
+      const seen = new Set();
+      // 1º: fotos específicas da cor (capa da variação fica certa)
+      (fotosDaCor || []).forEach(u => {
+        if (u && !seen.has(u)) { seen.add(u); out.push(u); }
+      });
+      // 2º: fotos gerais que ainda não foram incluídas
+      gerais.forEach(u => {
+        if (u && !seen.has(u)) { seen.add(u); out.push(u); }
+      });
+      return out;
+    };
+    
     if (v && v.corId) {
       const cor = cores.find(c => c.id === v.corId);
-      if (cor && cor.fotos && cor.fotos.length > 0) return cor.fotos;
+      if (cor) return unir(cor.fotos);
     }
     // Fallback: tenta achar cor pelo nome
     if (v && v.cor) {
       const cor = cores.find(c => 
         String(c.nome).toLowerCase().trim() === String(v.cor).toLowerCase().trim()
       );
-      if (cor && cor.fotos && cor.fotos.length > 0) return cor.fotos;
+      if (cor) return unir(cor.fotos);
     }
-    return produto.fotos || [];
+    return gerais; // sem corId nem cor: só gerais
   }
   
   // Migra um produto antigo (sem cores[]) pro novo modelo.
@@ -25474,7 +25564,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32j.6-fix-ia-3-bugs';
+  const _DIAG_VERSAO_PAINEL = 'v32j.10-export-respeita-contas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
