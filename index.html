@@ -11810,6 +11810,14 @@ Retorne JSON: {"ID": "valor", ...}`;
           </div>
         </label>
         
+        <label style="display:flex;align-items:center;gap:8px;padding:10px;background:#faf5ff;border:1px solid #d8b4fe;border-radius:8px;cursor:pointer;margin-bottom:8px">
+          <input type="checkbox" id="mdRotacionarFotos" checked style="width:16px;height:16px">
+          <div>
+            <div style="font-size:12px;font-weight:700;color:#6b21a8">🔄 Rotacionar fotos (capa diferente por cópia)</div>
+            <div style="font-size:10px;color:#6b21a8;opacity:0.85">Evita a Shopee detectar anúncios duplicados pela mesma capa</div>
+          </div>
+        </label>
+        
         <label style="display:flex;align-items:center;gap:8px;padding:10px;background:#fef3c7;border-radius:8px;cursor:pointer;margin-bottom:8px">
           <input type="checkbox" id="mdExportarAuto" style="width:16px;height:16px">
           <div>
@@ -11851,6 +11859,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     const marcarRascunho = modal.querySelector('#mdMarcarRascunho').checked;
     const variarTitulo = modal.querySelector('#mdVariarTitulo').checked;
     const variarDescricao = modal.querySelector('#mdVariarDescricao').checked;
+    const rotacionarFotosOpt = modal.querySelector('#mdRotacionarFotos').checked;
     const lojaDestino = lojasErp.find(l => String(l.id) === String(lojaDestinoId));
     if (!lojaDestino) { alert('Loja não encontrada'); return; }
     
@@ -11956,6 +11965,26 @@ Retorne JSON: {"ID": "valor", ...}`;
             } catch(e) {
               log.textContent += ' ⚠ IA descrição falhou, usando original';
             }
+          }
+          
+          // 3.5. Rotação de fotos (capa diferente por cópia) — paridade com fluxo do card.
+          // Sem isso, todas as cópias ficam com a mesma capa e a Shopee acusa duplicidade.
+          if (rotacionarFotosOpt) {
+            const isShopeeDest = lojaDestino.marketplace === 'shopee';
+            const coresOrig = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
+            if (isShopeeDest) {
+              // Shopee usa p.fotos (galeria) E cores[].fotos[] (capas das variações): rotaciona ambos
+              novo.fotos = rotacionarFotos(p.fotos || [], k);
+              novo.cores = coresOrig.map(c => ({ id: c.id, nome: c.nome, fotos: rotacionarFotos(c.fotos || [], k) }));
+            } else {
+              // ML: fotos por cor; mantém p.fotos como união pra compat
+              const novasCores = coresOrig.map(c => ({ id: c.id, nome: c.nome, fotos: rotacionarFotos(c.fotos || [], k) }));
+              novo.cores = novasCores;
+              const setFotos = new Set();
+              novasCores.forEach(c => (c.fotos || []).forEach(url => setFotos.add(url)));
+              novo.fotos = Array.from(setFotos);
+            }
+            log.textContent += '\n    🔄 fotos rotacionadas (capa ' + k + ')';
           }
           
           // 4. Adiciona no array
@@ -12995,13 +13024,16 @@ Retorne JSON: {"ID": "valor", ...}`;
       instrucaoImagem: (primeiraFoto ? 'ANALISE A IMAGEM ANEXADA pra identificar tipo de calçado, cor, materiais visíveis, tipo de ajuste e demais características.\n' : '') + listaAtributosTxt + listaCategoriasShopeeTxt
     });
 
-    const opcoesIA = { prompt, system, maxTokens: 1500 };
+    const opcoesIA = { prompt, system, maxTokens: 3000 };
     if (primeiraFoto) opcoesIA.imagens = [primeiraFoto];
     const respostaIA = await chamarIA(opcoesIA);
-    let raw = String(respostaIA || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    let raw = String(respostaIA || '').trim();
     let dados;
-    try { dados = JSON.parse(raw); }
-    catch (e) { throw new Error('IA não respondeu JSON válido: ' + raw.slice(0, 120)); }
+    try {
+      dados = parseJsonTolerante(raw);
+    } catch (e) {
+      throw new Error('IA não respondeu JSON válido: ' + raw.slice(0, 120));
+    }
 
     // ── Aplica campos texto (só vazios) ─────────────────────────────────
     function setSeVazio(campo, valor) {
@@ -17545,10 +17577,19 @@ REGRAS DURAS:
         sug.innerHTML = '<div style="padding:10px;color:#9ca3af;font-size:12px">Nenhuma categoria encontrada</div>';
       } else {
         sug.innerHTML = matches.map(c => {
-          const nome = c.display_category_name || c.original_category_name;
+          const nome = c.display_category_name || c.original_category_name || '';
           const folha = !c.has_children;
-          return `<div onclick="selecionarCategoriaShopee('${c.category_id}', ${JSON.stringify(nome)})" 
-            style="padding:8px 10px;cursor:pointer;border-bottom:1px solid #fed7aa;font-size:12px;${folha ? 'color:#0f172a' : 'color:#9ca3af'}">
+          // Folha = selecionável (🟢). Pasta = só agrupador, NÃO clicável (📁).
+          // IMPORTANTE: não interpolar o NOME no onclick (aspas/apóstrofos quebram o HTML).
+          // Passamos só o category_id; o handler busca o nome no objeto.
+          const clickAttr = folha
+            ? `onclick="selecionarCategoriaShopee('${c.category_id}')" style="cursor:pointer;color:#0f172a"`
+            : `style="cursor:default;color:#9ca3af" title="Categoria agrupadora — escolha uma subcategoria 🟢"`;
+          return `<div ${clickAttr}
+            data-cat-id="${c.category_id}"
+            data-cat-folha="${folha ? '1' : '0'}"
+            class="shopee-cat-sug-item"
+            style="padding:8px 10px;border-bottom:1px solid #fed7aa;font-size:12px">
             ${folha ? '🟢' : '📁'} ${escapeHtml(nome)} <span style="color:#9ca3af;font-size:10px">id ${c.category_id}</span>
           </div>`;
         }).join('');
@@ -17557,22 +17598,49 @@ REGRAS DURAS:
     }, 250);
   }
   
-  async function selecionarCategoriaShopee(catId, catNome) {
+  async function selecionarCategoriaShopee(catId) {
     const catEl = document.getElementById('prodShopeeCategoria');
     const catIdEl = document.getElementById('prodShopeeCategoriaId');
     const catSelEl = document.getElementById('prodShopeeCategoriaSelecionada');
     const sug = document.getElementById('prodShopeeCategoriaSugestoes');
-    
-    catEl.value = catNome;
-    catIdEl.value = catId;
-    catSelEl.textContent = '✓ ' + catNome + ' (ID ' + catId + ')';
-    sug.style.display = 'none';
-    
-    // Carrega atributos
+
     const lojaShopee = lojasErp.find(l => l.marketplace === 'shopee' && l.idBanco);
-    if (lojaShopee) {
-      carregarAtributosShopeeNoModal(lojaShopee.idBanco, catId);
+    if (!lojaShopee) { showToast('Nenhuma loja Shopee conectada', true); return; }
+
+    // Resolve o nome e valida que é folha, a partir do objeto da categoria
+    let catNome = catId;
+    let ehFolha = true;
+    try {
+      const cats = await carregarCategoriasShopee(lojaShopee.idBanco);
+      const cat = (cats || []).find(c => String(c.category_id) === String(catId));
+      if (cat) {
+        catNome = cat.display_category_name || cat.original_category_name || String(catId);
+        ehFolha = !cat.has_children;
+      }
+    } catch (e) {
+      console.warn('[cat shopee] não resolveu nome:', e.message);
     }
+
+    if (!ehFolha) {
+      showToast('Essa é uma categoria agrupadora. Escolha uma subcategoria 🟢', true);
+      return;
+    }
+
+    // Aplica no modal
+    if (catEl) catEl.value = catNome;
+    if (catIdEl) catIdEl.value = catId;
+    if (catSelEl) catSelEl.textContent = '✓ ' + catNome + ' (ID ' + catId + ')';
+    if (sug) sug.style.display = 'none';
+
+    // Grava no produto em edição (corrige #5: categoria não persistia)
+    const p = produtosErp.find(x => String(x.id) === String(_produtoEditandoId));
+    if (p) {
+      p.categoryIdShopee = String(catId);
+      p.categoryNomeShopee = catNome;
+    }
+
+    // Carrega atributos da categoria escolhida
+    carregarAtributosShopeeNoModal(lojaShopee.idBanco, catId);
   }
   
   async function carregarAtributosShopeeNoModal(lojaIdBanco, catId) {
@@ -18975,13 +19043,14 @@ REGRAS DURAS:
       });
       
       // Se tem foto, manda no array de imagens (Claude vai analisar visualmente)
-      const opcoesIA = { prompt, system, maxTokens: 1500 };
+      const opcoesIA = { prompt, system, maxTokens: 3000 };
       if (primeiraFoto) opcoesIA.imagens = [primeiraFoto];
       const respostaIA = await chamarIA(opcoesIA);
-      let raw = String(respostaIA || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      let raw = String(respostaIA || '').trim();
       let dados;
-      try { dados = JSON.parse(raw); }
-      catch(e) { throw new Error('IA não respondeu JSON válido: ' + raw.slice(0, 120)); }
+      try {
+        dados = parseJsonTolerante(raw);
+      } catch(e) { throw new Error('IA não respondeu JSON válido: ' + raw.slice(0, 120)); }
       
       let preenchidos = 0;
       // Campos texto simples
@@ -26149,7 +26218,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.3-ia-massa-completa-progresso';
+  const _DIAG_VERSAO_PAINEL = 'v32k.6-massa-dup-rotaciona-fotos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -27548,6 +27617,65 @@ REGRAS DE OURO:
     return false;
   }
   
+  // Parse JSON tolerante: recupera respostas de IA levemente imperfeitas
+  // (cercas markdown, texto antes/depois, vírgula final, JSON truncado por limite
+  // de tokens com chaves/colchetes não fechados). Lança se for irrecuperável.
+  function parseJsonTolerante(texto) {
+    let s = String(texto || '').trim();
+    // remove cercas ```json ... ```
+    s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    // isola do primeiro { até o último } (descarta preâmbulo/epílogo)
+    const ini = s.indexOf('{');
+    if (ini > 0) s = s.slice(ini);
+    // 1ª tentativa: parse direto (corta no último } se houver lixo depois)
+    const fim = s.lastIndexOf('}');
+    if (fim !== -1) {
+      const candidato = s.slice(0, fim + 1);
+      try { return JSON.parse(candidato); } catch (e) { /* tenta reparar abaixo */ }
+    }
+    // 2ª tentativa: reparar JSON truncado.
+    // Varre respeitando strings/escapes, fecha o que ficou aberto.
+    let emString = false, escape = false;
+    const pilha = [];
+    let ultimoValido = -1;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { emString = !emString; if (!emString) ultimoValido = i; continue; }
+      if (emString) continue;
+      if (c === '{' || c === '[') pilha.push(c);
+      else if (c === '}' || c === ']') { pilha.pop(); ultimoValido = i; }
+      else if (/[0-9truefalsn]/.test(c)) ultimoValido = i; // fim de número/bool/null
+    }
+    let reparo;
+    if (emString) {
+      // Truncou DENTRO de um valor string: mantém tudo e fecha a aspa.
+      // (não corta no ultimoValido, senão perde o conteúdo da string aberta)
+      reparo = s + '"';
+    } else {
+      // Truncou entre tokens: corta no último token completo.
+      reparo = ultimoValido >= 0 ? s.slice(0, ultimoValido + 1) : s;
+      // remove vírgula/dois-pontos pendentes no fim (ex: {"a":1,  ou  {"a":)
+      reparo = reparo.replace(/[,:]\s*$/, '');
+    }
+    // se sobrou uma chave sem valor (ex: {"nome":"X","cor"  → vira {"nome":"X"} )
+    reparo = reparo.replace(/,\s*"[^"]*"\s*$/, '');
+    // fecha estruturas abertas na ordem inversa
+    for (let i = pilha.length - 1; i >= 0; i--) {
+      reparo += (pilha[i] === '{' ? '}' : ']');
+    }
+    try {
+      return JSON.parse(reparo);
+    } catch (e) {
+      // último recurso: remove o último par "chave":"valor incompleto" e re-fecha
+      let r2 = reparo.replace(/,?\s*"[^"]*"\s*:\s*"[^"]*$/, '');
+      r2 = r2.replace(/,\s*$/, '');
+      for (let i = pilha.length - 1; i >= 0; i--) r2 += (pilha[i] === '{' ? '}' : ']');
+      return JSON.parse(r2); // se ainda falhar, propaga
+    }
+  }
+
   async function chamarIA({ prompt, system, modelo, maxTokens, imagens, messages }) {
     const body = {
       system: system || '',
@@ -32311,7 +32439,7 @@ Seja específico e prático. Cite exatamente o que está errado.`;
           <div class="consultor-welcome-title">${conf.welcomeTitle}</div>
           <div class="consultor-welcome-desc">${conf.welcomeDesc}</div>
           <div class="consultor-suggestions">
-            ${conf.suggestions.map(s => `<button class="consultor-suggest" onclick="sendChatMsg(${JSON.stringify(s.text)})">${s.label}</button>`).join('')}
+            ${conf.suggestions.map(s => `<button class="consultor-suggest" data-msg="${escapeHtml(s.text)}" onclick="sendChatMsg(this.dataset.msg)">${s.label}</button>`).join('')}
           </div>
         </div>`;
       return;
