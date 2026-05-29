@@ -4675,10 +4675,9 @@
         <button type="button" data-prio="baixa" onclick="setDemandaPrio('baixa')">⚪ Baixa</button>
       </div>
     </div>
-    <div class="form-group">
-      <label class="form-label">Descrição / Detalhes</label>
-      <textarea class="form-input" id="demandaDescricao" rows="3" placeholder="O que precisa ser feito?"></textarea>
-    </div>
+    <!-- v32h.4 #5: campo Descrição/Detalhes removido (irrelevante).
+         textarea mantido oculto pra compatibilidade com código que lê o id. -->
+    <textarea id="demandaDescricao" style="display:none"></textarea>
     <div class="demanda-checklist-area" id="demandaChecklistArea" style="display:none"></div>
     
     <!-- Upload de imagens da demanda -->
@@ -4791,9 +4790,9 @@
     <!-- Barra de ações -->
     <div class="prod-toolbar">
       <div class="prod-busca">
-        <input type="text" id="prodBusca" placeholder="🔍 Buscar por nome, SKU ou EAN..." oninput="renderProdutos()">
+        <input type="text" id="prodBusca" placeholder="🔍 Buscar por nome, SKU ou EAN..." oninput="aoMudarFiltroProdutos()">
       </div>
-      <select id="prodFiltroLoja" class="prod-select" onchange="renderProdutos()">
+      <select id="prodFiltroLoja" class="prod-select" onchange="aoMudarFiltroProdutos()">
         <option value="">Todas as lojas</option>
       </select>
       <select id="prodFiltroMarketplace" class="prod-select" onchange="renderProdutos()" title="Filtra por marketplace">
@@ -4953,6 +4952,9 @@
     
     <!-- Lista de produtos (CHUNK 3.2: agora renderiza cards em grade) -->
     <div id="prodLista"></div>
+    
+    <!-- v32i.1: paginação clássica (carrega 50 por vez do backend) -->
+    <div id="prodPaginacao" style="margin-top:18px;display:none;justify-content:center;align-items:center;gap:6px;flex-wrap:wrap;padding:12px 0"></div>
   </div>
 </div>
 
@@ -8462,10 +8464,13 @@
       });
       
       // v32g.6: junta fotos GERAIS (galeria do anúncio) + fotos por cor.
-      // Antes pegava SÓ as da primeira cor, e as gerais sumiam — causou bug de
-      // "Apenas 1 foto" no QA. Agora: galeria = gerais primeiro + capas das cores.
+      // v32h.4 #2: Quando o produto tem APENAS 1 variação/cor, a foto dessa cor
+      // NÃO deve duplicar na galeria (fica só na variação). Galeria = gerais apenas.
+      // Quando tem múltiplas cores, junta 1ª de cada na galeria (mostra o leque).
       const fotosGlobaisOk = fotosGlobais.filter(f => typeof f === 'string' && f.startsWith('http'));
-      const capasDeCores = cores.flatMap(c => c.fotos.slice(0, 1));
+      const capasDeCores = cores.length > 1
+        ? cores.flatMap(c => c.fotos.slice(0, 1))
+        : [];  // 1 só variação → não polui galeria com a foto dela
       const fotosGaleria = [];
       const seen = new Set();
       [...fotosGlobaisOk, ...capasDeCores].forEach(u => {
@@ -9262,21 +9267,27 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
   async function acaoGerarSKUs(d) {
     const p = _produtoDaDemanda(d);
     if (!p.skuPai) { p.skuPai = 'P' + Date.now().toString().slice(-5); }
-    function abrev(s) {
-      return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0,3) || 'X';
-    }
-    function abrev(s) {
-      return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0,3) || 'X';
+    // v32h.4 #7: SKU agora usa cor COMPLETA (não mais só 3 primeiras letras).
+    // "Preto Pink" vira "PRETO-PINK", "Vermelho Bordô" vira "VERMELHO-BORDO".
+    // Espaços viram hifens, acentos removidos, mantém A-Z 0-9.
+    function normalizarCor(s) {
+      const limpo = String(s||'')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // tira acentos
+        .toUpperCase()
+        .replace(/[^A-Z0-9\s-]/g, '')   // só letras/números/espaço/hífen
+        .trim()
+        .replace(/[\s-]+/g, '-');        // qualquer combinação de espaços/hifens vira um hífen
+      return limpo || 'X';
     }
     const usados = new Set();
     let n = 0;
     (p.variacoes || []).forEach(v => {
       if (v.sku) { usados.add(v.sku); return; }
-      const cor = abrev(v.cor);
+      const cor = v.cor ? normalizarCor(v.cor) : '';
       const tam = String(v.tamanho||'').replace(/[^\w.\-]/g,'') || 'UN';
       let novo = [p.skuPai, cor, tam].filter(Boolean).join('-');
       let k = 2;
-      while (usados.has(novo)) { novo = [p.skuPai, cor, tam, k].join('-'); k++; }
+      while (usados.has(novo)) { novo = [p.skuPai, cor, tam, k].filter(Boolean).join('-'); k++; }
       v.sku = novo;
       usados.add(novo);
       n++;
@@ -9513,10 +9524,37 @@ Retorne JSON: {"ID": "valor", ...}`;
     const sel = document.getElementById('demandaFluxo');
     if (!sel) return;
     const atual = sel.value;
+    
+    // v32h.4 #1: Filtra fluxos pelos marketplaces das contas marcadas em cima.
+    // Cada fluxo tem f.marketplace ('shopee'|'mercadolivre'|null). Se for null,
+    // inferimos pelos passos (tipo 'catshopee' → shopee, 'catml' → ML; senão genérico).
+    const mktsSel = new Set();
+    (_demandaContasSel || []).forEach(id => {
+      const l = lojasErp.find(x => String(x.id) === String(id));
+      if (l && l.marketplace) mktsSel.add(l.marketplace);
+    });
+    
+    const inferirMkt = (f) => {
+      if (f.marketplace) return f.marketplace;
+      const tipos = (f.passos || []).map(p => p.tipo || '').join(' ');
+      if (/shopee/i.test(tipos)) return 'shopee';
+      if (/\bml\b|mercadolivre|categoria_ml|catml/i.test(tipos)) return 'mercadolivre';
+      return null; // genérico
+    };
+    
+    const fluxosVisiveis = (mktsSel.size === 0)
+      ? fluxosDemanda  // nenhuma conta marcada: mostra tudo
+      : fluxosDemanda.filter(f => {
+          const mk = inferirMkt(f);
+          return !mk || mktsSel.has(mk);  // genéricos sempre passam
+        });
+    
     sel.innerHTML = '<option value="">Sem fluxo definido</option>' +
-      fluxosDemanda.map(f => {
+      fluxosVisiveis.map(f => {
         const nPassos = (f.passos || []).length;
-        return `<option value="${f.id}">${escapeHtml(f.nome)} (${nPassos} passo${nPassos!==1?'s':''})</option>`;
+        const mk = inferirMkt(f);
+        const tag = mk === 'shopee' ? ' [🛒 Shopee]' : (mk === 'mercadolivre' ? ' [🟡 ML]' : '');
+        return `<option value="${f.id}">${escapeHtml(f.nome)}${tag} (${nPassos} passo${nPassos!==1?'s':''})</option>`;
       }).join('');
     if (atual) sel.value = atual;
   }
@@ -10776,19 +10814,15 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
     }
     
-    // Re-sincroniza fotos como união das cores (caso novas URLs)
-    let fotosFinais = fotosNovas;
-    if (Array.isArray(produto.cores) && produto.cores.length > 0) {
-      const set = new Set();
-      produto.cores.forEach(c => (c.fotos || []).forEach(url => {
-        if (url && !String(url).startsWith('data:')) set.add(url);
-      }));
-      if (set.size > 0) {
-        fotosFinais = Array.from(set);
-      }
-    }
-    
-    return { ...produto, fotos: fotosFinais };
+    // v32g.9 FIX CRÍTICO: NÃO sobrescrever produto.fotos com a união das cores!
+    // Bug anterior: se o produto tinha 11 fotos de capa e as cores tinham 1 cada,
+    // o "Array.from(set)" descartava as 11 capas e deixava 1 só (a foto da cor).
+    // Isso quebrava a duplicação Shopee: cada cópia ficava com "1 foto de capa".
+    //
+    // Agora: produto.fotos = todas as URLs das fotos originais (já uploadadas),
+    // SEM mistura forçada com cores. As cores ficam intactas no produto.cores[].
+    // Quem precisar de "todas as fotos juntas" pode fazer a união sob demanda.
+    return { ...produto, fotos: fotosNovas };
   }
   
   async function salvarProdutoNoBackend(produto) {
@@ -12111,8 +12145,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     function abrevCor(cor) {
       if (!cor) return 'COR';
-      return String(cor).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        .toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0,3) || 'COR';
+      // v32h.4 #7: cor completa em vez de só 3 letras. "Preto Pink" → "PRETO-PINK".
+      const limpo = String(cor).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase().replace(/[^A-Z0-9\s-]/g, '').trim().replace(/[\s-]+/g, '-');
+      return limpo || 'COR';
     }
     
     let prods = 0, vars = 0;
@@ -12313,8 +12349,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     const skusJaUsados = new Set(vars.filter(v => v.sku).map(v => v.sku.trim()));
     vars.forEach((v, i) => {
       if (v.sku && v.sku.trim()) return; // já tem
+      // v32h.4 #7: cor completa (não mais .slice(0,3))
       const cor = String(v.cor || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-        .toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,3) || '';
+        .toUpperCase().replace(/[^A-Z0-9\s-]/g, '').trim().replace(/[\s-]+/g, '-');
       const tam = String(v.tamanho || '').replace(/[^\w.\-]/g,'') || 'UN';
       let novoSku = [skuPai, cor, tam].filter(Boolean).join('-');
       
@@ -14534,6 +14571,137 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   
+  // ============================================================
+  // v32i.1: PRODUTOSTORE — abstração de paginação backend-driven
+  // ============================================================
+  // Problema resolvido: localStorage estourava com >100 produtos (vínculos pesados).
+  // Solução: backend é a fonte da verdade. produtosErp local só tem a PÁGINA ATUAL
+  // (50 itens). Filtros/busca vão no backend (que aceita ?q=, ?lojaId=, ?status=).
+  // Outras telas que ainda iteram produtosErp continuam funcionando — só que vão ver
+  // só a página atual. Pra operações globais (export em massa, etc), vai precisar
+  // adaptar pra puxar do backend — faremos camada a camada.
+  
+  window._prodPaginacao = {
+    paginaAtual: 1,
+    porPagina: 50,
+    total: 0,
+    filtrosAtivos: null,
+    carregando: false,
+  };
+  
+  // Constrói query string a partir dos filtros do painel
+  function _construirQueryProdutos(filtros) {
+    const params = new URLSearchParams();
+    params.set('page', filtros.page || 1);
+    params.set('limit', filtros.limit || 50);
+    if (filtros.q) params.set('q', filtros.q);
+    if (filtros.lojaId) params.set('lojaId', filtros.lojaId);
+    if (filtros.status) params.set('status', filtros.status);
+    return params.toString();
+  }
+  
+  // Carrega 1 página do backend e ATUALIZA produtosErp + renderiza
+  async function carregarPaginaProdutos(opts = {}) {
+    const est = window._prodPaginacao;
+    if (est.carregando) return;
+    est.carregando = true;
+    
+    // Lê filtros da tela
+    const busca = (document.getElementById('prodBusca')?.value || '').trim();
+    const filtroLoja = document.getElementById('prodFiltroLoja')?.value || '';
+    const filtroStatus = document.getElementById('prodFiltroStatus')?.value || '';
+    
+    const filtros = {
+      page: opts.page || est.paginaAtual,
+      limit: est.porPagina,
+      q: busca || undefined,
+      lojaId: filtroLoja || undefined,
+      status: filtroStatus || undefined,
+    };
+    
+    // Mostra indicador de loading discreto
+    const lista = document.getElementById('prodLista');
+    if (lista && !lista.querySelector('.prod-card')) {
+      lista.innerHTML = '<div style="text-align:center;padding:40px;color:var(--cinza-texto)">⏳ Carregando produtos...</div>';
+    }
+    
+    try {
+      const qs = _construirQueryProdutos(filtros);
+      const resp = await fetch(BACKEND_URL + '/api/produtos?' + qs, {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const dados = await resp.json();
+      if (!dados.ok) throw new Error(dados.erro || 'Erro ao carregar produtos');
+      
+      // Substitui produtosErp pela página atual
+      produtosErp.length = 0;
+      (dados.produtos || []).forEach(p => produtosErp.push(p));
+      
+      est.paginaAtual = filtros.page;
+      est.total = dados.total || 0;
+      est.filtrosAtivos = filtros;
+      
+      // Persiste só os 50 atuais (leve)
+      try { saveProdutos(); } catch(_) {}
+      
+      // Renderiza
+      if (typeof renderProdutos === 'function') renderProdutos();
+      _renderPaginacaoProdutos();
+    } catch(err) {
+      console.error('[carregarPaginaProdutos]', err);
+      showToast('Erro ao carregar produtos: ' + err.message, true);
+    } finally {
+      est.carregando = false;
+    }
+  }
+  
+  // Renderiza os botões de paginação 1 2 3 ... próximo
+  function _renderPaginacaoProdutos() {
+    const cont = document.getElementById('prodPaginacao');
+    const est = window._prodPaginacao;
+    if (!cont) return;
+    const totalPaginas = Math.max(1, Math.ceil(est.total / est.porPagina));
+    if (totalPaginas <= 1) { cont.style.display = 'none'; return; }
+    cont.style.display = 'flex';
+    
+    const btn = (txt, page, ativo = false, dis = false) => {
+      const style = ativo
+        ? 'background:var(--azul);color:white;font-weight:700'
+        : (dis ? 'background:#f3f4f6;color:#9ca3af;cursor:not-allowed' : 'background:white;color:var(--azul);cursor:pointer');
+      const onclick = (dis || ativo) ? '' : `onclick="carregarPaginaProdutos({page:${page}})"`;
+      return `<button ${onclick} style="min-width:36px;height:36px;padding:0 10px;border:1px solid var(--cinza-borda);border-radius:6px;font-size:13px;${style}">${txt}</button>`;
+    };
+    
+    // Janela: pagAtual ± 2 + sempre 1 e última
+    const p = est.paginaAtual;
+    const pgs = new Set([1, totalPaginas]);
+    for (let i = Math.max(1, p-2); i <= Math.min(totalPaginas, p+2); i++) pgs.add(i);
+    const arr = Array.from(pgs).sort((a, b) => a - b);
+    
+    let html = btn('‹', p - 1, false, p === 1);
+    arr.forEach((n, idx) => {
+      if (idx > 0 && arr[idx] - arr[idx-1] > 1) {
+        html += '<span style="color:#9ca3af;padding:0 4px">…</span>';
+      }
+      html += btn(String(n), n, n === p);
+    });
+    html += btn('›', p + 1, false, p === totalPaginas);
+    html += '<span style="margin-left:12px;font-size:12px;color:var(--cinza-texto)">' + ((p-1)*est.porPagina + 1) + '–' + Math.min(p*est.porPagina, est.total) + ' de ' + est.total + '</span>';
+    
+    cont.innerHTML = html;
+  }
+  
+  // Quando o user muda um filtro, volta pra página 1 e re-carrega.
+  // Debounced (300ms) pra não disparar a cada tecla na busca.
+  let _filtroProdutosTimer = null;
+  function aoMudarFiltroProdutos() {
+    clearTimeout(_filtroProdutosTimer);
+    _filtroProdutosTimer = setTimeout(() => {
+      window._prodPaginacao.paginaAtual = 1;
+      carregarPaginaProdutos({ page: 1 });
+    }, 300);
+  }
+  
   function renderProdutos() {
     // Popula filtro de loja
     const selLoja = document.getElementById('prodFiltroLoja');
@@ -15877,9 +16045,20 @@ REGRAS CRÍTICAS:
         // 4. Rotação de fotos
         if (opts.rotacionarFotos) {
           if (isShopee) {
-            // Shopee: fotos vão no anúncio geral → rotaciona p.fotos
+            // v32g.9 FIX: Shopee usa BOTH p.fotos (galeria) E p.cores[].fotos[] (capas das variações).
+            // Antes só rotacionava p.fotos e deixava cores intactas, mas o montarPayloadExport
+            // Shopee envia o cores[] inteiro pro backend, que pega a 1ª foto de cada cor como
+            // capa da variação. Sem rotacionar cores também, as cópias ficavam idênticas
+            // visualmente e a Shopee detectava duplicidade.
             novo.fotos = rotacionarFotos(p.fotos || [], k);
-            dupLogStep(`  ✓ Fotos rotacionadas (Shopee — ${novo.fotos.length} no anúncio)`, 'ok');
+            const coresOrig = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
+            novo.cores = coresOrig.map(c => ({
+              id: c.id,
+              nome: c.nome,
+              fotos: rotacionarFotos(c.fotos || [], k),
+            }));
+            const totalCores = novo.cores.reduce((acc, c) => acc + (c.fotos||[]).length, 0);
+            dupLogStep(`  ✓ Fotos rotacionadas (Shopee — ${novo.fotos.length} galeria + ${totalCores} em ${novo.cores.length} cor(es))`, 'ok');
           } else {
             // ML: fotos vão por COR (modelo novo produto.cores[].fotos[])
             // Rotaciona dentro de cada cor pra ficar diferente em cada cópia
@@ -17442,14 +17621,16 @@ REGRAS CRÍTICAS:
       }
     }
     
-    // Abrevia cor pra 3 letras maiusculas, removendo acentos/espaços
+    // v32h.4 #7: cor COMPLETA no SKU (não mais 3 primeiras). "Preto Pink" → "PRETO-PINK"
     function abrevCor(cor) {
       if (!cor) return '';
       const limpo = String(cor)
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
         .toUpperCase()
-        .replace(/[^A-Z0-9]/g, '');
-      return limpo.slice(0, 3) || 'COR';
+        .replace(/[^A-Z0-9\s-]/g, '')
+        .trim()
+        .replace(/[\s-]+/g, '-');
+      return limpo || 'COR';
     }
     
     // Detecta duplicados pra adicionar sufixo numerico
@@ -17585,7 +17766,10 @@ REGRAS CRÍTICAS:
     if (!skuPai) return 0;
     function abrevCor(cor) {
       if (!cor) return '';
-      return String(cor).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,3) || 'COR';
+      // v32h.4 #7: cor COMPLETA. "Preto Pink" → "PRETO-PINK"
+      const limpo = String(cor).normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+        .toUpperCase().replace(/[^A-Z0-9\s-]/g, '').trim().replace(/[\s-]+/g, '-');
+      return limpo || 'COR';
     }
     const usados = new Set(_variacoesProduto.map(v => v.sku && v.sku.trim()).filter(Boolean));
     let n = 0;
@@ -24736,7 +24920,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32g.8-categoria-interna-auto';
+  const _DIAG_VERSAO_PAINEL = 'v32i.1-paginacao-backend';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -25037,7 +25221,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (screenId === 'operacaoScreen') { renderOperacao(); iniciarVidaEscritorio(); }
     else { pararVidaEscritorio(); }
     if (screenId === 'settingsScreen') renderSettings();
-    if (screenId === 'produtosScreen') renderProdutos();
+    if (screenId === 'produtosScreen') {
+      // v32i.1: carrega página 1 do backend (paginação). Se já tem itens carregados
+      // e a página atual é 1 e sem filtros, só re-renderiza (evita re-fetch desnecessário).
+      const est = window._prodPaginacao || {};
+      if (est.paginaAtual === 1 && produtosErp.length > 0 && !est.filtrosAtivos?.q) {
+        renderProdutos();
+        if (typeof _renderPaginacaoProdutos === 'function') _renderPaginacaoProdutos();
+      } else {
+        carregarPaginaProdutos({ page: 1 });
+      }
+    }
     if (screenId === 'estoqueScreen') renderEstoque();
     if (screenId === 'promocoesScreen') renderPromocoes();
     if (screenId === 'reconciliacaoScreen') renderReconciliacao();
@@ -30037,6 +30231,8 @@ ${JSON.stringify(metricas, null, 2)}`
     // v32g.7: ajusta visibilidade de bloco de fotos gerais + limites
     if (typeof aplicarVisibilidadeFotosGerais === 'function') aplicarVisibilidadeFotosGerais();
     if (typeof renderUploadFotosPorCor === 'function') renderUploadFotosPorCor();
+    // v32h.4 #1: re-popula dropdown de fluxos pelos marketplaces marcados
+    if (typeof popularDropdownFluxos === 'function') popularDropdownFluxos();
   }
   
   // v32g.3: A "Loja destino" do fluxo é redundante quando o usuário já escolheu
@@ -31864,6 +32060,64 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       if (btn) btn.style.display = 'none';
     }
     deferredInstallPrompt = null;
+  }
+  
+  // ============================================================
+  // v32h.3: AUTO-LOGIN AO RECARREGAR A PÁGINA
+  // ============================================================
+  // Antes: F5 sempre voltava pra tela de login mesmo com token salvo.
+  // Agora: se houver token, valida com o backend (/api/auth/verificar) e:
+  //  - 200 OK → pula direto pro homeScreen e renderiza
+  //  - 401 → mostra login normalmente (token expirado/inválido)
+  //  - sem token → login normalmente
+  // O token JWT agora dura 10 anos (v32h.3 no backend) → só desloga clicando em Sair.
+  async function _autoLoginAoBoot() {
+    const token = getTokenLogin();
+    if (!token) return;  // sem token salvo: mostra login normalmente
+    
+    // Esconde a tela de login enquanto valida (evita flash)
+    const loginScreen = document.getElementById('loginScreen');
+    if (loginScreen) loginScreen.style.opacity = '0';
+    
+    try {
+      const backend = getBackendUrl();
+      if (!backend) {
+        if (loginScreen) loginScreen.style.opacity = '';
+        return;
+      }
+      
+      const resp = await fetch(backend + '/api/auth/verificar', {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.ok) {
+          // Token válido — entra direto
+          goTo('homeScreen');
+          if (typeof renderAll === 'function') renderAll();
+          return;
+        }
+      }
+      
+      // Token inválido/expirado — limpa e mostra login
+      setTokenLogin('');
+      localStorage.removeItem('lider_api_token');
+      if (loginScreen) loginScreen.style.opacity = '';
+    } catch(err) {
+      // Sem rede ou backend fora — mostra login (sem assumir que o token é inválido)
+      console.warn('[autoLogin] erro de rede:', err.message);
+      if (loginScreen) loginScreen.style.opacity = '';
+    }
+  }
+  
+  // Roda assim que o DOM estiver pronto. Se o script já carregou após o DOMContentLoaded,
+  // executa direto. Senão, espera o evento.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _autoLoginAoBoot);
+  } else {
+    _autoLoginAoBoot();
   }
 </script>
 
