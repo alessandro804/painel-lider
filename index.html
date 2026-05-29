@@ -4759,6 +4759,38 @@
         </div>
       </div>
       
+      <!-- v32j.3: Duplicação automática após exportar -->
+      <div class="form-group" style="background:white;border:1px solid #c4b5fd;border-radius:8px;padding:10px;margin-top:8px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:700;color:#7c3aed;margin:0">
+          <input type="checkbox" id="demandaDupAtivo" onchange="toggleBlocoDupDemanda()" style="width:16px;height:16px;cursor:pointer">
+          <span>🔁 Duplicar este anúncio após exportar</span>
+        </label>
+        
+        <div id="demandaDupOpts" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #e9d5ff">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <label style="font-size:12px;font-weight:600;color:#1e2a47">Quantidade de cópias:</label>
+            <input type="number" id="demandaDupQtd" min="1" max="10" value="3" style="width:60px;padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;text-align:center">
+            <span style="font-size:11px;color:#999">(máximo 10)</span>
+          </div>
+          
+          <div style="font-size:11px;color:#666;margin-bottom:6px">Cada cópia recebe variações automáticas pra não ser igual:</div>
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:12px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="demandaDupVariarTitulo" checked> ✨ Variar título com IA (SEO diferente)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="demandaDupVariarDescricao" checked> 📝 Variar descrição com IA
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="demandaDupRotacionarFotos" checked> 📷 Rotacionar ordem das fotos (cada cópia tem capa diferente)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="demandaDupVariarPreco" checked> 💰 +R$ 0,01 a cada cópia (evita preço idêntico)
+            </label>
+          </div>
+        </div>
+      </div>
+      
       <div style="font-size:11px;color:#7c3aed;background:white;padding:8px;border-radius:6px;margin-top:6px">
         💡 IA vai gerar título, descrição, marca, atributos e SKU automaticamente baseado nas fotos. Você pode deixar nome do produto vazio.
       </div>
@@ -5140,6 +5172,18 @@
         <div class="modal-v2-form-group">
           <label class="modal-v2-label">Descrição</label>
           <textarea class="modal-v2-input form-input" id="prodDescricao" rows="3" placeholder="Descrição que aparece nos anúncios"></textarea>
+        </div>
+        
+        <!-- v32j.1: palavras-chave SEO (5 tags). 
+             Vai pro Shopee (campo tags) e fim da descrição do ML como 
+             "Você também pode buscar por: ...". -->
+        <div class="modal-v2-form-group">
+          <label class="modal-v2-label" style="display:flex;align-items:center;gap:8px;justify-content:space-between">
+            <span>🔎 Palavras-chave SEO <span style="font-weight:400;color:#999;font-size:11px">(5 termos de busca)</span></span>
+            <button type="button" class="toolbar-btn" style="background:#7c3aed;color:white;border:none;font-size:11px;padding:4px 10px" onclick="gerarPalavrasChaveSEOModal()" title="A IA gera baseado no produto">✨ Gerar com IA</button>
+          </label>
+          <input type="text" class="modal-v2-input form-input" id="prodPalavrasChaveSEO" placeholder="Ex: tenis academia, tenis treino, tenis caminhada, calcado esportivo, tenis confortavel">
+          <div class="modal-v2-input-hint">Separe por vírgula. Aparecem nas buscas da Shopee e no fim da descrição do ML.</div>
         </div>
         
         <div class="modal-v2-form-row">
@@ -8562,6 +8606,87 @@
   }
   
   // Renderiza uma zona de upload pra cada cor digitada
+  // ============================================================
+  // v32j.2: DRAG & DROP DE FOTOS (reordenar arrastando)
+  // ============================================================
+  // Helper genérico que funciona em qualquer galeria de fotos.
+  // Aplica em <div data-drag-photo data-idx="N"> ... </div> dentro de um container.
+  //
+  // Uso: ativarDragDropFotos(container, (fromIdx, toIdx) => { /* reordena array */ });
+  // A função onReorder é chamada com os índices ANTIGO→NOVO; quem chama é
+  // responsável por mexer no array e re-renderizar.
+  //
+  // Funciona com HTML5 nativo (sem libs). Visual: opacidade na arrastada,
+  // borda azul + leve elevação no destino, scrollbar prevenido.
+  function ativarDragDropFotos(container, onReorder) {
+    if (!container || container._dragAtivo) return;
+    container._dragAtivo = true;
+    
+    let arrastadoIdx = null;
+    
+    container.addEventListener('dragstart', (e) => {
+      const item = e.target.closest('[data-drag-photo]');
+      if (!item) return;
+      arrastadoIdx = parseInt(item.dataset.idx, 10);
+      e.dataTransfer.effectAllowed = 'move';
+      // Firefox precisa de data setada pra disparar drag
+      try { e.dataTransfer.setData('text/plain', String(arrastadoIdx)); } catch(_) {}
+      // Visual: opacidade na arrastada
+      item.style.opacity = '0.4';
+    });
+    
+    container.addEventListener('dragend', (e) => {
+      const item = e.target.closest('[data-drag-photo]');
+      if (item) item.style.opacity = '';
+      // Limpa visual de todos os destinos
+      container.querySelectorAll('[data-drag-photo]').forEach(el => {
+        el.style.outline = '';
+        el.style.transform = '';
+      });
+      arrastadoIdx = null;
+    });
+    
+    container.addEventListener('dragover', (e) => {
+      e.preventDefault(); // necessário pra permitir drop
+      e.dataTransfer.dropEffect = 'move';
+    });
+    
+    container.addEventListener('dragenter', (e) => {
+      const item = e.target.closest('[data-drag-photo]');
+      if (!item || arrastadoIdx === null) return;
+      const idx = parseInt(item.dataset.idx, 10);
+      if (idx === arrastadoIdx) return;
+      item.style.outline = '3px solid #4f46e5';
+      item.style.transform = 'scale(1.05)';
+    });
+    
+    container.addEventListener('dragleave', (e) => {
+      const item = e.target.closest('[data-drag-photo]');
+      if (!item) return;
+      item.style.outline = '';
+      item.style.transform = '';
+    });
+    
+    container.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const item = e.target.closest('[data-drag-photo]');
+      if (!item || arrastadoIdx === null) return;
+      const destinoIdx = parseInt(item.dataset.idx, 10);
+      if (destinoIdx === arrastadoIdx) return;
+      const from = arrastadoIdx;
+      arrastadoIdx = null;
+      try { onReorder(from, destinoIdx); } catch(err) { console.warn('[dragdrop] onReorder:', err); }
+    });
+  }
+  
+  // Helper: reordena um array movendo o índice `from` pro `to` (sem perder elementos)
+  function moverNoArray(arr, from, to) {
+    if (from < 0 || to < 0 || from >= arr.length || to >= arr.length) return arr;
+    const item = arr.splice(from, 1)[0];
+    arr.splice(to, 0, item);
+    return arr;
+  }
+  
   function renderUploadFotosPorCor() {
     const grupo = document.getElementById('demandaFotosPorCorGrupo');
     const list = document.getElementById('demandaFotosPorCorList');
@@ -8586,8 +8711,10 @@
         const subindo = typeof f === 'object' && f && f._status === 'subindo';
         const src = typeof f === 'string' ? f : (f && f._dataUrl) || '';
         const overlay = subindo ? '<div style="position:absolute;inset:0;background:rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:9px;color:#7c3aed;font-weight:700">↑↑↑</div>' : '';
-        return '<div style="position:relative;display:inline-block">' +
-          (src ? '<img src="' + src + '" style="width:50px;height:50px;object-fit:cover;border-radius:6px;border:1px solid #ddd">' : '<div style="width:50px;height:50px;background:#f3f4f6;border-radius:6px"></div>') +
+        // v32j.2: draggable=true + data-drag-photo pra reordenar arrastando
+        const draggable = subindo ? '' : ' draggable="true"';
+        return '<div data-drag-photo data-cor="' + escapeHtml(cor) + '" data-idx="' + i + '"' + draggable + ' style="position:relative;display:inline-block;cursor:' + (subindo ? 'default' : 'grab') + ';transition:transform 0.15s,outline 0.15s">' +
+          (src ? '<img src="' + src + '" style="width:50px;height:50px;object-fit:cover;border-radius:6px;border:1px solid #ddd;pointer-events:none">' : '<div style="width:50px;height:50px;background:#f3f4f6;border-radius:6px"></div>') +
           overlay +
           (subindo ? '' : '<button onclick="removerFotoCorDemanda(\'' + corEsc + '\',' + i + ')" style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:white;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:1">×</button>') +
         '</div>';
@@ -8602,12 +8729,22 @@
         '<input type="file" id="' + inputId + '" accept="image/*" multiple style="display:none" onchange="adicionarFotoCorDemanda(\'' + corEsc + '\', this.files)">';
       return '<div style="margin-bottom:10px;padding:8px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px">' +
         '<div style="font-size:12px;font-weight:600;color:#7c3aed;margin-bottom:6px">🎨 ' + escapeHtml(cor) + ' <span style="font-weight:400;color:#999">(' + numFotos + '/' + limite + (numSubindo > 0 ? ' · ' + numSubindo + ' subindo' : '') + ')</span></div>' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' +
+        '<div class="dnd-fotos-cor" data-dnd-cor="' + escapeHtml(cor) + '" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' +
           thumbs +
           btnAdd +
         '</div>' +
       '</div>';
     }).join('');
+    
+    // v32j.2: ativa drag&drop em cada container de fotos por cor
+    list.querySelectorAll('.dnd-fotos-cor').forEach(container => {
+      const cor = container.dataset.dndCor;
+      ativarDragDropFotos(container, (from, to) => {
+        if (!window._demandaFotosPorCor[cor]) return;
+        moverNoArray(window._demandaFotosPorCor[cor], from, to);
+        renderUploadFotosPorCor();
+      });
+    });
   }
   
   async function adicionarFotoCorDemanda(cor, files) {
@@ -8967,7 +9104,19 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
       ? ` ⚠ Faltam ${faltamObrig.length} obrigatórios: ${faltamObrig.slice(0,3).map(a => a.id).join(',')}` 
       : '';
     
-    return { _msg: `título="${p.nome.slice(0,30)}", desc=${p.descricao.length}ch, marca="${p.marca}", ${preenchidos} atrs (${obrigatorios.length} obrig)${aviso}` };
+    // v32j.1: gera palavras-chave SEO (5 tags) pro produto.
+    // Vai pro Shopee como tags (campo oficial) e pro fim da descrição do ML como
+    // "Você também pode buscar por: tenis academia, tenis treino..."
+    let palavrasChaveMsg = '';
+    try {
+      const tags = await gerarPalavrasChaveSEO(p);
+      if (tags.length > 0) {
+        p.palavrasChaveSEO = tags;
+        palavrasChaveMsg = ', ' + tags.length + ' palavras-chave SEO';
+      }
+    } catch(e) { console.warn('[acaoIA] palavras-chave falharam:', e.message); }
+    
+    return { _msg: `título="${p.nome.slice(0,30)}", desc=${p.descricao.length}ch, marca="${p.marca}", ${preenchidos} atrs (${obrigatorios.length} obrig)${aviso}${palavrasChaveMsg}` };
   }
   
   async function acaoCategoriaML(d) {
@@ -9516,7 +9665,20 @@ Retorne JSON: {"ID": "valor", ...}`;
       throw new Error((data.erro || 'erro desconhecido') + detalhes);
     }
     const anuncioId = data.itemId || (data.dados && data.dados.id) || '?';
-    return { _msg: `Anúncio criado: ${anuncioId} (${loja.marketplace})` };
+    
+    // v32j.3: dispara duplicação automática se a demanda tem essa opção ativa.
+    // Roda EM BACKGROUND (sem await) pra não bloquear o retorno do passo do fluxo —
+    // o overlay de duplicação aparece sozinho com seu próprio progress.
+    let _msgDup = '';
+    if (d && d.duplicacao && d.duplicacao.ativo) {
+      _msgDup = ' · 🔁 duplicação iniciada (' + (d.duplicacao.qtd || 3) + ' cópia' + ((d.duplicacao.qtd||3) > 1 ? 's' : '') + ')';
+      // dispara mas não espera (background)
+      _dispararDupDemanda(d, pLocal || p).catch(err => {
+        console.error('[acaoExportar→dup] falhou:', err);
+      });
+    }
+    
+    return { _msg: `Anúncio criado: ${anuncioId} (${loja.marketplace})` + _msgDup };
   }
   
   // === Fluxo dentro da demanda ===
@@ -9667,12 +9829,23 @@ Retorne JSON: {"ID": "valor", ...}`;
         : img.status === 'erro' 
         ? '<div style="position:absolute;inset:0;background:rgba(255,255,255,0.85);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#dc2626;text-align:center;padding:4px" title="' + escapeHtml(img.erro||'erro') + '">⚠ erro</div>'
         : '';
-      return `<div class="demanda-upload-item" style="${borda};position:relative">
-        ${src ? `<img src="${escapeHtml(src)}" alt="${escapeHtml(img.nome)}" title="${escapeHtml(img.nome)}">` : `<div style="background:#f3f4f6;width:100%;aspect-ratio:1">📷</div>`}
+      // v32j.2: draggable=true só pra fotos ok (não pra subindo/erro)
+      const draggable = (img.status === 'subindo' || img.status === 'erro') ? '' : ' draggable="true"';
+      const cursor = draggable ? 'grab' : 'default';
+      return `<div data-drag-photo data-idx="${i}"${draggable} class="demanda-upload-item" style="${borda};position:relative;cursor:${cursor};transition:transform 0.15s,outline 0.15s">
+        ${src ? `<img src="${escapeHtml(src)}" alt="${escapeHtml(img.nome)}" title="${escapeHtml(img.nome)}" style="pointer-events:none">` : `<div style="background:#f3f4f6;width:100%;aspect-ratio:1">📷</div>`}
         ${overlay}
         <button type="button" class="demanda-upload-del" onclick="removerImagemDemanda(${i})">✕</button>
       </div>`;
     }).join('');
+    
+    // v32j.2: ativa drag&drop no grid das imagens gerais
+    ativarDragDropFotos(grid, async (from, to) => {
+      moverNoArray(_imagensDemandaSessao, from, to);
+      renderImagensDemanda();
+      // Persiste a nova ordem na demanda atual (igual ao remover)
+      try { await _persistirImagensNaDemanda(); } catch(_) {}
+    });
   }
   
   async function removerImagemDemanda(i) {
@@ -15576,6 +15749,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     document.getElementById('prodPreco').value = '';
     document.getElementById('prodPeso').value = '';
     document.getElementById('prodDescricao').value = '';
+    // v32j.1: limpa palavras-chave SEO
+    const pkSEOEl = document.getElementById('prodPalavrasChaveSEO');
+    if (pkSEOEl) pkSEOEl.value = '';
     document.getElementById('prodMarca').value = '';
     document.getElementById('prodMaterial').value = '';
     document.getElementById('prodStatus').value = 'rascunho';
@@ -15931,6 +16107,95 @@ Retorne JSON: {"ID": "valor", ...}`;
     return result;
   }
   
+  // v32j.1: Gera palavras-chave SEO via IA pra produto.
+  // Retorna array de 5 frases curtas (1-3 palavras cada) otimizadas pra busca.
+  // Usadas em: Shopee (campo tags) + ML (fim da descrição como "Você também pode buscar por...").
+  // 
+  // PRINCÍPIO: combinar TERMOS DE BUSCA REAIS que o cliente digita no Mercado Livre/Shopee,
+  // não sinônimos chiques. Ex pra um tênis: ["tenis academia", "tenis treino", "calcado esportivo",
+  // "tenis confortavel", "tenis caminhada"] — não ["calçado desportivo de alta performance"].
+  async function gerarPalavrasChaveSEO(produto) {
+    if (!produto || !produto.nome) return [];
+    
+    const partes = [];
+    partes.push('PRODUTO: ' + produto.nome);
+    if (produto.categoria) partes.push('CATEGORIA: ' + produto.categoria);
+    if (produto.marca) partes.push('MARCA: ' + produto.marca);
+    
+    // Atributos relevantes (gênero, cor predominante, material...) ajudam a IA escolher melhor
+    const atrs = produto.atributosMl || produto.atributosShopee || {};
+    const atrTxt = Object.entries(atrs)
+      .filter(([k,v]) => v && String(v).length < 50)
+      .slice(0, 6)
+      .map(([k,v]) => k + '=' + v)
+      .join(' | ');
+    if (atrTxt) partes.push('ATRIBUTOS: ' + atrTxt);
+    
+    const prompt = partes.join('\n') + '\n\n' +
+      'Gere 5 PALAVRAS-CHAVE de busca pra esse produto, tipo o que um cliente digitaria no Mercado Livre ou Shopee.\n' +
+      'REGRAS:\n' +
+      '- Cada palavra-chave tem 2-4 palavras (frases curtas).\n' +
+      '- Use termos populares, sem letras maiúsculas exceto siglas.\n' +
+      '- Inclua variações de busca diferentes (não 5 sinônimos parecidos).\n' +
+      '- Foque em quem é o cliente: gênero, ocasião, característica principal.\n' +
+      '- NÃO repita palavras do nome do produto inteiras — escolha termos COMPLEMENTARES.\n\n' +
+      'EXEMPLOS pra "Tênis Esportivo Feminino Preto":\n' +
+      '["tenis feminino academia", "calcado treino mulher", "tenis caminhada leve", "tenis preto basico", "tenis confortavel diario"]\n\n' +
+      'Responda APENAS um JSON: { "tags": ["...", "...", "...", "...", "..."] }';
+    
+    try {
+      const resp = await chamarIA({ prompt, system: 'Responde só JSON válido.', maxTokens: 250 });
+      let raw = String(resp || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      const dados = JSON.parse(raw);
+      const tags = Array.isArray(dados.tags) ? dados.tags : [];
+      // Sanitiza: corta, limita a 5, remove vazios e duplicatas
+      const limpas = [];
+      const seen = new Set();
+      tags.forEach(t => {
+        const s = String(t || '').trim().toLowerCase().slice(0, 50);
+        if (s && !seen.has(s)) { seen.add(s); limpas.push(s); }
+      });
+      return limpas.slice(0, 5);
+    } catch(e) {
+      console.warn('[palavrasChaveSEO] IA falhou:', e.message);
+      return [];
+    }
+  }
+  
+  // v32j.1: Gera palavras-chave SEO via IA no modal de produto (handler do botão).
+  // Lê o que está preenchido no modal e dispara a IA, preenchendo o campo no fim.
+  async function gerarPalavrasChaveSEOModal() {
+    const nome = (document.getElementById('prodNome')||{}).value || '';
+    if (!nome.trim()) {
+      showToast('Preencha o nome do produto antes pra IA ter contexto', true);
+      return;
+    }
+    const produtoTemp = {
+      nome,
+      marca: (document.getElementById('prodMarca')||{}).value || '',
+      categoria: (document.getElementById('prodCategoria')||{}).value || '',
+    };
+    
+    const btn = (typeof event !== 'undefined' && event) ? event.target : null;
+    const txtOrig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Gerando...'; }
+    
+    try {
+      const tags = await gerarPalavrasChaveSEO(produtoTemp);
+      if (tags.length === 0) {
+        showToast('IA não retornou palavras-chave válidas', true);
+        return;
+      }
+      const el = document.getElementById('prodPalavrasChaveSEO');
+      if (el) el.value = tags.join(', ');
+      showToast('✨ ' + tags.length + ' palavras-chave geradas — revise e ajuste se quiser');
+    } catch(e) {
+      showToast('IA falhou: ' + e.message, true);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = txtOrig; }
+    }
+  }
+  
   async function gerarTituloVariadoIA(produtoOuTitulo) {
     // Aceita produto inteiro (preferível) OU só título string (compat)
     const p = typeof produtoOuTitulo === 'string' 
@@ -16114,18 +16379,29 @@ REGRAS CRÍTICAS:
       .trim();
   }
   
-  async function iniciarDuplicacao() {
-    const p = produtosErp.find(x => String(x.id) === String(_dupProdutoId));
+  // v32j.3: aceita parâmetros pra ser chamada programaticamente (do fluxo de demanda).
+  // Compatível com chamada antiga sem args (lê o DOM como antes).
+  // params: { produtoId, qtd, lojaDestinoId, opts: {variarTitulo, variarDescricao, rotacionarFotos, variarPreco} }
+  async function iniciarDuplicacao(params) {
+    const usarParams = params && typeof params === 'object';
+    const produtoId = usarParams ? params.produtoId : _dupProdutoId;
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) { showToast('Produto não encontrado', true); return; }
     
-    const qtd = parseInt(document.getElementById('dupQuantidade').value) || 0;
+    const qtd = usarParams ? parseInt(params.qtd || 0) : (parseInt(document.getElementById('dupQuantidade').value) || 0);
     if (qtd < 1 || qtd > 50) { showToast('Quantidade entre 1 e 50', true); return; }
     
-    const lojaDestinoId = document.getElementById('dupLojaDestino').value;
+    const lojaDestinoId = usarParams ? params.lojaDestinoId : document.getElementById('dupLojaDestino').value;
     if (!lojaDestinoId) { showToast('Selecione uma loja destino', true); return; }
     const lojaDestino = lojasErp.find(l => String(l.id) === String(lojaDestinoId));
     
-    const opts = {
+    const opts = usarParams && params.opts ? {
+      variarTitulo: !!params.opts.variarTitulo,
+      variarDescricao: !!params.opts.variarDescricao,
+      rotacionarFotos: !!params.opts.rotacionarFotos,
+      variarPreco: !!params.opts.variarPreco,
+      lojaDestino,
+    } : {
       variarTitulo: document.getElementById('dupVariarTitulo').checked,
       variarDescricao: document.getElementById('dupVariarDescricao').checked,
       rotacionarFotos: document.getElementById('dupRotacionarFotos').checked,
@@ -16133,7 +16409,7 @@ REGRAS CRÍTICAS:
       lojaDestino,
     };
     
-    fecharDupConfig();
+    if (!usarParams) fecharDupConfig();
     document.getElementById('dupProgressOverlay').classList.add('active');
     document.getElementById('dupStepLog').innerHTML = '';
     const btnCancelar = document.getElementById('dupBtnCancelar');
@@ -16621,6 +16897,9 @@ REGRAS CRÍTICAS:
     document.getElementById('prodPreco').value = p.preco || '';
     document.getElementById('prodPeso').value = p.peso || '';
     document.getElementById('prodDescricao').value = p.descricao || '';
+    // v32j.1: carrega palavras-chave SEO
+    const pkSEOEl2 = document.getElementById('prodPalavrasChaveSEO');
+    if (pkSEOEl2) pkSEOEl2.value = Array.isArray(p.palavrasChaveSEO) ? p.palavrasChaveSEO.join(', ') : '';
     document.getElementById('prodMarca').value = p.marca || '';
     document.getElementById('prodMaterial').value = p.material || '';
     document.getElementById('prodStatus').value = p.status === 'excluido' ? 'rascunho' : p.status;
@@ -17431,9 +17710,11 @@ REGRAS CRÍTICAS:
     cont.innerHTML = _coresProdutoSessao.map((c, ci) => {
       const fotosHtml = (c.fotos || []).map((src, i) => {
         const subindo = String(src).startsWith('data:image');
+        // v32j.2: draggable=true + data-drag-photo pra reordenar arrastando
+        const draggable = subindo ? '' : ' draggable="true"';
         return `
-        <div style="position:relative;width:80px;height:80px;border-radius:6px;overflow:hidden;border:1px solid #e5e7eb;background:#f9fafb${subindo ? ';opacity:0.7' : ''}">
-          <img src="${escapeHtml(src)}" style="width:100%;height:100%;object-fit:cover">
+        <div data-drag-photo data-cor-id="${c.id}" data-idx="${i}"${draggable} style="position:relative;width:80px;height:80px;border-radius:6px;overflow:hidden;border:1px solid #e5e7eb;background:#f9fafb${subindo ? ';opacity:0.7' : ''};cursor:${subindo ? 'default' : 'grab'};transition:transform 0.15s,outline 0.15s">
+          <img src="${escapeHtml(src)}" style="width:100%;height:100%;object-fit:cover;pointer-events:none">
           ${subindo ? '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);color:white;font-size:10px;font-weight:700">⏳ subindo</div>' : ''}
           <button type="button" onclick="removerFotoDaCor('${c.id}',${i})" style="position:absolute;top:2px;right:2px;width:18px;height:18px;background:rgba(220,38,38,0.9);color:white;border:none;border-radius:50%;cursor:pointer;font-size:10px;line-height:1;display:flex;align-items:center;justify-content:center" title="Remover">✕</button>
           ${(!subindo && i > 0) ? `<button type="button" onclick="moverFotoCor('${c.id}',${i},-1)" style="position:absolute;bottom:2px;left:2px;width:18px;height:18px;background:rgba(30,42,71,0.85);color:white;border:none;border-radius:3px;cursor:pointer;font-size:10px;line-height:1" title="Mover pra esquerda">◀</button>` : ''}
@@ -17452,7 +17733,7 @@ REGRAS CRÍTICAS:
             <span style="font-size:10px;color:#6b7280">${(c.fotos||[]).length} foto${(c.fotos||[]).length===1?'':'s'}${varsCount>0 ? ' · '+varsCount+' var.' : ''}</span>
             <button type="button" onclick="removerCorProduto('${c.id}')" style="padding:5px 8px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:5px;cursor:pointer;font-size:11px" title="Remover cor">🗑</button>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+          <div class="dnd-fotos-cor-produto" data-cor-id="${c.id}" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
             ${fotosHtml || '<div style="color:#9ca3af;font-size:11px;padding:10px">Sem fotos ainda</div>'}
           </div>
           <button type="button" onclick="abrirUploadFotosCor('${c.id}')" style="width:100%;padding:8px;background:white;border:1px dashed #d1d5db;border-radius:6px;color:#6b7280;font-size:11px;cursor:pointer">
@@ -17461,6 +17742,17 @@ REGRAS CRÍTICAS:
         </div>
       `;
     }).join('');
+    
+    // v32j.2: ativa drag&drop em cada container de fotos por cor do produto manual
+    cont.querySelectorAll('.dnd-fotos-cor-produto').forEach(container => {
+      const corId = container.dataset.corId;
+      ativarDragDropFotos(container, (from, to) => {
+        const cor = _coresProdutoSessao.find(c => c.id === corId);
+        if (!cor || !cor.fotos) return;
+        moverNoArray(cor.fotos, from, to);
+        renderCoresProduto();
+      });
+    });
   }
   
   // === Compat: funções antigas redirecionam pra UI nova ===
@@ -18554,6 +18846,9 @@ REGRAS CRÍTICAS:
       preco: parseFloat(document.getElementById('prodPreco').value) || 0,
       peso: parseFloat(document.getElementById('prodPeso').value) || 0,
       descricao: document.getElementById('prodDescricao').value.trim(),
+      // v32j.1: salva palavras-chave SEO (CSV → array)
+      palavrasChaveSEO: ((document.getElementById('prodPalavrasChaveSEO')||{}).value || '')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean).slice(0, 5),
       marca: document.getElementById('prodMarca').value.trim(),
       material: document.getElementById('prodMaterial').value.trim(),
       status: document.getElementById('prodStatus').value,
@@ -19217,6 +19512,9 @@ REGRAS CRÍTICAS:
         atributosShopee: p.atributosShopee || [],
         // Marca
         marca: p.marca || '',
+        // v32j.1: palavras-chave SEO. Shopee aceita 'tags' como campo oficial pra busca.
+        // Geradas pela IA via gerarPalavrasChaveSEO; podem ser editadas no modal do produto.
+        tags: Array.isArray(p.palavrasChaveSEO) ? p.palavrasChaveSEO.slice(0, 5) : [],
       };
     }
     // === MERCADO LIVRE — novo modelo (preço por variação + guia de tamanhos) ===
@@ -19307,7 +19605,19 @@ REGRAS CRÍTICAS:
         // ITEM_CONDITION: a API só aceita "New" para anúncios novos
         condition: 'new',
         listing_type_id: 'gold_special',
-        description: { plain_text: p.descricao || '' },
+        // v32j.1: descrição + palavras-chave SEO em parágrafo separado no fim.
+        // ML não tem campo "tags" público — o jeito de ajudar a busca é com termos
+        // naturais ao fim da descrição em formato "Você também pode buscar por: ...".
+        description: { plain_text: (() => {
+          let desc = p.descricao || '';
+          if (Array.isArray(p.palavrasChaveSEO) && p.palavrasChaveSEO.length > 0) {
+            const tags = p.palavrasChaveSEO.slice(0, 5).map(t => String(t).trim()).filter(Boolean);
+            if (tags.length > 0) {
+              desc += '\n\nVocê também pode buscar por: ' + tags.join(', ') + '.';
+            }
+          }
+          return desc;
+        })() },
         pictures: (() => {
           // União de todas as fotos das cores (sem duplicar)
           // Capa do anúncio = primeira foto da primeira cor (orden tradicional)
@@ -25087,7 +25397,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32i.5-fix-categoria-shopee';
+  const _DIAG_VERSAO_PAINEL = 'v32j.3-duplicacao-demanda';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30319,6 +30629,8 @@ ${JSON.stringify(metricas, null, 2)}`
         const edIn = document.getElementById('demandaEstoqueDefault'); if (edIn) edIn.value = d.estoqueDefault || '';
         window._demandaFotosPorCor = d.fotosPorCor ? JSON.parse(JSON.stringify(d.fotosPorCor)) : {};
         renderUploadFotosPorCor();
+        // v32j.3: restaura opções de duplicação automática
+        _aplicarOpcoesDupDemanda(d);
       }
     } else {
       document.getElementById('demandaModalTitle').textContent = '+ Nova Demanda';
@@ -30326,6 +30638,8 @@ ${JSON.stringify(metricas, null, 2)}`
       document.getElementById('demandaChecklistArea').style.display = 'none';
       document.getElementById('demandaChecklistArea').innerHTML = '';
       atualizarTiposPorSetor();
+      // v32j.3: limpa opções de duplicação (estado padrão pra demanda nova)
+      _aplicarOpcoesDupDemanda(null);
     }
     
     renderDemandaContas();
@@ -30384,6 +30698,88 @@ ${JSON.stringify(metricas, null, 2)}`
         </label>
       `;
     }).join('');
+  }
+  
+  // v32j.3: Duplicação automática integrada à demanda.
+  // Quando o usuário marca "Duplicar este anúncio após exportar" no modal de demanda
+  // e configura a quantidade, o sistema dispara iniciarDuplicacao() automaticamente
+  // após o passo de export ter sucesso. As opções são salvas em d.duplicacao.
+  
+  function toggleBlocoDupDemanda() {
+    const cb = document.getElementById('demandaDupAtivo');
+    const bloco = document.getElementById('demandaDupOpts');
+    if (cb && bloco) bloco.style.display = cb.checked ? 'block' : 'none';
+  }
+  
+  // Coleta as opções de duplicação do modal de demanda
+  function _coletarOpcoesDupDemanda() {
+    const ativo = (document.getElementById('demandaDupAtivo') || {}).checked;
+    if (!ativo) return null;
+    const qtd = Math.min(10, Math.max(1, parseInt((document.getElementById('demandaDupQtd')||{}).value) || 3));
+    return {
+      ativo: true,
+      qtd,
+      variarTitulo: !!(document.getElementById('demandaDupVariarTitulo') || {}).checked,
+      variarDescricao: !!(document.getElementById('demandaDupVariarDescricao') || {}).checked,
+      rotacionarFotos: !!(document.getElementById('demandaDupRotacionarFotos') || {}).checked,
+      variarPreco: !!(document.getElementById('demandaDupVariarPreco') || {}).checked,
+    };
+  }
+  
+  // Aplica as opções de duplicação salvas no modal (ao abrir uma demanda existente)
+  function _aplicarOpcoesDupDemanda(d) {
+    const opts = d && d.duplicacao;
+    if (!opts) {
+      // Garante estado vazio
+      const cb = document.getElementById('demandaDupAtivo');
+      if (cb) cb.checked = false;
+      toggleBlocoDupDemanda();
+      return;
+    }
+    const set = (id, val) => { const el = document.getElementById(id); if (el) { if (el.type === 'checkbox') el.checked = !!val; else el.value = val; }};
+    set('demandaDupAtivo', opts.ativo !== false);
+    set('demandaDupQtd', opts.qtd || 3);
+    set('demandaDupVariarTitulo', opts.variarTitulo !== false);
+    set('demandaDupVariarDescricao', opts.variarDescricao !== false);
+    set('demandaDupRotacionarFotos', opts.rotacionarFotos !== false);
+    set('demandaDupVariarPreco', opts.variarPreco !== false);
+    toggleBlocoDupDemanda();
+  }
+  
+  // Dispara a duplicação programaticamente após o export ter sucesso.
+  // Chamada do acaoExportar quando d.duplicacao.ativo === true.
+  async function _dispararDupDemanda(d, produtoExportado) {
+    if (!d || !d.duplicacao || !d.duplicacao.ativo) return null;
+    if (!produtoExportado || !produtoExportado.id) return null;
+    const lojaDestino = produtoExportado.lojaId 
+      ? lojasErp.find(l => String(l.id) === String(produtoExportado.lojaId))
+      : null;
+    if (!lojaDestino) {
+      console.warn('[demanda dup] loja destino não achada');
+      return null;
+    }
+    const opts = d.duplicacao;
+    const qtd = Math.min(10, Math.max(1, parseInt(opts.qtd) || 3));
+    
+    showToast(`🔁 Iniciando duplicação automática (${qtd} cópia${qtd>1?'s':''})...`);
+    
+    // Chama iniciarDuplicacao com parâmetros diretos (não depende do DOM do dup config)
+    try {
+      await iniciarDuplicacao({
+        produtoId: produtoExportado.id,
+        qtd,
+        lojaDestinoId: lojaDestino.id,
+        opts: {
+          variarTitulo: opts.variarTitulo,
+          variarDescricao: opts.variarDescricao,
+          rotacionarFotos: opts.rotacionarFotos,
+          variarPreco: opts.variarPreco,
+        }
+      });
+    } catch(e) {
+      console.error('[demanda dup] falhou:', e);
+      showToast('Duplicação automática falhou: ' + e.message, true);
+    }
   }
   
   function toggleDemandaConta(id) {
@@ -30652,6 +31048,8 @@ ${JSON.stringify(metricas, null, 2)}`
         });
         d.precoBase = precoBase;
         d.estoqueDefault = estoqueDefault;
+        // v32j.3: persiste opções de duplicação automática (se ativadas)
+        d.duplicacao = _coletarOpcoesDupDemanda();
         // SEMPRE atualiza imagens da sessão (corrige bug de "imagem antiga voltava")
         d.imagens = _imagensDemandaSessao
           .filter(i => i.url && i.status === 'ok')
@@ -30687,6 +31085,8 @@ ${JSON.stringify(metricas, null, 2)}`
         })(),
         precoBase,
         estoqueDefault,
+        // v32j.3: opções de duplicação automática (null se desativado)
+        duplicacao: _coletarOpcoesDupDemanda(),
         // Imagens da sessão (já no Storage)
         imagens: _imagensDemandaSessao
           .filter(i => i.url && i.status === 'ok')
