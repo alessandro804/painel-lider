@@ -4802,7 +4802,7 @@
         <option value="tiktok">🎵 TikTok Shop</option>
         <option value="shein">👗 Shein</option>
       </select>
-      <select id="prodFiltroCategoria" class="prod-select" onchange="renderProdutos()" title="Filtra por categoria interna">
+      <select id="prodFiltroCategoria" class="prod-select" onchange="aoMudarFiltroProdutos()" title="Filtra por categoria interna">
         <option value="">Todas categorias</option>
       </select>
       <button class="toolbar-btn" onclick="abrirFiltrosAvancados()" title="Mais filtros">⚙ Mais filtros</button>
@@ -4832,15 +4832,15 @@
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
         <div>
           <label style="font-size:11px;font-weight:700;color:#6b7280">Marca</label>
-          <select id="prodFiltroMarca" class="form-input" onchange="renderProdutos()">
+          <select id="prodFiltroMarca" class="form-input" onchange="aoMudarFiltroProdutos()">
             <option value="">Todas marcas</option>
           </select>
         </div>
         <div>
           <label style="font-size:11px;font-weight:700;color:#6b7280">Faixa de preço</label>
           <div style="display:flex;gap:4px">
-            <input type="number" id="prodFiltroPrecoMin" class="form-input" placeholder="Min" style="font-size:12px;padding:6px" oninput="renderProdutos()">
-            <input type="number" id="prodFiltroPrecoMax" class="form-input" placeholder="Max" style="font-size:12px;padding:6px" oninput="renderProdutos()">
+            <input type="number" id="prodFiltroPrecoMin" class="form-input" placeholder="Min" style="font-size:12px;padding:6px" oninput="aoMudarFiltroProdutos()">
+            <input type="number" id="prodFiltroPrecoMax" class="form-input" placeholder="Max" style="font-size:12px;padding:6px" oninput="aoMudarFiltroProdutos()">
           </div>
         </div>
         <div>
@@ -14597,6 +14597,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (filtros.q) params.set('q', filtros.q);
     if (filtros.lojaId) params.set('lojaId', filtros.lojaId);
     if (filtros.status) params.set('status', filtros.status);
+    // v32i.2: filtros adicionais
+    if (filtros.categoria) params.set('categoria', filtros.categoria);
+    if (filtros.marca) params.set('marca', filtros.marca);
+    if (filtros.precoMin) params.set('precoMin', filtros.precoMin);
+    if (filtros.precoMax) params.set('precoMax', filtros.precoMax);
     return params.toString();
   }
   
@@ -14610,6 +14615,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     const busca = (document.getElementById('prodBusca')?.value || '').trim();
     const filtroLoja = document.getElementById('prodFiltroLoja')?.value || '';
     const filtroStatus = document.getElementById('prodFiltroStatus')?.value || '';
+    // v32i.2: filtros adicionais que agora vão no backend
+    const filtroCat = document.getElementById('prodFiltroCategoria')?.value || '';
+    const filtroMarca = document.getElementById('prodFiltroMarca')?.value || '';
+    const precoMin = document.getElementById('prodFiltroPrecoMin')?.value || '';
+    const precoMax = document.getElementById('prodFiltroPrecoMax')?.value || '';
     
     const filtros = {
       page: opts.page || est.paginaAtual,
@@ -14617,6 +14627,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       q: busca || undefined,
       lojaId: filtroLoja || undefined,
       status: filtroStatus || undefined,
+      categoria: filtroCat || undefined,
+      marca: filtroMarca || undefined,
+      precoMin: precoMin || undefined,
+      precoMax: precoMax || undefined,
     };
     
     // Mostra indicador de loading discreto
@@ -14717,21 +14731,56 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
     
     // Popula filtros de categoria interna e marca a partir do catálogo
+    // v32i.2: usa endpoint /facets do backend (mostra TODAS as opções do catálogo,
+    // não só as dos 50 produtos da página atual). Carregamento assíncrono em background.
+    if (!window._facetsLoaded) {
+      window._facetsLoaded = true; // só carrega 1x por sessão
+      (async () => {
+        try {
+          const resp = await fetch(BACKEND_URL + '/api/produtos/facets', {
+            headers: { 'x-api-token': getApiToken() }
+          });
+          const dados = await resp.json();
+          if (dados.ok) {
+            window._facetsCache = dados;
+            // Re-renderiza só os selects de filtros
+            const selCat = document.getElementById('prodFiltroCategoria');
+            if (selCat) {
+              const atual = selCat.value;
+              selCat.innerHTML = '<option value="">Todas categorias</option>' +
+                dados.categorias.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+              if (atual) selCat.value = atual;
+            }
+            const selMarca = document.getElementById('prodFiltroMarca');
+            if (selMarca) {
+              const atual = selMarca.value;
+              selMarca.innerHTML = '<option value="">Todas marcas</option>' +
+                dados.marcas.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+              if (atual) selMarca.value = atual;
+            }
+          }
+        } catch(e) { console.warn('[facets]', e); }
+      })();
+    }
+    
+    // Fallback (e popula imediato ao carregar): usa o que já tem em cache local
     const selCat = document.getElementById('prodFiltroCategoria');
-    if (selCat) {
+    if (selCat && !selCat.dataset.facetsLoaded) {
       const atual = selCat.value;
-      const cats = Array.from(new Set(produtosErp.map(p => p.categoria).filter(Boolean))).sort();
+      const cats = (window._facetsCache?.categorias) || Array.from(new Set(produtosErp.map(p => p.categoria).filter(Boolean))).sort();
       selCat.innerHTML = '<option value="">Todas categorias</option>' +
         cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
       if (atual) selCat.value = atual;
+      if (window._facetsCache) selCat.dataset.facetsLoaded = '1';
     }
     const selMarca = document.getElementById('prodFiltroMarca');
-    if (selMarca) {
+    if (selMarca && !selMarca.dataset.facetsLoaded) {
       const atual = selMarca.value;
-      const marcas = Array.from(new Set(produtosErp.map(p => p.marca).filter(Boolean))).sort();
+      const marcas = (window._facetsCache?.marcas) || Array.from(new Set(produtosErp.map(p => p.marca).filter(Boolean))).sort();
       selMarca.innerHTML = '<option value="">Todas marcas</option>' +
         marcas.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
       if (atual) selMarca.value = atual;
+      if (window._facetsCache) selMarca.dataset.facetsLoaded = '1';
     }
     
     const lista = document.getElementById('prodLista');
@@ -14903,8 +14952,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     // Resumo
     if (resumo) {
-      const total = produtosErp.filter(p => p.status !== 'excluido').length;
-      resumo.textContent = `${filtrados.length} produto(s) exibido(s) · ${total} no catálogo`;
+      // v32i.2: total agora vem do backend (via _prodPaginacao.total), não do
+      // produtosErp local que só tem a página atual (50 itens).
+      // "exibido(s)" = quantos passaram nos filtros locais (categoria, marca, etc).
+      const totalBackend = (window._prodPaginacao && window._prodPaginacao.total) || produtosErp.filter(p => p.status !== 'excluido').length;
+      resumo.textContent = `${filtrados.length} produto(s) exibido(s) · ${totalBackend} no catálogo`;
     }
     
     if (filtrados.length === 0) {
@@ -22352,7 +22404,16 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         msg += stats.produtosCriados + ' produto(s) novo(s)';
         if (stats.suspeitos > 0) msg += ' · ⚠ ' + stats.suspeitos + ' suspeito(s)';
         showToast(msg);
-        renderProdutos();
+        // v32i.2: NÃO chama renderProdutos() direto (que manteria todos em memória).
+        // Em vez disso: descarta o que está em memória e recarrega a página 1 do
+        // backend, mantendo o storage LEVE (50 produtos em vez de 179+).
+        // Os vínculos já foram persistidos no Supabase via salvarProdutoNoBackend.
+        if (typeof carregarPaginaProdutos === 'function') {
+          // Espera 800ms pra dar tempo do backend persistir os updates em paralelo
+          setTimeout(() => carregarPaginaProdutos({ page: 1 }), 800);
+        } else {
+          renderProdutos();
+        }
       } else {
         showToast('✓ ' + anuncios.length + ' anúncio(s) recebido(s) do ' + marketplace);
       }
@@ -24920,7 +24981,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32i.1-paginacao-backend';
+  const _DIAG_VERSAO_PAINEL = 'v32i.2-paginacao-completa';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
