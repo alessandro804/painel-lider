@@ -10639,72 +10639,170 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   // --- Produtos ---
+  // v32i.3 Camada 3: migração automática do cache antigo.
+  // Se o localStorage estiver com >50 itens (cache antigo de versão pré-paginação)
+  // ou pesar >500 KB (cheio de vínculos/base64 redundantes), zera e força recarga
+  // do backend na próxima sincronização. Backend é a fonte da verdade — o que está
+  // lá é seguro. O que está localStorage é só cache leve da UI.
+  (function _migracaoCacheProdutos() {
+    try {
+      const raw = localStorage.getItem('lider_produtos_v1') || '';
+      const bytes = new Blob([raw]).size;
+      const parsed = raw ? JSON.parse(raw) : [];
+      const qtd = Array.isArray(parsed) ? parsed.length : 0;
+      if (qtd > 50 || bytes > 500 * 1024) {
+        console.log('[migracao] cache antigo detectado:', qtd, 'itens,', (bytes/1024).toFixed(1), 'KB — limpando.');
+        localStorage.removeItem('lider_produtos_v1');
+      }
+    } catch(_) {
+      // Se nem parsing funciona, melhor limpar
+      localStorage.removeItem('lider_produtos_v1');
+    }
+  })();
+  
   let produtosErp = JSON.parse(localStorage.getItem('lider_produtos_v1') || '[]');
   
+  // v32i.3 Camada 3: helper pra telas que precisam do catálogo INTEIRO temporariamente
+  // (ações em massa, reconciliação, exports). Busca tudo do backend numa requisição,
+  // sem persistir no localStorage. Retorna o array — não substitui produtosErp.
+  // Uso: const todos = await carregarTodosProdutos(); todos.forEach(...);
+  // Se houver muitos produtos (>500), busca em chunks pra não estourar timeout.
+  async function carregarTodosProdutos() {
+    try {
+      // Primeiro descobre o total (rápido — count=true não retorna produtos)
+      const respCount = await fetch(BACKEND_URL + '/api/produtos?count=true', {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const dCount = await respCount.json();
+      const total = (dCount.ok && dCount.total) || 0;
+      
+      if (total <= 500) {
+        // Cabe em 1 request
+        const r = await fetch(BACKEND_URL + '/api/produtos?limit=' + Math.max(total, 1), {
+          headers: { 'x-api-token': getApiToken() }
+        });
+        const d = await r.json();
+        return d.ok ? (d.produtos || []) : [];
+      }
+      
+      // Pega em chunks de 200
+      const todos = [];
+      const totalPaginas = Math.ceil(total / 200);
+      for (let p = 1; p <= totalPaginas; p++) {
+        const r = await fetch(BACKEND_URL + '/api/produtos?page=' + p + '&limit=200', {
+          headers: { 'x-api-token': getApiToken() }
+        });
+        const d = await r.json();
+        if (d.ok) todos.push(...(d.produtos || []));
+      }
+      return todos;
+    } catch(err) {
+      console.error('[carregarTodosProdutos]', err);
+      showToast('Erro ao carregar catálogo: ' + err.message, true);
+      return [];
+    }
+  }
+  
+  // Cache simples por ID — busca 1 produto pelo backend sem mexer em produtosErp.
+  // Útil pra edição, export, duplicação — telas que precisam de UM produto específico
+  // que pode não estar na página atual.
+  async function carregarProdutoPorId(idOuIdBanco) {
+    if (!idOuIdBanco) return null;
+    // Tenta primeiro em produtosErp (cache da página atual)
+    const local = produtosErp.find(p => String(p.id) === String(idOuIdBanco) || String(p.idBanco) === String(idOuIdBanco));
+    if (local) return local;
+    // Senão, busca no backend
+    try {
+      const r = await fetch(BACKEND_URL + '/api/produtos/' + idOuIdBanco, {
+        headers: { 'x-api-token': getApiToken() }
+      });
+      const d = await r.json();
+      return d.ok ? d.produto : null;
+    } catch(err) {
+      console.warn('[carregarProdutoPorId]', err.message);
+      return null;
+    }
+  }
+  
+  // Expõe pros próximos refactors
+  window.carregarTodosProdutos = carregarTodosProdutos;
+  window.carregarProdutoPorId = carregarProdutoPorId;
+  
+  
   // saveProdutos: grava no cache local (rápido) e envia pro backend.
+  // v32i.3 Camada 3: saveProdutos sanitário
+  //   - Limita o localStorage a 50 produtos (cache leve = página atual)
+  //   - Poda automaticamente campos pesados redundantes dos vínculos
+  //     (titulo/permalink/shopId/skuExterno — viviam em cada vínculo de cada
+  //     variação, duplicando dezenas de vezes o mesmo dado por produto)
+  //   - NUNCA estoura: se ainda assim ficar grande, salva versão mínima
+  //   - O backend continua sendo a fonte da verdade — localStorage é só cache UI
+  const _CAMPOS_VINCULO_PODAR = [
+    'titulo', 'permalink', 'shopId', 'skuExterno',
+    'ultimaAtualizacao', 'skuSuspeito', 'personalizado',
+    'vinculadoEm', 'atualizadoEm'
+  ];
+  
+  function _podarVinculosProduto(p) {
+    if (!p.variacoes) return p;
+    p.variacoes.forEach(v => {
+      (v.vinculos || []).forEach(vinc => {
+        _CAMPOS_VINCULO_PODAR.forEach(k => { delete vinc[k]; });
+      });
+    });
+    return p;
+  }
+  
   function saveProdutos() {
-    // v32d.10: proteção anti-quota
-    // 1. Tenta salvar tudo
-    // 2. Se estourar, filtra excluídos antigos (>7 dias) e tenta de novo
-    // 3. Se ainda estourar, filtra TODOS os excluídos
+    // Sanitização defensiva: poda vínculos pesados antes de salvar
+    produtosErp.forEach(_podarVinculosProduto);
     
-    const _tentarSalvar = (lista) => {
-      localStorage.setItem('lider_produtos_v1', JSON.stringify(lista));
-    };
+    // Limita a 50 produtos no localStorage (cache da página atual).
+    // Backend é a fonte da verdade — produtos não-cacheados são re-buscados sob demanda.
+    const paraCachear = produtosErp.slice(0, 50);
     
     try {
-      _tentarSalvar(produtosErp);
+      localStorage.setItem('lider_produtos_v1', JSON.stringify(paraCachear));
+      return;
     } catch (e) {
-      if (!String(e.message || e.name || '').match(/quota|QuotaExceeded/i)) {
-        // Erro diferente de quota — propaga
-        throw e;
-      }
-      
-      console.warn('[saveProdutos] localStorage estourou. Tentando podar excluídos antigos...');
-      
-      // 1ª tentativa: remove excluídos com mais de 7 dias
-      const limiteAntigo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      const semAntigos = produtosErp.filter(p => {
-        if (p.status !== 'excluido') return true;
-        const dataExc = p._excluidoEm || p._mescladoEm || p.atualizadoEm;
-        const ts = dataExc ? new Date(dataExc).getTime() : 0;
-        return ts >= limiteAntigo;  // mantém só recentes
-      });
-      
+      if (!String(e.message || e.name || '').match(/quota|QuotaExceeded/i)) throw e;
+    }
+    
+    // Fallback 1: poda também `descricao` longa e mantém só essenciais
+    console.warn('[saveProdutos] storage cheio. Salvando versão mínima...');
+    const minimo = paraCachear.map(p => ({
+      id: p.id, idBanco: p.idBanco, nome: p.nome, skuPai: p.skuPai,
+      ean: p.ean, preco: p.preco, peso: p.peso, status: p.status,
+      lojaId: p.lojaId, marketplaces: p.marketplaces,
+      fotos: (p.fotos || []).slice(0, 3), // só 3 fotos no cache
+      cores: (p.cores || []).map(c => ({ id: c.id, nome: c.nome, fotos: (c.fotos||[]).slice(0,3) })),
+      variacoes: (p.variacoes || []).map(v => ({
+        id: v.id, cor: v.cor, tamanho: v.tamanho, sku: v.sku,
+        preco: v.preco, estoque: v.estoque, ean: v.ean,
+        vinculos: (v.vinculos || []).map(vinc => ({
+          id: vinc.id, lojaId: vinc.lojaId, lojaIdBanco: vinc.lojaIdBanco,
+          marketplace: vinc.marketplace, anuncioId: vinc.anuncioId,
+          variacaoExternaId: vinc.variacaoExternaId, statusMl: vinc.statusMl,
+        })),
+      })),
+      atualizadoEm: p.atualizadoEm,
+    }));
+    
+    try {
+      localStorage.setItem('lider_produtos_v1', JSON.stringify(minimo));
+    } catch (e2) {
+      // Fallback 2: salva só os 20 mais recentes
+      console.warn('[saveProdutos] ainda cheio. Salvando só 20 produtos...');
       try {
-        _tentarSalvar(semAntigos);
-        // Sucesso → atualiza array em memória pra ficar consistente
-        const removidos = produtosErp.length - semAntigos.length;
-        if (removidos > 0) {
-          produtosErp.length = 0;
-          semAntigos.forEach(p => produtosErp.push(p));
-          console.log('[saveProdutos] podou', removidos, 'excluído(s) antigo(s)');
-        }
-        return;
-      } catch (e2) {
-        if (!String(e2.message || e2.name || '').match(/quota|QuotaExceeded/i)) throw e2;
-      }
-      
-      console.warn('[saveProdutos] ainda estourou. Removendo TODOS os excluídos...');
-      
-      // 2ª tentativa: remove TODOS os excluídos
-      const semExcluidos = produtosErp.filter(p => p.status !== 'excluido');
-      
-      try {
-        _tentarSalvar(semExcluidos);
-        const removidos = produtosErp.length - semExcluidos.length;
-        produtosErp.length = 0;
-        semExcluidos.forEach(p => produtosErp.push(p));
-        console.log('[saveProdutos] removeu', removidos, 'excluído(s) do localStorage (continuam no banco)');
-        showToast('⚠ Lixeira local limpa pra liberar espaço (lixeira do banco intacta)', false);
+        localStorage.setItem('lider_produtos_v1', JSON.stringify(minimo.slice(0, 20)));
       } catch (e3) {
-        // Última cartada: avisa user, NÃO joga exceção pra cima (senão pode travar fluxos)
-        console.error('[saveProdutos] mesmo sem excluídos, localStorage cheio. Cabe pra você decidir.');
-        showToast('❌ Armazenamento local cheio. Recarregue a página.', true);
+        // Última cartada: zera o cache (backend continua intacto)
+        console.error('[saveProdutos] não cabe nada. Zerando cache local.');
+        try { localStorage.removeItem('lider_produtos_v1'); } catch(_) {}
       }
     }
     
-    // Sync com nuvem (sempre roda, com array atual)
+    // Sync com nuvem (sempre roda — independe do cache local)
     try {
       LiderSync.schedulePush('produtos', () => LiderSync.pushAppData('produtos', produtosErp));
     } catch (eSync) {
@@ -24981,7 +25079,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32i.2-paginacao-completa';
+  const _DIAG_VERSAO_PAINEL = 'v32i.3-camada3-storage-defensivo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
