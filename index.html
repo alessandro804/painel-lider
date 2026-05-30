@@ -8998,9 +8998,12 @@ DADOS DISPONÍVEIS:
 - Preço: R$ ${p.preco}
 ${contextoFotos}
 
-REGRAS DO ML:
-- Título: EXATAMENTE entre 50 e 60 caracteres. Comece com tipo do produto + marca + diferencial + público.
-  Ex: "Tênis Esportivo AMX Voxel Corrida Masculino Casual"
+REGRAS DO TÍTULO (serve pra ML e Shopee):
+- Tamanho: entre 80 e 100 caracteres. IMPORTANTE: o título é cortado em 60 pro Mercado Livre,
+  então coloque o ESSENCIAL (tipo do produto + marca + diferencial + público) nos PRIMEIROS 60 caracteres,
+  e use os 40 caracteres seguintes pra palavras-chave extras e sinônimos regionais (ex: chinelo/chinela/sandália;
+  sapatilha/sapato baixo) que ampliam a busca na Shopee. Assim funciona bem cortado (ML) ou inteiro (Shopee).
+  Ex: "Sapatilha Feminina Confortável Bico Fino Casual Leve Sapato Baixo Trabalho Dia a Dia"
 - Descrição: NO MÍNIMO 400 caracteres. Comece com o TÍTULO numa linha sozinha, deixe uma linha em branco, depois 3-5 parágrafos curtos de storytelling (use sentidos, situações reais, linguagem natural). Sem emojis, sem markdown.
   Exemplo de início:
   Tênis Esportivo Feminino Leve Confortável
@@ -9015,7 +9018,7 @@ PROIBIDO: emojis (✅ ✔ 🌟 etc), markdown (**negrito**, # títulos), "BLOCO 
 
 RETORNE APENAS JSON nesse formato exato (sem \`\`\`json):
 {
-  "nome": "título 50-60 chars",
+  "nome": "título 80-100 chars (essencial nos primeiros 60)",
   "descricao": "descrição completa multilinha com emojis e bullets",
   "marca": "nome da marca",
   "modelo": "modelo específico",
@@ -9037,7 +9040,8 @@ RETORNE APENAS JSON nesse formato exato (sem \`\`\`json):
     }
     
     // Aplica conteúdo
-    if (dadosConteudo.nome) p.nome = String(dadosConteudo.nome).slice(0, 60);
+    // Nome base até 100 (mira Shopee). O ML corta pra 60 no montarPayloadExport.
+    if (dadosConteudo.nome) p.nome = String(dadosConteudo.nome).slice(0, 100);
     if (dadosConteudo.descricao) p.descricao = dadosConteudo.descricao;
     if (dadosConteudo.marca) p.marca = dadosConteudo.marca;
     if (dadosConteudo.peso) p.peso = parseFloat(dadosConteudo.peso) || 0.5;
@@ -9471,6 +9475,11 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
         else if (/^condi(ç|c)(ã|a)o$|condition/.test(nn)) {
           if (Array.isArray(a.valores) && a.valores.length) { const nv = a.valores.find(v => /novo|new/i.test(v.nome)); if (nv) { p.atributosShopee[a.attribute_id] = nv.nome; nAttrs++; } }
           else { p.atributosShopee[a.attribute_id] = 'Novo'; nAttrs++; }
+        }
+        else if (/pa(í|i)s de origem|country of origin|origem/.test(nn)) {
+          // País de Origem sempre Brasil. Se tem lista, casa com a opção "Brasil"; senão texto livre.
+          if (Array.isArray(a.valores) && a.valores.length) { const br = a.valores.find(v => /brasil|brazil/i.test(v.nome)); if (br) { p.atributosShopee[a.attribute_id] = br.nome; nAttrs++; } }
+          else { p.atributosShopee[a.attribute_id] = 'Brasil'; nAttrs++; }
         }
       });
       
@@ -11558,8 +11567,12 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
     }
     
-    // Re-sincroniza produto.fotos como união (caso cores tenham URLs novas)
-    if (Array.isArray(produto.cores) && produto.cores.length > 0) {
+    // Fallback: se produto.fotos está VAZIO, usa a união das fotos das cores.
+    // NÃO sobrescreve uma galeria existente — a Shopee tem galeria geral (até 9 fotos)
+    // independente das fotos de cor; sobrescrever pela união das cores (1 por cor)
+    // destruía a galeria (ex: 9 fotos viravam 4). Pro ML, a galeria já reflete as cores.
+    if ((!Array.isArray(produto.fotos) || produto.fotos.length === 0)
+        && Array.isArray(produto.cores) && produto.cores.length > 0) {
       const set = new Set();
       produto.cores.forEach(c => (c.fotos || []).forEach(url => {
         if (!String(url).startsWith('data:image')) set.add(url);
@@ -18666,6 +18679,15 @@ REGRAS DURAS:
           produto.atributosShopee[a.attribute_id] = 'Novo';
           nDefaults++;
         }
+      } else if (/pa(í|i)s de origem|country of origin|origem/.test(nomeNorm)) {
+        // País de Origem: sempre Brasil.
+        if (Array.isArray(a.valores) && a.valores.length > 0) {
+          const br = a.valores.find(v => /brasil|brazil/i.test(v.nome));
+          if (br) { produto.atributosShopee[a.attribute_id] = br.nome; nDefaults++; }
+        } else {
+          produto.atributosShopee[a.attribute_id] = 'Brasil';
+          nDefaults++;
+        }
       }
     });
     
@@ -19922,7 +19944,7 @@ REGRAS DURAS:
       
       const payloadML = {
         marketplace: 'mercadolivre',
-        title: p.nome,
+        title: String(p.nome || '').slice(0, 60), // ML limita título a 60; nome base pode ter até 100
         category_id: categoriaMkt,
         // No modelo legado, o preço fica no item; no novo, fica nas variações
         price: modeloNovo ? undefined : p.preco,
@@ -19998,7 +20020,7 @@ REGRAS DURAS:
       
       return {
         marketplace: 'tiktok',
-        title: p.nome,
+        title: String(p.nome || '').slice(0, 60),
         category_id: categoriaMkt,
         description: p.descricao || '',
         // TikTok exige imagens por URL
@@ -26048,7 +26070,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.18-modal-mostra-fotos-herdadas';
+  const _DIAG_VERSAO_PAINEL = 'v32k.20-fix-galeria-dup-shopee';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
