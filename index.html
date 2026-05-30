@@ -26229,7 +26229,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.29-promo-editar-precos';
+  const _DIAG_VERSAO_PAINEL = 'v32k.30-promo-salvar-le-tela';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30391,7 +30391,7 @@ ${JSON.stringify(metricas, null, 2)}`
             <span style="color:#9ca3af">→</span>
             ${somenteLeitura
               ? `<span style="color:#16a34a;font-weight:700">R$ ${Number(promo||0).toFixed(2)}</span>`
-              : `<span style="color:#16a34a;font-weight:700">R$</span><input type="number" step="0.01" min="0" value="${promo}" data-ii="${ii}" data-mi="${mi}" class="promo-preco-input" onchange="promoMarcarAlterado(${ii},${mi},this.value)" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;text-align:right">`}
+              : `<span style="color:#16a34a;font-weight:700">R$</span><input type="number" step="0.01" min="0" value="${promo}" data-ii="${ii}" data-mi="${mi}" class="promo-preco-input" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;text-align:right">`}
           </div>`;
         });
       } else if (item.item_promotion_price != null) {
@@ -30436,33 +30436,45 @@ ${JSON.stringify(metricas, null, 2)}`
   window.promoAtualizarContadorSel = promoAtualizarContadorSel;
 
   function promoAplicarMassa() {
-    const preco = parseFloat(document.getElementById('promoMassaPreco').value);
-    if (!preco || preco <= 0) { showToast('Informe um preço válido pra aplicar', true); return; }
+    const campo = document.getElementById('promoMassaPreco');
+    const preco = parseFloat(String(campo.value).replace(',', '.'));
+    if (!preco || preco <= 0 || isNaN(preco)) { showToast('Informe um preço válido pra aplicar', true); return; }
     const sel = document.querySelectorAll('.promo-chk:checked');
     if (sel.length === 0) { showToast('Selecione ao menos uma variação', true); return; }
+    let aplicados = 0;
+    const val = (Math.round((preco + Number.EPSILON) * 100) / 100).toFixed(2);
     sel.forEach(chk => {
-      const ii = parseInt(chk.dataset.ii, 10), mi = parseInt(chk.dataset.mi, 10);
+      const ii = chk.dataset.ii, mi = chk.dataset.mi;
       const input = document.querySelector(`.promo-preco-input[data-ii="${ii}"][data-mi="${mi}"]`);
-      if (input) { input.value = preco.toFixed(2); promoMarcarAlterado(ii, mi, preco); }
+      if (input) { input.value = val; aplicados++; }  // o salvar lê direto do input
     });
-    showToast('✓ Preço aplicado em ' + sel.length + ' variação(ões). Clique em Salvar pra enviar.');
+    showToast('✓ R$ ' + val + ' aplicado em ' + aplicados + ' variação(ões). Clique em Salvar pra enviar.');
   }
   window.promoAplicarMassa = promoAplicarMassa;
 
   async function promoSalvarPrecos() {
     if (!_promoEditando) return;
     const { loja, campanha, itens } = _promoEditando;
-    // Monta só os itens com variações alteradas (preço diferente do atual)
+    // CRÍTICO: lê o que está VISÍVEL nos inputs da tela AGORA (não a memória _novoPreco,
+    // que podia divergir após "aplicar em massa" parcial). Só envia variações cujo preço
+    // na tela difere do preço atual da Shopee. Arredonda a 2 casas pra evitar lixo de float.
+    const round2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
     const itensAlterados = [];
-    itens.forEach(item => {
-      const varsAlteradas = (item.model_list || []).filter(m =>
-        m._novoPreco != null && !isNaN(m._novoPreco) && m._novoPreco !== m.model_promotion_price
-      );
+    itens.forEach((item, ii) => {
+      const varsAlteradas = [];
+      (item.model_list || []).forEach((m, mi) => {
+        const input = document.querySelector(`.promo-preco-input[data-ii="${ii}"][data-mi="${mi}"]`);
+        if (!input) return;                                    // sem input visível → não toca
+        if (input.value === '' || input.value == null) return; // vazio → não toca
+        const precoTela = round2(parseFloat(input.value));
+        if (isNaN(precoTela) || precoTela <= 0) return;        // inválido → não toca
+        const precoAtual = round2(m.model_promotion_price);
+        if (precoTela !== precoAtual) {                        // só o que MUDOU de verdade na tela
+          varsAlteradas.push({ modelId: m.model_id, preco: precoTela });
+        }
+      });
       if (varsAlteradas.length > 0) {
-        itensAlterados.push({
-          itemId: item.item_id,
-          variacoes: varsAlteradas.map(m => ({ modelId: m.model_id, preco: m._novoPreco }))
-        });
+        itensAlterados.push({ itemId: item.item_id, variacoes: varsAlteradas });
       }
     });
     if (itensAlterados.length === 0) { showToast('Nenhum preço foi alterado', true); return; }
