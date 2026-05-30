@@ -11852,7 +11852,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   async function _executarMassaDup() {
     const modal = document.getElementById('massaDupModal');
     if (!modal) return;
-    
+
     const lojaDestinoId = modal.querySelector('#mdLojaDestino').value;
     const copiasPorProd = parseInt(modal.querySelector('#mdCopiasPorProd').value) || 1;
     const exportarAuto = modal.querySelector('#mdExportarAuto').checked;
@@ -11862,353 +11862,43 @@ Retorne JSON: {"ID": "valor", ...}`;
     const rotacionarFotosOpt = modal.querySelector('#mdRotacionarFotos').checked;
     const lojaDestino = lojasErp.find(l => String(l.id) === String(lojaDestinoId));
     if (!lojaDestino) { alert('Loja não encontrada'); return; }
-    
+
     const ids = Array.from(_prodSelecionados);
     modal.remove();
-    
-    const totalCopias = ids.length * copiasPorProd;
-    
-    // Modal de progresso
-    const prog = document.createElement('div');
-    prog.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
-    prog.innerHTML = `<div style="background:white;border-radius:14px;padding:24px;width:min(700px,95vw);max-height:85vh;overflow:hidden;display:flex;flex-direction:column">
-      <h3 style="margin:0 0 8px;font-size:16px;color:#1e2a47">📋 Duplicando pra ${escapeHtml(lojaDestino.nome)}...</h3>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        <div style="flex:1;height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden">
-          <div id="mdBarra" style="height:100%;background:#7c3aed;width:0%;transition:width 0.3s"></div>
-        </div>
-        <span id="mdContador" style="font-size:11px;font-weight:700;color:#6b7280">0/${totalCopias}</span>
-      </div>
-      <div id="mdLog" style="font-size:11px;color:#374151;font-family:monospace;white-space:pre-wrap;background:#f9fafb;padding:10px;border-radius:8px;max-height:400px;overflow:auto;flex:1;border:1px solid #e5e7eb">Iniciando fila sequencial...</div>
-      <div style="margin-top:14px;display:flex;justify-content:space-between;gap:10px">
-        <button id="mdCancelar" style="padding:8px 14px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:700">⏸ Pausar (termina atual)</button>
-        <button id="mdFechar" style="padding:8px 14px;background:#1e2a47;color:white;border:none;border-radius:8px;cursor:pointer;display:none">Fechar</button>
-      </div>
-    </div>`;
-    document.body.appendChild(prog);
-    const log = prog.querySelector('#mdLog');
-    const btn = prog.querySelector('#mdFechar');
-    const barra = prog.querySelector('#mdBarra');
-    const contador = prog.querySelector('#mdContador');
-    const btnCancelar = prog.querySelector('#mdCancelar');
-    
-    let cancelado = false;
-    btnCancelar.onclick = () => { 
-      cancelado = true; 
-      btnCancelar.disabled = true; 
-      btnCancelar.textContent = '⏸ Pausando após item atual...'; 
+
+    // UNIFICADO (Fase 2b): em vez de reimplementar clone/IA/rotação/export/vínculos,
+    // o massa agora delega ao MOTOR ÚNICO iniciarDuplicacao — um produto por vez.
+    // Garante paridade total (rollback, vínculos Catalog/Legado, garantia de variação)
+    // e elimina o código duplicado que era fonte de bugs.
+    const optsMotor = {
+      variarTitulo, variarDescricao,
+      rotacionarFotos: rotacionarFotosOpt,
+      variarPreco: false,
+      exportar: exportarAuto,
+      marcarRascunho,
     };
-    
-    let criados = 0, exportados = 0, falhas = 0;
-    let copiaAtual = 0;
-    
-    for (let i = 0; i < ids.length; i++) {
-      if (cancelado) break;
-      const pid = ids[i];
+
+    let processados = 0;
+    for (const pid of ids) {
       const p = produtosErp.find(x => String(x.id) === String(pid));
-      if (!p) { 
-        log.textContent += '\n⚠ Produto ' + pid + ' não encontrado'; 
-        continue; 
+      if (!p) { processados++; continue; }
+      try {
+        await iniciarDuplicacao({
+          produtoId: pid,
+          qtd: copiasPorProd,
+          lojaDestinoId: lojaDestino.id,
+          opts: optsMotor,
+        });
+      } catch (e) {
+        console.warn('[massa-dup] produto', pid, 'falhou:', e.message);
       }
-      
-      log.textContent += '\n\n━━━ [' + (i+1) + '/' + ids.length + '] ' + p.nome.slice(0, 50) + ' ━━━';
-      log.scrollTop = log.scrollHeight;
-      
-      for (let k = 1; k <= copiasPorProd; k++) {
-        if (cancelado) break;
-        copiaAtual++;
-        const pct = Math.round((copiaAtual / totalCopias) * 100);
-        barra.style.width = pct + '%';
-        contador.textContent = copiaAtual + '/' + totalCopias;
-        
-        log.textContent += '\n  cópia ' + k + '/' + copiasPorProd + ':';
-        try {
-          // 1. Clone profundo
-          const novo = JSON.parse(JSON.stringify(p));
-          delete novo.id;
-          delete novo.idBanco;
-          delete novo.itemIdMarketplace;
-          delete novo.criadoEm;
-          novo.atualizadoEm = new Date().toISOString();
-          novo.origem = 'duplicado-massa';
-          novo.duplicadoDeId = p.duplicadoDeId || p.id;
-          novo.duplicadoDeIdBanco = p.duplicadoDeIdBanco || p.idBanco || null;
-          (novo.variacoes || []).forEach(v => { 
-            v.vinculos = []; 
-            delete v.idBanco;
-          });
-          novo.marketplaces = {};
-          novo.id = gerarId();
-          novo.lojaId = lojaDestino.id;
-          novo.status = marcarRascunho && !exportarAuto ? 'rascunho' : 'ativo';
-          // MANTÉM SKU pai e SKUs das variações IGUAIS
-          
-          // 2. Variar título com IA
-          if (variarTitulo) {
-            log.textContent += '\n    ✨ gerando título...';
-            log.scrollTop = log.scrollHeight;
-            try {
-              novo.nome = await gerarTituloVariadoIA(p);
-              log.textContent = log.textContent.replace('    ✨ gerando título...', '    ✨ título: "' + novo.nome.slice(0,45) + '"');
-            } catch(e) {
-              log.textContent += ' ⚠ IA título falhou, usando original';
-            }
-          }
-          
-          // 3. Variar descrição com IA
-          if (variarDescricao) {
-            log.textContent += '\n    ✨ gerando descrição...';
-            log.scrollTop = log.scrollHeight;
-            try {
-              novo.descricao = await gerarDescricaoVariadaIA(p);
-              log.textContent = log.textContent.replace('    ✨ gerando descrição...', '    ✨ descrição (' + novo.descricao.length + ' chars)');
-            } catch(e) {
-              log.textContent += ' ⚠ IA descrição falhou, usando original';
-            }
-          }
-          
-          // 3.5. Rotação de fotos (capa diferente por cópia) — paridade com fluxo do card.
-          // Sem isso, todas as cópias ficam com a mesma capa e a Shopee acusa duplicidade.
-          if (rotacionarFotosOpt) {
-            const isShopeeDest = lojaDestino.marketplace === 'shopee';
-            const coresOrig = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
-            if (isShopeeDest) {
-              // Shopee usa p.fotos (galeria) E cores[].fotos[] (capas das variações): rotaciona ambos
-              novo.fotos = rotacionarFotos(p.fotos || [], k);
-              novo.cores = coresOrig.map(c => ({ id: c.id, nome: c.nome, fotos: rotacionarFotos(c.fotos || [], k) }));
-            } else {
-              // ML: fotos por cor; mantém p.fotos como união pra compat
-              const novasCores = coresOrig.map(c => ({ id: c.id, nome: c.nome, fotos: rotacionarFotos(c.fotos || [], k) }));
-              novo.cores = novasCores;
-              const setFotos = new Set();
-              novasCores.forEach(c => (c.fotos || []).forEach(url => setFotos.add(url)));
-              novo.fotos = Array.from(setFotos);
-            }
-            log.textContent += '\n    🔄 fotos rotacionadas (capa ' + k + ')';
-          }
-          
-          // 4. Adiciona no array
-          produtosErp.unshift(novo);
-          criados++;
-          
-          // 5. Salva no backend SEMPRE (pra ter idBanco antes de exportar)
-          try {
-            if (typeof salvarProdutoNoBackend === 'function') {
-              const salvo = await salvarProdutoNoBackend(novo);
-              if (salvo && salvo.id) {
-                novo.idBanco = salvo.id;
-                // Merge: campos do backend podem ter URLs públicas (fotos), 
-                // guia_tamanhos normalizado, etc. Mantém id local.
-                Object.assign(novo, salvo, { id: novo.id, idBanco: salvo.id });
-                saveProdutos();
-              }
-            }
-          } catch(e) {
-            log.textContent += '\n    ⚠ falha ao salvar no banco: ' + e.message.slice(0,50);
-          }
-          
-          // 6. Exportar?
-          if (exportarAuto && lojaDestino.contaConectada) {
-            log.textContent += '\n    ⏳ exportando pro ' + lojaDestino.marketplace + '...';
-            log.scrollTop = log.scrollHeight;
-            
-            // FLUXO IDÊNTICO ao da duplicação individual (que sabidamente funciona):
-            // fetch direto no endpoint com payload montado por montarPayloadExport
-            try {
-              const lojaIdBanco = await garantirLojaNoBanco(lojaDestino);
-              if (!lojaIdBanco) throw new Error('Loja sem idBanco');
-              if (!novo.idBanco) throw new Error('Produto sem idBanco');
-              
-              // CRITICAL: garante fotos das cores como URL pública (não base64)
-              if (typeof garantirFotosUrlsPublicas === 'function') {
-                try { await garantirFotosUrlsPublicas(novo); } catch(_) {}
-              }
-              
-              const payload = montarPayloadExport(novo, lojaDestino.marketplace);
-              
-              // 🔍 DEBUG: loga o payload antes de enviar
-              console.log('[massa-dup] ━━━ COPIA ' + (i+1) + '.' + k + ' ━━━');
-              console.log('[massa-dup] novo.id=' + novo.id + ' idBanco=' + novo.idBanco);
-              console.log('[massa-dup] novo.categoryIdMl=' + novo.categoryIdMl);
-              console.log('[massa-dup] novo.categoria=' + novo.categoria);
-              console.log('[massa-dup] novo.guiaTamanhos=', novo.guiaTamanhos ? 
-                'SIM (' + (novo.guiaTamanhos.linhas||[]).length + ' linhas)' : 'NAO');
-              console.log('[massa-dup] novo.atributosMl=', novo.atributosMl);
-              console.log('[massa-dup] novo.variacoes=' + (novo.variacoes||[]).length);
-              console.log('[massa-dup] payload.category_id=' + payload.category_id);
-              console.log('[massa-dup] payload.size_guide=', payload.size_guide);
-              console.log('[massa-dup] payload completo:', payload);
-              
-              const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + novo.idBanco;
-              const resp = await fetch(url, {
-                method: 'POST',
-                headers: {
-                  'x-api-token': getApiToken(),
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ payload })
-              });
-              const data = await resp.json();
-              console.log('[massa-dup] resposta backend:', data);
-              
-              if (data.ok || data.success) {
-                exportados++;
-                const itemId = data.itemId || (data.dados && data.dados.itemId) || (data.dados && data.dados.id) || '?';
-                log.textContent = log.textContent.replace(
-                  '    ⏳ exportando pro ' + lojaDestino.marketplace + '...',
-                  '    ✓ EXPORTADO! itemId=' + itemId
-                );
-                
-                // v31b.6: Cria vínculos detectando Catalog vs Legado
-                if (itemId && itemId !== '?') {
-                  if (!novo.marketplaces) novo.marketplaces = {};
-                  novo.marketplaces[lojaDestino.marketplace] = {
-                    exportado: true,
-                    exportadoEm: new Date().toISOString(),
-                    itemId,
-                    payload
-                  };
-                  
-                  const eCatalog = !!(data.dados && data.dados.eCatalog);
-                  const criadosCatalog = (data.dados && Array.isArray(data.dados.criados)) ? data.dados.criados : [];
-                  
-                  if (eCatalog && criadosCatalog.length > 0) {
-                    // CATALOG: 1 vínculo por cor+tam
-                    const norm = s => String(s || '').trim().toLowerCase();
-                    criadosCatalog.forEach(c => {
-                      const varInterna = (novo.variacoes || []).find(v => 
-                        norm(v.cor) === norm(c.cor) && norm(v.tamanho) === norm(c.tamanho)
-                      );
-                      if (!varInterna) {
-                        console.warn('[massa-dup Catalog] sem match cor=' + c.cor + ' tam=' + c.tamanho);
-                        return;
-                      }
-                      if (!varInterna.vinculos) varInterna.vinculos = [];
-                      const jaTem = varInterna.vinculos.some(vi => String(vi.anuncioId) === String(c.itemId));
-                      if (!jaTem) {
-                        varInterna.vinculos.push({
-                          id: gerarId(),
-                          anuncioId: c.itemId,
-                          marketplace: lojaDestino.marketplace,
-                          lojaId: lojaIdBanco,
-                          lojaIdBanco: lojaIdBanco,
-                          titulo: novo.nome,
-                          skuExterno: varInterna.sku || '',
-                          skuSuspeito: false,
-                          criadoPor: 'duplicacao-massa-catalog',
-                          criadoEm: new Date().toISOString()
-                        });
-                      }
-                    });
-                  } else {
-                    // LEGADO
-                    (novo.variacoes || []).forEach(v => {
-                      if (!v.vinculos) v.vinculos = [];
-                      const jaTem = v.vinculos.some(vi => String(vi.anuncioId) === String(itemId));
-                      if (!jaTem) {
-                        v.vinculos.push({
-                          id: gerarId(),
-                          anuncioId: itemId,
-                          marketplace: lojaDestino.marketplace,
-                          lojaId: lojaIdBanco,
-                          lojaIdBanco: lojaIdBanco,
-                          titulo: novo.nome,
-                          skuExterno: v.sku || '',
-                          skuSuspeito: false,
-                          criadoPor: 'duplicacao-massa',
-                          criadoEm: new Date().toISOString()
-                        });
-                      }
-                    });
-                  }
-                  
-                  // v31b.5: persiste no backend de verdade
-                  try {
-                    if (typeof v31_persistirProduto === 'function') {
-                      await v31_persistirProduto(novo);
-                    } else {
-                      saveProdutos();
-                    }
-                  } catch(e) { console.warn('[massa-dup] persist:', e.message); }
-                }
-              } else {
-                falhas++;
-                const erroTxt = data.erro || JSON.stringify(data).slice(0, 100);
-                log.textContent = log.textContent.replace(
-                  '    ⏳ exportando pro ' + lojaDestino.marketplace + '...',
-                  '    ✗ FALHOU: ' + erroTxt.slice(0, 100)
-                );
-                if (data.detalhes && Array.isArray(data.detalhes)) {
-                  data.detalhes.slice(0, 3).forEach(d => {
-                    log.textContent += '\n      • ' + String(d).slice(0, 80);
-                  });
-                }
-                
-                // ROLLBACK: produto não exportou → remove do banco e local
-                try {
-                  if (novo.idBanco) {
-                    await fetch(BACKEND_URL + '/api/produtos/' + novo.idBanco, {
-                      method: 'DELETE',
-                      headers: { 'x-api-token': getApiToken() }
-                    });
-                  }
-                  const idx = produtosErp.findIndex(x => String(x.id) === String(novo.id));
-                  if (idx >= 0) produtosErp.splice(idx, 1);
-                  log.textContent += '\n    ↶ rollback OK';
-                } catch(_) {}
-              }
-            } catch (e) {
-              falhas++;
-              log.textContent = log.textContent.replace(
-                '    ⏳ exportando pro ' + lojaDestino.marketplace + '...',
-                '    ✗ ERRO: ' + e.message.slice(0, 100)
-              );
-              // Rollback em erro de rede
-              try {
-                if (novo.idBanco) {
-                  await fetch(BACKEND_URL + '/api/produtos/' + novo.idBanco, {
-                    method: 'DELETE',
-                    headers: { 'x-api-token': getApiToken() }
-                  });
-                }
-                const idx = produtosErp.findIndex(x => String(x.id) === String(novo.id));
-                if (idx >= 0) produtosErp.splice(idx, 1);
-              } catch(_) {}
-            }
-            
-            // Pausa 800ms entre exports pra não floodar o ML
-            await new Promise(res => setTimeout(res, 800));
-          } else {
-            log.textContent += '\n    ✓ criada (não exportada)';
-          }
-        } catch(e) {
-          falhas++;
-          log.textContent += '\n    ✗ ERRO: ' + e.message.slice(0,80);
-        }
-        log.scrollTop = log.scrollHeight;
-      }
+      processados++;
     }
-    
-    saveProdutos();
+
+    _prodSelecionados.clear();
+    atualizarBarraSelecao();
     renderProdutos();
-    
-    log.textContent += '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
-    log.textContent += '✅ FILA CONCLUÍDA\n';
-    if (cancelado) log.textContent += '  ⏸ Cancelado pelo usuário\n';
-    log.textContent += '  • Cópias criadas: ' + criados + '\n';
-    if (exportarAuto) {
-      log.textContent += '  • Exportadas com sucesso: ' + exportados + '\n';
-      log.textContent += '  • Falhas na exportação: ' + falhas + '\n';
-    }
-    
-    btnCancelar.style.display = 'none';
-    btn.style.display = 'inline-block';
-    btn.onclick = () => {
-      prog.remove();
-      _prodSelecionados.clear();
-      atualizarBarraSelecao();
-      renderProdutos();
-    };
+    showToast('✓ Duplicação em massa concluída (' + processados + ' produto(s) processado(s))');
   }
   window._executarMassaDup = _executarMassaDup;
   
@@ -16849,12 +16539,16 @@ REGRAS DURAS:
       variarDescricao: !!params.opts.variarDescricao,
       rotacionarFotos: !!params.opts.rotacionarFotos,
       variarPreco: !!params.opts.variarPreco,
+      exportar: params.opts.exportar !== false, // default true; massa pode passar false (só rascunho)
+      marcarRascunho: !!params.opts.marcarRascunho,
       lojaDestino,
     } : {
       variarTitulo: document.getElementById('dupVariarTitulo').checked,
       variarDescricao: document.getElementById('dupVariarDescricao').checked,
       rotacionarFotos: document.getElementById('dupRotacionarFotos').checked,
       variarPreco: document.getElementById('dupVariarPreco').checked,
+      exportar: true,
+      marcarRascunho: false,
       lojaDestino,
     };
     
@@ -17009,7 +16703,16 @@ REGRAS DURAS:
         
         passoAtual++; // contava o "clone" como passo
         
-        // 7. Exporta automaticamente — precisa do lojaIdBanco e idBanco do produto
+        // 7. Exporta automaticamente (a menos que opts.exportar === false → só rascunho)
+        if (opts.exportar === false) {
+          novo.status = opts.marcarRascunho ? 'rascunho' : (novo.status || 'rascunho');
+          try {
+            if (typeof v31_persistirProduto === 'function') await v31_persistirProduto(novo);
+            else saveProdutos();
+          } catch(_) {}
+          dupLogStep(`  ✓ Cópia criada (sem exportar — ${novo.status})`, 'ok');
+          okCopias++;
+        } else {
         passoAtual++;
         dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: exportando para ${lojaDestino.nome}...`);
         try {
@@ -17052,8 +16755,62 @@ REGRAS DURAS:
           });
           const data = await resp.json();
           if (data.ok || data.success) {
-            dupLogStep(`  ✓ Exportado para ${lojaDestino.marketplace} (anuncio ${data.itemId || (data.dados && data.dados.id) || '?'})`, 'ok');
+            const itemId = data.itemId || (data.dados && data.dados.itemId) || (data.dados && data.dados.id) || '?';
+            dupLogStep(`  ✓ Exportado para ${lojaDestino.marketplace} (anuncio ${itemId})`, 'ok');
             okCopias++;
+
+            // Cria vínculos (Catalog vs Legado) — portado do fluxo de massa (Fase 2a).
+            // Sem isso, o produto exporta mas não fica vinculado ao anúncio (quebra
+            // "Atualizar", status nos marketplaces, etc).
+            if (itemId && itemId !== '?') {
+              if (!novo.marketplaces) novo.marketplaces = {};
+              novo.marketplaces[lojaDestino.marketplace] = {
+                exportado: true,
+                exportadoEm: new Date().toISOString(),
+                itemId,
+                payload,
+              };
+              const eCatalog = !!(data.dados && data.dados.eCatalog);
+              const criadosCatalog = (data.dados && Array.isArray(data.dados.criados)) ? data.dados.criados : [];
+              const norm = s => String(s || '').trim().toLowerCase();
+              if (eCatalog && criadosCatalog.length > 0) {
+                // CATALOG: 1 vínculo por cor+tamanho
+                criadosCatalog.forEach(c => {
+                  const varInterna = (novo.variacoes || []).find(v =>
+                    norm(v.cor) === norm(c.cor) && norm(v.tamanho) === norm(c.tamanho));
+                  if (!varInterna) return;
+                  if (!varInterna.vinculos) varInterna.vinculos = [];
+                  if (!varInterna.vinculos.some(vi => String(vi.anuncioId) === String(c.itemId))) {
+                    varInterna.vinculos.push({
+                      id: gerarId(), anuncioId: c.itemId, marketplace: lojaDestino.marketplace,
+                      lojaId: lojaIdBanco, lojaIdBanco: lojaIdBanco, titulo: novo.nome,
+                      skuExterno: varInterna.sku || '', skuSuspeito: false,
+                      criadoPor: 'duplicacao-catalog', criadoEm: new Date().toISOString(),
+                    });
+                  }
+                });
+              } else {
+                // LEGADO: 1 vínculo (mesmo anuncioId) em todas as variações
+                (novo.variacoes || []).forEach(v => {
+                  if (!v.vinculos) v.vinculos = [];
+                  if (!v.vinculos.some(vi => String(vi.anuncioId) === String(itemId))) {
+                    v.vinculos.push({
+                      id: gerarId(), anuncioId: itemId, marketplace: lojaDestino.marketplace,
+                      lojaId: lojaIdBanco, lojaIdBanco: lojaIdBanco, titulo: novo.nome,
+                      skuExterno: v.sku || '', skuSuspeito: false,
+                      criadoPor: 'duplicacao', criadoEm: new Date().toISOString(),
+                    });
+                  }
+                });
+              }
+              // Persiste o produto com os vínculos
+              try {
+                if (typeof v31_persistirProduto === 'function') await v31_persistirProduto(novo);
+                else saveProdutos();
+              } catch (ePersist) {
+                console.warn('[dup vínculos] persist falhou:', ePersist.message);
+              }
+            }
           } else {
             // Mostra detalhes do erro
             const erroMsg = data.erro || JSON.stringify(data).slice(0,200);
@@ -17096,6 +16853,7 @@ REGRAS DURAS:
           } catch(_) {}
           errCopias++;
         }
+        } // fim do if (opts.exportar)
         
       } catch(eGeral) {
         dupLogStep(`✗ Cópia ${k} falhou: ${eGeral.message}`, 'err');
@@ -26266,7 +26024,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.9-card-foto-1-1';
+  const _DIAG_VERSAO_PAINEL = 'v32k.13-unif-fase2b-massa-usa-motor';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
