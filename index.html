@@ -26231,7 +26231,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.42-flash-listar';
+  const _DIAG_VERSAO_PAINEL = 'v32k.44-flash-editor-itens';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -31160,10 +31160,442 @@ ${JSON.stringify(metricas, null, 2)}`
   }
 
   // Placeholders das próximas etapas (criar/detalhe) — implementados a seguir
-  function flashAbrirCriar() { promoToast('Tela de criar flash sale — próxima etapa'); }
+  // ─── Etapa 3: criar flash sale (escolhe loja → slot → cria) ──────────
+  function flashAbrirCriar() {
+    const lojas = _lojasShopee();
+    if (lojas.length === 0) { promoToast('Nenhuma loja Shopee conectada', true); return; }
+    const existente = document.getElementById('flashCriarModal');
+    if (existente) existente.remove();
+    const modal = document.createElement('div');
+    modal.id = 'flashCriarModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(560px,95vw);max-height:88vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:16px 20px;background:linear-gradient(135deg,#dc2626,#991b1b);color:white;display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0;font-size:16px">⚡ Nova Flash Sale</h2>
+        <button onclick="document.getElementById('flashCriarModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:18px;overflow:auto;flex:1">
+        <label style="font-size:13px;color:#374151;font-weight:600;display:block;margin-bottom:6px">1. Escolha a loja</label>
+        <select id="flashCriarLoja" onchange="flashCarregarSlotsCriar()" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;margin-bottom:16px;box-sizing:border-box">
+          <option value="">— selecione —</option>
+          ${lojas.map(l => `<option value="${l.idBanco}">${escapeHtml(l.nome)}</option>`).join('')}
+        </select>
+        <label style="font-size:13px;color:#374151;font-weight:600;display:block;margin-bottom:6px">2. Escolha o horário (slot da Shopee)</label>
+        <div id="flashCriarSlots" style="font-size:13px;color:#9ca3af">Selecione uma loja primeiro.</div>
+      </div>
+      <div style="padding:12px 18px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px">
+        <button id="flashCriarBtn" onclick="flashConfirmarCriar()" disabled style="padding:10px 18px;background:#dc2626;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700;opacity:0.5">Criar Flash Sale</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
   window.flashAbrirCriar = flashAbrirCriar;
-  function flashAbrirDetalhe(idx) { promoToast('Editor de flash sale — próxima etapa'); }
+
+  let _flashSlotEscolhido = null;
+  let _flashLojaCriar = null;
+
+  async function flashCarregarSlotsCriar() {
+    const lojaId = document.getElementById('flashCriarLoja').value;
+    const cont = document.getElementById('flashCriarSlots');
+    const btn = document.getElementById('flashCriarBtn');
+    _flashSlotEscolhido = null;
+    _flashLojaCriar = lojaId;
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+    if (!lojaId) { cont.innerHTML = 'Selecione uma loja primeiro.'; return; }
+    cont.innerHTML = '⏳ Carregando horários disponíveis...';
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaId + '/flash-sale/slots', { headers: { 'x-api-token': getApiToken() } });
+      const data = await resp.json();
+      if (!data.ok) { cont.innerHTML = `<span style="color:#991b1b">Erro: ${escapeHtml(data.erro || 'falha')}</span>`; return; }
+      const slots = data.slots || [];
+      if (slots.length === 0) { cont.innerHTML = '<span style="color:#6b7280">Nenhum horário disponível pra esta loja agora.</span>'; return; }
+      cont.innerHTML = slots.map(s => {
+        const ini = new Date(s.startTime * 1000).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const fim = new Date(s.endTime * 1000).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        return `<label style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;cursor:pointer">
+          <input type="radio" name="flashSlot" value="${s.timeslotId}" onchange="flashEscolherSlot('${s.timeslotId}')">
+          <span style="font-size:13px">${ini} → ${fim}</span>
+        </label>`;
+      }).join('');
+    } catch (e) {
+      cont.innerHTML = `<span style="color:#991b1b">Erro de rede: ${escapeHtml(e.message)}</span>`;
+    }
+  }
+  window.flashCarregarSlotsCriar = flashCarregarSlotsCriar;
+
+  function flashEscolherSlot(id) {
+    _flashSlotEscolhido = id;
+    const btn = document.getElementById('flashCriarBtn');
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+  }
+  window.flashEscolherSlot = flashEscolherSlot;
+
+  async function flashConfirmarCriar() {
+    if (!_flashLojaCriar || !_flashSlotEscolhido) { promoToast('Escolha loja e horário', true); return; }
+    const btn = document.getElementById('flashCriarBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Criando...'; }
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + _flashLojaCriar + '/flash-sale', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timeslotId: _flashSlotEscolhido })
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        promoToast('Erro ao criar: ' + (data.erro || 'falha'), true);
+        if (btn) { btn.disabled = false; btn.textContent = 'Criar Flash Sale'; }
+        return;
+      }
+      promoToast('⚡ Flash sale criada! Agora adicione produtos a ela.');
+      document.getElementById('flashCriarModal').remove();
+      await carregarFlashSales();
+      // Abre direto o editor da recém-criada pra adicionar produtos
+      const idx = _flashCache.findIndex(x => String(x.flash.flashSaleId) === String(data.flashSaleId));
+      if (idx >= 0) flashAbrirDetalhe(idx);
+    } catch (e) {
+      promoToast('Erro de rede: ' + e.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = 'Criar Flash Sale'; }
+    }
+  }
+  window.flashConfirmarCriar = flashConfirmarCriar;
+  // ════════════════════════════════════════════════════════════════════
+  // FLASH SALE — Etapa 4: editor de itens
+  // ════════════════════════════════════════════════════════════════════
+  let _flashEditando = null;       // { loja, flash, itens:[...] }
+  let _flashPrecosPromo = {};      // modelId → preço da promoção comum ongoing (referência −1 e validação)
+
+  async function flashAbrirDetalhe(idx) {
+    const it = _flashCache[idx];
+    if (!it) return;
+    const f = it.flash;
+    const existente = document.getElementById('flashDetalheModal');
+    if (existente) existente.remove();
+    const modal = document.createElement('div');
+    modal.id = 'flashDetalheModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    const ini = f.startTime ? new Date(f.startTime * 1000).toLocaleString('pt-BR') : '?';
+    const fim = f.endTime ? new Date(f.endTime * 1000).toLocaleString('pt-BR') : '?';
+    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(860px,96vw);max-height:92vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:16px 20px;background:linear-gradient(135deg,#dc2626,#991b1b);color:white;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <h2 style="margin:0;font-size:16px">⚡ Flash Sale — ${escapeHtml(it.loja.nome)}</h2>
+          <div style="font-size:12px;opacity:0.9;margin-top:2px">${ini} → ${fim} · ${FLASH_TIPO_LABEL[f.tipo] || ''}</div>
+        </div>
+        <button onclick="document.getElementById('flashDetalheModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div id="flashDetalheBody" style="padding:18px;overflow:auto;flex:1">
+        <div style="text-align:center;color:#6b7280;padding:20px">⏳ Carregando itens e promoções de referência...</div>
+      </div>
+      <div id="flashDetalheFooter" style="padding:12px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:none;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"></div>
+    </div>`;
+    document.body.appendChild(modal);
+
+    try {
+      // Carrega itens da flash + promoções comuns ongoing da loja (referência de preço)
+      const [fResp, pPrecos] = await Promise.all([
+        fetch(BACKEND_URL + '/api/marketplaces/loja/' + it.loja.idBanco + '/flash-sale/' + f.flashSaleId, { headers: { 'x-api-token': getApiToken() } }).then(r => r.json()),
+        _flashCarregarPrecosPromo(it.loja.idBanco),
+      ]);
+      _flashPrecosPromo = pPrecos;
+      const itens = (fResp.ok && fResp.itens) ? fResp.itens : [];
+      itens.forEach(item => (item.models || []).forEach(m => { m._precoFlashOrig = m.precoInput; m._statusOrig = m.status; }));
+      _flashEditando = { loja: it.loja, flash: f, itens };
+      const editavel = (f.tipo === 1 || f.tipo === 2);
+      renderFlashEditor(!editavel);
+    } catch (e) {
+      const body = document.getElementById('flashDetalheBody');
+      if (body) body.innerHTML = `<div style="color:#991b1b;text-align:center;padding:20px">Erro: ${escapeHtml(e.message)}</div>`;
+    }
+  }
   window.flashAbrirDetalhe = flashAbrirDetalhe;
+
+  // Monta mapa modelId → preço da promoção comum ongoing (pra pré-preencher −1 e validar)
+  async function _flashCarregarPrecosPromo(lojaIdBanco) {
+    const mapa = {};
+    try {
+      const proms = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/promocoes?status=ongoing', { headers: { 'x-api-token': getApiToken() } })).json();
+      if (!proms.ok) return mapa;
+      for (const c of (proms.campanhas || [])) {
+        const det = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/promocoes/' + c.discountId, { headers: { 'x-api-token': getApiToken() } })).json();
+        if (!det.ok) continue;
+        (det.promocao.itens || []).forEach(item => (item.model_list || []).forEach(m => {
+          if (m.model_promotion_price != null) mapa[String(m.model_id)] = m.model_promotion_price;
+        }));
+      }
+    } catch (_) {}
+    return mapa;
+  }
+
+  function renderFlashEditor(somenteLeitura) {
+    const body = document.getElementById('flashDetalheBody');
+    const footer = document.getElementById('flashDetalheFooter');
+    if (!body || !_flashEditando) return;
+    const { itens } = _flashEditando;
+
+    let html = '';
+    if (somenteLeitura) {
+      html += `<div style="background:#f3f4f6;border-radius:8px;padding:8px 12px;font-size:12px;color:#6b7280;margin-bottom:12px">Flash sale expirada — somente leitura.</div>`;
+    } else {
+      html += `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;font-size:12px;color:#991b1b;margin-bottom:12px">
+        ⚡ Preços sugeridos = preço da promoção comum −1. O preço da flash deve ser <b>menor</b> que a promoção comum. Estoque padrão 2 (urgência). Pra mudar preço de variação já habilitada, o sistema desabilita e reabilita automaticamente ao salvar.</div>`;
+    }
+
+    if (itens.length === 0) {
+      html += `<div style="text-align:center;color:#6b7280;padding:20px">Nenhum produto nesta flash sale ainda. Use "+ Adicionar produtos".</div>`;
+    }
+
+    itens.forEach((item, ii) => {
+      const models = item.model_list || item.models || [];
+      const naFlash = models.filter(m => m.status === 1);
+      html += `<div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:12px;overflow:hidden">
+        <div style="background:#fafafa;padding:10px 12px;font-weight:600;font-size:13px;color:#1f2937;display:flex;align-items:center;gap:8px">
+          <span style="flex:1;min-width:0">${escapeHtml(item.nome || ('Item ' + item.itemId))}</span>
+          <span style="font-size:11px;color:#9ca3af">${naFlash.length}/${models.length} na flash</span>
+        </div>`;
+      models.forEach((m, mi) => {
+        const naFlashVar = m.status === 1;
+        const precoPromo = _flashPrecosPromo[String(m.modelId)];
+        const sugestao = precoPromo != null ? Math.round((precoPromo - 1) * 100) / 100 : null;
+        const valorInput = naFlashVar ? (m.precoInput != null ? Number(m.precoInput).toFixed(2) : '') : (sugestao != null ? sugestao.toFixed(2) : '');
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #f3f4f6;font-size:12px">
+          ${somenteLeitura ? '' : `<input type="checkbox" class="flash-chk" data-ii="${ii}" data-mi="${mi}" ${naFlashVar ? 'checked' : ''}>`}
+          <span style="flex:1;min-width:0">${escapeHtml(m.nome || ('var ' + m.modelId))}${naFlashVar ? ' <span style="color:#16a34a;font-size:10px">● na flash</span>' : ''}</span>
+          ${precoPromo != null ? `<span style="color:#9ca3af;font-size:11px">promo R$${Number(precoPromo).toFixed(2)}</span>` : '<span style="color:#d97706;font-size:11px">sem promoção comum</span>'}
+          <span style="color:#9ca3af">→</span>
+          ${somenteLeitura
+            ? `<span style="color:#dc2626;font-weight:700">R$ ${valorInput || '—'}</span>`
+            : `<span style="color:#dc2626;font-weight:700">R$</span><input type="text" inputmode="decimal" value="${valorInput}" data-ii="${ii}" data-mi="${mi}" class="flash-preco-input" style="width:72px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;text-align:right">
+             <span style="color:#9ca3af;font-size:10px">est</span><input type="text" inputmode="numeric" value="${naFlashVar && m.estoqueCampanha != null ? m.estoqueCampanha : 2}" data-ii="${ii}" data-mi="${mi}" class="flash-estoque-input" style="width:42px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;text-align:center">`}
+        </div>`;
+      });
+      html += `</div>`;
+    });
+
+    body.innerHTML = html;
+
+    if (somenteLeitura) { footer.style.display = 'none'; return; }
+    footer.style.display = 'flex';
+    footer.innerHTML = `
+      <button onclick="flashRemoverSelecionados()" style="padding:10px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700">🗑 Remover selec.</button>
+      <button onclick="flashAbrirAdicionar()" style="padding:10px 14px;background:#fff;color:#2563eb;border:1px solid #2563eb;border-radius:8px;cursor:pointer;font-weight:700">+ Adicionar produtos</button>
+      <button id="flashSalvarBtn" onclick="flashSalvarItens()" style="padding:10px 18px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">💾 Salvar na Shopee</button>`;
+  }
+  window.renderFlashEditor = renderFlashEditor;
+
+  // Salvar: lê a tela, valida flash < promoção comum, monta itens e envia.
+  // O backend trata o fluxo desabilita→reabilita pra variações já habilitadas.
+  async function flashSalvarItens() {
+    if (!_flashEditando) return;
+    const { loja, flash, itens } = _flashEditando;
+    const round2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+    const itensEnviar = [];
+    const violam = [];
+    itens.forEach((item, ii) => {
+      const models = item.model_list || item.models || [];
+      const varsMarcadas = [];
+      models.forEach((m, mi) => {
+        const chk = document.querySelector(`.flash-chk[data-ii="${ii}"][data-mi="${mi}"]`);
+        if (!chk || !chk.checked) return; // só as marcadas entram/permanecem
+        const inP = document.querySelector(`.flash-preco-input[data-ii="${ii}"][data-mi="${mi}"]`);
+        const inE = document.querySelector(`.flash-estoque-input[data-ii="${ii}"][data-mi="${mi}"]`);
+        const preco = _parsePrecoPromo(inP ? inP.value : '');
+        const estoque = inE ? parseInt(String(inE.value).replace(/\D/g, ''), 10) : 2;
+        if (preco == null || preco <= 0) return;
+        // valida flash < promoção comum
+        const precoPromo = _flashPrecosPromo[String(m.modelId)];
+        if (precoPromo != null && preco >= round2(precoPromo)) {
+          violam.push(`${m.nome || m.modelId} (flash R$${preco.toFixed(2)} ≥ promo R$${Number(precoPromo).toFixed(2)})`);
+        }
+        varsMarcadas.push({ modelId: m.modelId, preco, stock: Number.isInteger(estoque) ? estoque : 2, estavaHabilitado: m._statusOrig === 1 });
+      });
+      if (varsMarcadas.length > 0) {
+        itensEnviar.push({ itemId: item.itemId, purchaseLimit: 0, variacoes: varsMarcadas });
+      }
+    });
+
+    if (itensEnviar.length === 0) { promoToast('Marque ao menos uma variação com preço', true); return; }
+    if (violam.length > 0) {
+      if (!confirm(`Atenção: ${violam.length} variação(ões) com preço de flash MAIOR ou igual à promoção comum (o ideal é ser menor):\n\n${violam.slice(0,5).join('\n')}${violam.length>5?'\n...':''}\n\nSalvar mesmo assim?`)) return;
+    }
+
+    const btn = document.getElementById('flashSalvarBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando...'; }
+    try {
+      // Decide: itens novos (nenhuma var estava habilitada) vão via POST add;
+      // itens que já tinham variação na flash vão via PUT update (desabilita→reabilita no backend).
+      const novos = [], atualizar = [];
+      itensEnviar.forEach(it => {
+        const temExistente = it.variacoes.some(v => v.estavaHabilitado);
+        if (temExistente) atualizar.push(it); else novos.push(it);
+      });
+      let msgs = [];
+      if (novos.length > 0) {
+        const r = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale/' + flash.flashSaleId + '/itens', {
+          method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ itens: novos })
+        })).json();
+        if (r.ok) msgs.push(`${r.resultado.totalSucesso} adicionada(s)`);
+        if (r.resultado && (r.resultado.falhas||[]).length) _flashRegistrarFalhas(r.resultado.falhas, flash, loja);
+      }
+      if (atualizar.length > 0) {
+        const r = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale/' + flash.flashSaleId + '/itens', {
+          method: 'PUT', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ itens: atualizar })
+        })).json();
+        if (r.ok) msgs.push(`${r.resultado.totalSucesso} atualizada(s)`);
+        if (r.resultado && (r.resultado.falhas||[]).length) _flashRegistrarFalhas(r.resultado.falhas, flash, loja);
+      }
+      promoToast('✓ Flash sale salva: ' + (msgs.join(', ') || 'sem mudanças'));
+      // recarrega
+      const fdet = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale/' + flash.flashSaleId, { headers: { 'x-api-token': getApiToken() } })).json();
+      if (fdet.ok) {
+        const novosItens = fdet.itens || [];
+        novosItens.forEach(item => (item.models||[]).forEach(m => { m._precoFlashOrig = m.precoInput; m._statusOrig = m.status; }));
+        _flashEditando.itens = novosItens;
+        renderFlashEditor(false);
+      }
+    } catch (e) {
+      promoToast('Erro: ' + e.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = '💾 Salvar na Shopee'; }
+    }
+  }
+  window.flashSalvarItens = flashSalvarItens;
+
+  function _flashRegistrarFalhas(falhas, flash, loja) {
+    adicionarPendencia('export_falhou', 'Flash sale: variações não entraram',
+      `${falhas.length} variação(ões) falharam na flash sale (${loja.nome}): ${falhas.map(f=>f.erro).slice(0,3).join('; ')}`);
+  }
+
+  // Adicionar produtos: oferece os que estão em promoção comum ongoing (têm preço de referência)
+  function flashAbrirAdicionar() {
+    if (!_flashEditando) return;
+    const { loja, itens } = _flashEditando;
+    const jaNaFlash = new Set(itens.map(it => String(it.itemId)));
+    // candidatos = itens que têm preço de promoção comum (estão em _flashPrecosPromo) e não estão na flash
+    // agrupa modelIds por itemId via produtosErp
+    const porItem = {};
+    (produtosErp || []).forEach(p => {
+      (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+        if (!/shopee/i.test(vi.marketplace) || String(vi.lojaIdBanco) !== String(loja.idBanco) || !vi.anuncioId) return;
+        if (jaNaFlash.has(String(vi.anuncioId))) return;
+        // só inclui se ALGUMA variação do item está em promoção comum
+        const temPromo = (p.variacoes||[]).some(vv => (vv.vinculos||[]).some(x => x.variacaoExternaId && _flashPrecosPromo[String(x.variacaoExternaId)] != null));
+        if (!porItem[vi.anuncioId]) porItem[vi.anuncioId] = { itemId: vi.anuncioId, nome: vi.titulo || p.nome };
+      }));
+    });
+    // fallback: como o vínculo de variação pode não bater, oferecemos todos os itens em promoção
+    // que não estão na flash, buscando nome real depois.
+    const candidatos = Object.values(porItem);
+    if (candidatos.length === 0) {
+      promoToast('Todos os produtos em promoção comum já estão na flash (ou não há promoção comum ongoing)', true);
+      return;
+    }
+    const existente = document.getElementById('flashAddModal');
+    if (existente) existente.remove();
+    const modal = document.createElement('div');
+    modal.id = 'flashAddModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100002;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(620px,95vw);max-height:88vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:16px 20px;background:#1f2937;color:white;display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0;font-size:15px">+ Adicionar à flash sale (preço = promoção −1)</h2>
+        <button onclick="document.getElementById('flashAddModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:14px 18px;overflow:auto;flex:1">
+        <input type="text" id="flashAddBusca" placeholder="🔍 Buscar..." oninput="flashFiltrarAdd()" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;margin-bottom:10px;box-sizing:border-box">
+        <div id="flashAddLista">${candidatos.map(c => `
+          <label style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #f3f4f6;cursor:pointer" data-nome="${escapeHtml((c.nome||'').toLowerCase())}">
+            <input type="checkbox" class="flash-add-chk" data-itemid="${c.itemId}">
+            <span style="flex:1;font-size:13px">${escapeHtml(c.nome)}</span>
+            <code style="font-size:10px;color:#9ca3af">${c.itemId}</code>
+          </label>`).join('')}</div>
+      </div>
+      <div style="padding:12px 18px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end">
+        <button onclick="flashConfirmarAdicionar()" style="padding:10px 16px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">Adicionar (preço promo −1)</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    _flashAtualizarNomesAdd(loja, candidatos);
+  }
+  window.flashAbrirAdicionar = flashAbrirAdicionar;
+
+  async function _flashAtualizarNomesAdd(loja, candidatos) {
+    try {
+      const ids = candidatos.map(c => String(c.itemId));
+      const data = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/itens-nomes', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ itemIds: ids })
+      })).json();
+      if (data.ok && data.nomes) {
+        document.querySelectorAll('#flashAddLista label').forEach(label => {
+          const chk = label.querySelector('.flash-add-chk');
+          const nomeReal = chk && data.nomes[String(chk.dataset.itemid)];
+          if (nomeReal) { label.querySelector('span').textContent = nomeReal; label.dataset.nome = nomeReal.toLowerCase(); }
+        });
+      }
+    } catch (_) {}
+  }
+
+  function flashFiltrarAdd() {
+    const q = (document.getElementById('flashAddBusca').value || '').toLowerCase();
+    document.querySelectorAll('#flashAddLista label').forEach(l => { l.style.display = (l.dataset.nome||'').includes(q) ? 'flex' : 'none'; });
+  }
+  window.flashFiltrarAdd = flashFiltrarAdd;
+
+  async function flashConfirmarAdicionar() {
+    if (!_flashEditando) return;
+    const { loja, flash } = _flashEditando;
+    const sel = [...document.querySelectorAll('.flash-add-chk:checked')];
+    if (sel.length === 0) { promoToast('Selecione ao menos um produto', true); return; }
+    promoToast('⏳ Buscando variações e adicionando (preço promo −1)...');
+    const round2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+    const itensAdd = [];
+    for (const chk of sel) {
+      const itemId = chk.dataset.itemid;
+      try {
+        const m = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/item/' + itemId + '/models', { headers: { 'x-api-token': getApiToken() } })).json();
+        if (!m.ok || !(m.models||[]).length) continue;
+        // pra cada variação, preço = promoção comum −1 (se tiver referência); senão pula a variação
+        const vars = [];
+        m.models.forEach(mod => {
+          const pp = _flashPrecosPromo[String(mod.modelId)];
+          if (pp != null) vars.push({ modelId: mod.modelId, preco: round2(pp - 1), stock: 2 });
+        });
+        if (vars.length > 0) itensAdd.push({ itemId: parseInt(itemId,10), purchaseLimit: 0, variacoes: vars });
+      } catch (_) {}
+    }
+    if (itensAdd.length === 0) { promoToast('Nenhuma variação com promoção comum de referência', true); return; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale/' + flash.flashSaleId + '/itens', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ itens: itensAdd })
+      })).json();
+      if (!r.ok) { promoToast('Erro: ' + (r.erro||'falha'), true); return; }
+      promoToast(`✓ ${r.resultado.totalSucesso} variação(ões) adicionada(s)`);
+      if (r.resultado && (r.resultado.falhas||[]).length) _flashRegistrarFalhas(r.resultado.falhas, flash, loja);
+      document.getElementById('flashAddModal').remove();
+      const fdet = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale/' + flash.flashSaleId, { headers: { 'x-api-token': getApiToken() } })).json();
+      if (fdet.ok) { (fdet.itens||[]).forEach(item => (item.models||[]).forEach(mm => { mm._precoFlashOrig = mm.precoInput; mm._statusOrig = mm.status; })); _flashEditando.itens = fdet.itens||[]; renderFlashEditor(false); }
+    } catch (e) { promoToast('Erro: ' + e.message, true); }
+  }
+  window.flashConfirmarAdicionar = flashConfirmarAdicionar;
+
+  async function flashRemoverSelecionados() {
+    if (!_flashEditando) return;
+    const { loja, flash, itens } = _flashEditando;
+    const sel = [...document.querySelectorAll('.flash-chk:checked')];
+    if (sel.length === 0) { promoToast('Marque as variações que quer remover', true); return; }
+    // flash sale remove por item inteiro (delete_shop_flash_sale_items é por item_id)
+    const itemIds = new Set();
+    sel.forEach(chk => { const it = itens[chk.dataset.ii]; if (it) itemIds.add(it.itemId); });
+    const ids = [...itemIds];
+    if (!confirm(`Remover ${ids.length} produto(s) inteiro(s) da flash sale? (a remoção na flash é por produto, não por variação)`)) return;
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale/' + flash.flashSaleId + '/itens', {
+        method: 'DELETE', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ itemIds: ids })
+      })).json();
+      if (!r.ok) { promoToast('Erro: ' + (r.erro||'falha'), true); return; }
+      promoToast(`✓ ${r.resultado.totalSucesso} produto(s) removido(s)`);
+      const fdet = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale/' + flash.flashSaleId, { headers: { 'x-api-token': getApiToken() } })).json();
+      if (fdet.ok) { (fdet.itens||[]).forEach(item => (item.models||[]).forEach(mm => { mm._precoFlashOrig = mm.precoInput; mm._statusOrig = mm.status; })); _flashEditando.itens = fdet.itens||[]; renderFlashEditor(false); }
+    } catch (e) { promoToast('Erro: ' + e.message, true); }
+  }
+  window.flashRemoverSelecionados = flashRemoverSelecionados;
 
   function renderMarketing() {
     document.getElementById('mktMonthLabel').textContent = `${meses[mktMesAtual]} · ${mktAnoAtual}`;
