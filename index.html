@@ -5743,11 +5743,13 @@
         <button class="prod-filtro-btn" data-promo="cupom" onclick="filtrarPromocoes('cupom')">🎫 Cupons</button>
       </div>
       <button class="op-new-btn" onclick="abrirPromocoesShopee()" style="background:#ea580c;margin-right:8px">🟠 Promoções Shopee</button>
+      <button class="op-new-btn" onclick="abrirFlashSaleShopee()" style="background:#dc2626;margin-right:8px">⚡ Flash Sale Shopee</button>
       <button class="op-new-btn" onclick="abrirNovaPromocao()">+ Nova Promoção</button>
     </div>
     
     <!-- Painel de Promoções Shopee (live) — escondido até abrir -->
     <div id="promoShopeePanel" style="display:none"></div>
+    <div id="flashSalePanel" style="display:none"></div>
     
     <div class="prod-resumo" id="promoResumo"></div>
     <div id="promoLista"></div>
@@ -26229,7 +26231,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.38-promo-cria-espelho-auto';
+  const _DIAG_VERSAO_PAINEL = 'v32k.42-flash-listar';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30170,6 +30172,8 @@ ${JSON.stringify(metricas, null, 2)}`
   // ════════════════════════════════════════════════════════════════════
   let _promoShopeeCache = [];          // [{loja, campanha}] achatado
   let _promoStatusFiltro = 'ongoing';  // ongoing | upcoming | expired | all
+  let _flashCache = [];                // [{loja, flash}] achatado
+  let _flashTipoFiltro = 'upcoming';   // upcoming | ongoing | expired | all
 
   function _lojasShopee() {
     return (lojasErp || []).filter(l => /shopee/i.test(l.marketplace) && l.idBanco);
@@ -31033,6 +31037,133 @@ ${JSON.stringify(metricas, null, 2)}`
     }
   }
   window.promoRemoverSelecionados = promoRemoverSelecionados;
+
+  // ════════════════════════════════════════════════════════════════════
+  // FLASH SALE (promoção relâmpago) — Etapa 2: listar
+  // ════════════════════════════════════════════════════════════════════
+  const FLASH_TIPO_LABEL = { 1: 'Agendada', 2: 'Ativa', 3: 'Expirada' };
+  const FLASH_TIPO_COR = { 1: '#2563eb', 2: '#16a34a', 3: '#9ca3af' };
+  const FLASH_FILTRO_MAP = { upcoming: 1, ongoing: 2, expired: 3, all: 0 };
+
+  async function abrirFlashSaleShopee() {
+    const painel = document.getElementById('flashSalePanel');
+    if (!painel) return;
+    painel.style.display = 'block';
+    ['promoLista', 'promoResumo', 'promoStatsV2', 'mktPeriodoBar', 'promoShopeePanel'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+    painel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <button onclick="fecharFlashSaleShopee()" style="padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;cursor:pointer">← Voltar</button>
+          <h2 style="margin:0;font-size:18px;color:#1f2937">⚡ Flash Sale Shopee</h2>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="flashTipoSelect" onchange="mudarFiltroFlash(this.value)" style="padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+            <option value="upcoming">Agendadas</option>
+            <option value="ongoing">Ativas</option>
+            <option value="expired">Expiradas</option>
+            <option value="all">Todas</option>
+          </select>
+          <button onclick="flashAbrirCriar()" style="padding:8px 14px;background:#dc2626;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">+ Nova Flash Sale</button>
+          <button onclick="carregarFlashSales()" style="padding:8px 14px;background:#374151;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">↻ Atualizar</button>
+        </div>
+      </div>
+      <div id="flashList"></div>`;
+    document.getElementById('flashTipoSelect').value = _flashTipoFiltro;
+    await carregarFlashSales();
+  }
+  window.abrirFlashSaleShopee = abrirFlashSaleShopee;
+
+  function fecharFlashSaleShopee() {
+    const painel = document.getElementById('flashSalePanel');
+    if (painel) { painel.style.display = 'none'; painel.innerHTML = ''; }
+    ['promoLista', 'promoResumo', 'promoStatsV2'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = '';
+    });
+    const mkt = document.getElementById('mktPeriodoBar');
+    if (mkt) mkt.style.display = '';
+  }
+  window.fecharFlashSaleShopee = fecharFlashSaleShopee;
+
+  function mudarFiltroFlash(v) { _flashTipoFiltro = v; carregarFlashSales(); }
+  window.mudarFiltroFlash = mudarFiltroFlash;
+
+  async function carregarFlashSales() {
+    const cont = document.getElementById('flashList');
+    if (!cont) return;
+    const lojas = _lojasShopee();
+    if (lojas.length === 0) {
+      cont.innerHTML = '<div style="text-align:center;color:#6b7280;padding:30px">Nenhuma loja Shopee conectada.</div>';
+      return;
+    }
+    cont.innerHTML = `<div style="text-align:center;color:#6b7280;padding:30px">⏳ Carregando flash sales de ${lojas.length} loja(s)...</div>`;
+
+    const resultados = await Promise.all(lojas.map(async loja => {
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale?type=' + _flashTipoFiltro, {
+          headers: { 'x-api-token': getApiToken() }
+        });
+        const data = await resp.json();
+        if (!data.ok) return { loja, erro: data.erro || 'falha', flashSales: [] };
+        return { loja, flashSales: data.flashSales || [] };
+      } catch (e) {
+        return { loja, erro: e.message, flashSales: [] };
+      }
+    }));
+
+    _flashCache = [];
+    const errosLojas = [];
+    resultados.forEach(r => {
+      if (r.erro) errosLojas.push(r.loja.nome + ' (' + r.erro + ')');
+      (r.flashSales || []).forEach(f => _flashCache.push({ loja: r.loja, flash: f }));
+    });
+    renderFlashSalesLista(errosLojas);
+  }
+  window.carregarFlashSales = carregarFlashSales;
+
+  function renderFlashSalesLista(errosLojas) {
+    const cont = document.getElementById('flashList');
+    if (!cont) return;
+    let html = '';
+    if (_flashCache.length === 0) {
+      html += `<div style="text-align:center;color:#6b7280;padding:30px">Nenhuma flash sale ${FLASH_TIPO_LABEL[FLASH_FILTRO_MAP[_flashTipoFiltro]] ? '(' + _flashTipoFiltro + ')' : ''} encontrada.</div>`;
+    } else {
+      // Ordena: mais recentes (maior startTime) primeiro
+      const ordenado = [..._flashCache].sort((a, b) => (b.flash.startTime || 0) - (a.flash.startTime || 0));
+      ordenado.forEach((it, idx) => {
+        const f = it.flash;
+        const cor = FLASH_TIPO_COR[f.tipo] || '#6b7280';
+        const label = FLASH_TIPO_LABEL[f.tipo] || '?';
+        const ini = f.startTime ? new Date(f.startTime * 1000).toLocaleString('pt-BR') : '?';
+        const fim = f.endTime ? new Date(f.endTime * 1000).toLocaleString('pt-BR') : '?';
+        const editavel = (f.tipo === 1 || f.tipo === 2); // upcoming ou ongoing
+        html += `<div onclick="flashAbrirDetalhe(${idx})" style="border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:10px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="background:${cor};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${label}</span>
+              <span style="font-size:12px;color:#6b7280">🏪 ${escapeHtml(it.loja.nome)}</span>
+            </div>
+            <div style="font-size:13px;color:#1f2937;margin-top:4px">⚡ ${ini} → ${fim}</div>
+            <div style="font-size:11px;color:#9ca3af;margin-top:2px">${f.itemCount} produto(s) · ${f.enabledItemCount} habilitado(s)${f.clickCount ? ' · ' + f.clickCount + ' clique(s)' : ''}</div>
+          </div>
+          <div style="color:#9ca3af">${editavel ? '✏️' : '👁'}</div>
+        </div>`;
+      });
+    }
+    if (errosLojas && errosLojas.length > 0) {
+      html += `<div style="font-size:11px;color:#9ca3af;margin-top:8px">Algumas lojas não retornaram: ${errosLojas.map(e => escapeHtml(e)).join(', ')}</div>`;
+    }
+    cont.innerHTML = html;
+  }
+
+  // Placeholders das próximas etapas (criar/detalhe) — implementados a seguir
+  function flashAbrirCriar() { promoToast('Tela de criar flash sale — próxima etapa'); }
+  window.flashAbrirCriar = flashAbrirCriar;
+  function flashAbrirDetalhe(idx) { promoToast('Editor de flash sale — próxima etapa'); }
+  window.flashAbrirDetalhe = flashAbrirDetalhe;
 
   function renderMarketing() {
     document.getElementById('mktMonthLabel').textContent = `${meses[mktMesAtual]} · ${mktAnoAtual}`;
