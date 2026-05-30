@@ -4425,6 +4425,7 @@
               <button class="op-new-btn" onclick="goTo('produtosScreen')" style="background:rgba(255,255,255,0.15)">📦 Produtos</button>
               <button class="op-new-btn" onclick="goTo('estoqueScreen')" style="background:rgba(255,255,255,0.15)">📊 Estoque</button>
               <button class="op-new-btn" onclick="goTo('promocoesScreen')" style="background:rgba(255,255,255,0.15)">🎟️ Promoções</button>
+              <button class="op-new-btn" onclick="abrirCalendario()" style="background:rgba(255,255,255,0.15)">📅 Calendário</button>
               <button class="op-new-btn" onclick="abrirNovaDemanda()">+ Nova Demanda</button>
             </div>
           </div>
@@ -5716,6 +5717,38 @@
     
     <div class="prod-resumo" id="estoqueResumo"></div>
     <div id="estoqueLista"></div>
+  </div>
+</div>
+
+<!-- ===== CALENDÁRIO DE AGENDAMENTOS ===== -->
+<div class="screen" id="calendarioScreen">
+  <div class="app-header">
+    <div class="header-content">
+      <button class="op-new-btn" onclick="goTo('operacaoScreen')" style="background:rgba(255,255,255,0.15)">← Voltar</button>
+      <h1 style="margin:0 0 0 12px;font-size:20px">📅 Calendário de Agendamentos</h1>
+    </div>
+  </div>
+  <div style="max-width:1100px;margin:0 auto;padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <button onclick="calMudarMes(-1)" style="padding:8px 12px;border:1px solid #d1d5db;background:white;border-radius:8px;cursor:pointer">‹</button>
+        <span id="calMesLabel" style="font-size:17px;font-weight:700;color:#1f2937;min-width:180px;text-align:center"></span>
+        <button onclick="calMudarMes(1)" style="padding:8px 12px;border:1px solid #d1d5db;background:white;border-radius:8px;cursor:pointer">›</button>
+        <button onclick="calIrHoje()" style="padding:8px 12px;border:1px solid #d1d5db;background:#f3f4f6;border-radius:8px;cursor:pointer;font-size:13px">Hoje</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="calFiltroTipo" onchange="renderCalendario()" style="padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+          <option value="">Todos os tipos</option>
+          <option value="sincronizar_vendas">Sincronizar vendas</option>
+          <option value="gerar_flash_sale">Gerar flash sale</option>
+          <option value="mudar_preco">Mudar preço</option>
+          <option value="duplicar_anuncio">Duplicar anúncio</option>
+        </select>
+        <button onclick="carregarCalendario()" style="padding:8px 14px;background:#374151;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">↻ Atualizar</button>
+      </div>
+    </div>
+    <div id="calGrid"></div>
+    <div id="calDiaDetalhe" style="margin-top:18px"></div>
   </div>
 </div>
 
@@ -26231,7 +26264,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.45-flash-add-por-itemid';
+  const _DIAG_VERSAO_PAINEL = 'v32k.61-calendario';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -31044,6 +31077,150 @@ ${JSON.stringify(metricas, null, 2)}`
   const FLASH_TIPO_LABEL = { 1: 'Agendada', 2: 'Ativa', 3: 'Expirada' };
   const FLASH_TIPO_COR = { 1: '#2563eb', 2: '#16a34a', 3: '#9ca3af' };
   const FLASH_FILTRO_MAP = { upcoming: 1, ongoing: 2, expired: 3, all: 0 };
+
+  // ════════════════════════════════════════════════════════════════════
+  // CALENDÁRIO DE AGENDAMENTOS (lê tarefas_agendadas)
+  // ════════════════════════════════════════════════════════════════════
+  let _calData = new Date();        // mês exibido
+  let _calTarefas = [];             // todas as tarefas carregadas
+  const CAL_TIPO_LABEL = { sincronizar_vendas: 'Sincronizar vendas', gerar_flash_sale: 'Gerar flash sale', mudar_preco: 'Mudar preço', duplicar_anuncio: 'Duplicar anúncio' };
+  const CAL_STATUS_COR = { pendente: '#2563eb', rodando: '#d97706', concluida: '#16a34a', erro: '#dc2626' };
+  const CAL_STATUS_LABEL = { pendente: 'Pendente', rodando: 'Rodando', concluida: 'Concluída', erro: 'Erro' };
+
+  async function abrirCalendario() {
+    goTo('calendarioScreen');
+    _calData = new Date();
+    await carregarCalendario();
+  }
+  window.abrirCalendario = abrirCalendario;
+
+  async function carregarCalendario() {
+    const grid = document.getElementById('calGrid');
+    if (grid) grid.innerHTML = '<div style="text-align:center;color:#6b7280;padding:30px">⏳ Carregando agendamentos...</div>';
+    try {
+      const data = await (await fetch(BACKEND_URL + '/api/tarefas', { headers: { 'x-api-token': getApiToken() } })).json();
+      _calTarefas = (data.ok && data.tarefas) ? data.tarefas : [];
+    } catch (e) {
+      _calTarefas = [];
+    }
+    renderCalendario();
+  }
+  window.carregarCalendario = carregarCalendario;
+
+  function calMudarMes(delta) { _calData.setMonth(_calData.getMonth() + delta); renderCalendario(); }
+  window.calMudarMes = calMudarMes;
+  function calIrHoje() { _calData = new Date(); renderCalendario(); document.getElementById('calDiaDetalhe').innerHTML=''; }
+  window.calIrHoje = calIrHoje;
+
+  // mapa 'YYYY-MM-DD' → [tarefas daquele dia] (aplicando filtro de tipo)
+  function _calTarefasPorDia() {
+    const filtro = (document.getElementById('calFiltroTipo') || {}).value || '';
+    const mapa = {};
+    _calTarefas.forEach(t => {
+      if (filtro && t.tipo !== filtro) return;
+      if (!t.rodar_em) return;
+      const d = new Date(t.rodar_em);
+      const chave = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+      (mapa[chave] = mapa[chave] || []).push(t);
+    });
+    return mapa;
+  }
+
+  function renderCalendario() {
+    const grid = document.getElementById('calGrid');
+    const label = document.getElementById('calMesLabel');
+    if (!grid) return;
+    const ano = _calData.getFullYear(), mes = _calData.getMonth();
+    const meses = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+    if (label) label.textContent = meses[mes] + ' ' + ano;
+    const porDia = _calTarefasPorDia();
+    const hojeChave = (() => { const h = new Date(); return h.getFullYear()+'-'+String(h.getMonth()+1).padStart(2,'0')+'-'+String(h.getDate()).padStart(2,'0'); })();
+
+    const primeiroDiaSemana = new Date(ano, mes, 1).getDay(); // 0=domingo
+    const diasNoMes = new Date(ano, mes + 1, 0).getDate();
+    const semanas = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+
+    let html = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">';
+    semanas.forEach(s => html += `<div style="text-align:center;font-size:12px;font-weight:700;color:#9ca3af;padding:4px">${s}</div>`);
+    // células vazias antes do dia 1
+    for (let i = 0; i < primeiroDiaSemana; i++) html += '<div></div>';
+    for (let dia = 1; dia <= diasNoMes; dia++) {
+      const chave = ano + '-' + String(mes+1).padStart(2,'0') + '-' + String(dia).padStart(2,'0');
+      const tarefas = porDia[chave] || [];
+      const ehHoje = chave === hojeChave;
+      // bolinhas de status (até 4)
+      const bolinhas = tarefas.slice(0, 4).map(t => `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${CAL_STATUS_COR[t.status]||'#9ca3af'}"></span>`).join(' ');
+      html += `<div onclick="calVerDia('${chave}')" style="min-height:70px;border:1px solid ${ehHoje?'#dc2626':'#e5e7eb'};border-radius:8px;padding:6px;cursor:pointer;background:${ehHoje?'#fef2f2':'white'};transition:background 0.15s" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='${ehHoje?'#fef2f2':'white'}'">
+        <div style="font-size:13px;font-weight:${ehHoje?'800':'600'};color:${ehHoje?'#dc2626':'#374151'}">${dia}</div>
+        ${tarefas.length ? `<div style="margin-top:4px;display:flex;gap:3px;flex-wrap:wrap">${bolinhas}</div><div style="font-size:10px;color:#9ca3af;margin-top:3px">${tarefas.length} tarefa(s)</div>` : ''}
+      </div>`;
+    }
+    html += '</div>';
+    grid.innerHTML = html;
+  }
+  window.renderCalendario = renderCalendario;
+
+  function calVerDia(chave) {
+    const cont = document.getElementById('calDiaDetalhe');
+    if (!cont) return;
+    const porDia = _calTarefasPorDia();
+    const tarefas = (porDia[chave] || []).sort((a,b) => new Date(a.rodar_em) - new Date(b.rodar_em));
+    const [a,m,d] = chave.split('-');
+    let html = `<div style="border:1px solid #e5e7eb;border-radius:12px;padding:16px">
+      <h3 style="margin:0 0 12px;font-size:16px;color:#1f2937">📋 ${d}/${m}/${a} — ${tarefas.length} agendamento(s)</h3>`;
+    if (tarefas.length === 0) {
+      html += '<div style="color:#9ca3af;font-size:13px">Nenhum agendamento neste dia.</div>';
+    } else {
+      tarefas.forEach(t => {
+        const hora = new Date(t.rodar_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        const cor = CAL_STATUS_COR[t.status] || '#9ca3af';
+        html += `<div style="display:flex;align-items:center;gap:10px;padding:10px;border-top:1px solid #f3f4f6;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:700;color:#374151;min-width:48px">${hora}</span>
+          <span style="background:${cor};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${CAL_STATUS_LABEL[t.status]||t.status}</span>
+          <span style="flex:1;min-width:0;font-size:13px;color:#1f2937">${CAL_TIPO_LABEL[t.tipo]||t.tipo}${t.recorrente?' 🔁':''}${t.descricao?' — '+escapeHtml(t.descricao):''}</span>
+          ${t.status==='pendente' ? `<button onclick="calEditarTarefa(${t.id})" style="padding:5px 10px;background:#fff;color:#2563eb;border:1px solid #2563eb;border-radius:6px;cursor:pointer;font-size:12px">✏️ Editar</button>` : ''}
+          ${t.status==='pendente' ? `<button onclick="calCancelarTarefa(${t.id})" style="padding:5px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-size:12px">🗑 Cancelar</button>` : ''}
+        </div>
+        ${t.ultimo_resultado ? `<div style="font-size:11px;color:#9ca3af;padding:0 10px 8px 58px">${escapeHtml((t.ultimo_resultado||'').slice(0,160))}</div>` : ''}`;
+      });
+    }
+    html += '</div>';
+    cont.innerHTML = html;
+    cont.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  window.calVerDia = calVerDia;
+
+  async function calEditarTarefa(id) {
+    const t = _calTarefas.find(x => x.id === id);
+    if (!t) return;
+    const atual = new Date(t.rodar_em);
+    const dataStr = atual.getFullYear() + '-' + String(atual.getMonth()+1).padStart(2,'0') + '-' + String(atual.getDate()).padStart(2,'0');
+    const horaStr = String(atual.getHours()).padStart(2,'0') + ':' + String(atual.getMinutes()).padStart(2,'0');
+    const novaData = prompt('Nova data (AAAA-MM-DD):', dataStr);
+    if (!novaData) return;
+    const novaHora = prompt('Novo horário (HH:MM):', horaStr);
+    if (!novaHora) return;
+    const novoRodarEm = new Date(novaData + 'T' + novaHora + ':00');
+    if (isNaN(novoRodarEm.getTime())) { alert('Data/hora inválida'); return; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/tarefas/' + id, { method: 'PUT', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ rodar_em: novoRodarEm.toISOString() }) })).json();
+      if (!r.ok) { alert('Erro: ' + (r.erro||'falha')); return; }
+      await carregarCalendario();
+      calVerDia(novaData);
+    } catch (e) { alert('Erro: ' + e.message); }
+  }
+  window.calEditarTarefa = calEditarTarefa;
+
+  async function calCancelarTarefa(id) {
+    if (!confirm('Cancelar este agendamento? Esta ação remove a tarefa.')) return;
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/tarefas/' + id, { method: 'DELETE', headers: { 'x-api-token': getApiToken() } })).json();
+      if (!r.ok) { alert('Erro: ' + (r.erro||'falha')); return; }
+      await carregarCalendario();
+      document.getElementById('calDiaDetalhe').innerHTML = '';
+    } catch (e) { alert('Erro: ' + e.message); }
+  }
+  window.calCancelarTarefa = calCancelarTarefa;
 
   async function abrirFlashSaleShopee() {
     const painel = document.getElementById('flashSalePanel');
