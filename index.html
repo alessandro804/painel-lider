@@ -4247,18 +4247,6 @@
       </div>
 
       <div class="content">
-        <!-- Acesso rápido: Promoções Shopee (live) -->
-        <div style="background:linear-gradient(135deg,#fff7ed,#ffedd5);border:1px solid #fed7aa;border-radius:12px;padding:14px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-          <div>
-            <div style="font-weight:700;color:#9a3412;font-size:15px">🟠 Promoções Shopee</div>
-            <div style="font-size:12px;color:#c2410c;margin-top:2px">Veja e edite as campanhas de desconto de todas as lojas, direto da Shopee.</div>
-          </div>
-          <button onclick="abrirPromocoesShopee()" style="padding:10px 18px;background:#ea580c;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700;white-space:nowrap">Abrir promoções →</button>
-        </div>
-
-        <!-- Painel de Promoções Shopee (escondido até abrir) -->
-        <div id="promoShopeePanel" style="display:none"></div>
-
         <!-- Header com período -->
         <div class="month-filter-bar" id="mktPeriodoBar" style="margin-bottom:16px">
           <span class="mf-label">📅 Período</span>
@@ -5754,8 +5742,12 @@
         <button class="prod-filtro-btn" data-promo="relampago" onclick="filtrarPromocoes('relampago')">⚡ Relâmpago</button>
         <button class="prod-filtro-btn" data-promo="cupom" onclick="filtrarPromocoes('cupom')">🎫 Cupons</button>
       </div>
+      <button class="op-new-btn" onclick="abrirPromocoesShopee()" style="background:#ea580c;margin-right:8px">🟠 Promoções Shopee</button>
       <button class="op-new-btn" onclick="abrirNovaPromocao()">+ Nova Promoção</button>
     </div>
+    
+    <!-- Painel de Promoções Shopee (live) — escondido até abrir -->
+    <div id="promoShopeePanel" style="display:none"></div>
     
     <div class="prod-resumo" id="promoResumo"></div>
     <div id="promoLista"></div>
@@ -26237,7 +26229,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.27-diag-promo';
+  const _DIAG_VERSAO_PAINEL = 'v32k.29-promo-editar-precos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30188,10 +30180,13 @@ ${JSON.stringify(metricas, null, 2)}`
 
   async function abrirPromocoesShopee() {
     const painel = document.getElementById('promoShopeePanel');
-    const periodo = document.getElementById('mktPeriodoBar');
     if (!painel) return;
     painel.style.display = 'block';
-    if (periodo) periodo.style.display = 'none'; // foca nas promoções
+    // Esconde a lista de promoções internas enquanto mostra as da Shopee
+    ['promoLista', 'promoResumo', 'promoStatsV2', 'mktPeriodoBar'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
     painel.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
         <div style="display:flex;align-items:center;gap:10px">
@@ -30216,9 +30211,14 @@ ${JSON.stringify(metricas, null, 2)}`
 
   function fecharPromocoesShopee() {
     const painel = document.getElementById('promoShopeePanel');
-    const periodo = document.getElementById('mktPeriodoBar');
     if (painel) { painel.style.display = 'none'; painel.innerHTML = ''; }
-    if (periodo) periodo.style.display = '';
+    // Restaura a lista de promoções internas
+    ['promoLista', 'promoResumo', 'promoStatsV2'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = '';
+    });
+    const mkt = document.getElementById('mktPeriodoBar');
+    if (mkt) mkt.style.display = '';
   }
   window.fecharPromocoesShopee = fecharPromocoesShopee;
 
@@ -30227,9 +30227,8 @@ ${JSON.stringify(metricas, null, 2)}`
 
   async function carregarPromocoesShopee() {
     const cont = document.getElementById('promoShopeeList');
-    if (!cont) { console.warn('[DIAG promo] promoShopeeList não encontrado no DOM'); return; }
+    if (!cont) return;
     const lojas = _lojasShopee();
-    console.log('[DIAG promo] lojas Shopee encontradas:', lojas.length, lojas.map(l => ({nome: l.nome, idBanco: l.idBanco, mk: l.marketplace})));
     if (lojas.length === 0) {
       cont.innerHTML = '<div style="text-align:center;color:#6b7280;padding:30px">Nenhuma loja Shopee conectada.</div>';
       return;
@@ -30243,11 +30242,9 @@ ${JSON.stringify(metricas, null, 2)}`
           headers: { 'x-api-token': getApiToken() }
         });
         const data = await resp.json();
-        console.log('[DIAG promo] loja', loja.idBanco, loja.nome, '→ ok=', data.ok, 'campanhas=', (data.campanhas||[]).length, data.erro||'');
         if (!data.ok) return { loja, erro: data.erro || 'falha', campanhas: [] };
         return { loja, campanhas: data.campanhas || [] };
       } catch (e) {
-        console.warn('[DIAG promo] loja', loja.idBanco, 'erro de rede:', e.message);
         return { loja, erro: e.message, campanhas: [] };
       }
     }));
@@ -30259,7 +30256,6 @@ ${JSON.stringify(metricas, null, 2)}`
       if (r.erro) errosLojas.push(r.loja.nome + ' (' + r.erro + ')');
       (r.campanhas || []).forEach(c => _promoShopeeCache.push({ loja: r.loja, campanha: c }));
     });
-    console.log('[DIAG promo] total achatado:', _promoShopeeCache.length, '| filtro:', _promoStatusFiltro, '| erros:', errosLojas.length);
 
     renderPromocoesShopeeLista(errosLojas);
   }
@@ -30306,6 +30302,9 @@ ${JSON.stringify(metricas, null, 2)}`
   }
 
   // Detalhe da promoção: busca itens da Shopee e mostra (edição completa vem na Fase 3)
+  // Cache da promoção em edição: { loja, campanha, itens:[...] (estrutura Shopee) }
+  let _promoEditando = null;
+
   async function abrirDetalhePromo(idx) {
     const it = _promoShopeeCache[idx];
     if (!it) return;
@@ -30315,17 +30314,18 @@ ${JSON.stringify(metricas, null, 2)}`
     const modal = document.createElement('div');
     modal.id = 'promoDetalheModal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
-    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(700px,95vw);max-height:90vh;overflow:hidden;display:flex;flex-direction:column">
-      <div style="padding:18px 20px;background:linear-gradient(135deg,#ea580c,#c2410c);color:white;display:flex;justify-content:space-between;align-items:center">
+    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(820px,96vw);max-height:92vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:16px 20px;background:linear-gradient(135deg,#ea580c,#c2410c);color:white;display:flex;justify-content:space-between;align-items:center">
         <div>
           <h2 style="margin:0;font-size:17px">${escapeHtml(c.nome || 'Promoção')}</h2>
-          <div style="font-size:12px;opacity:0.9;margin-top:2px">🏪 ${escapeHtml(it.loja.nome)}</div>
+          <div style="font-size:12px;opacity:0.9;margin-top:2px">🏪 ${escapeHtml(it.loja.nome)} · ${c.status === 'ongoing' ? 'Ativa' : c.status === 'upcoming' ? 'Agendada' : 'Expirada'}</div>
         </div>
         <button onclick="document.getElementById('promoDetalheModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:16px">×</button>
       </div>
       <div id="promoDetalheBody" style="padding:18px;overflow:auto;flex:1">
         <div style="text-align:center;color:#6b7280;padding:20px">⏳ Carregando itens da promoção...</div>
       </div>
+      <div id="promoDetalheFooter" style="padding:12px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:none;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"></div>
     </div>`;
     document.body.appendChild(modal);
 
@@ -30341,27 +30341,169 @@ ${JSON.stringify(metricas, null, 2)}`
         return;
       }
       const p = data.promocao || {};
-      const itens = p.itens || [];
-      const ini = c.startTime ? new Date(c.startTime * 1000).toLocaleString('pt-BR') : '?';
-      const fim = c.endTime ? new Date(c.endTime * 1000).toLocaleString('pt-BR') : '?';
-      body.innerHTML = `
-        <div style="font-size:13px;color:#4b5563;margin-bottom:14px">
-          📅 ${ini} → ${fim} &nbsp;·&nbsp; ${itens.length} item(ns) na promoção
-        </div>
-        <div style="font-size:12px;color:#9ca3af;margin-bottom:8px">Itens (a edição em massa — adicionar/remover/mudar desconto — vem na próxima etapa):</div>
-        ${itens.length === 0 ? '<div style="color:#6b7280;padding:20px;text-align:center">Sem itens.</div>' :
-          itens.slice(0, 100).map(item => `
-            <div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #f3f4f6;font-size:12px">
-              <code style="color:#6b7280">item ${item.item_id}</code>
-              <span>${(item.model_list && item.model_list.length) ? item.model_list.length + ' variação(ões)' : (item.item_promotion_price != null ? 'R$ ' + item.item_promotion_price : '—')}</span>
-            </div>`).join('')}
-        ${itens.length > 100 ? `<div style="font-size:11px;color:#9ca3af;padding:8px;text-align:center">... e mais ${itens.length - 100} item(ns)</div>` : ''}`;
+      _promoEditando = { loja: it.loja, campanha: c, itens: p.itens || [] };
+      const expirada = c.status === 'expired';
+      renderEditorPromo(expirada);
     } catch (e) {
       const body = document.getElementById('promoDetalheBody');
       if (body) body.innerHTML = `<div style="color:#991b1b;text-align:center;padding:20px">Erro de rede: ${escapeHtml(e.message)}</div>`;
     }
   }
   window.abrirDetalhePromo = abrirDetalhePromo;
+
+  function renderEditorPromo(somenteLeitura) {
+    const body = document.getElementById('promoDetalheBody');
+    const footer = document.getElementById('promoDetalheFooter');
+    if (!body || !_promoEditando) return;
+    const { campanha, itens } = _promoEditando;
+    const ini = campanha.startTime ? new Date(campanha.startTime * 1000).toLocaleString('pt-BR') : '?';
+    const fim = campanha.endTime ? new Date(campanha.endTime * 1000).toLocaleString('pt-BR') : '?';
+
+    if (itens.length === 0) {
+      body.innerHTML = '<div style="color:#6b7280;padding:20px;text-align:center">Esta promoção não tem itens.</div>';
+      return;
+    }
+
+    let html = `<div style="font-size:13px;color:#4b5563;margin-bottom:6px">📅 ${ini} → ${fim} · ${itens.length} produto(s)</div>`;
+    if (somenteLeitura) {
+      html += `<div style="background:#f3f4f6;border-radius:8px;padding:8px 12px;font-size:12px;color:#6b7280;margin-bottom:12px">Promoção expirada — somente leitura.</div>`;
+    } else {
+      html += `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;font-size:12px;color:#1e40af;margin-bottom:12px">
+        💡 Edite o preço promocional de cada variação. Marque as caixas e use "Aplicar em massa" pra mudar várias de uma vez. Só o que mudar é enviado à Shopee.</div>`;
+    }
+
+    itens.forEach((item, ii) => {
+      const models = item.model_list || [];
+      html += `<div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:12px;overflow:hidden">
+        <div style="background:#fafafa;padding:10px 12px;font-weight:600;font-size:13px;color:#1f2937;display:flex;align-items:center;gap:8px">
+          ${somenteLeitura ? '' : `<input type="checkbox" onchange="promoToggleItem(${ii}, this.checked)" title="Selecionar todas as variações deste produto">`}
+          <span style="flex:1;min-width:0">${escapeHtml(item.item_name || ('Item ' + item.item_id))}</span>
+          <code style="font-size:10px;color:#9ca3af">${item.item_id}</code>
+        </div>`;
+      if (models.length > 0) {
+        models.forEach((m, mi) => {
+          const orig = m.model_original_price != null ? m.model_original_price : null;
+          const promo = m.model_promotion_price != null ? m.model_promotion_price : '';
+          html += `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #f3f4f6;font-size:12px">
+            ${somenteLeitura ? '' : `<input type="checkbox" class="promo-chk" data-ii="${ii}" data-mi="${mi}" onchange="promoAtualizarContadorSel()">`}
+            <span style="flex:1;min-width:0">${escapeHtml(m.model_name || ('var ' + m.model_id))}</span>
+            ${orig != null ? `<span style="color:#9ca3af;text-decoration:line-through">R$ ${Number(orig).toFixed(2)}</span>` : ''}
+            <span style="color:#9ca3af">→</span>
+            ${somenteLeitura
+              ? `<span style="color:#16a34a;font-weight:700">R$ ${Number(promo||0).toFixed(2)}</span>`
+              : `<span style="color:#16a34a;font-weight:700">R$</span><input type="number" step="0.01" min="0" value="${promo}" data-ii="${ii}" data-mi="${mi}" class="promo-preco-input" onchange="promoMarcarAlterado(${ii},${mi},this.value)" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;text-align:right">`}
+          </div>`;
+        });
+      } else if (item.item_promotion_price != null) {
+        html += `<div style="padding:8px 12px;border-top:1px solid #f3f4f6;font-size:12px;color:#16a34a;font-weight:700">R$ ${Number(item.item_promotion_price).toFixed(2)} (item sem variação)</div>`;
+      }
+      html += `</div>`;
+    });
+
+    body.innerHTML = html;
+
+    if (somenteLeitura) { footer.style.display = 'none'; return; }
+    footer.style.display = 'flex';
+    footer.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span id="promoSelCount" style="font-size:12px;color:#6b7280">0 selecionada(s)</span>
+        <input type="number" step="0.01" min="0" id="promoMassaPreco" placeholder="R$ novo" style="width:90px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px">
+        <button onclick="promoAplicarMassa()" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px">Aplicar em massa</button>
+      </div>
+      <button id="promoSalvarBtn" onclick="promoSalvarPrecos()" style="padding:10px 18px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">💾 Salvar na Shopee</button>`;
+  }
+
+  // Marca um preço como alterado no cache de edição
+  function promoMarcarAlterado(ii, mi, valor) {
+    if (!_promoEditando) return;
+    const m = _promoEditando.itens[ii]?.model_list?.[mi];
+    if (!m) return;
+    m._novoPreco = parseFloat(valor);
+  }
+  window.promoMarcarAlterado = promoMarcarAlterado;
+
+  function promoToggleItem(ii, checked) {
+    document.querySelectorAll(`.promo-chk[data-ii="${ii}"]`).forEach(chk => { chk.checked = checked; });
+    promoAtualizarContadorSel();
+  }
+  window.promoToggleItem = promoToggleItem;
+
+  function promoAtualizarContadorSel() {
+    const n = document.querySelectorAll('.promo-chk:checked').length;
+    const el = document.getElementById('promoSelCount');
+    if (el) el.textContent = n + ' selecionada(s)';
+  }
+  window.promoAtualizarContadorSel = promoAtualizarContadorSel;
+
+  function promoAplicarMassa() {
+    const preco = parseFloat(document.getElementById('promoMassaPreco').value);
+    if (!preco || preco <= 0) { showToast('Informe um preço válido pra aplicar', true); return; }
+    const sel = document.querySelectorAll('.promo-chk:checked');
+    if (sel.length === 0) { showToast('Selecione ao menos uma variação', true); return; }
+    sel.forEach(chk => {
+      const ii = parseInt(chk.dataset.ii, 10), mi = parseInt(chk.dataset.mi, 10);
+      const input = document.querySelector(`.promo-preco-input[data-ii="${ii}"][data-mi="${mi}"]`);
+      if (input) { input.value = preco.toFixed(2); promoMarcarAlterado(ii, mi, preco); }
+    });
+    showToast('✓ Preço aplicado em ' + sel.length + ' variação(ões). Clique em Salvar pra enviar.');
+  }
+  window.promoAplicarMassa = promoAplicarMassa;
+
+  async function promoSalvarPrecos() {
+    if (!_promoEditando) return;
+    const { loja, campanha, itens } = _promoEditando;
+    // Monta só os itens com variações alteradas (preço diferente do atual)
+    const itensAlterados = [];
+    itens.forEach(item => {
+      const varsAlteradas = (item.model_list || []).filter(m =>
+        m._novoPreco != null && !isNaN(m._novoPreco) && m._novoPreco !== m.model_promotion_price
+      );
+      if (varsAlteradas.length > 0) {
+        itensAlterados.push({
+          itemId: item.item_id,
+          variacoes: varsAlteradas.map(m => ({ modelId: m.model_id, preco: m._novoPreco }))
+        });
+      }
+    });
+    if (itensAlterados.length === 0) { showToast('Nenhum preço foi alterado', true); return; }
+
+    const totalVars = itensAlterados.reduce((a, it) => a + it.variacoes.length, 0);
+    if (!confirm(`Salvar ${totalVars} preço(s) promocional(is) alterado(s) na Shopee, na promoção "${campanha.nome}"? Isso altera o preço de venda real.`)) return;
+
+    const btn = document.getElementById('promoSalvarBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando...'; }
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/promocoes/' + campanha.discountId + '/itens', {
+        method: 'PUT',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itens: itensAlterados })
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        showToast('Erro ao salvar: ' + (data.erro || 'falha'), true);
+        if (btn) { btn.disabled = false; btn.textContent = '💾 Salvar na Shopee'; }
+        return;
+      }
+      const r = data.resultado || {};
+      const falhas = (r.falhas || []).length;
+      if (falhas > 0) {
+        showToast(`⚠ ${r.totalSucesso} salvo(s), ${falhas} falha(s) — veja os detalhes`, true);
+        adicionarPendencia('export_falhou', 'Promoção: algumas variações não atualizaram',
+          `${falhas} variação(ões) falharam ao atualizar preço na promoção "${campanha.nome}" (${loja.nome}).`);
+      } else {
+        showToast(`✓ ${r.totalSucesso} preço(s) atualizado(s) na Shopee`);
+      }
+      // Atualiza o cache local com os novos preços e re-renderiza
+      itens.forEach(item => (item.model_list || []).forEach(m => {
+        if (m._novoPreco != null && !isNaN(m._novoPreco)) { m.model_promotion_price = m._novoPreco; delete m._novoPreco; }
+      }));
+      renderEditorPromo(false);
+    } catch (e) {
+      showToast('Erro de rede: ' + e.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = '💾 Salvar na Shopee'; }
+    }
+  }
+  window.promoSalvarPrecos = promoSalvarPrecos;
 
   function renderMarketing() {
     document.getElementById('mktMonthLabel').textContent = `${meses[mktMesAtual]} · ${mktAnoAtual}`;
