@@ -26231,7 +26231,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.44-flash-editor-itens';
+  const _DIAG_VERSAO_PAINEL = 'v32k.45-flash-add-por-itemid';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -31263,6 +31263,7 @@ ${JSON.stringify(metricas, null, 2)}`
   // ════════════════════════════════════════════════════════════════════
   let _flashEditando = null;       // { loja, flash, itens:[...] }
   let _flashPrecosPromo = {};      // modelId → preço da promoção comum ongoing (referência −1 e validação)
+  let _flashItensPromo = {};       // itemId → {itemId, nome, models:[{modelId,preco}]} das promoções comuns
 
   async function flashAbrirDetalhe(idx) {
     const it = _flashCache[idx];
@@ -31312,15 +31313,26 @@ ${JSON.stringify(metricas, null, 2)}`
   // Monta mapa modelId → preço da promoção comum ongoing (pra pré-preencher −1 e validar)
   async function _flashCarregarPrecosPromo(lojaIdBanco) {
     const mapa = {};
+    _flashItensPromo = {}; // item_id → { itemId, nome, models:[{modelId, preco}] }
     try {
       const proms = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/promocoes?status=ongoing', { headers: { 'x-api-token': getApiToken() } })).json();
       if (!proms.ok) return mapa;
       for (const c of (proms.campanhas || [])) {
         const det = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/promocoes/' + c.discountId, { headers: { 'x-api-token': getApiToken() } })).json();
         if (!det.ok) continue;
-        (det.promocao.itens || []).forEach(item => (item.model_list || []).forEach(m => {
-          if (m.model_promotion_price != null) mapa[String(m.model_id)] = m.model_promotion_price;
-        }));
+        (det.promocao.itens || []).forEach(item => {
+          const models = [];
+          (item.model_list || []).forEach(m => {
+            if (m.model_promotion_price != null) {
+              mapa[String(m.model_id)] = m.model_promotion_price;
+              models.push({ modelId: m.model_id, preco: m.model_promotion_price });
+            }
+          });
+          if (models.length > 0) {
+            // item_id direto da promoção comum — ponte confiável (não usa vínculo interno)
+            _flashItensPromo[String(item.item_id)] = { itemId: item.item_id, nome: item.item_name, models };
+          }
+        });
       }
     } catch (_) {}
     return mapa;
@@ -31464,26 +31476,16 @@ ${JSON.stringify(metricas, null, 2)}`
       `${falhas.length} variação(ões) falharam na flash sale (${loja.nome}): ${falhas.map(f=>f.erro).slice(0,3).join('; ')}`);
   }
 
-  // Adicionar produtos: oferece os que estão em promoção comum ongoing (têm preço de referência)
+  // Adicionar produtos: oferece os itens que estão em promoção comum ongoing
+  // (pega direto de _flashItensPromo — item_id confiável, sem usar vínculo interno).
   function flashAbrirAdicionar() {
     if (!_flashEditando) return;
     const { loja, itens } = _flashEditando;
     const jaNaFlash = new Set(itens.map(it => String(it.itemId)));
-    // candidatos = itens que têm preço de promoção comum (estão em _flashPrecosPromo) e não estão na flash
-    // agrupa modelIds por itemId via produtosErp
-    const porItem = {};
-    (produtosErp || []).forEach(p => {
-      (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
-        if (!/shopee/i.test(vi.marketplace) || String(vi.lojaIdBanco) !== String(loja.idBanco) || !vi.anuncioId) return;
-        if (jaNaFlash.has(String(vi.anuncioId))) return;
-        // só inclui se ALGUMA variação do item está em promoção comum
-        const temPromo = (p.variacoes||[]).some(vv => (vv.vinculos||[]).some(x => x.variacaoExternaId && _flashPrecosPromo[String(x.variacaoExternaId)] != null));
-        if (!porItem[vi.anuncioId]) porItem[vi.anuncioId] = { itemId: vi.anuncioId, nome: vi.titulo || p.nome };
-      }));
-    });
-    // fallback: como o vínculo de variação pode não bater, oferecemos todos os itens em promoção
-    // que não estão na flash, buscando nome real depois.
-    const candidatos = Object.values(porItem);
+    // candidatos = itens das promoções comuns que ainda não estão na flash
+    const candidatos = Object.values(_flashItensPromo)
+      .filter(it => !jaNaFlash.has(String(it.itemId)))
+      .map(it => ({ itemId: it.itemId, nome: it.nome || ('item ' + it.itemId) }));
     if (candidatos.length === 0) {
       promoToast('Todos os produtos em promoção comum já estão na flash (ou não há promoção comum ongoing)', true);
       return;
@@ -31543,23 +31545,17 @@ ${JSON.stringify(metricas, null, 2)}`
     const { loja, flash } = _flashEditando;
     const sel = [...document.querySelectorAll('.flash-add-chk:checked')];
     if (sel.length === 0) { promoToast('Selecione ao menos um produto', true); return; }
-    promoToast('⏳ Buscando variações e adicionando (preço promo −1)...');
+    promoToast('⏳ Adicionando (preço promo −1)...');
     const round2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
     const itensAdd = [];
-    for (const chk of sel) {
+    sel.forEach(chk => {
       const itemId = chk.dataset.itemid;
-      try {
-        const m = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/item/' + itemId + '/models', { headers: { 'x-api-token': getApiToken() } })).json();
-        if (!m.ok || !(m.models||[]).length) continue;
-        // pra cada variação, preço = promoção comum −1 (se tiver referência); senão pula a variação
-        const vars = [];
-        m.models.forEach(mod => {
-          const pp = _flashPrecosPromo[String(mod.modelId)];
-          if (pp != null) vars.push({ modelId: mod.modelId, preco: round2(pp - 1), stock: 2 });
-        });
-        if (vars.length > 0) itensAdd.push({ itemId: parseInt(itemId,10), purchaseLimit: 0, variacoes: vars });
-      } catch (_) {}
-    }
+      const promoItem = _flashItensPromo[String(itemId)];
+      if (!promoItem) return;
+      // usa os models direto da promoção comum: modelId + preço já conhecidos, preço flash = promo −1
+      const vars = promoItem.models.map(m => ({ modelId: m.modelId, preco: round2(m.preco - 1), stock: 2 }));
+      if (vars.length > 0) itensAdd.push({ itemId: parseInt(itemId, 10), purchaseLimit: 0, variacoes: vars });
+    });
     if (itensAdd.length === 0) { promoToast('Nenhuma variação com promoção comum de referência', true); return; }
     try {
       const r = await (await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/flash-sale/' + flash.flashSaleId + '/itens', {
