@@ -26229,7 +26229,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.35-promo-remover-nome-shopee';
+  const _DIAG_VERSAO_PAINEL = 'v32k.38-promo-cria-espelho-auto';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30428,6 +30428,15 @@ ${JSON.stringify(metricas, null, 2)}`
     } else {
       html += `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;font-size:12px;color:#1e40af;margin-bottom:12px">
         💡 Edite o preço promocional de cada variação. Marque as caixas e use "Aplicar em massa" pra mudar várias de uma vez. Só o que mudar é enviado à Shopee.</div>`;
+      // Avisa sobre o espelhamento (existente ou que será criado)
+      const espelho = _promoDetectarEspelho();
+      if (espelho) {
+        html += `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;font-size:12px;color:#166534;margin-bottom:12px">
+          🔗 <b>Espelhamento ativo:</b> tudo que você fizer aqui (adicionar, mudar preço, remover) é replicado automaticamente na promoção agendada "<b>${escapeHtml(espelho.campanha.nome)}</b>".</div>`;
+      } else {
+        html += `<div style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;font-size:12px;color:#854d0e;margin-bottom:12px">
+          🆕 <b>Sem promoção agendada nesta loja.</b> Na primeira alteração que você fizer, o sistema cria automaticamente uma promoção espelho ("Lider Commerce criação de campanha [data]") que inicia quando esta terminar (+120 dias), já com todos os itens copiados.</div>`;
+      }
     }
 
     // Barra de busca (nome/ID) + ordenação por valor
@@ -30487,8 +30496,10 @@ ${JSON.stringify(metricas, null, 2)}`
     footer.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span id="promoSelCount" style="font-size:12px;color:#6b7280">0 selecionada(s)</span>
-        <input type="text" inputmode="decimal" id="promoShopeeMassaPreco" placeholder="R$ novo" style="width:90px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px">
-        <button onclick="promoAplicarMassa()" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px">Aplicar em massa</button>
+        <input type="text" inputmode="decimal" id="promoShopeeMassaPreco" placeholder="R$" style="width:80px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px">
+        <button onclick="promoAplicarMassa()" style="padding:6px 10px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" title="Define este preço nas selecionadas">= Definir</button>
+        <button onclick="promoAjustarMassa(-1)" style="padding:6px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-size:12px" title="Diminui este valor das selecionadas">− Baixar</button>
+        <button onclick="promoAjustarMassa(1)" style="padding:6px 10px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-size:12px" title="Aumenta este valor nas selecionadas">+ Aumentar</button>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button onclick="promoRemoverSelecionados()" style="padding:10px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700">🗑 Remover selecionados</button>
@@ -30527,6 +30538,29 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.promoAplicarMassa = promoAplicarMassa;
 
+  // Aumenta (+1) ou baixa (-1) o valor do campo sobre o preço ATUAL de cada selecionada
+  function promoAjustarMassa(sinal) {
+    const campo = document.getElementById('promoShopeeMassaPreco');
+    const delta = _parsePrecoPromo(campo.value);
+    if (delta == null || delta <= 0) { promoToast('Informe o valor a ' + (sinal > 0 ? 'aumentar' : 'baixar') + ' (ex: 5,00)', true); return; }
+    const sel = document.querySelectorAll('.promo-chk:checked');
+    if (sel.length === 0) { promoToast('Selecione ao menos uma variação', true); return; }
+    let aplicados = 0;
+    sel.forEach(chk => {
+      const ii = chk.dataset.ii, mi = chk.dataset.mi;
+      const input = document.querySelector(`.promo-preco-input[data-ii="${ii}"][data-mi="${mi}"]`);
+      if (!input) return;
+      const atual = _parsePrecoPromo(input.value);
+      if (atual == null) return;
+      let novo = Math.round((atual + sinal * delta + Number.EPSILON) * 100) / 100;
+      if (novo < 0.01) novo = 0.01; // não deixa zerar/negativar
+      input.value = novo.toFixed(2);
+      aplicados++;
+    });
+    promoToast(`✓ ${sinal > 0 ? 'Aumentado' : 'Baixado'} R$ ${delta.toFixed(2)} em ${aplicados} variação(ões). Clique em Salvar.`);
+  }
+  window.promoAjustarMassa = promoAjustarMassa;
+
   // Parse robusto de preço: aceita "54,90", "54.90", "1.234,56", "R$ 54,90"
   function _parsePrecoPromo(str) {
     if (str == null) return null;
@@ -30551,6 +30585,125 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.promoToast = promoToast;
 
+  // ════════════════════════════════════════════════════════════════════
+  // ESPELHAMENTO: replica ações da promoção atual na AGENDADA da mesma loja.
+  // O sistema detecta sozinho a promoção 'upcoming' da mesma loja como espelho.
+  // Se houver mais de uma agendada, usa a que começa mais cedo (a próxima a entrar).
+  // ════════════════════════════════════════════════════════════════════
+  function _promoDetectarEspelho() {
+    if (!_promoEditando) return null;
+    const { loja, campanha } = _promoEditando;
+    // candidatas: agendadas da MESMA loja, diferentes da atual
+    const agendadas = _promoShopeeCache.filter(x =>
+      String(x.loja.idBanco) === String(loja.idBanco) &&
+      x.campanha.status === 'upcoming' &&
+      String(x.campanha.discountId) !== String(campanha.discountId)
+    );
+    if (agendadas.length === 0) return null;
+    // a próxima a entrar (menor startTime)
+    agendadas.sort((a, b) => (a.campanha.startTime || 0) - (b.campanha.startTime || 0));
+    return agendadas[0];
+  }
+
+  // Replica uma ação no espelho. metodo: 'PUT'|'POST'|'DELETE'; itens: payload.
+  // Retorna { ok, totalSucesso, erro } — nunca lança (falha no espelho não quebra a atual).
+  // Cria a promoção-espelho (B) automaticamente: início = fim da atual +1min,
+  // fim = +120 dias, nome "Lider Commerce criação de campanha DD/MM/AAAA".
+  // Depois copia TODOS os itens da promoção atual pra ela. Retorna {loja,campanha} ou null.
+  async function _promoCriarEspelho() {
+    if (!_promoEditando) return null;
+    const { loja, campanha, itens } = _promoEditando;
+    const fimAtual = campanha.endTime;
+    if (!fimAtual) return null;
+    const inicioB = fimAtual + 60;                 // +1 minuto após o fim da atual
+    const fimB = inicioB + (120 * 24 * 60 * 60);   // +120 dias
+    const hoje = new Date();
+    const dataStr = String(hoje.getDate()).padStart(2,'0') + '/' + String(hoje.getMonth()+1).padStart(2,'0') + '/' + hoje.getFullYear();
+    const nomeB = 'Lider Commerce criação de campanha ' + dataStr;
+
+    // 1. Cria a campanha na Shopee
+    let novaId;
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/promocoes', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nome: nomeB, startTime: inicioB, endTime: fimB })
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        promoToast('Não consegui criar a promoção espelho: ' + (data.erro || 'erro'), true);
+        adicionarPendencia('export_falhou', 'Falha ao criar promoção espelho',
+          `Tentei criar "${nomeB}" na loja ${loja.nome} mas falhou: ${data.erro || 'erro'}. A alteração foi aplicada só na promoção atual.`);
+        return null;
+      }
+      novaId = data.discountId;
+    } catch (e) {
+      promoToast('Erro de rede ao criar espelho: ' + e.message, true);
+      return null;
+    }
+
+    // 2. Copia TODOS os itens da atual pra B (espelho completo)
+    const itensCopia = [];
+    itens.forEach(item => {
+      const comPreco = (item.model_list || []).filter(m => m.model_promotion_price != null);
+      if (comPreco.length > 0) {
+        itensCopia.push({ itemId: item.item_id, variacoes: comPreco.map(m => ({ modelId: m.model_id, preco: m.model_promotion_price })) });
+      } else if (item.item_promotion_price != null) {
+        itensCopia.push({ itemId: item.item_id, precoItem: item.item_promotion_price });
+      }
+    });
+    if (itensCopia.length > 0) {
+      try {
+        await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/promocoes/' + novaId + '/itens', {
+          method: 'POST',
+          headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ itens: itensCopia })
+        });
+      } catch (_) {}
+    }
+
+    // 3. Adiciona ao cache pra o espelho ser detectado dali em diante
+    const novaCampanha = { discountId: novaId, nome: nomeB, status: 'upcoming', startTime: inicioB, endTime: fimB, source: 0 };
+    _promoShopeeCache.push({ loja, campanha: novaCampanha });
+    promoToast(`🆕 Promoção espelho criada: "${nomeB}" (inicia quando a atual terminar, +120 dias)`);
+    return { loja, campanha: novaCampanha };
+  }
+
+  async function _promoReplicarNoEspelho(metodo, itens, descricaoAcao) {
+    let espelho = _promoDetectarEspelho();
+    // Se NÃO existe espelho, cria automaticamente (já com todos os itens da atual dentro)
+    if (!espelho) {
+      espelho = await _promoCriarEspelho();
+      if (!espelho) return { ok: false, erro: 'sem espelho e falha ao criar' };
+      // A B nasceu com todos os itens da atual copiados, então a ação já está refletida.
+      return { ok: true, totalSucesso: itens.length, nomeEspelho: espelho.campanha.nome, criouAgora: true };
+    }
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + espelho.loja.idBanco + '/promocoes/' + espelho.campanha.discountId + '/itens', {
+        method: metodo,
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itens })
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        adicionarPendencia('export_falhou', 'Espelhamento falhou na promoção agendada',
+          `A ação "${descricaoAcao}" foi aplicada na promoção atual mas FALHOU na agendada "${espelho.campanha.nome}" (${espelho.loja.nome}): ${data.erro || 'erro'}. Ajuste manualmente.`);
+        return { ok: false, erro: data.erro };
+      }
+      const r = data.resultado || {};
+      const falhas = (r.falhas || []).length;
+      if (falhas > 0) {
+        adicionarPendencia('export_falhou', 'Espelhamento parcial na promoção agendada',
+          `A ação "${descricaoAcao}" teve ${falhas} falha(s) ao espelhar na agendada "${espelho.campanha.nome}" (${espelho.loja.nome}). Verifique.`);
+      }
+      return { ok: true, totalSucesso: r.totalSucesso || 0, falhas, nomeEspelho: espelho.campanha.nome };
+    } catch (e) {
+      adicionarPendencia('export_falhou', 'Espelhamento falhou (rede) na promoção agendada',
+        `A ação "${descricaoAcao}" não pôde ser espelhada na agendada por erro de rede: ${e.message}.`);
+      return { ok: false, erro: e.message };
+    }
+  }
+
   async function promoSalvarPrecos() {
     if (!_promoEditando) return;
     const { loja, campanha, itens } = _promoEditando;
@@ -30559,6 +30712,7 @@ ${JSON.stringify(metricas, null, 2)}`
     // na tela difere do preço atual da Shopee. Arredonda a 2 casas pra evitar lixo de float.
     const round2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
     const itensAlterados = [];
+    const violam1pct = [];  // variações sem o mínimo de 1% de desconto
     itens.forEach((item, ii) => {
       const varsAlteradas = [];
       (item.model_list || []).forEach((m, mi) => {
@@ -30569,6 +30723,12 @@ ${JSON.stringify(metricas, null, 2)}`
         if (precoTela == null || precoTela <= 0) return;       // inválido → não toca
         const precoOriginal = round2(m._precoShopee != null ? m._precoShopee : m.model_promotion_price);
         if (precoTela !== precoOriginal) {                     // só o que MUDOU vs o original da Shopee
+          // A Shopee exige no mínimo 1% de desconto: preço promo ≤ 99% do preço cheio.
+          const cheio = Number(m.model_original_price);
+          if (cheio > 0 && precoTela > round2(cheio * 0.99)) {
+            violam1pct.push(`${item.item_name || item.item_id} / ${m.model_name || m.model_id} (cheio R$${cheio.toFixed(2)}, máx promo R$${round2(cheio*0.99).toFixed(2)})`);
+            return; // não envia esta — violaria a regra da Shopee
+          }
           varsAlteradas.push({ modelId: m.model_id, preco: precoTela });
         }
       });
@@ -30576,6 +30736,13 @@ ${JSON.stringify(metricas, null, 2)}`
         itensAlterados.push({ itemId: item.item_id, variacoes: varsAlteradas });
       }
     });
+
+    if (violam1pct.length > 0) {
+      promoToast(`⚠ ${violam1pct.length} variação(ões) sem o mínimo de 1% de desconto não serão enviadas. Ajuste o preço pra menos.`, true);
+      adicionarPendencia('export_falhou', 'Promoção: variações sem 1% de desconto',
+        `${violam1pct.length} variação(ões) tinham preço promocional sem o mínimo de 1% de desconto e foram ignoradas: ${violam1pct.slice(0,5).join('; ')}${violam1pct.length>5?'...':''}`);
+      if (itensAlterados.length === 0) return; // nada válido pra enviar
+    }
     if (itensAlterados.length === 0) { promoToast('Nenhum preço foi alterado', true); return; }
 
     const totalVars = itensAlterados.reduce((a, it) => a + it.variacoes.length, 0);
@@ -30603,6 +30770,11 @@ ${JSON.stringify(metricas, null, 2)}`
           `${falhas} variação(ões) falharam ao atualizar preço na promoção "${campanha.nome}" (${loja.nome}).`);
       } else {
         promoToast(`✓ ${r.totalSucesso} preço(s) atualizado(s) na Shopee`);
+      }
+      // ESPELHA na promoção agendada (mesmos preços)
+      const esp = await _promoReplicarNoEspelho('PUT', itensAlterados, 'atualizar preços');
+      if (esp.ok && !esp.criouAgora) {
+        promoToast(`🔗 Espelhado na agendada "${esp.nomeEspelho}" (${esp.totalSucesso} variação(ões))`);
       }
       // Atualiza o cache local com os preços enviados (vira o novo "original" da Shopee)
       const mapEnviado = {};
@@ -30677,8 +30849,49 @@ ${JSON.stringify(metricas, null, 2)}`
       </div>`}
     </div>`;
     document.body.appendChild(modal);
+    // Busca os nomes REAIS da Shopee (batch) e atualiza a lista — o título do vínculo
+    // pode estar genérico/desatualizado. Mostra um aviso enquanto carrega.
+    if (candidatos.length > 0) _promoAtualizarNomesShopee(loja, candidatos);
   }
   window.promoAbrirAdicionar = promoAbrirAdicionar;
+
+  async function _promoAtualizarNomesShopee(loja, candidatos) {
+    const lista = document.getElementById('promoAddLista');
+    if (!lista) return;
+    const aviso = document.createElement('div');
+    aviso.id = 'promoAddCarregandoNomes';
+    aviso.style.cssText = 'font-size:11px;color:#ea580c;padding:4px 0 8px';
+    aviso.textContent = '⏳ Carregando nomes reais da Shopee...';
+    lista.parentNode.insertBefore(aviso, lista);
+    try {
+      const ids = candidatos.map(c => String(c.itemId));
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/itens-nomes', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemIds: ids })
+      });
+      const data = await resp.json();
+      if (data.ok && data.nomes) {
+        // Atualiza cada label com o nome real da Shopee (quando veio)
+        lista.querySelectorAll('label').forEach(label => {
+          const chk = label.querySelector('.promo-add-chk');
+          const id = chk && chk.dataset.itemid;
+          const nomeReal = id && data.nomes[String(id)];
+          if (nomeReal) {
+            const span = label.querySelector('span');
+            if (span) span.textContent = nomeReal;
+            label.dataset.nome = nomeReal.toLowerCase();
+            if (chk) chk.dataset.nome = nomeReal;
+          }
+        });
+      }
+    } catch (_) {
+      // se falhar, mantém os nomes do vínculo (fallback) — não trava o seletor
+    } finally {
+      const a = document.getElementById('promoAddCarregandoNomes');
+      if (a) a.remove();
+    }
+  }
 
   function promoFiltrarAdd() {
     const q = (document.getElementById('promoAddBusca').value || '').toLowerCase();
@@ -30741,6 +30954,11 @@ ${JSON.stringify(metricas, null, 2)}`
           `${totalSem} variação(ões) sem estoque não entraram na promoção "${campanha.nome}" (${loja.nome}). Serão tratadas quando houver reposição (fila de espera — em construção).`);
       }
       promoToast(msg);
+      // ESPELHA a adição na promoção agendada (mesmos itens/preços)
+      const esp = await _promoReplicarNoEspelho('POST', itensParaAdd, 'adicionar produtos');
+      if (esp.ok && !esp.criouAgora) {
+        promoToast(`🔗 Espelhado na agendada "${esp.nomeEspelho}"`);
+      }
       document.getElementById('promoAddModal').remove();
       // Recarrega a promoção pra mostrar os novos itens
       const respGet = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/promocoes/' + campanha.discountId, { headers: { 'x-api-token': getApiToken() } });
@@ -30796,6 +31014,11 @@ ${JSON.stringify(metricas, null, 2)}`
       promoToast(falhas > 0
         ? `⚠ ${r.totalSucesso} removida(s), ${falhas} falha(s)`
         : `✓ ${r.totalSucesso} variação(ões) removida(s) da promoção`, falhas > 0);
+      // ESPELHA a remoção na promoção agendada (mesmos itens)
+      const esp = await _promoReplicarNoEspelho('DELETE', itensRemover, 'remover produtos');
+      if (esp.ok && !esp.criouAgora) {
+        promoToast(`🔗 Removido também da agendada "${esp.nomeEspelho}"`);
+      }
       // Recarrega a promoção pra refletir a remoção
       const respGet = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/promocoes/' + campanha.discountId, { headers: { 'x-api-token': getApiToken() } });
       const dGet = await respGet.json();
