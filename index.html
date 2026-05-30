@@ -4421,6 +4421,7 @@
               </div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button id="pendenciasSino" class="op-new-btn" onclick="abrirCentroAvisos()" style="background:rgba(255,255,255,0.15);position:relative" title="Central de Avisos — pendências que precisam de atenção">🔔 Avisos<span id="pendenciasBadge" style="display:none;position:absolute;top:-6px;right:-6px;background:#dc2626;color:white;font-size:10px;font-weight:800;min-width:18px;height:18px;border-radius:9px;align-items:center;justify-content:center;padding:0 4px"></span></button>
               <button class="op-new-btn" onclick="goTo('produtosScreen')" style="background:rgba(255,255,255,0.15)">📦 Produtos</button>
               <button class="op-new-btn" onclick="goTo('estoqueScreen')" style="background:rgba(255,255,255,0.15)">📊 Estoque</button>
               <button class="op-new-btn" onclick="goTo('promocoesScreen')" style="background:rgba(255,255,255,0.15)">🎟️ Promoções</button>
@@ -9633,34 +9634,42 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
   async function acaoQAQualidade(d) {
     const p = _produtoDaDemanda(d);
     const problemas = [];
-    
-    // Título
+
+    // Marketplace destino da demanda — valida só as regras DELE.
+    // (Antes validava sempre ML, gerando avisos irrelevantes numa demanda Shopee.)
+    const mkt = (d && d.marketplace) ? String(d.marketplace).toLowerCase().replace(/[_\s]/g, '') : '';
+    const ehML = mkt === 'mercadolivre' || mkt === '';   // sem marketplace definido → assume ML (legado)
+    const ehShopee = mkt === 'shopee';
+    const limiteTitulo = ehShopee ? 100 : 60;
+
+    // Título (limite conforme marketplace)
     if (!p.nome || p.nome.length < 30) problemas.push('Título muito curto (' + (p.nome||'').length + 'ch, ideal 50-60)');
-    if (p.nome && p.nome.length > 60) problemas.push('Título passou de 60ch (' + p.nome.length + ')');
-    
+    if (p.nome && p.nome.length > limiteTitulo) problemas.push('Título passou de ' + limiteTitulo + 'ch (' + p.nome.length + ')');
+
     // Descrição
     if (!p.descricao || p.descricao.length < 200) problemas.push('Descrição muito curta (' + (p.descricao||'').length + 'ch, mínimo 200)');
-    
+
     // Marca
     if (!p.marca) problemas.push('Sem marca');
-    if (!p.atributosMl.BRAND) problemas.push('Sem BRAND no atributosMl');
-    
-    // Categoria
-    if (!p.categoryIdMl) problemas.push('Sem categoria ML');
-    
+    if (ehML && !p.atributosMl.BRAND) problemas.push('Sem BRAND no atributosMl');
+
+    // Categoria (a do marketplace destino)
+    if (ehML && !p.categoryIdMl) problemas.push('Sem categoria ML');
+    if (ehShopee && !p.categoryIdShopee) problemas.push('Sem categoria Shopee');
+
     // SKU
     if (!p.skuPai) problemas.push('Sem SKU pai');
-    
+
     // Variações
     if (!p.variacoes || p.variacoes.length === 0) problemas.push('Sem variações');
     (p.variacoes || []).forEach((v, i) => {
       if (!v.sku) problemas.push('Var ' + (i+1) + ' sem SKU');
       if (!v.ean) problemas.push('Var ' + (i+1) + ' sem EAN');
     });
-    
-    // Atributos da categoria
+
+    // Atributos da categoria (só ML — Shopee valida no próprio fluxo)
     let faltamObrig = [];
-    if (p.categoryIdMl) {
+    if (ehML && p.categoryIdMl) {
       try {
         const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/' + p.categoryIdMl + '/atributos', {
           headers: { 'x-api-token': getApiToken() }
@@ -9675,13 +9684,13 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
         }
       } catch(_) {}
     }
-    
+
     // Fotos
     if (!p.fotos || p.fotos.length === 0) problemas.push('Sem fotos');
     if (p.fotos && p.fotos.length < 3) problemas.push('Apenas ' + p.fotos.length + ' foto(s) — ideal 4+');
-    
-    // Guia de tamanhos
-    if (!p.guiaTamanhos || !p.guiaTamanhos.linhas || p.guiaTamanhos.linhas.length === 0) {
+
+    // Guia de tamanhos (ML exige no modelo novo; Shopee não)
+    if (ehML && (!p.guiaTamanhos || !p.guiaTamanhos.linhas || p.guiaTamanhos.linhas.length === 0)) {
       problemas.push('Sem guia de tamanhos (ML exige no modelo novo)');
     }
     
@@ -15447,7 +15456,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         const tt = info.origem 
           ? 'Produto criado na loja: ' + nome 
           : 'Anúncio(s) nesta loja: ' + nome;
-        lojaChips += `<span class="prod-card-mkt-chip" style="background:${corBg};color:white;font-size:9px;padding:1px 6px" title="${escapeHtml(tt)}">🏪 ${escapeHtml(nome)}${sufixo}</span>`;
+        lojaChips += `<span class="prod-card-mkt-chip" style="background:${corBg};color:white;font-size:9px;padding:1px 6px;cursor:pointer" title="${escapeHtml(tt)} — clique pra abrir e ver os vínculos">🏪 ${escapeHtml(nome)}${sufixo}</span>`;
       });
       
       // FASE A/B: badges de vínculos e suspeitos (CLICÁVEIS — abrem modal)
@@ -16858,6 +16867,12 @@ REGRAS DURAS:
             if (data.detalhes) {
               data.detalhes.slice(0, 5).forEach(d => dupLogStep(`    • ${d}`, 'err'));
             }
+            // Registra no Centro de Avisos pra revisão humana (fica até marcar lido)
+            if (typeof adicionarPendencia === 'function') {
+              adicionarPendencia('export_falhou',
+                'Anúncio não exportado: ' + (novo.nome || novo.skuPai || 'produto'),
+                'Falha ao exportar: ' + erroMsg, { skuPai: novo.skuPai });
+            }
             // ROLLBACK: produto duplicado nao exportou -> deleta do banco e local
             // (evita poluir a tela com produtos "fantasma" sem anuncio)
             dupLogStep(`  ↶ Rollback: removendo produto duplicado do sistema...`);
@@ -16879,6 +16894,11 @@ REGRAS DURAS:
           }
         } catch(e) {
           dupLogStep(`  ✗ Erro de rede: ${e.message}`, 'err');
+          if (typeof adicionarPendencia === 'function') {
+            adicionarPendencia('export_falhou',
+              'Anúncio não exportado: ' + (novo.nome || novo.skuPai || 'produto'),
+              'Erro de rede ao exportar: ' + (e.message || 'sem detalhe'), { skuPai: novo.skuPai });
+          }
           // Rollback tb em erro de rede
           try {
             if (novo.idBanco) {
@@ -17685,12 +17705,17 @@ REGRAS DURAS:
         ? `1 variação: ${escapeHtml(corTams)}`
         : `${variacoesDoErp.length} variações: ${escapeHtml(corTams.slice(0,60))}${corTams.length > 60 ? '…' : ''}`;
       
+      // Nome do marketplace por extenso (resolve grafia mercadolivre/mercado_livre)
+      const mktNomeLegivel = ({ mercadolivre: 'Mercado Livre', mercado_livre: 'Mercado Livre',
+        shopee: 'Shopee', tiktok: 'TikTok Shop', shein: 'Shein' })[vinc.marketplace] || vinc.marketplace;
+
       return `<div style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #f3f4f6">
         <div style="flex:1;min-width:0">
           <div style="font-size:12px;font-weight:600;display:flex;align-items:center;flex-wrap:wrap">
-            ${MKT_EMOJI[vinc.marketplace] || ''} <span style="color:#3b82f6;margin:0 4px">${escapeHtml(nomeLoja)}</span>
-            <span style="color:#6b7280">·</span>
-            <code style="margin-left:4px;font-size:11px;background:#f3f4f6;padding:1px 5px;border-radius:3px">${escapeHtml(String(vinc.anuncioId))}</code>
+            ${MKT_EMOJI[vinc.marketplace] || ''} <span style="color:#6b7280;margin-left:3px;font-size:11px">${escapeHtml(mktNomeLegivel)}</span>
+            <span style="color:#9ca3af;margin:0 4px">·</span>
+            <span style="color:#3b82f6;font-weight:700">🏪 ${escapeHtml(nomeLoja)}</span>
+            <code style="margin-left:6px;font-size:11px;background:#f3f4f6;padding:1px 5px;border-radius:3px">${escapeHtml(String(vinc.anuncioId))}</code>
             ${v32d_htmlTagStatus(v32d_statusVinculo(vinc))}
             ${badge}
           </div>
@@ -22628,6 +22653,120 @@ São o mesmo produto?`;
     renderProdutos();
   }
   window.marcarBanimentosComoLido = marcarBanimentosComoLido;
+
+  // ========================================================================
+  // CENTRO DE AVISOS — pendências que precisam de atenção humana (Leva 2).
+  // Lista genérica em localStorage; cada item fica até ser marcado como lido.
+  // Tipos previstos: export_falhou (este), e futuramente cor_sem_foto, etc.
+  // ========================================================================
+  function _carregarPendencias() {
+    try { return JSON.parse(localStorage.getItem('lc_pendencias') || '[]'); }
+    catch(_) { return []; }
+  }
+  function _salvarPendencias(lista) {
+    try { localStorage.setItem('lc_pendencias', JSON.stringify(lista.slice(-200))); } catch(_) {}
+  }
+  // Adiciona uma pendência. tipo: string; titulo: string curto; detalhe: string; extra: obj opcional
+  function adicionarPendencia(tipo, titulo, detalhe, extra) {
+    const lista = _carregarPendencias();
+    lista.push({
+      id: 'pend_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+      tipo: tipo || 'aviso',
+      titulo: titulo || 'Aviso',
+      detalhe: detalhe || '',
+      extra: extra || null,
+      criadoEm: new Date().toISOString(),
+      lido: false
+    });
+    _salvarPendencias(lista);
+    atualizarBadgePendencias();
+  }
+  window.adicionarPendencia = adicionarPendencia;
+
+  function listarPendenciasNaoLidas() {
+    return _carregarPendencias().filter(p => !p.lido);
+  }
+
+  function marcarPendenciaLida(id) {
+    const lista = _carregarPendencias();
+    const it = lista.find(p => p.id === id);
+    if (it) { it.lido = true; _salvarPendencias(lista); }
+    atualizarBadgePendencias();
+    const cont = document.getElementById('pendenciasModalList');
+    if (cont) renderPendenciasNoModal();
+  }
+  window.marcarPendenciaLida = marcarPendenciaLida;
+
+  function marcarTodasPendenciasLidas() {
+    const lista = _carregarPendencias();
+    lista.forEach(p => { p.lido = true; });
+    _salvarPendencias(lista);
+    atualizarBadgePendencias();
+    const modal = document.getElementById('pendenciasModal');
+    if (modal) modal.remove();
+    showToast('✓ Avisos marcados como lidos');
+  }
+  window.marcarTodasPendenciasLidas = marcarTodasPendenciasLidas;
+
+  // Ícones por tipo de pendência
+  const PEND_ICONE = { export_falhou: '📤', cor_sem_foto: '🎨', banimento: '🚨', aviso: '⚠️' };
+
+  function renderPendenciasNoModal() {
+    const cont = document.getElementById('pendenciasModalList');
+    if (!cont) return;
+    const naoLidas = listarPendenciasNaoLidas();
+    if (naoLidas.length === 0) {
+      cont.innerHTML = '<div style="text-align:center;color:#6b7280;font-size:13px;padding:30px">✓ Nenhum aviso pendente.</div>';
+      return;
+    }
+    cont.innerHTML = naoLidas.slice().reverse().map(p => `
+      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;color:#92400e;font-size:13px">${PEND_ICONE[p.tipo] || '⚠️'} ${escapeHtml(p.titulo)}</div>
+            ${p.detalhe ? `<div style="font-size:12px;color:#78350f;margin-top:4px">${escapeHtml(p.detalhe)}</div>` : ''}
+            <div style="font-size:10px;color:#9ca3af;margin-top:6px">${new Date(p.criadoEm).toLocaleString('pt-BR')}</div>
+          </div>
+          <button onclick="marcarPendenciaLida('${p.id}')" style="padding:5px 10px;background:#16a34a;color:white;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;white-space:nowrap">✓ Li</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function abrirCentroAvisos() {
+    const existente = document.getElementById('pendenciasModal');
+    if (existente) existente.remove();
+    const modal = document.createElement('div');
+    modal.id = 'pendenciasModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(600px,95vw);max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+      <div style="padding:18px 20px;background:linear-gradient(135deg,#f59e0b,#d97706);color:white;display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0;font-size:18px;display:flex;align-items:center;gap:10px">🔔 Central de Avisos</h2>
+        <button onclick="document.getElementById('pendenciasModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:16px">×</button>
+      </div>
+      <div id="pendenciasModalList" style="padding:16px;overflow:auto;flex:1"></div>
+      <div style="padding:14px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px">
+        <button onclick="marcarTodasPendenciasLidas()" style="padding:10px 16px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">✓ Marcar todos como lidos</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    renderPendenciasNoModal();
+  }
+  window.abrirCentroAvisos = abrirCentroAvisos;
+
+  // Atualiza o badge/contador no sino de avisos (se existir na UI)
+  function atualizarBadgePendencias() {
+    const n = listarPendenciasNaoLidas().length;
+    const badge = document.getElementById('pendenciasBadge');
+    if (badge) {
+      badge.textContent = n > 0 ? (n > 99 ? '99+' : String(n)) : '';
+      badge.style.display = n > 0 ? 'flex' : 'none';
+    }
+    const sino = document.getElementById('pendenciasSino');
+    if (sino) sino.style.display = 'flex';
+  }
+  window.atualizarBadgePendencias = atualizarBadgePendencias;
+
   
   async function abrirExcluirAnuncioML(variacaoId, vinculoId) {
     const produto = _produtoVinculosAtual;
@@ -26086,7 +26225,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.22-salvar-preserva-galeria';
+  const _DIAG_VERSAO_PAINEL = 'v32k.25-centro-avisos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30493,6 +30632,8 @@ ${JSON.stringify(metricas, null, 2)}`
   };
   
   function renderOperacao() {
+    // Atualiza o contador do sino de avisos
+    if (typeof atualizarBadgePendencias === 'function') atualizarBadgePendencias();
     // Popula datalist de clientes (da carteira do Comercial)
     const clientesSet = new Set();
     billings.forEach(b => { if (b.cliente) clientesSet.add(b.cliente); });
