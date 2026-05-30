@@ -26229,7 +26229,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.33-promo-add-produtos';
+  const _DIAG_VERSAO_PAINEL = 'v32k.35-promo-remover-nome-shopee';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30304,6 +30304,58 @@ ${JSON.stringify(metricas, null, 2)}`
   // Detalhe da promoção: busca itens da Shopee e mostra (edição completa vem na Fase 3)
   // Cache da promoção em edição: { loja, campanha, itens:[...] (estrutura Shopee) }
   let _promoEditando = null;
+  let _promoBusca = '';      // texto de busca (nome/ID)
+  let _promoOrdem = '';      // '', 'preco_desc', 'preco_asc', 'nome'
+
+  // Preço de referência de um item pra ordenar (menor preço promocional das variações)
+  function _promoPrecoRef(item) {
+    const models = item.model_list || [];
+    if (models.length > 0) {
+      const precos = models.map(m => Number(m.model_promotion_price)).filter(n => !isNaN(n));
+      return precos.length ? Math.min(...precos) : 0;
+    }
+    return Number(item.item_promotion_price) || 0;
+  }
+
+  // Filtra (nome/ID) e ordena os itens pra exibição, preservando o índice original
+  function _promoFiltrarOrdenar(itensComIdx) {
+    let arr = itensComIdx;
+    const q = (_promoBusca || '').trim().toLowerCase();
+    if (q) {
+      arr = arr.filter(({ item }) =>
+        String(item.item_name || '').toLowerCase().includes(q) ||
+        String(item.item_id || '').includes(q)
+      );
+    }
+    if (_promoOrdem === 'preco_desc') arr = [...arr].sort((a, b) => _promoPrecoRef(b.item) - _promoPrecoRef(a.item));
+    else if (_promoOrdem === 'preco_asc') arr = [...arr].sort((a, b) => _promoPrecoRef(a.item) - _promoPrecoRef(b.item));
+    else if (_promoOrdem === 'nome') arr = [...arr].sort((a, b) => String(a.item.item_name||'').localeCompare(String(b.item.item_name||'')));
+    return arr;
+  }
+
+  // Lê os campos da barra, guarda o estado e re-renderiza (preservando preços digitados)
+  function promoAplicarBuscaFiltro() {
+    // Preserva o que já foi digitado nos inputs (campo _editado) antes de re-renderizar
+    if (_promoEditando) {
+      document.querySelectorAll('.promo-preco-input').forEach(input => {
+        const ii = input.dataset.ii, mi = input.dataset.mi;
+        const m = _promoEditando.itens[ii]?.model_list?.[mi];
+        if (m && input.value !== '') {
+          const v = _parsePrecoPromo(input.value);
+          if (v != null) m._editado = v; // guarda à parte — NÃO mexe no preço original da Shopee
+        }
+      });
+    }
+    const busca = document.getElementById('promoBusca');
+    const ordem = document.getElementById('promoOrdem');
+    _promoBusca = busca ? busca.value : '';
+    _promoOrdem = ordem ? ordem.value : '';
+    renderEditorPromo(false);
+    // Devolve o foco ao campo de busca (re-render recria o elemento)
+    const nb = document.getElementById('promoBusca');
+    if (nb) { nb.focus(); nb.setSelectionRange(nb.value.length, nb.value.length); }
+  }
+  window.promoAplicarBuscaFiltro = promoAplicarBuscaFiltro;
 
   async function abrirDetalhePromo(idx) {
     const it = _promoShopeeCache[idx];
@@ -30341,7 +30393,13 @@ ${JSON.stringify(metricas, null, 2)}`
         return;
       }
       const p = data.promocao || {};
-      _promoEditando = { loja: it.loja, campanha: c, itens: p.itens || [] };
+      const itensCarregados = p.itens || [];
+      // Fixa o preço promocional ORIGINAL da Shopee em cada variação. É a referência
+      // imutável que o salvar usa pra detectar mudança — não muda ao filtrar/ordenar.
+      itensCarregados.forEach(item => (item.model_list || []).forEach(m => {
+        m._precoShopee = m.model_promotion_price;
+      }));
+      _promoEditando = { loja: it.loja, campanha: c, itens: itensCarregados };
       const expirada = c.status === 'expired';
       renderEditorPromo(expirada);
     } catch (e) {
@@ -30372,7 +30430,27 @@ ${JSON.stringify(metricas, null, 2)}`
         💡 Edite o preço promocional de cada variação. Marque as caixas e use "Aplicar em massa" pra mudar várias de uma vez. Só o que mudar é enviado à Shopee.</div>`;
     }
 
-    itens.forEach((item, ii) => {
+    // Barra de busca (nome/ID) + ordenação por valor
+    html += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <input type="text" id="promoBusca" value="${escapeHtml(_promoBusca)}" placeholder="🔍 Buscar por nome ou ID..." oninput="promoAplicarBuscaFiltro()" style="flex:1;min-width:160px;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+      <select id="promoOrdem" onchange="promoAplicarBuscaFiltro()" style="padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+        <option value="">Ordem original</option>
+        <option value="preco_desc">Valor: maior → menor</option>
+        <option value="preco_asc">Valor: menor → maior</option>
+        <option value="nome">Nome (A-Z)</option>
+      </select>
+    </div>
+    <div id="promoItensContainer">`;
+
+    // Constrói os itens com índice ORIGINAL preservado (pro salvar funcionar)
+    // e aplica busca/ordenação só na exibição.
+    const itensComIdx = itens.map((item, ii) => ({ item, ii }));
+    const filtrados = _promoFiltrarOrdenar(itensComIdx);
+
+    if (filtrados.length === 0) {
+      html += '<div style="text-align:center;color:#6b7280;padding:20px">Nenhum produto corresponde à busca.</div>';
+    }
+    filtrados.forEach(({ item, ii }) => {
       const models = item.model_list || [];
       html += `<div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:12px;overflow:hidden">
         <div style="background:#fafafa;padding:10px 12px;font-weight:600;font-size:13px;color:#1f2937;display:flex;align-items:center;gap:8px">
@@ -30383,7 +30461,8 @@ ${JSON.stringify(metricas, null, 2)}`
       if (models.length > 0) {
         models.forEach((m, mi) => {
           const orig = m.model_original_price != null ? m.model_original_price : null;
-          const promo = m.model_promotion_price != null ? m.model_promotion_price : '';
+          // mostra o que o usuário digitou (_editado), senão o preço promocional da Shopee
+          const promo = m._editado != null ? m._editado : (m.model_promotion_price != null ? m.model_promotion_price : '');
           html += `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #f3f4f6;font-size:12px">
             ${somenteLeitura ? '' : `<input type="checkbox" class="promo-chk" data-ii="${ii}" data-mi="${mi}" onchange="promoAtualizarContadorSel()">`}
             <span style="flex:1;min-width:0">${escapeHtml(m.model_name || ('var ' + m.model_id))}</span>
@@ -30399,6 +30478,7 @@ ${JSON.stringify(metricas, null, 2)}`
       }
       html += `</div>`;
     });
+    html += `</div>`; // fecha promoItensContainer
 
     body.innerHTML = html;
 
@@ -30410,7 +30490,8 @@ ${JSON.stringify(metricas, null, 2)}`
         <input type="text" inputmode="decimal" id="promoShopeeMassaPreco" placeholder="R$ novo" style="width:90px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px">
         <button onclick="promoAplicarMassa()" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px">Aplicar em massa</button>
       </div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="promoRemoverSelecionados()" style="padding:10px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700">🗑 Remover selecionados</button>
         <button onclick="promoAbrirAdicionar()" style="padding:10px 14px;background:#fff;color:#ea580c;border:1px solid #ea580c;border-radius:8px;cursor:pointer;font-weight:700">+ Adicionar produtos</button>
         <button id="promoSalvarBtn" onclick="promoSalvarPrecos()" style="padding:10px 18px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">💾 Salvar na Shopee</button>
       </div>`;
@@ -30486,8 +30567,8 @@ ${JSON.stringify(metricas, null, 2)}`
         if (input.value === '' || input.value == null) return; // vazio → não toca
         const precoTela = _parsePrecoPromo(input.value);
         if (precoTela == null || precoTela <= 0) return;       // inválido → não toca
-        const precoAtual = round2(m.model_promotion_price);
-        if (precoTela !== precoAtual) {                        // só o que MUDOU de verdade na tela
+        const precoOriginal = round2(m._precoShopee != null ? m._precoShopee : m.model_promotion_price);
+        if (precoTela !== precoOriginal) {                     // só o que MUDOU vs o original da Shopee
           varsAlteradas.push({ modelId: m.model_id, preco: precoTela });
         }
       });
@@ -30523,11 +30604,15 @@ ${JSON.stringify(metricas, null, 2)}`
       } else {
         promoToast(`✓ ${r.totalSucesso} preço(s) atualizado(s) na Shopee`);
       }
-      // Atualiza o cache local com os preços que foram enviados (lendo do que mandamos)
+      // Atualiza o cache local com os preços enviados (vira o novo "original" da Shopee)
       const mapEnviado = {};
       itensAlterados.forEach(it => it.variacoes.forEach(v => { mapEnviado[v.modelId] = v.preco; }));
       itens.forEach(item => (item.model_list || []).forEach(m => {
-        if (mapEnviado[m.model_id] != null) m.model_promotion_price = mapEnviado[m.model_id];
+        if (mapEnviado[m.model_id] != null) {
+          m.model_promotion_price = mapEnviado[m.model_id];
+          m._precoShopee = mapEnviado[m.model_id];
+        }
+        delete m._editado; // limpa rascunho de edição
       }));
       renderEditorPromo(false);
     } catch (e) {
@@ -30547,13 +30632,17 @@ ${JSON.stringify(metricas, null, 2)}`
     // Produtos do ERP vinculados a esta loja Shopee, com item_id (anuncioId) não duplicado
     const candidatos = [];
     (produtosErp || []).forEach(p => {
+      // Só produtos ATIVOS — esconde inativos, excluídos e rascunhos
+      if (p.status !== 'ativo') return;
       const anunciosVistos = new Set();
       (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
         const ehShopee = /shopee/i.test(vi.marketplace || '');
         const mesmaLoja = String(vi.lojaIdBanco || '') === String(loja.idBanco);
         if (ehShopee && mesmaLoja && vi.anuncioId && !anunciosVistos.has(String(vi.anuncioId)) && !jaNaPromo.has(String(vi.anuncioId))) {
+          // Prioriza o título do vínculo (nome real do anúncio na Shopee) sobre o
+          // p.nome interno, que costuma estar genérico/repetido (ex: vários "Polo" iguais).
           anunciosVistos.add(String(vi.anuncioId));
-          candidatos.push({ itemId: vi.anuncioId, nome: p.nome || vi.titulo || ('item ' + vi.anuncioId) });
+          candidatos.push({ itemId: vi.anuncioId, nome: vi.titulo || p.nome || ('item ' + vi.anuncioId) });
         }
       }));
     });
@@ -30662,6 +30751,65 @@ ${JSON.stringify(metricas, null, 2)}`
     }
   }
   window.promoConfirmarAdicionar = promoConfirmarAdicionar;
+
+  // ─── Remover itens/variações selecionados da promoção ────────────────
+  async function promoRemoverSelecionados() {
+    if (!_promoEditando) return;
+    const { loja, campanha, itens } = _promoEditando;
+    const sel = [...document.querySelectorAll('.promo-chk:checked')];
+    if (sel.length === 0) { promoToast('Selecione as variações que quer remover (caixas à esquerda)', true); return; }
+
+    // Agrupa por item: { itemId, modelIds:[...] }
+    const porItem = {};
+    sel.forEach(chk => {
+      const ii = chk.dataset.ii, mi = chk.dataset.mi;
+      const item = itens[ii];
+      const m = item?.model_list?.[mi];
+      if (!item || !m) return;
+      if (!porItem[item.item_id]) porItem[item.item_id] = { itemId: item.item_id, modelIds: [], totalModels: (item.model_list||[]).length };
+      porItem[item.item_id].modelIds.push(m.model_id);
+    });
+    const grupos = Object.values(porItem);
+    const totalVars = grupos.reduce((a, g) => a + g.modelIds.length, 0);
+    if (totalVars === 0) { promoToast('Nada pra remover', true); return; }
+
+    if (!confirm(`Remover ${totalVars} variação(ões) da promoção "${campanha.nome}"? Elas voltam ao preço normal (sem o desconto da promoção).`)) return;
+
+    // Monta os itens pra remover. Se TODAS as variações de um item forem removidas,
+    // remove o item inteiro (sem modelId); senão remove só as variações marcadas.
+    const itensRemover = grupos.map(g => {
+      if (g.modelIds.length >= g.totalModels) return { itemId: g.itemId };           // item inteiro
+      return g.modelIds.map(mid => ({ itemId: g.itemId, modelId: mid }));            // variações
+    }).flat();
+
+    promoToast('⏳ Removendo da Shopee...');
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/promocoes/' + campanha.discountId + '/itens', {
+        method: 'DELETE',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itens: itensRemover })
+      });
+      const data = await resp.json();
+      if (!data.ok) { promoToast('Erro ao remover: ' + (data.erro || 'falha'), true); return; }
+      const r = data.resultado || {};
+      const falhas = (r.falhas || []).length;
+      promoToast(falhas > 0
+        ? `⚠ ${r.totalSucesso} removida(s), ${falhas} falha(s)`
+        : `✓ ${r.totalSucesso} variação(ões) removida(s) da promoção`, falhas > 0);
+      // Recarrega a promoção pra refletir a remoção
+      const respGet = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/promocoes/' + campanha.discountId, { headers: { 'x-api-token': getApiToken() } });
+      const dGet = await respGet.json();
+      if (dGet.ok) {
+        const novos = (dGet.promocao || {}).itens || [];
+        novos.forEach(item => (item.model_list || []).forEach(m => { m._precoShopee = m.model_promotion_price; }));
+        _promoEditando.itens = novos;
+        renderEditorPromo(false);
+      }
+    } catch (e) {
+      promoToast('Erro de rede: ' + e.message, true);
+    }
+  }
+  window.promoRemoverSelecionados = promoRemoverSelecionados;
 
   function renderMarketing() {
     document.getElementById('mktMonthLabel').textContent = `${meses[mktMesAtual]} · ${mktAnoAtual}`;
