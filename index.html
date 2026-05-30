@@ -11897,7 +11897,10 @@ Retorne JSON: {"ID": "valor", ...}`;
 
     _prodSelecionados.clear();
     atualizarBarraSelecao();
-    renderProdutos();
+    // Recarrega do backend (não só renderProdutos) pra cópias/rascunhos recém-criados
+    // aparecerem na tela paginada — senão ficam só em memória e somem ao paginar.
+    if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
+    else renderProdutos();
     showToast('✓ Duplicação em massa concluída (' + processados + ' produto(s) processado(s))');
   }
   window._executarMassaDup = _executarMassaDup;
@@ -16289,7 +16292,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   
-  async function gerarTituloVariadoIA(produtoOuTitulo) {
+  async function gerarTituloVariadoIA(produtoOuTitulo, marketplaceDestino) {
     // Aceita produto inteiro (preferível) OU só título string (compat)
     const p = typeof produtoOuTitulo === 'string' 
       ? { nome: produtoOuTitulo } 
@@ -16300,8 +16303,16 @@ Retorne JSON: {"ID": "valor", ...}`;
     const marca = p.marca || '';
     const genderAttr = (p.atributosMl || {}).GENDER || '';
     const tipoAttr = (p.atributosMl || {}).FOOTWEAR_TYPE || (p.atributosMl || {}).PRODUCT_TYPE || '';
+
+    // Limite por marketplace: ML=60 (rígido), Shopee=100 (até 120, mas miramos 100).
+    const ehShopee = marketplaceDestino === 'shopee';
+    const limite = ehShopee ? 100 : 60;
+    const nomeMkt = ehShopee ? 'Shopee Brasil' : 'Mercado Livre Brasil';
+    const dicaShopee = ehShopee
+      ? '\n✓ APROVEITE o espaço maior (até 100 chars) pra incluir SINÔNIMOS e variações regionais que o comprador busca. Ex: um chinelo pode ser buscado como "chinelo", "chinela", "sandália", "havaiana"; um tênis como "tênis", "sapatênis casual". Inclua 2-3 desses termos relevantes pra ampliar o alcance da busca.'
+      : '';
     
-    const prompt = `Você cria títulos OTIMIZADOS pra busca no Mercado Livre Brasil.
+    const prompt = `Você cria títulos OTIMIZADOS pra busca no ${nomeMkt}.
 
 PRODUTO ATUAL: "${nome}"
 ${categoria ? 'CATEGORIA: ' + categoria : ''}
@@ -16314,17 +16325,17 @@ REGRAS DURAS (não negociáveis):
 ✗ JAMAIS troque o tipo do produto (se é tênis, fica tênis — não vira sapatênis nem outro tipo)
 ✗ JAMAIS troque a marca
 
-Crie um NOVO título de no máximo 60 caracteres que:
+Crie um NOVO título de no máximo ${limite} caracteres que:
 ✓ Use palavras-chave de busca relevantes (exemplos pra calçados: "leve", "confortável", "antiderrapante", "macio", "esportivo", "casual", "trabalho", "lançamento", "premium")
 ✓ Tenha uma abordagem DIFERENTE do original — não seja simples reordenação
 ✓ Use linguagem natural, sem CAPS LOCK, sem emojis, sem aspas
-✓ Pense em como um comprador buscaria esse produto
+✓ Pense em como um comprador buscaria esse produto${dicaShopee}
 
 Responda APENAS o título novo. Nada mais.`;
     
     try {
       const resp = await chamarIA({ prompt, maxTokens: 100 });
-      let novo = String(resp || '').trim().replace(/^["']|["']$/g, '').slice(0, 60);
+      let novo = String(resp || '').trim().replace(/^["']|["']$/g, '').slice(0, limite);
       if (novo.length < 10) novo = nome;
       
       // v32j.6: validação de gênero — se o original era masculino e a IA gerou feminino
@@ -16607,7 +16618,7 @@ REGRAS DURAS:
         if (opts.variarTitulo) {
           passoAtual++;
           dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: gerando título com IA...`);
-          novo.nome = await gerarTituloVariadoIA(p);
+          novo.nome = await gerarTituloVariadoIA(p, lojaDestino.marketplace);
           dupLogStep(`  ✓ Título: "${novo.nome.slice(0,50)}"`, 'ok');
         }
         
@@ -26024,7 +26035,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.13-unif-fase2b-massa-usa-motor';
+  const _DIAG_VERSAO_PAINEL = 'v32k.14-ajustes-titulo-rascunho';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
