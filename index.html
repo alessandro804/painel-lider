@@ -4898,7 +4898,6 @@
       <button class="prod-filtro-btn" data-status="excluido" onclick="filtrarProdutos('excluido')">🗑 Lixeira</button>
       <button class="prod-filtro-btn" id="btnEsvaziarLixeira" onclick="esvaziarLixeiraDefinitivo()" style="background:#7f1d1d;color:white;border-color:#7f1d1d;display:none" title="Apaga DEFINITIVAMENTE todos os produtos da lixeira (do banco também). Não tem volta.">🔥 Esvaziar lixeira</button>
       <button class="prod-filtro-btn" onclick="limparFantasmasAgora()" style="background:#fef2f2;color:#991b1b;border-color:#fecaca" title="Re-sincroniza todas as lojas e move pra lixeira todos os produtos sem anúncio correspondente">🧹 Limpar fantasmas</button>
-      <button class="prod-filtro-btn" onclick="acaoAgruparDuplicadosAgora()" style="background:#faf5ff;color:#6b21a8;border-color:#d8b4fe" title="Agrupa produtos com mesmo SKU pai como duplicados — o mais antigo vira pai">📋 Agrupar duplicados</button>
       <button class="prod-filtro-btn" id="btnLimparFiltros" onclick="limparTodosFiltros()" style="background:#fef3c7;color:#92400e;display:none">✕ Limpar filtros</button>
     </div>
     
@@ -4975,7 +4974,6 @@
             <button onclick="acaoMassaAtualizarPorLoja()">🏪 Escolher loja específica...</button>
             <hr>
             <button onclick="acaoMassaRecriarVinculosFaltantes()" style="background:#fef3c7">🔗 Recriar vínculos faltantes</button>
-            <button onclick="acaoAgruparDuplicadosAgora()" style="background:#faf5ff">📋 Agrupar duplicados por SKU pai</button>
           </div>
         </div>
         
@@ -13398,13 +13396,25 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
     });
     
-    // 2. Junta cores
+    // 2. Junta cores — FUNDE fotos por cor (não descarta). Match por nome normalizado
+    // (acento/caixa/espaço). Se a cor já existe no destino mas SEM foto, recebe as
+    // fotos do `de`. Se o destino não tem a cor, copia inteira. Antes: cor de mesmo
+    // nome era PULADA, perdendo as fotos do `de` (sintoma: cores ficavam sem foto).
     if (Array.isArray(de.cores) && de.cores.length > 0) {
       if (!Array.isArray(para.cores)) para.cores = [];
-      const nomesPara = new Set(para.cores.map(c => String(c.nome || '').toLowerCase()));
+      const normNome = s => String(s || '').trim().toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+      const corParaPorNome = {};
+      para.cores.forEach(c => { corParaPorNome[normNome(c.nome)] = c; });
       de.cores.forEach(c => {
-        if (!nomesPara.has(String(c.nome || '').toLowerCase())) {
-          para.cores.push(JSON.parse(JSON.stringify(c)));
+        const existente = corParaPorNome[normNome(c.nome)];
+        if (!existente) {
+          const nova = JSON.parse(JSON.stringify(c));
+          para.cores.push(nova);
+          corParaPorNome[normNome(c.nome)] = nova;
+        } else if ((!existente.fotos || existente.fotos.length === 0) && Array.isArray(c.fotos) && c.fotos.length > 0) {
+          // cor existe mas sem foto → herda as fotos do `de`
+          existente.fotos = [...c.fotos];
         }
       });
     }
@@ -26070,7 +26080,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.20-fix-galeria-dup-shopee';
+  const _DIAG_VERSAO_PAINEL = 'v32k.21-mesclar-funde-fotos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
