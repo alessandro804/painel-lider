@@ -4661,6 +4661,38 @@
   </div>
 </div>
 
+<!-- ===== MODAL CONFIRMAR ENVIO WHATSAPP ===== -->
+<div class="modal-overlay" id="waConfirmOverlay" onclick="if(event.target===this)fecharWaConfirm()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:520px">
+    <button class="modal-close" onclick="fecharWaConfirm()" aria-label="Fechar">✕</button>
+    <div class="modal-title">📱 Confirmar envio ao cliente</div>
+    <div class="modal-subtitle">Revise o número e a mensagem gerada pela IA antes de enviar.</div>
+
+    <div class="form-group" style="margin-top:14px">
+      <label class="form-label">Cliente</label>
+      <input type="text" class="form-input" id="waConfCliente" readonly style="background:#f9fafb">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Número (WhatsApp)</label>
+      <input type="text" class="form-input" id="waConfNumero" placeholder="Ex: 37999998888">
+      <div class="settings-help" style="font-size:11px;margin-top:4px">Confira se está correto. Pode ajustar se precisar.</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Mensagem (gerada pela IA — edite à vontade)</label>
+      <textarea class="form-input" id="waConfMensagem" rows="8" style="resize:vertical;line-height:1.5"></textarea>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button class="toolbar-btn" style="font-size:11px" onclick="waConfRegerar()" id="waConfBtnRegerar">🔄 Gerar de novo (IA)</button>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="toolbar-btn" style="flex:1" onclick="fecharWaConfirm()">Cancelar</button>
+      <button class="primary-btn" style="flex:2;background:#25D366" onclick="waConfEnviar()" id="waConfBtnEnviar">✓ Enviar agora</button>
+    </div>
+    <div id="waConfResultado" style="margin-top:10px;font-size:13px;text-align:center"></div>
+  </div>
+</div>
+
 <!-- ===== MODAL NOVA DEMANDA ===== -->
 <div class="modal-overlay" id="demandaOverlay" onclick="closeDemandaIfOverlay(event)">
   <div class="modal modal-large" onclick="event.stopPropagation()">
@@ -10912,6 +10944,39 @@ Retorne JSON: {"ID": "valor", ...}`;
     }).join('');
   }
   
+  // Lista clientes únicos (do comercial/billings) pra o seletor de vínculo
+  function listarClientesUnicos() {
+    const mapa = {};
+    (typeof billings !== 'undefined' ? billings : []).forEach(b => {
+      if (!b.cliente) return;
+      if (!mapa[b.cliente]) mapa[b.cliente] = { nome: b.cliente, telefone: b.telefone || '' };
+      else if (!mapa[b.cliente].telefone && b.telefone) mapa[b.cliente].telefone = b.telefone;
+    });
+    return Object.values(mapa).sort((a, b) => a.nome.localeCompare(b.nome));
+  }
+
+  function montarOpcoesClientes(selecionado) {
+    const clientes = listarClientesUnicos();
+    let html = '<option value="">— Sem vínculo —</option>';
+    clientes.forEach(c => {
+      const sel = (c.nome === selecionado) ? 'selected' : '';
+      const semTel = c.telefone ? '' : ' (sem telefone)';
+      html += `<option value="${escapeHtml(c.nome)}" ${sel}>${escapeHtml(c.nome)}${semTel}</option>`;
+    });
+    return html;
+  }
+  window.montarOpcoesClientes = montarOpcoesClientes;
+
+  function vincularClienteLoja(lojaId, clienteNome) {
+    const loja = lojasErp.find(l => String(l.id) === String(lojaId));
+    if (!loja) return;
+    loja.clienteVinculado = clienteNome || null;
+    if (typeof saveLojas === 'function') saveLojas();
+    else if (typeof v31_persistirLojas === 'function') v31_persistirLojas();
+    showToast(clienteNome ? `Loja vinculada a ${clienteNome}` : 'Vínculo removido');
+  }
+  window.vincularClienteLoja = vincularClienteLoja;
+
   function cardLojaHtml(loja, status) {
     const conectada = status && status.conectada;
     let statusBg, statusTxt, statusLabel, expiraTxt;
@@ -10957,6 +11022,13 @@ Retorne JSON: {"ID": "valor", ...}`;
       </div>
       <div style="font-size:11px;color:#6b7280;line-height:1.6;margin-bottom:10px">
         ${expiraTxt}
+      </div>
+      <div style="margin-bottom:10px;padding:8px;background:#faf5ff;border-radius:8px">
+        <label style="font-size:10px;font-weight:700;color:#6b21a8;display:block;margin-bottom:4px">👤 Cliente vinculado</label>
+        <select onchange="vincularClienteLoja('${loja.id}', this.value)" style="width:100%;padding:6px;border:1px solid #d8b4fe;border-radius:6px;font-size:12px">
+          ${montarOpcoesClientes(loja.clienteVinculado)}
+        </select>
+        <div style="font-size:9px;color:#9ca3af;margin-top:3px">Usado pra avisar o cliente no WhatsApp quando a demanda conclui.</div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         ${conectada ? `<button class="toolbar-btn" style="flex:1;font-size:11px;padding:6px" onclick="acaoLojaSincronizar('${loja.id}')">🔄 Sincronizar</button>` : ''}
@@ -26684,7 +26756,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32m.3-whatsapp-limpo-desconectar';
+  const _DIAG_VERSAO_PAINEL = 'v32m.4-vinculo-cliente-loja-confirmacao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -34191,7 +34263,124 @@ ${JSON.stringify(metricas, null, 2)}`
     }, 300);
   }
   
-  function avisarClienteWhats(demanda) {
+  // Descobre o cliente vinculado à(s) loja(s) da demanda e o telefone dele
+  function _resolverClienteDaDemanda(demanda) {
+    // 1. tenta pelo cliente direto da demanda; 2. pela loja vinculada
+    let clienteNome = demanda.cliente || '';
+    if (!clienteNome && demanda.loja) {
+      const loja = lojasErp.find(l => l.nome === demanda.loja || String(l.id) === String(demanda.lojaId));
+      if (loja && loja.clienteVinculado) clienteNome = loja.clienteVinculado;
+    }
+    if (!clienteNome && Array.isArray(demanda.contas)) {
+      for (const c of demanda.contas) {
+        const loja = lojasErp.find(l => String(l.id) === String(c) || l.nome === c);
+        if (loja && loja.clienteVinculado) { clienteNome = loja.clienteVinculado; break; }
+      }
+    }
+    let telefone = '';
+    if (clienteNome) {
+      const b = (typeof billings !== 'undefined' ? billings : []).find(x => x.cliente === clienteNome && x.telefone);
+      if (b) telefone = (b.telefone || '').replace(/\D/g, '');
+    }
+    return { clienteNome, telefone };
+  }
+
+  // Monta o input técnico pra IA (loja - cliente - plataforma - demanda)
+  function _montarInputDemandaIA(demanda, clienteNome) {
+    const tipoLabel = labelTipoDemanda(demanda.tipo).replace(/[^\w\sÀ-ÿ]/g, '').trim();
+    const loja = demanda.loja || (Array.isArray(demanda.contas) ? demanda.contas.join(', ') : '');
+    const plataforma = (() => {
+      const l = lojasErp.find(x => x.nome === demanda.loja);
+      return l ? (MK_INFO[l.marketplace] ? MK_INFO[l.marketplace].nome : l.marketplace) : '';
+    })();
+    return `Loja: ${loja || '—'}\nCliente: ${clienteNome || '—'}\nPlataforma: ${plataforma || '—'}\nDemanda concluída: ${tipoLabel}${demanda.produto ? ' - ' + demanda.produto : ''}`;
+  }
+
+  let _waConfDemandaAtual = null;
+  // Novo fluxo: gera a mensagem com IA e abre o modal de confirmação (número + texto)
+  async function avisarClienteWhats(demanda) {
+    _waConfDemandaAtual = demanda;
+    const { clienteNome, telefone } = _resolverClienteDaDemanda(demanda);
+
+    document.getElementById('waConfCliente').value = clienteNome || '(sem cliente vinculado)';
+    document.getElementById('waConfNumero').value = telefone || '';
+    document.getElementById('waConfMensagem').value = '⏳ Gerando mensagem com IA...';
+    document.getElementById('waConfResultado').innerHTML = '';
+    document.getElementById('waConfOverlay').classList.add('active');
+
+    await waConfRegerar();
+    if (!telefone) {
+      document.getElementById('waConfResultado').innerHTML = '<span style="color:#d97706">⚠ Cliente sem telefone cadastrado. Preencha o número manualmente ou cadastre no Comercial.</span>';
+    }
+  }
+  window.avisarClienteWhats = avisarClienteWhats;
+
+  // Gera (ou regenera) a mensagem com a IA usando o prompt editável
+  async function waConfRegerar() {
+    const demanda = _waConfDemandaAtual;
+    if (!demanda) return;
+    const btn = document.getElementById('waConfBtnRegerar');
+    const txt = document.getElementById('waConfMensagem');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Gerando...'; }
+    try {
+      const { clienteNome } = _resolverClienteDaDemanda(demanda);
+      const input = _montarInputDemandaIA(demanda, clienteNome);
+      const systemPrompt = (typeof getPrompt === 'function')
+        ? getPrompt('whatsapp_demanda_concluida').replace('{{demanda}}', input)
+        : input;
+      // o prompt já tem a instrução completa; mandamos como system e pedimos a mensagem
+      const resposta = await chamarIA({
+        system: systemPrompt,
+        prompt: 'Gere a mensagem final pronta para enviar ao cliente, seguindo as diretrizes.',
+        maxTokens: 600
+      });
+      txt.value = (resposta || '').trim();
+    } catch (e) {
+      txt.value = '';
+      document.getElementById('waConfResultado').innerHTML = '<span style="color:#dc2626">⚠ Erro ao gerar com IA: ' + e.message + '</span>';
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 Gerar de novo (IA)'; }
+    }
+  }
+  window.waConfRegerar = waConfRegerar;
+
+  async function waConfEnviar() {
+    const numero = (document.getElementById('waConfNumero').value || '').trim();
+    const msg = (document.getElementById('waConfMensagem').value || '').trim();
+    const res = document.getElementById('waConfResultado');
+    const btn = document.getElementById('waConfBtnEnviar');
+    if (!numero) { res.innerHTML = '<span style="color:#dc2626">Informe o número.</span>'; return; }
+    if (!msg) { res.innerHTML = '<span style="color:#dc2626">Mensagem vazia.</span>'; return; }
+    btn.disabled = true; btn.textContent = 'Enviando...';
+    res.innerHTML = '<span style="color:#6b7280">Enviando...</span>';
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ numero, texto: msg })
+      })).json();
+      if (r.ok) {
+        res.innerHTML = '<span style="color:#16a34a;font-weight:700">✓ Enviado!</span>';
+        if (_waConfDemandaAtual) { _waConfDemandaAtual.clienteAvisado = true; saveDemandas(); }
+        setTimeout(fecharWaConfirm, 1200);
+      } else {
+        res.innerHTML = '<span style="color:#dc2626">⚠ ' + (r.erro || 'falha ao enviar') + '</span>';
+      }
+    } catch (e) {
+      res.innerHTML = '<span style="color:#dc2626">⚠ Erro: ' + e.message + '</span>';
+    } finally {
+      btn.disabled = false; btn.textContent = '✓ Enviar agora';
+    }
+  }
+  window.waConfEnviar = waConfEnviar;
+
+  function fecharWaConfirm() {
+    document.getElementById('waConfOverlay').classList.remove('active');
+    _waConfDemandaAtual = null;
+  }
+  window.fecharWaConfirm = fecharWaConfirm;
+
+  // (função antiga wa.me substituída pelo fluxo IA + modal de confirmação acima)
+  function _avisarClienteWhats_OLD(demanda) {
     // Tenta achar o telefone do cliente na carteira de cobranças
     let telefone = '';
     const billing = billings.find(b => b.cliente === demanda.cliente && (b.telefone || b.cpf_cnpj));
