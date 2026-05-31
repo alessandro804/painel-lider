@@ -4841,6 +4841,12 @@
       </div>
     </div>
     
+    <div style="background:#eff6ff;padding:10px;border-radius:8px;margin-bottom:10px">
+      <label style="font-size:12px;font-weight:700;color:#1d4ed8;display:block;margin-bottom:4px">📅 Agendar exportação (opcional)</label>
+      <input type="datetime-local" id="demandaAgendarEm" class="form-input" style="width:100%">
+      <div style="font-size:10px;color:#6b7280;margin-top:2px">Vazio = executa o fluxo e exporta agora. Preenchido = cria o produto agora e agenda a exportação pra essa data.</div>
+    </div>
+
     <button class="primary-btn" onclick="salvarDemanda()">Salvar demanda</button>
     <button class="primary-btn" id="demandaExecutarBtn" onclick="salvarEExecutarDemanda()" style="background:#7c3aed;display:none;margin-top:8px">🚀 Salvar + EXECUTAR fluxo (automação)</button>
     <button class="delete-btn" id="demandaDeleteBtn" onclick="excluirDemanda()" style="display:none;">🗑 Excluir demanda</button>
@@ -5074,6 +5080,20 @@
       <label style="font-size:11px;font-weight:700;color:#1d4ed8;display:block;margin-bottom:4px">📅 Agendar (opcional)</label>
       <input type="datetime-local" id="dupAgendarEm" class="form-input" style="font-size:13px">
       <div style="font-size:10px;color:#6b7280;margin-top:2px">Deixe vazio para duplicar agora. Preencha para agendar a duplicação para uma data/hora.</div>
+    </div>
+
+    <div style="background:#f0fdf4;padding:10px;border-radius:8px;margin-bottom:12px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#15803d;cursor:pointer">
+        <input type="checkbox" id="dupReguaAtiva" onchange="dupToggleRegua()"> 💰 Régua de preços (promoção)
+      </label>
+      <div id="dupReguaBox" style="display:none;margin-top:8px">
+        <div style="font-size:10px;color:#6b7280;margin-bottom:6px">Ao exportar, o anúncio entra na promoção vigente. Defina o desconto imediato e até 5 mudanças futuras (a partir da exportação).</div>
+        <label style="font-size:11px;font-weight:700;color:#374151">Desconto imediato (R$) — opcional</label>
+        <input type="number" id="dupReguaImediato" step="0.01" min="0" class="form-input" placeholder="ex: 59.90" style="font-size:13px;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:4px">Degraus futuros (até 5)</div>
+        <div id="dupReguaDegraus"></div>
+        <button type="button" onclick="dupAddDegrau()" id="dupBtnAddDegrau" style="margin-top:6px;padding:6px 10px;background:#fff;border:1px dashed #16a34a;color:#15803d;border-radius:6px;cursor:pointer;font-size:12px">+ Adicionar degrau</button>
+      </div>
     </div>
     
     <div style="background:#fef3c7;padding:10px;border-radius:8px;margin-bottom:14px;font-size:11px;color:#92400e">
@@ -9860,6 +9880,20 @@ Retorne JSON: {"ID": "valor", ...}`;
         }
         
         const payload = montarPayloadExport(pLocal || p, loja.marketplace);
+        // Se a demanda foi marcada pra agendar a exportação, cria a tarefa em vez de exportar agora.
+        if (d._agendarExportarEm) {
+          try {
+            const rAg = await (await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+              tipo: 'duplicar_anuncio',
+              descricao: 'Exportar "' + (p.nome||'').slice(0,40) + '" → ' + loja.nome,
+              rodar_em: d._agendarExportarEm,
+              params: { lojaId: lojaIdBanco, itens: [{ produtoId: p.idBanco, payload }] }
+            }) })).json();
+            if (rAg.ok) { resultados.push('📅 ' + sufixoLog + 'exportação agendada'); okCount++; }
+            else { resultados.push('✗ ' + sufixoLog + 'erro ao agendar: ' + (rAg.erro||'falha')); erroCount++; }
+          } catch (eAg) { resultados.push('✗ ' + sufixoLog + 'erro ao agendar: ' + eAg.message); erroCount++; }
+          continue; // não exporta agora
+        }
         const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + p.idBanco;
         const resp = await fetch(url, {
           method: 'POST',
@@ -11904,6 +11938,12 @@ Retorne JSON: {"ID": "valor", ...}`;
             <div style="font-size:10px;color:#6b7280">Só vale se NÃO exportar — revisa antes de publicar</div>
           </div>
         </label>
+
+        <div style="margin-top:12px;padding:10px;background:#eff6ff;border-radius:8px">
+          <label style="font-size:12px;font-weight:700;color:#1d4ed8;display:block;margin-bottom:6px">📅 Agendar exportação (opcional)</label>
+          <input type="datetime-local" id="mdAgendarEm" class="form-input" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px">
+          <div style="font-size:10px;color:#6b7280;margin-top:4px">Vazio = segue a opção acima (exportar/rascunho agora). Preenchido = cria as cópias como rascunho e agenda a exportação de todas pra essa data.</div>
+        </div>
       </div>
       
       <div style="padding:14px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;gap:10px">
@@ -11934,6 +11974,14 @@ Retorne JSON: {"ID": "valor", ...}`;
     const lojaDestino = lojasErp.find(l => String(l.id) === String(lojaDestinoId));
     if (!lojaDestino) { alert('Loja não encontrada'); return; }
 
+    // Agendamento (opcional): se preenchido, cria cópias como rascunho e agenda exportação de todas
+    const agMassaVal = modal.querySelector('#mdAgendarEm') ? modal.querySelector('#mdAgendarEm').value : '';
+    let agendarQuando = null;
+    if (agMassaVal) {
+      agendarQuando = new Date(agMassaVal);
+      if (isNaN(agendarQuando.getTime()) || agendarQuando.getTime() < Date.now()) { alert('Data/hora de agendamento inválida ou no passado'); return; }
+    }
+
     const ids = Array.from(_prodSelecionados);
     modal.remove();
 
@@ -11941,12 +11989,14 @@ Retorne JSON: {"ID": "valor", ...}`;
     // o massa agora delega ao MOTOR ÚNICO iniciarDuplicacao — um produto por vez.
     // Garante paridade total (rollback, vínculos Catalog/Legado, garantia de variação)
     // e elimina o código duplicado que era fonte de bugs.
+    const coletadasMassa = agendarQuando ? [] : null;
     const optsMotor = {
       variarTitulo, variarDescricao,
       rotacionarFotos: rotacionarFotosOpt,
       variarPreco: false,
-      exportar: exportarAuto,
-      marcarRascunho,
+      exportar: agendarQuando ? false : exportarAuto,
+      marcarRascunho: agendarQuando ? true : marcarRascunho,
+      _coletarParaAgendar: coletadasMassa,
     };
 
     let processados = 0;
@@ -11964,6 +12014,25 @@ Retorne JSON: {"ID": "valor", ...}`;
         console.warn('[massa-dup] produto', pid, 'falhou:', e.message);
       }
       processados++;
+    }
+
+    // Se agendado: cria UMA tarefa que exporta todas as cópias coletadas na data
+    if (agendarQuando && coletadasMassa && coletadasMassa.length > 0) {
+      let lojaIdBanco = null;
+      try { lojaIdBanco = await garantirLojaNoBanco(lojaDestino); } catch(_){}
+      if (!lojaIdBanco && lojaDestino.idBanco) lojaIdBanco = lojaDestino.idBanco;
+      if (lojaIdBanco) {
+        try {
+          const r = await (await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+            tipo: 'duplicar_anuncio',
+            descricao: 'Exportar ' + coletadasMassa.length + ' cópia(s) em massa → ' + lojaDestino.nome,
+            rodar_em: agendarQuando.toISOString(),
+            params: { lojaId: lojaIdBanco, itens: coletadasMassa }
+          }) })).json();
+          if (r.ok) alert('✅ ' + coletadasMassa.length + ' cópia(s) criada(s) como rascunho.\nExportação agendada para ' + agendarQuando.toLocaleString('pt-BR') + '.\nAcompanhe no Calendário.');
+          else alert('❌ Cópias criadas, mas erro ao agendar: ' + (r.erro||'falha'));
+        } catch (e) { alert('❌ Erro ao agendar: ' + e.message); }
+      } else { alert('Cópias criadas, mas não consegui resolver a loja pra agendar.'); }
     }
 
     _prodSelecionados.clear();
@@ -16604,14 +16673,59 @@ REGRAS DURAS:
       .trim();
   }
   
+  // ── Régua de preços (UI do modal Duplicar) ──────────────────────
+  function dupToggleRegua() {
+    const box = document.getElementById('dupReguaBox');
+    const on = document.getElementById('dupReguaAtiva').checked;
+    if (box) box.style.display = on ? 'block' : 'none';
+    if (on && document.getElementById('dupReguaDegraus').children.length === 0) dupAddDegrau();
+  }
+  window.dupToggleRegua = dupToggleRegua;
+
+  function dupAddDegrau() {
+    const cont = document.getElementById('dupReguaDegraus');
+    if (!cont || cont.children.length >= 5) { if (cont && cont.children.length >= 5) showToast('Máximo de 5 degraus', true); return; }
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px';
+    div.innerHTML = `
+      <span style="font-size:11px;color:#6b7280">daqui</span>
+      <input type="number" class="form-input dup-degrau-dias" min="1" placeholder="dias" style="width:70px;font-size:12px">
+      <span style="font-size:11px;color:#6b7280">dias → R$</span>
+      <input type="number" class="form-input dup-degrau-preco" step="0.01" min="0" placeholder="preço" style="width:90px;font-size:12px">
+      <button type="button" onclick="this.parentElement.remove()" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
+    cont.appendChild(div);
+  }
+  window.dupAddDegrau = dupAddDegrau;
+
+  // Lê a régua configurada no modal → { imediato?, degraus:[{dias,preco}] } ou null
+  function dupLerRegua() {
+    const ativa = document.getElementById('dupReguaAtiva');
+    if (!ativa || !ativa.checked) return null;
+    const imediatoVal = parseFloat(document.getElementById('dupReguaImediato').value);
+    const degraus = [];
+    document.querySelectorAll('#dupReguaDegraus > div').forEach(div => {
+      const dias = parseInt(div.querySelector('.dup-degrau-dias').value);
+      const preco = parseFloat(div.querySelector('.dup-degrau-preco').value);
+      if (dias > 0 && preco > 0) degraus.push({ dias, preco });
+    });
+    const regua = {};
+    if (imediatoVal > 0) regua.imediato = imediatoVal;
+    if (degraus.length > 0) regua.degraus = degraus;
+    return (regua.imediato != null || (regua.degraus && regua.degraus.length)) ? regua : null;
+  }
+  window.dupLerRegua = dupLerRegua;
+
   // Decide: duplicar agora (fluxo normal) ou criar cópias como rascunho + agendar exportação.
   async function iniciarDuplicacaoComAgendamento() {
     const agEl = document.getElementById('dupAgendarEm');
     const quandoVal = agEl ? agEl.value : '';
-    if (!quandoVal) { return iniciarDuplicacao(); } // sem data → fluxo normal intacto
+    const temRegua = !!dupLerRegua();
+    // Sem data E sem régua → fluxo normal intacto.
+    // Com régua mas sem data → roteia pela tarefa (exporta "agora" via backend, que orquestra a régua com o itemId real).
+    if (!quandoVal && !temRegua) { return iniciarDuplicacao(); }
 
-    const quando = new Date(quandoVal);
-    if (isNaN(quando.getTime()) || quando.getTime() < Date.now()) { showToast('Data/hora de agendamento inválida ou no passado', true); return; }
+    const quando = quandoVal ? new Date(quandoVal) : new Date(Date.now() + 2000); // sem data mas com régua → daqui 2s
+    if (isNaN(quando.getTime()) || (quandoVal && quando.getTime() < Date.now())) { showToast('Data/hora de agendamento inválida ou no passado', true); return; }
 
     const produtoId = _dupProdutoId;
     const qtd = parseInt(document.getElementById('dupQuantidade').value) || 0;
@@ -16633,6 +16747,10 @@ REGRAS DURAS:
       }
     });
     if (coletadas.length === 0) { showToast('Nenhuma cópia foi criada para agendar', true); return; }
+
+    // anexa a régua de preços (se configurada) a cada cópia
+    const reguaCfg = dupLerRegua();
+    if (reguaCfg) coletadas.forEach(c => { c.regua = reguaCfg; });
 
     // 2. resolve loja no banco
     let lojaIdBanco = null;
@@ -26385,7 +26503,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.69-duplicar-agendado';
+  const _DIAG_VERSAO_PAINEL = 'v32k.72-regua-precos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33850,6 +33968,16 @@ ${JSON.stringify(metricas, null, 2)}`
     // Anexa as URLs (não base64!) à demanda + o guia
     d.imagens = urlsFotos.map(url => ({ url }));
     d.guiaTamanhos = guiaParaUsar;
+    // Agendamento de exportação (opcional): se preenchido, acaoExportar vai agendar em vez de exportar agora
+    const _agEl = document.getElementById('demandaAgendarEm');
+    if (_agEl && _agEl.value) {
+      const _q = new Date(_agEl.value);
+      if (!isNaN(_q.getTime()) && _q.getTime() > Date.now()) {
+        d._agendarExportarEm = _q.toISOString();
+      } else {
+        alert('Data/hora de agendamento inválida ou no passado — vou executar e exportar agora.');
+      }
+    }
     saveDemandas();
     
     // Pequeno delay pra modal fechar e DOM atualizar
