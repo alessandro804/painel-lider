@@ -6326,6 +6326,7 @@
           <button class="settings-tab active" onclick="setSettingsTab('financas', this)">💰 Finanças</button>
           <button class="settings-tab" onclick="setSettingsTab('gerais', this)">⚙️ Config. Gerais</button>
           <button class="settings-tab" onclick="setSettingsTab('prompts', this)">🤖 Prompts da IA</button>
+          <button class="settings-tab" onclick="setSettingsTab('whatsapp', this)">📱 WhatsApp</button>
           <button class="settings-tab" onclick="setSettingsTab('backup', this)">💾 Backup</button>
           <button class="settings-tab" onclick="setSettingsTab('profile', this)">👤 Perfil</button>
         </div>
@@ -6627,6 +6628,31 @@
           </div>
           
           <div id="promptsList"></div>
+        </div>
+
+        <!-- Tab: WhatsApp -->
+        <div class="settings-panel" id="panel-whatsapp">
+          <div class="settings-card" style="border:2px solid #25D366">
+            <div class="settings-card-title">📱 WhatsApp (disparos aos clientes)</div>
+            <div class="settings-card-subtitle">
+              Conexão com o WhatsApp pra enviar avisos automáticos aos clientes (ex: demanda concluída).
+              O texto da mensagem é gerado pela IA — você edita o prompt na aba "🤖 Prompts da IA" (item "📱 WhatsApp · Aviso de demanda concluída").
+            </div>
+            <div id="waStatusBox" style="margin-top:14px;padding:12px;border-radius:8px;background:#f9fafb;font-size:13px">
+              <span style="color:#6b7280">Verificando conexão...</span>
+            </div>
+            <button onclick="waVerificarStatus()" style="margin-top:10px;padding:8px 14px;background:#fff;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;font-size:13px">🔄 Verificar conexão</button>
+          </div>
+
+          <div class="settings-card" style="margin-top:14px">
+            <div class="settings-card-title">✉️ Testar envio</div>
+            <div class="settings-card-subtitle">Manda uma mensagem de teste pra confirmar que está tudo funcionando. Use seu próprio número.</div>
+            <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+              <input type="text" id="waTesteNumero" class="form-input" placeholder="Ex: 37999998888" style="flex:1;min-width:200px;padding:10px;border:1px solid #d1d5db;border-radius:8px">
+              <button onclick="waEnviarTeste()" id="waBtnTeste" style="padding:10px 18px;background:#25D366;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">Enviar teste</button>
+            </div>
+            <div id="waTesteResultado" style="margin-top:10px;font-size:13px"></div>
+          </div>
         </div>
 
         <!-- Tab: Backup -->
@@ -26610,7 +26636,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.73-seletor-regua-novademanda';
+  const _DIAG_VERSAO_PAINEL = 'v32m.0-whatsapp-config';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -27800,6 +27826,24 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // ============================================================
   
   const PROMPTS_DEFAULT = {
+    whatsapp_demanda_concluida: {
+      nome: '📱 WhatsApp · Aviso de demanda concluída',
+      descricao: 'Prompt que transforma a demanda técnica concluída numa mensagem gentil pro cliente. Placeholder disponível: {{demanda}} (preenchido com loja, cliente, plataforma e o que foi feito).',
+      texto: `Você é um assistente de uma agência de marketplaces especializado em transformar instruções técnicas e objetivas em mensagens gentis, claras e com tom descontraído para os clientes.
+Sua missão é reescrever comunicações internas de demandas concluídas — como atualizações de estoque, alterações de anúncios, configurações de sistemas — em comunicados prontos para serem enviados de forma leve, cordial e profissional.
+Siga estas diretrizes:
+- Comece sempre com uma saudação ou introdução amigável (ex: "Oi! Passando pra avisar que…").
+- Deixe claro o que foi feito (ex: atualização, alteração, configuração, publicação, etc).
+- Inclua informações específicas como nome da loja, produto, plataforma, referência, variação, etc.
+- Finalize com uma frase simpática de apoio ou disponibilidade (ex: "Se precisar de algo, estamos por aqui!").
+- Use uma linguagem simples, leve e positiva, sem jargões técnicos.
+- Evite termos como "erro", "problema" ou "falha" — foque na solução e no andamento positivo.
+- Sempre que possível, mantenha a mensagem direta e acolhedora, com tom próximo e prestativo.
+- A resposta deve ser apenas a mensagem final pronta para ser enviada ao cliente, sem explicações ou mensagens adicionais.
+- Caso possuir login ou link enviar para o cliente
+Mensagem:
+{{demanda}}`
+    },
     preencher_produto_system: {
       nome: '🎯 Preencher produto · Personalidade (system)',
       descricao: 'Define a personalidade da IA quando preenche dados de produto automaticamente. Editar pode mudar drasticamente a qualidade do preenchimento.',
@@ -30130,7 +30174,55 @@ ${JSON.stringify(metricas, null, 2)}`
     if (tab === 'backup' && typeof renderSyncStatus === 'function') renderSyncStatus();
     if (tab === 'gerais' && typeof renderConfigGerais === 'function') renderConfigGerais();
     if (tab === 'prompts' && typeof renderPromptsList === 'function') renderPromptsList();
+    if (tab === 'whatsapp' && typeof waVerificarStatus === 'function') waVerificarStatus();
   }
+
+  // ============================================================
+  // WHATSAPP — status da conexão e teste de envio
+  // ============================================================
+  async function waVerificarStatus() {
+    const box = document.getElementById('waStatusBox');
+    if (!box) return;
+    box.innerHTML = '<span style="color:#6b7280">Verificando conexão...</span>';
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/whatsapp/status', { headers: { 'x-api-token': getApiToken() } })).json();
+      if (!r.ok) { box.innerHTML = '<span style="color:#dc2626">⚠ Erro ao consultar: ' + (r.erro || 'falha') + '</span>'; return; }
+      if (!r.configurado) {
+        box.innerHTML = '<span style="color:#d97706">⚠ WhatsApp não configurado no servidor.</span><br><span style="font-size:11px;color:#6b7280">Faltam as variáveis EVOLUTION_URL, EVOLUTION_API_KEY e EVOLUTION_INSTANCE no backend.</span>';
+        return;
+      }
+      if (r.conectado) {
+        box.innerHTML = '<span style="color:#16a34a;font-weight:700">✓ Conectado</span> <span style="font-size:11px;color:#6b7280">(instância: ' + (r.instancia || '?') + ')</span>';
+      } else {
+        box.innerHTML = '<span style="color:#d97706;font-weight:700">○ Desconectado</span> <span style="font-size:11px;color:#6b7280">(estado: ' + (r.state || '?') + ') — reconecte escaneando o QR no manager da Evolution.</span>';
+      }
+    } catch (e) {
+      box.innerHTML = '<span style="color:#dc2626">⚠ Não consegui falar com o backend: ' + e.message + '</span>';
+    }
+  }
+  window.waVerificarStatus = waVerificarStatus;
+
+  async function waEnviarTeste() {
+    const numero = (document.getElementById('waTesteNumero').value || '').trim();
+    const res = document.getElementById('waTesteResultado');
+    const btn = document.getElementById('waBtnTeste');
+    if (!numero) { res.innerHTML = '<span style="color:#dc2626">Informe um número.</span>'; return; }
+    btn.disabled = true; btn.textContent = 'Enviando...';
+    res.innerHTML = '<span style="color:#6b7280">Enviando mensagem de teste...</span>';
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/whatsapp/teste', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ numero })
+      })).json();
+      if (r.ok) res.innerHTML = '<span style="color:#16a34a;font-weight:700">✓ Enviado!</span> <span style="font-size:11px;color:#6b7280">Confira o WhatsApp do número ' + (r.numero || numero) + '.</span>';
+      else res.innerHTML = '<span style="color:#dc2626">⚠ ' + (r.erro || 'falha ao enviar') + '</span>';
+    } catch (e) {
+      res.innerHTML = '<span style="color:#dc2626">⚠ Erro: ' + e.message + '</span>';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Enviar teste';
+    }
+  }
+  window.waEnviarTeste = waEnviarTeste;
   
   // ============================================================
   // RENDERIZAÇÃO DA TELA DE PROMPTS DA IA
