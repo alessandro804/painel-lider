@@ -4841,10 +4841,20 @@
       </div>
     </div>
     
-    <div style="background:#eff6ff;padding:10px;border-radius:8px;margin-bottom:10px">
-      <label style="font-size:12px;font-weight:700;color:#1d4ed8;display:block;margin-bottom:4px">📅 Agendar exportação (opcional)</label>
-      <input type="datetime-local" id="demandaAgendarEm" class="form-input" style="width:100%">
-      <div style="font-size:10px;color:#6b7280;margin-top:2px">Vazio = executa o fluxo e exporta agora. Preenchido = cria o produto agora e agenda a exportação pra essa data.</div>
+    <div style="background:#eff6ff;padding:10px;border-radius:8px;margin-bottom:10px" id="demSeletorBox"></div>
+
+    <div style="background:#f0fdf4;padding:10px;border-radius:8px;margin-bottom:10px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#15803d;cursor:pointer">
+        <input type="checkbox" id="demReguaAtiva" onchange="demToggleRegua()"> 💰 Régua de preços (promoção)
+      </label>
+      <div id="demReguaBox" style="display:none;margin-top:8px">
+        <div style="font-size:10px;color:#6b7280;margin-bottom:6px">Ao exportar, o anúncio entra na promoção vigente. Defina o desconto imediato e as mudanças futuras (a partir da exportação).</div>
+        <label style="font-size:11px;font-weight:700;color:#374151">Desconto imediato (R$) — opcional</label>
+        <input type="number" id="demReguaImediato" step="0.01" min="0" class="form-input" placeholder="ex: 59.90" style="font-size:13px;margin-bottom:8px;width:100%">
+        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:4px">Degraus futuros</div>
+        <div id="demReguaDegraus"></div>
+        <button type="button" onclick="demAddDegrau()" style="margin-top:6px;padding:6px 10px;background:#fff;border:1px dashed #16a34a;color:#15803d;border-radius:6px;cursor:pointer;font-size:12px">+ Adicionar degrau</button>
+      </div>
     </div>
 
     <button class="primary-btn" onclick="salvarDemanda()">Salvar demanda</button>
@@ -5076,21 +5086,17 @@
       </label>
     </div>
     
-    <div style="background:#eff6ff;padding:10px;border-radius:8px;margin-bottom:12px">
-      <label style="font-size:11px;font-weight:700;color:#1d4ed8;display:block;margin-bottom:4px">📅 Agendar (opcional)</label>
-      <input type="datetime-local" id="dupAgendarEm" class="form-input" style="font-size:13px">
-      <div style="font-size:10px;color:#6b7280;margin-top:2px">Deixe vazio para duplicar agora. Preencha para agendar a duplicação para uma data/hora.</div>
-    </div>
+    <div style="background:#eff6ff;padding:10px;border-radius:8px;margin-bottom:12px" id="dupSeletorBox"></div>
 
     <div style="background:#f0fdf4;padding:10px;border-radius:8px;margin-bottom:12px">
       <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#15803d;cursor:pointer">
         <input type="checkbox" id="dupReguaAtiva" onchange="dupToggleRegua()"> 💰 Régua de preços (promoção)
       </label>
       <div id="dupReguaBox" style="display:none;margin-top:8px">
-        <div style="font-size:10px;color:#6b7280;margin-bottom:6px">Ao exportar, o anúncio entra na promoção vigente. Defina o desconto imediato e até 5 mudanças futuras (a partir da exportação).</div>
+        <div style="font-size:10px;color:#6b7280;margin-bottom:6px">Ao exportar, o anúncio entra na promoção vigente. Defina o desconto imediato e mudanças futuras (a partir da exportação).</div>
         <label style="font-size:11px;font-weight:700;color:#374151">Desconto imediato (R$) — opcional</label>
         <input type="number" id="dupReguaImediato" step="0.01" min="0" class="form-input" placeholder="ex: 59.90" style="font-size:13px;margin-bottom:8px">
-        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:4px">Degraus futuros (até 5)</div>
+        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:4px">Degraus futuros</div>
         <div id="dupReguaDegraus"></div>
         <button type="button" onclick="dupAddDegrau()" id="dupBtnAddDegrau" style="margin-top:6px;padding:6px 10px;background:#fff;border:1px dashed #16a34a;color:#15803d;border-radius:6px;cursor:pointer;font-size:12px">+ Adicionar degrau</button>
       </div>
@@ -9887,7 +9893,7 @@ Retorne JSON: {"ID": "valor", ...}`;
               tipo: 'duplicar_anuncio',
               descricao: 'Exportar "' + (p.nome||'').slice(0,40) + '" → ' + loja.nome,
               rodar_em: d._agendarExportarEm,
-              params: { lojaId: lojaIdBanco, itens: [{ produtoId: p.idBanco, payload }] }
+              params: { lojaId: lojaIdBanco, itens: [{ produtoId: p.idBanco, payload, regua: d._regua || undefined }] }
             }) })).json();
             if (rAg.ok) { resultados.push('📅 ' + sufixoLog + 'exportação agendada'); okCount++; }
             else { resultados.push('✗ ' + sufixoLog + 'erro ao agendar: ' + (rAg.erro||'falha')); erroCount++; }
@@ -9910,6 +9916,30 @@ Retorne JSON: {"ID": "valor", ...}`;
         const anuncioId = data.itemId || (data.dados && data.dados.id) || '?';
         resultados.push('✓ ' + sufixoLog + 'anúncio ' + anuncioId + ' (' + loja.marketplace + ')');
         okCount++;
+
+        // Régua de preços (exportação imediata): anúncio já existe, cria as tarefas direto
+        const _itemIdReal = data.itemId || (data.dados && (data.dados.itemId || data.dados.item_id));
+        if (d._regua && _itemIdReal) {
+          try {
+            const tk = getApiToken();
+            const agora = Date.now();
+            // desconto imediato → entrar_promocao (roda no próximo ciclo)
+            if (d._regua.imediato != null) {
+              await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':tk,'Content-Type':'application/json'}, body: JSON.stringify({
+                tipo:'entrar_promocao', descricao:'Entrar na promoção (R$ '+Number(d._regua.imediato).toFixed(2)+') item '+_itemIdReal,
+                rodar_em:new Date(agora-1000).toISOString(), params:{ lojaId:lojaIdBanco, itemId:_itemIdReal, preco:Number(d._regua.imediato) }
+              }) });
+            }
+            // degraus → mudar_preco daqui X dias
+            for (const deg of (d._regua.degraus||[])) {
+              await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':tk,'Content-Type':'application/json'}, body: JSON.stringify({
+                tipo:'mudar_preco', descricao:'Régua: R$ '+Number(deg.preco).toFixed(2)+' (+'+deg.dias+'d) item '+_itemIdReal,
+                rodar_em:new Date(agora + Number(deg.dias)*86400000).toISOString(), params:{ lojaId:lojaIdBanco, itemId:_itemIdReal, preco:Number(deg.preco) }
+              }) });
+            }
+            resultados.push('  💰 régua de preços criada');
+          } catch(eR) { console.warn('[acaoExportar régua]', eR.message); }
+        }
         
         // v32j.3: dispara duplicação automática (uma vez por loja exportada)
         if (d && d.duplicacao && d.duplicacao.ativo) {
@@ -11939,11 +11969,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           </div>
         </label>
 
-        <div style="margin-top:12px;padding:10px;background:#eff6ff;border-radius:8px">
-          <label style="font-size:12px;font-weight:700;color:#1d4ed8;display:block;margin-bottom:6px">📅 Agendar exportação (opcional)</label>
-          <input type="datetime-local" id="mdAgendarEm" class="form-input" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px">
-          <div style="font-size:10px;color:#6b7280;margin-top:4px">Vazio = segue a opção acima (exportar/rascunho agora). Preenchido = cria as cópias como rascunho e agenda a exportação de todas pra essa data.</div>
-        </div>
+        <div style="margin-top:12px;padding:10px;background:#eff6ff;border-radius:8px" id="mdSeletorBox"></div>
       </div>
       
       <div style="padding:14px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;gap:10px">
@@ -11952,8 +11978,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       </div>
     </div>`;
     document.body.appendChild(modal);
+    // injeta o seletor Agora/Agendar no massa
+    const mdSegBox = modal.querySelector('#mdSeletorBox');
+    if (mdSegBox) { mdSegBox.innerHTML = htmlSeletorAgendamento('md', '📅 Quando exportar'); selAgendamento('md', false); }
     
-    // Atualiza total quando muda qtd
     modal.querySelector('#mdCopiasPorProd').addEventListener('input', e => {
       const n = parseInt(e.target.value) || 1;
       modal.querySelector('#mdTotalCopias').textContent = (ids.length * n);
@@ -16302,6 +16330,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       sel.innerHTML = '<option value="">⚠ Nenhuma loja conectada</option>';
     }
     
+    // injeta o seletor Agora/Agendar (default: Agora)
+    const segBox = document.getElementById('dupSeletorBox');
+    if (segBox) { segBox.innerHTML = htmlSeletorAgendamento('dup', '📅 Quando exportar'); selAgendamento('dup', false); }
+
     document.getElementById('dupConfigOverlay').classList.add('active');
   }
   
@@ -16684,7 +16716,7 @@ REGRAS DURAS:
 
   function dupAddDegrau() {
     const cont = document.getElementById('dupReguaDegraus');
-    if (!cont || cont.children.length >= 5) { if (cont && cont.children.length >= 5) showToast('Máximo de 5 degraus', true); return; }
+    if (!cont) return;
     const div = document.createElement('div');
     div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px';
     div.innerHTML = `
@@ -16714,6 +16746,81 @@ REGRAS DURAS:
     return (regua.imediato != null || (regua.degraus && regua.degraus.length)) ? regua : null;
   }
   window.dupLerRegua = dupLerRegua;
+
+  // ── Régua + seletor da tela Nova Demanda (prefixo 'dem') ─────────
+  function demToggleRegua() {
+    const box = document.getElementById('demReguaBox');
+    const on = document.getElementById('demReguaAtiva').checked;
+    if (box) box.style.display = on ? 'block' : 'none';
+    if (on && document.getElementById('demReguaDegraus').children.length === 0) demAddDegrau();
+  }
+  window.demToggleRegua = demToggleRegua;
+  function demAddDegrau() {
+    const cont = document.getElementById('demReguaDegraus');
+    if (!cont) return;
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px';
+    div.innerHTML = `<span style="font-size:11px;color:#6b7280">daqui</span>
+      <input type="number" class="form-input dem-degrau-dias" min="1" placeholder="dias" style="width:70px;font-size:12px">
+      <span style="font-size:11px;color:#6b7280">dias → R$</span>
+      <input type="number" class="form-input dem-degrau-preco" step="0.01" min="0" placeholder="preço" style="width:90px;font-size:12px">
+      <button type="button" onclick="this.parentElement.remove()" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
+    cont.appendChild(div);
+  }
+  window.demAddDegrau = demAddDegrau;
+  function demLerRegua() {
+    const ativa = document.getElementById('demReguaAtiva');
+    if (!ativa || !ativa.checked) return null;
+    const imediatoVal = parseFloat(document.getElementById('demReguaImediato').value);
+    const degraus = [];
+    document.querySelectorAll('#demReguaDegraus > div').forEach(div => {
+      const dias = parseInt(div.querySelector('.dem-degrau-dias').value);
+      const preco = parseFloat(div.querySelector('.dem-degrau-preco').value);
+      if (dias > 0 && preco > 0) degraus.push({ dias, preco });
+    });
+    const regua = {};
+    if (imediatoVal > 0) regua.imediato = imediatoVal;
+    if (degraus.length > 0) regua.degraus = degraus;
+    return (regua.imediato != null || (regua.degraus && regua.degraus.length)) ? regua : null;
+  }
+  window.demLerRegua = demLerRegua;
+  // injeta o seletor da Nova Demanda quando o container existir
+  function demInitSeletor() {
+    const box = document.getElementById('demSeletorBox');
+    if (box && !box.dataset.init) { box.innerHTML = htmlSeletorAgendamento('dem', '📅 Quando exportar'); selAgendamento('dem', false); box.dataset.init = '1'; }
+  }
+  window.demInitSeletor = demInitSeletor;
+
+  // ── Seletor Agora/Agendar reutilizável ──────────────────────────
+  // Gera o HTML de dois botões + campo de data escondido. `prefixo` deve ser único.
+  function htmlSeletorAgendamento(prefixo, label) {
+    return `
+      <div style="margin-bottom:6px">
+        <label style="font-size:12px;font-weight:700;color:#374151;display:block;margin-bottom:6px">${label || 'Quando exportar'}</label>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button type="button" id="${prefixo}BtnAgora" onclick="selAgendamento('${prefixo}', false)" style="flex:1;padding:8px;border:2px solid #16a34a;background:#16a34a;color:white;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">⚡ Agora</button>
+          <button type="button" id="${prefixo}BtnAgendar" onclick="selAgendamento('${prefixo}', true)" style="flex:1;padding:8px;border:2px solid #d1d5db;background:white;color:#374151;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">📅 Agendar</button>
+        </div>
+        <input type="datetime-local" id="${prefixo}AgendarEm" class="form-input" style="display:none;font-size:13px;width:100%">
+      </div>`;
+  }
+  window.htmlSeletorAgendamento = htmlSeletorAgendamento;
+
+  function selAgendamento(prefixo, agendar) {
+    const btnA = document.getElementById(prefixo + 'BtnAgora');
+    const btnG = document.getElementById(prefixo + 'BtnAgendar');
+    const campo = document.getElementById(prefixo + 'AgendarEm');
+    if (agendar) {
+      btnG.style.background = '#2563eb'; btnG.style.borderColor = '#2563eb'; btnG.style.color = 'white';
+      btnA.style.background = 'white'; btnA.style.borderColor = '#d1d5db'; btnA.style.color = '#374151';
+      if (campo) campo.style.display = 'block';
+    } else {
+      btnA.style.background = '#16a34a'; btnA.style.borderColor = '#16a34a'; btnA.style.color = 'white';
+      btnG.style.background = 'white'; btnG.style.borderColor = '#d1d5db'; btnG.style.color = '#374151';
+      if (campo) { campo.style.display = 'none'; campo.value = ''; }
+    }
+  }
+  window.selAgendamento = selAgendamento;
 
   // Decide: duplicar agora (fluxo normal) ou criar cópias como rascunho + agendar exportação.
   async function iniciarDuplicacaoComAgendamento() {
@@ -26503,7 +26610,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.72-regua-precos';
+  const _DIAG_VERSAO_PAINEL = 'v32k.73-seletor-regua-novademanda';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33300,6 +33407,7 @@ ${JSON.stringify(metricas, null, 2)}`
   
   function abrirNovaDemanda(demandaId) {
     editingDemanda = demandaId || null;
+    if (typeof demInitSeletor === 'function') demInitSeletor();
     
     document.getElementById('demandaCliente').value = '';
     document.getElementById('demandaProduto').value = '';
@@ -33969,7 +34077,7 @@ ${JSON.stringify(metricas, null, 2)}`
     d.imagens = urlsFotos.map(url => ({ url }));
     d.guiaTamanhos = guiaParaUsar;
     // Agendamento de exportação (opcional): se preenchido, acaoExportar vai agendar em vez de exportar agora
-    const _agEl = document.getElementById('demandaAgendarEm');
+    const _agEl = document.getElementById('demAgendarEm');
     if (_agEl && _agEl.value) {
       const _q = new Date(_agEl.value);
       if (!isNaN(_q.getTime()) && _q.getTime() > Date.now()) {
@@ -33977,6 +34085,11 @@ ${JSON.stringify(metricas, null, 2)}`
       } else {
         alert('Data/hora de agendamento inválida ou no passado — vou executar e exportar agora.');
       }
+    }
+    // Régua de preços (opcional) — anexa à demanda; acaoExportar repassa pro backend
+    if (typeof demLerRegua === 'function') {
+      const _regua = demLerRegua();
+      if (_regua) d._regua = _regua;
     }
     saveDemandas();
     
