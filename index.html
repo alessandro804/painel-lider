@@ -8695,18 +8695,21 @@
       // v32h.4 #2: Quando o produto tem APENAS 1 variação/cor, a foto dessa cor
       // NÃO deve duplicar na galeria (fica só na variação). Galeria = gerais apenas.
       // Quando tem múltiplas cores, junta 1ª de cada na galeria (mostra o leque).
+      // GALERIA = SÓ as fotos gerais. As fotos de cor ficam SÓ nas variações,
+      // nunca são jogadas na galeria (isso estourava o limite de fotos do ML/Shopee
+      // e misturava fotos de variação com as gerais).
+      // No ML não há fotos "gerais" — fotosGlobais fica vazio e as fotos vêm das
+      // variações (cores[].fotos), que são montadas separadamente mais adiante.
       const fotosGlobaisOk = fotosGlobais.filter(f => typeof f === 'string' && f.startsWith('http'));
-      const capasDeCores = cores.length > 1
-        ? cores.flatMap(c => c.fotos.slice(0, 1))
-        : [];  // 1 só variação → não polui galeria com a foto dela
       const fotosGaleria = [];
       const seen = new Set();
-      [...fotosGlobaisOk, ...capasDeCores].forEach(u => {
+      fotosGlobaisOk.forEach(u => {
         if (u && !seen.has(u)) { seen.add(u); fotosGaleria.push(u); }
       });
-      // Fallback: se vazio, usa o que tiver
+      // Fallback: se NÃO houver fotos gerais (ex: ML, ou Shopee sem gerais),
+      // usa a 1ª foto da 1ª cor só pra não ficar sem capa nenhuma.
       const fotosCapaProduto = fotosGaleria.length > 0 ? fotosGaleria
-        : (cores.length > 0 && cores[0].fotos.length > 0 ? [...cores[0].fotos] : fotosGlobais);
+        : (cores.length > 0 && cores[0].fotos.length > 0 ? [cores[0].fotos[0]] : fotosGlobais);
       
       d._produtoTemp = {
         id: 'tmp-' + d.id,
@@ -26807,7 +26810,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32m.6-config-do-backend';
+  const _DIAG_VERSAO_PAINEL = 'v32m.7-fix-fotos-galeria-lojadest';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33870,19 +33873,18 @@ ${JSON.stringify(metricas, null, 2)}`
     const marcadas = _demandaContasSel.map(String);
     const todas = lojasErp.filter(l => l.contaConectada);
     const fonte = marcadas.length > 0 ? todas.filter(l => marcadas.includes(String(l.id))) : todas;
-    
+
     sel.innerHTML = fonte.map(l => {
       const mk = (typeof MKT_NOMES !== 'undefined' && MKT_NOMES[l.marketplace]) || l.marketplace || '';
       return '<option value="' + l.id + '">' + escapeHtml(l.nome) + ' — ' + escapeHtml(mk) + '</option>';
     }).join('');
-    
-    // Se só uma conta marcada, já seleciona e esconde (redundante)
-    if (marcadas.length === 1) {
-      sel.value = marcadas[0];
-      if (wrap) wrap.style.display = 'none';
-    } else {
-      if (wrap) wrap.style.display = '';
-    }
+
+    // O campo "Loja destino" é SEMPRE redundante: as contas já são escolhidas em cima
+    // (em "Contas / Lojas"). A exportação cria o anúncio em TODAS as contas marcadas.
+    // Mantemos o select preenchido (1º valor) só pra compatibilidade com o código de
+    // exportação que ainda lê lojaDestinoId, mas SEMPRE escondemos o campo da tela.
+    if (fonte.length > 0) sel.value = String(fonte[0].id);
+    if (wrap) wrap.style.display = 'none';
   }
   
   // Atualiza o seletor de produtos conforme as contas escolhidas
@@ -34209,8 +34211,8 @@ ${JSON.stringify(metricas, null, 2)}`
     // VALIDAÇÃO RIGOROSA dos pré-requisitos (todos OBRIGATÓRIOS)
     const erros = [];
     
-    const lojaDestino = document.getElementById('demandaLojaDestino').value;
-    if (!lojaDestino) erros.push('• Selecione a loja destino');
+    const lojaDestino = document.getElementById('demandaLojaDestino').value || (_demandaContasSel[0] || '');
+    if (!lojaDestino) erros.push('• Selecione pelo menos uma conta/loja em cima');
     
     const cores = (document.getElementById('demandaCoresInput').value || '').trim();
     if (!cores) erros.push('• Informe pelo menos uma cor');
