@@ -17683,7 +17683,7 @@ REGRAS DURAS:
         btn = `<button class="integ-acao-btn" style="padding:4px 9px;background:#3b82f6;color:white;border:none" onclick="atualizarVinculosDeUmMarketplace('${p.id}','${mk.id}')" title="${vincsMkt} anúncio(s) vinculado(s) neste marketplace">🔄 Atualizar (${vincsMkt})</button>`;
       } else {
         // Sem vínculo → exporta novo
-        btn = `<button class="integ-acao-btn" style="padding:4px 9px" onclick="exportarProdutoMarketplace('${p.id}','${mk.id}')">Exportar</button>`;
+        btn = `<button class="integ-acao-btn" style="padding:4px 9px" onclick="exportarComOpcao('${p.id}','${mk.id}')">Exportar</button>`;
       }
       
       return `<div class="prod-mkt-linha">
@@ -19397,6 +19397,23 @@ REGRAS DURAS:
   }
   
   // === Exportar produto para marketplace (estrutura — backend pluga aqui) ===
+  // Pergunta se exporta agora ou agenda; reusa exportarProdutoMarketplace nos dois casos.
+  async function exportarComOpcao(produtoId, marketplace) {
+    const escolha = prompt('Exportar AGORA ou AGENDAR?\n\nDigite "agora" para exportar imediatamente,\nou a data e hora do agendamento no formato:\nAAAA-MM-DD HH:MM\n\n(ex: 2026-06-01 08:00)', 'agora');
+    if (escolha === null) return; // cancelou
+    const txt = escolha.trim().toLowerCase();
+    if (txt === 'agora' || txt === '') {
+      return exportarProdutoMarketplace(produtoId, marketplace);
+    }
+    // tenta interpretar como data/hora
+    const norm = escolha.trim().replace(' ', 'T');
+    const quando = new Date(norm);
+    if (isNaN(quando.getTime())) { alert('Data/hora inválida. Use o formato AAAA-MM-DD HH:MM (ex: 2026-06-01 08:00).'); return; }
+    if (quando.getTime() < Date.now()) { alert('A data/hora precisa ser no futuro.'); return; }
+    return exportarProdutoMarketplace(produtoId, marketplace, { agendarEm: quando.toISOString() });
+  }
+  window.exportarComOpcao = exportarComOpcao;
+
   async function exportarProdutoMarketplace(produtoId, marketplace, opts) {
     opts = opts || {};
     // 1. Sincroniza o cache com o backend antes de exportar — MAS NÃO em modo silencioso
@@ -19485,6 +19502,37 @@ REGRAS DURAS:
     }
     
     const payload = montarPayloadExport(produtoParaExportar, marketplace);
+    
+    // ── AGENDAR EXPORTAÇÃO ──────────────────────────────────────────
+    // Se opts.agendarEm vier preenchido, NÃO exporta agora: salva o payload
+    // (o mesmo que a exportação normal usa) numa tarefa agendada. O handler
+    // duplicar_anuncio só repassa esse payload pro fluxo de exportação na hora.
+    if (opts.agendarEm) {
+      // resolve a loja de destino (mesma lógica da exportação)
+      let lojaIdBancoAg = null;
+      const lojaProdAg = lojasErp.find(l => String(l.id) === String(produtoParaExportar.lojaId));
+      if (lojaProdAg) { try { lojaIdBancoAg = await garantirLojaNoBanco(lojaProdAg); } catch(_){} }
+      if (!lojaIdBancoAg) {
+        const lojaFb = lojasErp.find(l => l.marketplace === (marketplace==='mercado_livre'?'mercadolivre':marketplace) && l.idBanco);
+        if (lojaFb) lojaIdBancoAg = lojaFb.idBanco;
+      }
+      if (!lojaIdBancoAg) { alert('Não consegui resolver a loja de destino pra agendar.'); return { ok:false, erro:'sem loja' }; }
+      try {
+        const r = await (await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+          tipo: 'duplicar_anuncio',
+          descricao: 'Exportar "' + (produtoParaExportar.nome||'').slice(0,40) + '" → ' + marketplace,
+          rodar_em: opts.agendarEm,
+          params: { lojaId: lojaIdBancoAg, produtoId: produtoParaExportar.idBanco, payload }
+        }) })).json();
+        if (r.ok) {
+          alert('✅ Exportação agendada para ' + new Date(opts.agendarEm).toLocaleString('pt-BR') + '.\nVocê pode acompanhar no Calendário.');
+          return { ok: true, agendado: true, tarefa: r.tarefa };
+        }
+        alert('❌ Erro ao agendar: ' + (r.erro||'falha'));
+        return { ok:false, erro: r.erro };
+      } catch (e) { alert('❌ Erro ao agendar: ' + e.message); return { ok:false, erro:e.message }; }
+    }
+    // ─────────────────────────────────────────────────────────────────
     
     const temBackend = !!configIntegracoes.backendUrl;
     if (!temBackend) {
@@ -26268,7 +26316,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.66-fix-peso-salvar';
+  const _DIAG_VERSAO_PAINEL = 'v32k.68-agendar-export';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
