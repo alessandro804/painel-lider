@@ -5070,13 +5070,19 @@
       </label>
     </div>
     
+    <div style="background:#eff6ff;padding:10px;border-radius:8px;margin-bottom:12px">
+      <label style="font-size:11px;font-weight:700;color:#1d4ed8;display:block;margin-bottom:4px">📅 Agendar (opcional)</label>
+      <input type="datetime-local" id="dupAgendarEm" class="form-input" style="font-size:13px">
+      <div style="font-size:10px;color:#6b7280;margin-top:2px">Deixe vazio para duplicar agora. Preencha para agendar a duplicação para uma data/hora.</div>
+    </div>
+    
     <div style="background:#fef3c7;padding:10px;border-radius:8px;margin-bottom:14px;font-size:11px;color:#92400e">
       ⚠ Pode demorar alguns minutos (IA + exportação por cópia). Não feche a aba durante o processo.
     </div>
     
     <div style="display:flex;gap:8px">
       <button type="button" onclick="fecharDupConfig()" style="flex:1;padding:10px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:8px;font-weight:700;cursor:pointer">Cancelar</button>
-      <button type="button" onclick="iniciarDuplicacao()" style="flex:2;padding:10px;background:#7c3aed;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer">📋 Iniciar duplicação</button>
+      <button type="button" onclick="iniciarDuplicacaoComAgendamento()" style="flex:2;padding:10px;background:#7c3aed;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer">📋 Iniciar duplicação</button>
     </div>
   </div>
 </div>
@@ -16598,6 +16604,60 @@ REGRAS DURAS:
       .trim();
   }
   
+  // Decide: duplicar agora (fluxo normal) ou criar cópias como rascunho + agendar exportação.
+  async function iniciarDuplicacaoComAgendamento() {
+    const agEl = document.getElementById('dupAgendarEm');
+    const quandoVal = agEl ? agEl.value : '';
+    if (!quandoVal) { return iniciarDuplicacao(); } // sem data → fluxo normal intacto
+
+    const quando = new Date(quandoVal);
+    if (isNaN(quando.getTime()) || quando.getTime() < Date.now()) { showToast('Data/hora de agendamento inválida ou no passado', true); return; }
+
+    const produtoId = _dupProdutoId;
+    const qtd = parseInt(document.getElementById('dupQuantidade').value) || 0;
+    const lojaDestinoId = document.getElementById('dupLojaDestino').value;
+    if (!lojaDestinoId) { showToast('Selecione uma loja destino', true); return; }
+    const lojaDestino = lojasErp.find(l => String(l.id) === String(lojaDestinoId));
+
+    // 1. cria as cópias AGORA como rascunho (sem exportar) e coleta payloads
+    const coletadas = [];
+    await iniciarDuplicacao({
+      produtoId, qtd, lojaDestinoId,
+      opts: {
+        variarTitulo: document.getElementById('dupVariarTitulo').checked,
+        variarDescricao: document.getElementById('dupVariarDescricao').checked,
+        rotacionarFotos: document.getElementById('dupRotacionarFotos').checked,
+        variarPreco: document.getElementById('dupVariarPreco').checked,
+        exportar: false, marcarRascunho: true,
+        _coletarParaAgendar: coletadas,
+      }
+    });
+    if (coletadas.length === 0) { showToast('Nenhuma cópia foi criada para agendar', true); return; }
+
+    // 2. resolve loja no banco
+    let lojaIdBanco = null;
+    try { lojaIdBanco = await garantirLojaNoBanco(lojaDestino); } catch(_){}
+    if (!lojaIdBanco && lojaDestino && lojaDestino.idBanco) lojaIdBanco = lojaDestino.idBanco;
+    if (!lojaIdBanco) { showToast('Não consegui resolver a loja de destino', true); return; }
+
+    // 3. cria UMA tarefa que exporta todas as cópias na data marcada
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+        tipo: 'duplicar_anuncio',
+        descricao: 'Exportar ' + coletadas.length + ' cópia(s) → ' + (lojaDestino?lojaDestino.nome:lojaIdBanco),
+        rodar_em: quando.toISOString(),
+        params: { lojaId: lojaIdBanco, itens: coletadas }
+      }) })).json();
+      if (r.ok) {
+        showToast(coletadas.length + ' cópia(s) criada(s). Exportação agendada para ' + quando.toLocaleString('pt-BR'));
+        alert('✅ ' + coletadas.length + ' cópia(s) criada(s) como rascunho.\nExportação agendada para ' + quando.toLocaleString('pt-BR') + '.\nAcompanhe no Calendário.');
+      } else {
+        alert('❌ Cópias criadas, mas erro ao agendar: ' + (r.erro||'falha'));
+      }
+    } catch (e) { alert('❌ Erro ao agendar: ' + e.message); }
+  }
+  window.iniciarDuplicacaoComAgendamento = iniciarDuplicacaoComAgendamento;
+
   // v32j.3: aceita parâmetros pra ser chamada programaticamente (do fluxo de demanda).
   // Compatível com chamada antiga sem args (lê o DOM como antes).
   // params: { produtoId, qtd, lojaDestinoId, opts: {variarTitulo, variarDescricao, rotacionarFotos, variarPreco} }
@@ -16629,6 +16689,7 @@ REGRAS DURAS:
       variarPreco: !!params.opts.variarPreco,
       exportar: params.opts.exportar !== false, // default true; massa pode passar false (só rascunho)
       marcarRascunho: !!params.opts.marcarRascunho,
+      _coletarParaAgendar: params.opts._coletarParaAgendar || null,
       lojaDestino,
     } : {
       variarTitulo: document.getElementById('dupVariarTitulo').checked,
@@ -16798,6 +16859,14 @@ REGRAS DURAS:
             if (typeof v31_persistirProduto === 'function') await v31_persistirProduto(novo);
             else saveProdutos();
           } catch(_) {}
+          // Modo agendamento: coleta a cópia (idBanco + payload pronto) pra tarefa agendada
+          if (opts._coletarParaAgendar && novo.idBanco) {
+            try {
+              if (typeof garantirFotosUrlsPublicas === 'function') { try { await garantirFotosUrlsPublicas(novo); } catch(_){} }
+              const payloadCopia = montarPayloadExport(novo, lojaDestino.marketplace);
+              opts._coletarParaAgendar.push({ produtoId: novo.idBanco, payload: payloadCopia });
+            } catch(eP) { dupLogStep('  ⚠ não consegui montar payload da cópia: '+eP.message, 'err'); }
+          }
           dupLogStep(`  ✓ Cópia criada (sem exportar — ${novo.status})`, 'ok');
           okCopias++;
         } else {
@@ -26316,7 +26385,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32k.68-agendar-export';
+  const _DIAG_VERSAO_PAINEL = 'v32k.69-duplicar-agendado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
