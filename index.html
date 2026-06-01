@@ -648,6 +648,12 @@
   .kanban-card-cliente { font-size: 13px; font-weight: 700; color: var(--azul); margin-bottom: 2px; }
   .kanban-card-produto { font-size: 11px; color: var(--cinza-texto); margin-bottom: 8px; }
   .kanban-card-wa-row { margin-top: 6px; }
+  .kanban-card-acoes { margin-top: 6px; display: flex; gap: 6px; }
+  .kanban-btn-reagendar {
+    font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 6px;
+    background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; cursor: pointer;
+  }
+  .kanban-btn-reagendar:hover { background: #dbeafe; }
   .kanban-tag-wa {
     display: inline-block; font-size: 10px; font-weight: 700;
     padding: 3px 8px; border-radius: 6px; cursor: default;
@@ -4674,6 +4680,23 @@
     <div style="font-size:13px;font-weight:700;color:var(--azul);margin-bottom:8px" id="setorDemandasTitulo">Demandas deste setor:</div>
     <div class="setor-modal-demandas" id="setorDemandasList"></div>
     <button class="primary-btn" style="margin-top:14px" onclick="closeSetorModal()">Fechar</button>
+  </div>
+</div>
+
+<!-- ===== MODAL REAGENDAR DEMANDA ===== -->
+<div class="modal-overlay" id="reagendarOverlay" onclick="if(event.target===this)fecharReagendar()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:400px">
+    <button class="modal-close" onclick="fecharReagendar()" aria-label="Fechar">✕</button>
+    <div class="modal-title">📅 Agendar demanda</div>
+    <div class="modal-subtitle">Escolha a data e hora. A demanda vai aparecer nesse dia no kanban (e, se for fluxo de IA, roda nesse horário).</div>
+    <input type="hidden" id="reagendarDemandaId">
+    <div class="form-group" style="margin-top:14px">
+      <input type="datetime-local" id="reagendarData" class="form-input">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="toolbar-btn" style="flex:1" onclick="removerAgendamento()">Remover agendamento</button>
+      <button class="primary-btn" style="flex:1.5" onclick="salvarReagendamento()">✓ Salvar</button>
+    </div>
   </div>
 </div>
 
@@ -26892,7 +26915,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32o.0-salva-agendamento-demanda';
+  const _DIAG_VERSAO_PAINEL = 'v32o.1-reagendar-no-kanban';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33608,6 +33631,69 @@ ${JSON.stringify(metricas, null, 2)}`
     }
   }
   document.addEventListener('paste', _demandaColarImagem);
+  // === Reagendar demanda (data+hora) a partir do card do kanban ===
+  function _fmtDataCurta(iso) {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' +
+             d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    } catch(e) { return 'Agendado'; }
+  }
+  window._fmtDataCurta = _fmtDataCurta;
+
+  function abrirReagendar(demandaId) {
+    const d = demandas.find(x => String(x.id) === String(demandaId));
+    if (!d) return;
+    const overlay = document.getElementById('reagendarOverlay');
+    const inp = document.getElementById('reagendarData');
+    document.getElementById('reagendarDemandaId').value = demandaId;
+    const base = d._agendarExportarEm || d.criadoEm || new Date().toISOString();
+    const dt = new Date(base);
+    const off = dt.getTimezoneOffset() * 60000;
+    inp.value = new Date(dt - off).toISOString().slice(0, 16);
+    overlay.classList.add('active');
+  }
+  window.abrirReagendar = abrirReagendar;
+
+  function salvarReagendamento() {
+    const demandaId = document.getElementById('reagendarDemandaId').value;
+    const v = document.getElementById('reagendarData').value;
+    const d = demandas.find(x => String(x.id) === String(demandaId));
+    if (!d || !v) return;
+    const dt = new Date(v);
+    if (isNaN(dt.getTime())) { showToast('Data inválida', true); return; }
+    d._agendarExportarEm = dt.toISOString();
+    saveDemandas();
+    fecharReagendar();
+    showToast('📅 Demanda reagendada para ' + _fmtDataCurta(d._agendarExportarEm));
+    const inp = document.getElementById('opFilterDia');
+    if (inp) {
+      const off = dt.getTimezoneOffset() * 60000;
+      inp.value = new Date(dt - off).toISOString().slice(0, 10);
+      _kanbanTodosOsDias = false;
+    }
+    renderKanban();
+  }
+  window.salvarReagendamento = salvarReagendamento;
+
+  function removerAgendamento() {
+    const demandaId = document.getElementById('reagendarDemandaId').value;
+    const d = demandas.find(x => String(x.id) === String(demandaId));
+    if (!d) return;
+    d._agendarExportarEm = null;
+    saveDemandas();
+    fecharReagendar();
+    showToast('Agendamento removido (volta pra data de criação)');
+    renderKanban();
+  }
+  window.removerAgendamento = removerAgendamento;
+
+  function fecharReagendar() {
+    const o = document.getElementById('reagendarOverlay');
+    if (o) o.classList.remove('active');
+  }
+  window.fecharReagendar = fecharReagendar;
+
   let _kanbanTodosOsDias = false;
   function _hojeISO() {
     const d = new Date();
@@ -33740,6 +33826,9 @@ ${JSON.stringify(metricas, null, 2)}`
         <div class="kanban-card-footer">
           <span class="kanban-card-mkt ${d.marketplace || 'outro'}">${mktLabel}</span>
           <span class="kanban-card-tempo ${atrasada ? 'atrasado' : ''}">${atrasada ? '⏰ ' : ''}${tempo}</span>
+        </div>
+        <div class="kanban-card-acoes">
+          <button class="kanban-btn-reagendar" title="Agendar / reagendar esta demanda" onclick="event.stopPropagation(); abrirReagendar('${d.id}')">📅 ${d._agendarExportarEm ? _fmtDataCurta(d._agendarExportarEm) : 'Agendar'}</button>
         </div>
         ${tagWhats ? '<div class="kanban-card-wa-row">' + tagWhats + '</div>' : ''}
       `;
