@@ -4768,9 +4768,12 @@
         <button type="button" data-prio="baixa" onclick="setDemandaPrio('baixa')">⚪ Baixa</button>
       </div>
     </div>
-    <!-- v32h.4 #5: campo Descrição/Detalhes removido (irrelevante).
-         textarea mantido oculto pra compatibilidade com código que lê o id. -->
-    <textarea id="demandaDescricao" style="display:none"></textarea>
+    <!-- Campo principal: descrição livre da demanda (texto grande) -->
+    <div class="form-group">
+      <label class="form-label">📝 Descreva a demanda</label>
+      <textarea id="demandaDescricao" class="form-input" rows="5" placeholder="Escreva aqui o que precisa ser feito. Ex: 'Atualizar as fotos do anúncio X da loja Y', 'Criar loja no TikTok para o cliente Z', etc. Pode colar prints com Ctrl+V." style="resize:vertical;line-height:1.5;min-height:110px"></textarea>
+      <div class="settings-help" style="font-size:11px;margin-top:4px">💡 Dica: você pode colar imagens (prints) direto com <b>Ctrl+V</b> em qualquer lugar deste formulário.</div>
+    </div>
     <div class="demanda-checklist-area" id="demandaChecklistArea" style="display:none"></div>
     
     <!-- Upload de imagens da demanda -->
@@ -4902,6 +4905,19 @@
         <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:4px">Degraus futuros</div>
         <div id="demReguaDegraus"></div>
         <button type="button" onclick="demAddDegrau()" style="margin-top:6px;padding:6px 10px;background:#fff;border:1px dashed #16a34a;color:#15803d;border-radius:6px;cursor:pointer;font-size:12px">+ Adicionar degrau</button>
+      </div>
+    </div>
+
+    <!-- Agendamento da demanda -->
+    <div class="form-group" style="background:#f0f9ff;padding:12px;border-radius:10px;border:1px solid #bae6fd">
+      <label class="form-label" style="color:#0369a1">📅 Quando executar</label>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button type="button" id="demAgendaBtnAgora" onclick="demSelAgendamento(false)" style="flex:1;padding:8px;border:2px solid #0ea5e9;background:#0ea5e9;color:#fff;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">⚡ Agora</button>
+        <button type="button" id="demAgendaBtnAgendar" onclick="demSelAgendamento(true)" style="flex:1;padding:8px;border:2px solid #bae6fd;background:#fff;color:#0369a1;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">📅 Agendar</button>
+      </div>
+      <div id="demAgendaDataBox" style="display:none;margin-top:8px">
+        <input type="datetime-local" id="demandaAgendarEm" class="form-input" style="font-size:13px">
+        <div class="settings-help" style="font-size:11px;margin-top:4px">A demanda fica agendada e (se for fluxo de IA) executa automaticamente nesse horário.</div>
       </div>
     </div>
 
@@ -26826,7 +26842,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32m.9-fix-modal-confirm-id';
+  const _DIAG_VERSAO_PAINEL = 'v32n.1-modal-demanda-texto-colar-agenda';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33522,7 +33538,51 @@ ${JSON.stringify(metricas, null, 2)}`
     return d.prioridade;
   }
   
-  // === Filtro de dia do Kanban ===
+  // === Agendamento da demanda (Agora / Agendar data+hora) ===
+  let _demandaAgendar = false;
+  function demSelAgendamento(agendar) {
+    _demandaAgendar = !!agendar;
+    const bAgora = document.getElementById('demAgendaBtnAgora');
+    const bAgendar = document.getElementById('demAgendaBtnAgendar');
+    const box = document.getElementById('demAgendaDataBox');
+    if (agendar) {
+      bAgendar.style.background = '#0ea5e9'; bAgendar.style.color = '#fff'; bAgendar.style.borderColor = '#0ea5e9';
+      bAgora.style.background = '#fff'; bAgora.style.color = '#0369a1'; bAgora.style.borderColor = '#bae6fd';
+      if (box) box.style.display = 'block';
+      // pré-preenche com amanhã 9h se vazio
+      const inp = document.getElementById('demandaAgendarEm');
+      if (inp && !inp.value) {
+        const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0);
+        const off = d.getTimezoneOffset() * 60000;
+        inp.value = new Date(d - off).toISOString().slice(0, 16);
+      }
+    } else {
+      bAgora.style.background = '#0ea5e9'; bAgora.style.color = '#fff'; bAgora.style.borderColor = '#0ea5e9';
+      bAgendar.style.background = '#fff'; bAgendar.style.color = '#0369a1'; bAgendar.style.borderColor = '#bae6fd';
+      if (box) box.style.display = 'none';
+    }
+  }
+  window.demSelAgendamento = demSelAgendamento;
+
+  // === Colar imagem do clipboard (Ctrl+V) em qualquer lugar do modal de demanda ===
+  function _demandaColarImagem(e) {
+    const overlay = document.getElementById('demandaOverlay');
+    if (!overlay || !overlay.classList.contains('active')) return; // só com o modal aberto
+    const items = (e.clipboardData || e.originalEvent?.clipboardData)?.items;
+    if (!items) return;
+    for (const it of items) {
+      if (it.type && it.type.indexOf('image') === 0) {
+        const blob = it.getAsFile();
+        if (blob && typeof adicionarImagensDemanda === 'function') {
+          adicionarImagensDemanda([blob]);
+          showToast('📷 Print colado!');
+        }
+        e.preventDefault();
+        break;
+      }
+    }
+  }
+  document.addEventListener('paste', _demandaColarImagem);
   let _kanbanTodosOsDias = false;
   function _hojeISO() {
     const d = new Date();
@@ -33643,7 +33703,7 @@ ${JSON.stringify(metricas, null, 2)}`
           <span class="kanban-card-tipo">${tipoLabel}</span>
           <span class="kanban-card-prio">${prioIcon}</span>
         </div>
-        <div class="kanban-card-cliente">${d.cliente || 'Sem cliente'}</div>
+        <div class="kanban-card-cliente">${(function(){ try { const r = _resolverClienteDaDemanda(d); return r.clienteNome || d.cliente || 'Sem cliente'; } catch(e) { return d.cliente || 'Sem cliente'; } })()}</div>
         <div class="kanban-card-produto">${d.produto || d.descricao || '—'}</div>
         <div class="kanban-card-footer">
           <span class="kanban-card-mkt ${d.marketplace || 'outro'}">${mktLabel}</span>
@@ -33712,6 +33772,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function abrirNovaDemanda(demandaId) {
     editingDemanda = demandaId || null;
     if (typeof demInitSeletor === 'function') demInitSeletor();
+    if (typeof demSelAgendamento === 'function') demSelAgendamento(false); // default: Agora
     
     document.getElementById('demandaCliente').value = '';
     document.getElementById('demandaProduto').value = '';
@@ -34169,6 +34230,13 @@ ${JSON.stringify(metricas, null, 2)}`
     const descricao = document.getElementById('demandaDescricao').value.trim();
     const avisarCliente = document.getElementById('demandaAvisarCliente').checked;
     const fluxoId = document.getElementById('demandaFluxo').value || null;
+
+    // Agendamento (data+hora). Se "Agendar" estiver ativo e tiver data, guarda em agendarEm.
+    let agendarEm = null;
+    if (_demandaAgendar) {
+      const v = (document.getElementById('demandaAgendarEm') || {}).value || '';
+      if (v) agendarEm = new Date(v).toISOString();
+    }
     
     // Coleta inputs extras se for fluxo de anuncio novo
     const lojaDestinoId = (document.getElementById('demandaLojaDestino') || {}).value || '';
@@ -34185,6 +34253,7 @@ ${JSON.stringify(metricas, null, 2)}`
         d.setor = setor;
         d.contas = contas; d.marketplace = marketplace; d.descricao = descricao;
         d.prioridade = _demandaPrio; d.avisarCliente = avisarCliente;
+        d.agendarEm = agendarEm;
         d.lojaDestinoId = lojaDestinoId;
         d.skuPai = skuPaiDemanda;
         d.coresInput = coresInput;
@@ -34216,6 +34285,7 @@ ${JSON.stringify(metricas, null, 2)}`
         prioridade: _demandaPrio,
         status: 'recebido',
         avisarCliente,
+        agendarEm,
         clienteAvisado: false,
         fluxoId: fluxoId,
         passosConcluidos: [],
