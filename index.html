@@ -4822,6 +4822,22 @@
   </div>
 </div>
 
+<!-- ===== MODAL SINCRONIZAR ESTOQUES ===== -->
+<div class="modal-overlay" id="syncEstoqueOverlay" onclick="if(event.target===this)fecharSincronizarEstoques()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:480px">
+    <button class="modal-close" onclick="fecharSincronizarEstoques()" aria-label="Fechar">✕</button>
+    <div class="modal-title">🔄 Sincronizar estoques</div>
+    <div class="modal-subtitle">Selecione as contas que deseja sincronizar. Isso busca os anúncios atuais e atualiza estoque/preço e vínculos por SKU.</div>
+    <div style="display:flex;gap:8px;margin:12px 0">
+      <button class="toolbar-btn" style="flex:1" onclick="syncEstoqueMarcarTodas(true)">Marcar todas</button>
+      <button class="toolbar-btn" style="flex:1" onclick="syncEstoqueMarcarTodas(false)">Desmarcar</button>
+    </div>
+    <div id="syncEstoqueLista" style="max-height:300px;overflow-y:auto"></div>
+    <div id="syncEstoqueProgresso" style="margin-top:12px;font-size:13px;color:#15803d;white-space:pre-line"></div>
+    <button class="primary-btn" style="width:100%;margin-top:12px;background:#16a34a" onclick="executarSincronizarEstoques()">Sincronizar selecionadas</button>
+  </div>
+</div>
+
 <!-- ===== MODAL REAGENDAR DEMANDA ===== -->
 <div class="modal-overlay" id="reagendarOverlay" onclick="if(event.target===this)fecharReagendar()">
   <div class="modal" onclick="event.stopPropagation()" style="max-width:400px">
@@ -5956,6 +5972,7 @@
       <select id="estoqueFiltroLoja" class="prod-select" onchange="renderEstoque()">
         <option value="">Todas as lojas</option>
       </select>
+      <button class="primary-btn" style="background:#16a34a;white-space:nowrap" onclick="abrirSincronizarEstoques()">🔄 Sincronizar estoques</button>
     </div>
     
     <!-- Ações em massa -->
@@ -27157,7 +27174,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32q.1-sync-multiplos-anuncios-sku';
+  const _DIAG_VERSAO_PAINEL = 'v32q.2-botao-sincronizar-estoques';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -34566,6 +34583,62 @@ ${JSON.stringify(metricas, null, 2)}`
   // Contas selecionadas na demanda atual
   let _demandaContasSel = [];
   
+  // === Sincronizar estoques das contas selecionadas ===
+  function abrirSincronizarEstoques() {
+    const lista = document.getElementById('syncEstoqueLista');
+    // contas conectadas (1 por loja conectada)
+    const contas = lojasErp.filter(l => l.contaConectada || l.conectada);
+    const fonte = contas.length ? contas : lojasErp;
+    if (!fonte.length) {
+      showToast('Nenhuma loja conectada pra sincronizar', true);
+      return;
+    }
+    lista.innerHTML = fonte.map(l => {
+      const mk = (MK_INFO[l.marketplace] && MK_INFO[l.marketplace].nome) || l.marketplace || '?';
+      return `<label style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;cursor:pointer">
+        <input type="checkbox" class="sync-estoque-check" value="${l.idBanco || l.id}" data-mk="${l.marketplace}" checked style="width:18px;height:18px">
+        <div><div style="font-weight:700">${escapeHtml(l.nome)}</div><div style="font-size:12px;color:#6b7280">${mk}</div></div>
+      </label>`;
+    }).join('');
+    document.getElementById('syncEstoqueProgresso').textContent = '';
+    document.getElementById('syncEstoqueOverlay').classList.add('active');
+  }
+  window.abrirSincronizarEstoques = abrirSincronizarEstoques;
+
+  function fecharSincronizarEstoques() {
+    document.getElementById('syncEstoqueOverlay').classList.remove('active');
+  }
+  window.fecharSincronizarEstoques = fecharSincronizarEstoques;
+
+  function syncEstoqueMarcarTodas(marcar) {
+    document.querySelectorAll('.sync-estoque-check').forEach(c => c.checked = marcar);
+  }
+  window.syncEstoqueMarcarTodas = syncEstoqueMarcarTodas;
+
+  async function executarSincronizarEstoques() {
+    const checks = [...document.querySelectorAll('.sync-estoque-check:checked')];
+    if (!checks.length) { showToast('Selecione ao menos uma conta', true); return; }
+    const prog = document.getElementById('syncEstoqueProgresso');
+    let feitas = 0;
+    for (const c of checks) {
+      const mk = c.dataset.mk;
+      const loja = lojasErp.find(l => String(l.idBanco) === String(c.value)) || lojasErp.find(l => String(l.id) === String(c.value));
+      const nome = loja ? loja.nome : c.value;
+      prog.textContent += `\n⏳ Sincronizando ${nome}...`;
+      try {
+        await sincronizarConta(mk);
+        feitas++;
+        prog.textContent += ` ✓`;
+      } catch (e) {
+        prog.textContent += ` ✗ (${e.message})`;
+      }
+    }
+    prog.textContent += `\n\n✅ Concluído: ${feitas}/${checks.length} conta(s) sincronizada(s).`;
+    showToast(`✓ ${feitas} conta(s) sincronizada(s)`);
+    if (typeof renderEstoque === 'function') renderEstoque();
+  }
+  window.executarSincronizarEstoques = executarSincronizarEstoques;
+
   function abrirNovaDemanda(demandaId) {
     editingDemanda = demandaId || null;
     if (typeof demInitSeletor === 'function') demInitSeletor();
