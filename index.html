@@ -2017,6 +2017,12 @@
     font-size: 11px; font-weight: 700; color: var(--cinza-texto);
     background: var(--cinza-claro); padding: 3px 10px; border-radius: 12px;
   }
+  .estoque-replicar-btn {
+    font-size: 11px; font-weight: 700; padding: 5px 9px; border-radius: 6px;
+    background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; cursor: pointer;
+    white-space: nowrap; margin-left: 6px;
+  }
+  .estoque-replicar-btn:hover { background: #dbeafe; }
   .estoque-var-linha {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 0; border-top: 1px solid var(--cinza-borda);
@@ -24181,6 +24187,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           const checked = _estoqueSelecionados.includes(selId) ? 'checked' : '';
           const estoque = parseInt(v.estoque) || 0;
           const baixo = estoque <= 3 ? 'estoque-baixo' : '';
+          const nVinc = (v.sku) ? _anunciosPorSku(v.sku).length : 0;
+          const btnReplicar = nVinc > 0
+            ? `<button class="estoque-replicar-btn" title="Replicar estoque ${estoque} para ${nVinc} anúncio(s) vinculado(s) com o mesmo SKU" onclick="replicarEstoquePorSku('${p.id}','${v.id}')">🔄 ${nVinc}</button>`
+            : `<span style="font-size:10px;color:#cbd5e1" title="Nenhum anúncio vinculado a este SKU">—</span>`;
           return `<div class="estoque-var-linha">
             <input type="checkbox" class="estoque-check" ${checked} onchange="toggleEstoqueSel('${selId}')">
             <div class="estoque-var-nome">
@@ -24189,6 +24199,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             </div>
             <input type="number" class="estoque-var-input ${baixo}" value="${estoque}"
                    onchange="atualizarEstoqueVar('${p.id}','${v.id}',this.value)">
+            ${btnReplicar}
           </div>`;
         }).join('');
       }
@@ -24276,6 +24287,79 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     saveProdutos();
     renderEstoque();
   }
+
+  // Encontra TODOS os anúncios vinculados que compartilham um mesmo SKU,
+  // em todos os produtos e todas as lojas. Retorna [{lojaId, anuncioId, loja, marketplace}].
+  function _anunciosPorSku(sku) {
+    const skuAlvo = String(sku || '').trim().toUpperCase();
+    if (!skuAlvo) return [];
+    const achados = [];
+    const vistos = new Set();
+    produtosErp.forEach(p => {
+      if (p.status === 'excluido') return;
+      (p.variacoes || []).forEach(v => {
+        if (String(v.sku || '').trim().toUpperCase() !== skuAlvo) return;
+        (v.vinculos || []).forEach(vinc => {
+          if (!vinc.anuncioId) return;
+          const lojaIdBanco = vinc.lojaIdBanco || vinc.lojaId;
+          const chave = String(vinc.anuncioId) + '|' + lojaIdBanco;
+          if (vistos.has(chave)) return;
+          vistos.add(chave);
+          const loja = lojasErp.find(l => String(l.idBanco) === String(vinc.lojaIdBanco))
+                    || lojasErp.find(l => String(l.id) === String(vinc.lojaId));
+          achados.push({
+            lojaId: lojaIdBanco,
+            anuncioId: vinc.anuncioId,
+            loja: loja ? loja.nome : '(loja ?)',
+            marketplace: vinc.marketplace || (loja && loja.marketplace) || '?',
+          });
+        });
+      });
+    });
+    return achados;
+  }
+
+  // Replica o estoque de uma variação (pelo SKU) para todos os anúncios vinculados.
+  async function replicarEstoquePorSku(produtoId, variacaoId) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    const v = p && (p.variacoes||[]).find(x => String(x.id) === String(variacaoId));
+    if (!v) { showToast('Variação não encontrada', true); return; }
+    const sku = (v.sku || '').trim();
+    if (!sku) { showToast('Esta variação não tem SKU — não dá pra vincular', true); return; }
+
+    const novoEstoque = Math.max(0, parseInt(v.estoque) || 0);
+    const anuncios = _anunciosPorSku(sku);
+    if (anuncios.length === 0) {
+      showToast('Nenhum anúncio vinculado a esse SKU em nenhuma loja', true);
+      return;
+    }
+
+    // Confirmação com a lista de onde vai replicar
+    const lojasResumo = anuncios.map(a => `• ${a.loja} (${a.marketplace})`).join('\n');
+    if (!confirm(`Replicar estoque ${novoEstoque} do SKU "${sku}" para ${anuncios.length} anúncio(s):\n\n${lojasResumo}\n\nConfirmar?`)) return;
+
+    showToast(`🔄 Replicando estoque em ${anuncios.length} anúncio(s)...`);
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ sku, estoque: novoEstoque, anuncios }),
+      });
+      const data = await resp.json();
+      const d = data.dados || {};
+      if (data.ok) {
+        showToast(`✓ Estoque replicado em ${d.sucesso} anúncio(s)`);
+      } else {
+        const falhas = (d.resultados || []).filter(r => !r.ok);
+        const detalhe = falhas.slice(0,3).map(f => f.erro).join(' | ');
+        showToast(`⚠ ${d.sucesso||0} ok, ${d.falhas||0} falha(s): ${detalhe}`, true);
+        console.warn('[replicar estoque] falhas:', falhas);
+      }
+    } catch(e) {
+      showToast('Erro ao replicar: ' + e.message, true);
+    }
+  }
+  window.replicarEstoquePorSku = replicarEstoquePorSku;
   
   // Ação em massa: zerar ou definir estoque dos selecionados
   function acaoMassaEstoque(acao) {
@@ -27050,7 +27134,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32p.2-fech-modo-itens-logo-nova';
+  const _DIAG_VERSAO_PAINEL = 'v32q.0-estoque-replica-sku';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
