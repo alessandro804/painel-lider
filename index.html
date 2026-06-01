@@ -26892,7 +26892,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32n.8-ia-usa-descricao';
+  const _DIAG_VERSAO_PAINEL = 'v32n.9-kanban-dia-agendado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33675,11 +33675,12 @@ ${JSON.stringify(metricas, null, 2)}`
       const inp = document.getElementById('opFilterDia');
       const diaSel = inp && inp.value ? inp.value : _hojeISO();
       demandasFiltradas = demandasFiltradas.filter(d => {
-        // Converte a data de criação pro fuso LOCAL antes de comparar.
-        // (Antes comparava a data crua UTC, então demandas criadas à noite —
-        // quando já é o dia seguinte em UTC — sumiam do filtro de "hoje".)
-        if (!d.criadoEm) return false;
-        const dt = new Date(d.criadoEm);
+        // Usa a data AGENDADA (quando a demanda vai ser executada/trabalhada) se
+        // existir; senão, a data de criação. Converte pro fuso LOCAL antes de comparar.
+        const dataRef = d._agendarExportarEm || d.agendadaPara || d.criadoEm;
+        if (!dataRef) return false;
+        const dt = new Date(dataRef);
+        if (isNaN(dt.getTime())) return false;
         const off = dt.getTimezoneOffset() * 60000;
         const diaLocal = new Date(dt - off).toISOString().slice(0, 10);
         return diaLocal === diaSel;
@@ -34357,7 +34358,21 @@ ${JSON.stringify(metricas, null, 2)}`
       limparRascunhoDemanda();
       closeDemandaModal();
       // Volta o kanban pro dia de hoje, pra a demanda recém-criada/editada aparecer
-      if (typeof kanbanHoje === 'function') { try { kanbanHoje(); } catch(e) {} }
+      // Vai pro dia correto da demanda no kanban (agendado, se houver; senão criação),
+      // pra a demanda recém-salva aparecer no dia certo.
+      try {
+        const dRef = (editingDemanda ? demandas.find(x => x.id === editingDemanda) : demandas[0]);
+        const dataRef = dRef && (dRef._agendarExportarEm || dRef.agendadaPara || dRef.criadoEm);
+        const inp = document.getElementById('opFilterDia');
+        if (inp && dataRef) {
+          const dt = new Date(dataRef);
+          const off = dt.getTimezoneOffset() * 60000;
+          inp.value = new Date(dt - off).toISOString().slice(0, 10);
+          _kanbanTodosOsDias = false;
+          const btnT = document.getElementById('btnTodosDias');
+          if (btnT) { btnT.style.background = '#fff'; btnT.style.borderColor = '#d1d5db'; }
+        } else if (typeof kanbanHoje === 'function') { kanbanHoje(); }
+      } catch(e) {}
       renderOperacao();
       return true;
     } catch(e) {
