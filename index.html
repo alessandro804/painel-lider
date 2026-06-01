@@ -4717,8 +4717,16 @@
     <div class="modal-title" id="demandaModalTitle">+ Nova Demanda</div>
     <div class="modal-subtitle">Cadastre uma demanda na central de operações</div>
 
-    <!-- v32g.6: campo Cliente removido da UI (irrelevante quando a loja já é selecionada).
-         Input mantido oculto pra compatibilidade com código antigo que lê este id. -->
+    <!-- Cliente: por padrão usa o vínculo da loja, mas permite escolher um
+         cliente do painel ou "Avulso" (digitar o nome à mão, pra cliente novo). -->
+    <div class="form-group">
+      <label class="form-label">Cliente <span style="font-weight:400;color:var(--cinza-texto)">(opcional)</span></label>
+      <select class="form-select" id="demandaClienteSelect" onchange="onDemandaClienteSelect()">
+        <option value="">— Pelo vínculo da loja —</option>
+        <option value="__avulso__">✍️ Avulso (digitar nome)</option>
+      </select>
+      <input type="text" class="form-input" id="demandaClienteAvulso" placeholder="Nome do cliente avulso" style="margin-top:6px;display:none" oninput="document.getElementById('demandaCliente').value = this.value">
+    </div>
     <input type="hidden" id="demandaCliente" value="">
     <datalist id="demandaClienteList"></datalist>
     
@@ -25305,6 +25313,33 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   
   // Mostra/esconde o campo de texto livre quando tipo = "outro"
+  // Seletor de cliente da demanda: lista clientes do painel + opção "Avulso"
+  function popularClientesDemanda() {
+    const sel = document.getElementById('demandaClienteSelect');
+    if (!sel) return;
+    const clientes = (typeof listarClientesUnicos === 'function') ? listarClientesUnicos() : [];
+    let html = '<option value="">— Pelo vínculo da loja —</option>';
+    clientes.forEach(c => { html += `<option value="${escapeHtml(c.nome)}">${escapeHtml(c.nome)}</option>`; });
+    html += '<option value="__avulso__">✍️ Avulso (digitar nome)</option>';
+    sel.innerHTML = html;
+  }
+  window.popularClientesDemanda = popularClientesDemanda;
+
+  function onDemandaClienteSelect() {
+    const sel = document.getElementById('demandaClienteSelect');
+    const avulsoInp = document.getElementById('demandaClienteAvulso');
+    const hidden = document.getElementById('demandaCliente');
+    if (!sel) return;
+    if (sel.value === '__avulso__') {
+      if (avulsoInp) { avulsoInp.style.display = 'block'; avulsoInp.focus(); }
+      if (hidden) hidden.value = avulsoInp ? avulsoInp.value : '';
+    } else {
+      if (avulsoInp) { avulsoInp.style.display = 'none'; avulsoInp.value = ''; }
+      if (hidden) hidden.value = sel.value; // '' = pelo vínculo da loja; ou nome do cliente
+    }
+  }
+  window.onDemandaClienteSelect = onDemandaClienteSelect;
+
   function novaCategoriaDemanda() {
     const nome = (prompt('Nome da nova categoria de demanda:') || '').trim();
     if (!nome) return;
@@ -25331,6 +25366,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const ehAnuncioNovo = (tipo === 'anuncio_novo');
     if (blocoExtra) blocoExtra.style.display = ehAnuncioNovo ? 'block' : 'none';
     if (btnExec) btnExec.style.display = ehAnuncioNovo ? 'block' : 'none';
+
+    // O campo Produto/título só aparece na demanda de "Anúncio novo"
+    // (é onde se preenche o nome do produto a anunciar). Nos demais tipos fica oculto.
+    const grpProduto = document.getElementById('demandaProdutoGrupo');
+    if (grpProduto) grpProduto.style.display = ehAnuncioNovo ? 'block' : 'none';
 
     // Tipos com TELA PRÓPRIA (não mostram o campo de descrição livre):
     //  - anuncio_novo  → fluxo de criar anúncio (intocado)
@@ -26852,7 +26892,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32n.5-modal-limpeza';
+  const _DIAG_VERSAO_PAINEL = 'v32n.7-produto-anuncio-cliente-avulso';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33635,8 +33675,14 @@ ${JSON.stringify(metricas, null, 2)}`
       const inp = document.getElementById('opFilterDia');
       const diaSel = inp && inp.value ? inp.value : _hojeISO();
       demandasFiltradas = demandasFiltradas.filter(d => {
-        const dia = (d.criadoEm || '').slice(0, 10);
-        return dia === diaSel;
+        // Converte a data de criação pro fuso LOCAL antes de comparar.
+        // (Antes comparava a data crua UTC, então demandas criadas à noite —
+        // quando já é o dia seguinte em UTC — sumiam do filtro de "hoje".)
+        if (!d.criadoEm) return false;
+        const dt = new Date(d.criadoEm);
+        const off = dt.getTimezoneOffset() * 60000;
+        const diaLocal = new Date(dt - off).toISOString().slice(0, 10);
+        return diaLocal === diaSel;
       });
     }
     
@@ -33757,8 +33803,13 @@ ${JSON.stringify(metricas, null, 2)}`
   function abrirNovaDemanda(demandaId) {
     editingDemanda = demandaId || null;
     if (typeof demInitSeletor === 'function') demInitSeletor();
+    if (typeof popularClientesDemanda === 'function') popularClientesDemanda();
     
     document.getElementById('demandaCliente').value = '';
+    const _cliSel = document.getElementById('demandaClienteSelect');
+    if (_cliSel) _cliSel.value = '';
+    const _cliAv = document.getElementById('demandaClienteAvulso');
+    if (_cliAv) { _cliAv.value = ''; _cliAv.style.display = 'none'; }
     document.getElementById('demandaProduto').value = '';
     document.getElementById('demandaSetor').value = 'marketplaces';
     document.getElementById('demandaTipoOutro').value = '';
