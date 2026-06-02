@@ -2034,6 +2034,8 @@
     font-size: 11px; font-weight: 700; color: var(--cinza-texto);
     background: var(--cinza-claro); padding: 3px 10px; border-radius: 12px;
   }
+  .estoque-casamento { cursor: pointer; font-size: 14px; padding: 0 4px; }
+  .estoque-casamento.alerta { filter: saturate(1.3); }
   .estoque-replicar-btn {
     font-size: 11px; font-weight: 700; padding: 5px 9px; border-radius: 6px;
     background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; cursor: pointer;
@@ -5996,9 +5998,9 @@
     
     <div class="prod-toolbar">
       <div class="prod-busca">
-        <input type="text" id="estoqueBusca" placeholder="🔍 Buscar produto ou SKU..." oninput="renderEstoque()">
+        <input type="text" id="estoqueBusca" placeholder="🔍 Buscar produto ou SKU..." oninput="_estoquePagina=1; renderEstoque()">
       </div>
-      <select id="estoqueFiltroLoja" class="prod-select" onchange="renderEstoque()">
+      <select id="estoqueFiltroLoja" class="prod-select" onchange="_estoquePagina=1; renderEstoque()">
         <option value="">Todas as lojas</option>
       </select>
       <button class="primary-btn" style="background:#16a34a;white-space:nowrap" onclick="abrirSincronizarEstoques()">🔄 Sincronizar estoques</button>
@@ -6018,6 +6020,7 @@
     
     <div class="prod-resumo" id="estoqueResumo"></div>
     <div id="estoqueLista"></div>
+    <div id="estoquePaginacao" style="display:flex;align-items:center;justify-content:center;gap:8px;margin:16px 0"></div>
   </div>
 </div>
 
@@ -11425,7 +11428,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         return;
       }
       if (typeof importarAnunciosAutomatico === 'function') {
-        const stats = importarAnunciosAutomatico(anuncios, loja);
+        const stats = await importarAnunciosAutomatico(anuncios, loja);
         let msg = '✓ ' + anuncios.length + ' anúncio(s) de ' + loja.nome + ' · ';
         msg += stats.vinculadosNovos + ' vinculado(s) · ' + stats.produtosCriados + ' novo(s)';
         if (stats.suspeitos > 0) msg += ' · ⚠ ' + stats.suspeitos + ' suspeito(s)';
@@ -22541,6 +22544,19 @@ São o mesmo produto?`;
   }
   
   async function importarAnunciosAutomatico(anuncios, loja) {
+    // CORREÇÃO RAIZ DO LOOP DE DUPLICAÇÃO (v32q.9):
+    // O match por SKU pai (passo b) busca em produtosErp (memória). Como o painel
+    // mantém só ~50 produtos em memória (paginação leve), a sync NÃO enxergava a
+    // maioria dos produtos já existentes e CRIAVA cópias novas a cada sincronização.
+    // Solução: carregar o catálogo COMPLETO em memória antes de casar, pra que o
+    // match encontre o produto existente e ATUALIZE em vez de duplicar.
+    try {
+      if (typeof carregarTodosProdutos === 'function') {
+        const todos = await carregarTodosProdutos();
+        if (todos && todos.length) produtosErp = todos;
+      }
+    } catch(e) { console.warn('[importarAnunciosAutomatico] falha ao carregar catálogo completo:', e); }
+
     const stats = {
       vinculadosNovos: 0,
       vinculadosAtualizados: 0,
@@ -24178,7 +24194,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       // FASE A: importação automática com dedup por SKU
       const lojaParaImportar = lojasErp.find(l => l.contaConectada && l.marketplace === marketplace) || loja;
       if (lojaParaImportar && typeof importarAnunciosAutomatico === 'function') {
-        const stats = importarAnunciosAutomatico(anuncios, lojaParaImportar);
+        const stats = await importarAnunciosAutomatico(anuncios, lojaParaImportar);
         let msg = '✓ ' + anuncios.length + ' anúncio(s) processado(s) · ';
         msg += stats.vinculadosNovos + ' vinculado(s) · ';
         msg += stats.produtosCriados + ' produto(s) novo(s)';
@@ -24228,6 +24244,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // ============ MÓDULO DE ESTOQUE =============================
   // ============================================================
   let _estoqueSelecionados = []; // ids de "produtoId:variacaoId"
+  let _estoquePagina = 1;
+  const _ESTOQUE_POR_PAGINA = 20;
   
   // Abre a tela de estoque carregando o catálogo COMPLETO do backend,
   // pra que a busca e a listagem enxerguem todos os produtos (não só os ~50
@@ -24359,6 +24377,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.replicarSelecionadas = replicarSelecionadas;
 
+  // Avalia se a NOSSA variação casa bem com a variação correspondente em cada
+  // anúncio vinculado. Compara nosso SKU com o skuExterno guardado em cada vínculo.
+  function _statusCasamentoVar(v) {
+    const vinculos = v.vinculos || [];
+    if (!vinculos.length) return { temVinculo: false, todosOk: true, tooltip: '', detalhe: '' };
+    const nossoSku = normalizarSku(v.sku);
+    let ok = 0, div = 0;
+    const linhas = [];
+    vinculos.forEach(vi => {
+      const ext = vi.skuExterno || '';
+      const casou = ext && normalizarSku(ext) === nossoSku;
+      if (casou) ok++; else div++;
+      linhas.push(`${casou?'✓':'✗'} ${vi.marketplace||'?'} anúncio ${vi.anuncioId}: nosso "${v.sku||'?'}" ${casou?'=':'≠'} anúncio "${ext||'(vazio)'}"`);
+    });
+    const todosOk = div === 0;
+    const tooltip = todosOk
+      ? `Todas as ${ok} variações vinculadas casam certinho`
+      : `${div} de ${vinculos.length} vínculo(s) com SKU divergente — clique para ver`;
+    const detalhe = `Casamento da variação "${(v.nome||v.sku||'').replace(/'/g,'')}":\\n\\n` + linhas.join('\\n').replace(/'/g,'');
+    return { temVinculo: true, todosOk, tooltip, detalhe };
+  }
+
   function _chaveVar(v) {
     const norm = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
     const cor = norm(v.cor), tam = norm(v.tamanho);
@@ -24457,7 +24497,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   window.consolidarProdutoPorSkuPai = consolidarProdutoPorSkuPai;
 
   async function abrirTelaEstoque() {
-    renderEstoque(); // render imediato com o que tem (não trava a tela)
+    _estoquePagina = 1;
+    renderEstoque(); // render imediato com o que tem (não trava — é paginado)
     try {
       const lista = document.getElementById('estoqueLista');
       if (lista) lista.insertAdjacentHTML('afterbegin', '<div id="estoqueLoadingFull" style="padding:8px;color:#16a34a;font-size:13px">📥 Carregando catálogo completo...</div>');
@@ -24511,10 +24552,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     
     if (produtos.length === 0) {
       lista.innerHTML = '<div class="prod-vazio"><div class="prod-vazio-icone">📊</div><div>Nenhum produto para controlar estoque.</div></div>';
+      const pag = document.getElementById('estoquePaginacao');
+      if (pag) pag.innerHTML = '';
       return;
     }
+
+    // PAGINAÇÃO: renderiza só a página atual (evita travar o navegador com
+    // centenas de produtos × dezenas de variações no DOM de uma vez).
+    const totalPaginas = Math.max(1, Math.ceil(produtos.length / _ESTOQUE_POR_PAGINA));
+    if (_estoquePagina > totalPaginas) _estoquePagina = totalPaginas;
+    if (_estoquePagina < 1) _estoquePagina = 1;
+    const ini = (_estoquePagina - 1) * _ESTOQUE_POR_PAGINA;
+    const produtosPagina = produtos.slice(ini, ini + _ESTOQUE_POR_PAGINA);
     
-    lista.innerHTML = produtos.map(p => {
+    lista.innerHTML = produtosPagina.map(p => {
       const variacoes = p.variacoes || [];
       const total = variacoes.reduce((s,v) => s + (parseInt(v.estoque)||0), 0);
       
@@ -24528,6 +24579,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           const estoque = parseInt(v.estoque) || 0;
           const baixo = estoque <= 3 ? 'estoque-baixo' : '';
           const nVinc = (v.sku) ? _anunciosPorSku(v.sku).length : 0;
+          // Indicador de casamento: compara nosso SKU com o skuExterno de cada vínculo
+          const statusCasamento = _statusCasamentoVar(v);
+          const iconeCasamento = statusCasamento.todosOk
+            ? `<span class="estoque-casamento ok" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); alert('${escapeHtml(statusCasamento.detalhe)}')">✅</span>`
+            : (statusCasamento.temVinculo
+              ? `<span class="estoque-casamento alerta" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); alert('${escapeHtml(statusCasamento.detalhe)}')">⚠️</span>`
+              : '');
           const btnReplicar = nVinc > 0
             ? `<button class="estoque-replicar-btn" title="Replicar estoque ${estoque} para ${nVinc} anúncio(s) vinculado(s) com o mesmo SKU" onclick="replicarEstoquePorSku('${p.id}','${v.id}')">🔄 ${nVinc}</button>`
             : `<span style="font-size:10px;color:#cbd5e1" title="Nenhum anúncio vinculado a este SKU">—</span>`;
@@ -24537,6 +24595,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               ${escapeHtml(v.nome||'Variação')}
               <div class="estoque-var-sku">${escapeHtml(v.sku||'sem SKU')}</div>
             </div>
+            ${iconeCasamento}
             <input type="number" class="estoque-var-input ${baixo}" value="${estoque}"
                    onchange="atualizarEstoqueVar('${p.id}','${v.id}',this.value)">
             ${btnReplicar}
@@ -24565,9 +24624,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         ${varHtml}
       </div>`;
     }).join('');
+
+    // Controles de paginação
+    const pag = document.getElementById('estoquePaginacao');
+    if (pag) {
+      if (totalPaginas <= 1) {
+        pag.innerHTML = '';
+      } else {
+        pag.innerHTML = `
+          <button class="toolbar-btn" ${_estoquePagina<=1?'disabled':''} onclick="mudarPaginaEstoque(-1)">‹ Anterior</button>
+          <span style="font-size:13px;font-weight:600;padding:0 12px">Página ${_estoquePagina} de ${totalPaginas}</span>
+          <button class="toolbar-btn" ${_estoquePagina>=totalPaginas?'disabled':''} onclick="mudarPaginaEstoque(1)">Próxima ›</button>`;
+      }
+    }
   }
-  
-  // CHUNK 3.3: stats cards do estoque
+
+  function mudarPaginaEstoque(delta) {
+    _estoquePagina += delta;
+    renderEstoque();
+    const lista = document.getElementById('estoqueLista');
+    if (lista) lista.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  window.mudarPaginaEstoque = mudarPaginaEstoque;
   function renderEstoqueStats() {
     const cont = document.getElementById('estoqueStatsV2');
     if (!cont) return;
@@ -27487,7 +27565,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32q.8-desvincular-replicar-massa';
+  const _DIAG_VERSAO_PAINEL = 'v32q.9-paginacao-fix-loop-comparador';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
