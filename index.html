@@ -24361,18 +24361,33 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function atualizarVinculosDoModal() {
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
     if (!p) return;
-    // Descobre os marketplaces distintos dos anúncios vinculados
-    const mkts = new Set();
-    (p.variacoes||[]).forEach(v => (v.vinculos||[]).forEach(vi => { if (vi.marketplace) mkts.add(vi.marketplace); }));
-    if (!mkts.size) { showToast('Este produto não tem anúncios vinculados', true); return; }
-    if (!confirm('Isso vai re-sincronizar ' + [...mkts].join(', ') + ' pra atualizar os dados das variações. Pode levar alguns segundos. Continuar?')) return;
+    // Descobre as LOJAS específicas (por idBanco) dos anúncios vinculados — não só
+    // o marketplace genérico, senão sincroniza a conta errada e não atualiza estes vínculos.
+    const lojasIds = new Set();
+    (p.variacoes||[]).forEach(v => (v.vinculos||[]).forEach(vi => {
+      const lid = vi.lojaIdBanco || vi.lojaId;
+      if (lid) lojasIds.add(String(lid));
+    }));
+    if (!lojasIds.size) { showToast('Este produto não tem anúncios vinculados', true); return; }
+    const lojasAlvo = [...lojasIds].map(lid =>
+      lojasErp.find(l => String(l.idBanco) === lid) || lojasErp.find(l => String(l.id) === lid)
+    ).filter(Boolean);
+    const nomes = lojasAlvo.map(l => l.nome).join(', ') || (lojasIds.size + ' loja(s)');
+    if (!confirm('Isso vai re-sincronizar: ' + nomes + ' — pra atualizar os dados das variações. Pode levar alguns segundos. Continuar?')) return;
     showToast('🔄 Atualizando vínculos...');
     try {
-      for (const mk of mkts) {
-        if (typeof sincronizarConta === 'function') await sincronizarConta(mk);
+      for (const lid of lojasIds) {
+        const url = BACKEND_URL + '/api/marketplaces/loja/' + lid + '/sincronizar';
+        const resp = await fetch(url, { method: 'POST', headers: { 'x-api-token': getApiToken() } });
+        const data = await resp.json();
+        if (data.ok && Array.isArray(data.produtos)) {
+          const loja = lojasErp.find(l => String(l.idBanco) === String(lid)) || lojasErp.find(l => String(l.id) === String(lid));
+          if (loja && typeof importarAnunciosAutomatico === 'function') {
+            await importarAnunciosAutomatico(data.produtos, loja);
+          }
+        }
       }
       showToast('✓ Vínculos atualizados');
-      // Recarrega o produto atualizado e reabre o modal
       const atualizado = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
       if (atualizado) abrirGerenciarVinculos(atualizado.id);
     } catch(e) {
@@ -27678,7 +27693,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32r.6-sync-repreenche-skuexterno';
+  const _DIAG_VERSAO_PAINEL = 'v32r.7-atualizar-vinculos-loja-certa';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
