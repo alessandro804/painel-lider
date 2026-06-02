@@ -24665,6 +24665,57 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.abrirTelaEstoque = abrirTelaEstoque;
 
+  // Monta as variações de um produto SÓ quando o usuário expande (lazy).
+  // Deixa o render inicial do estoque rápido e a tela curta.
+  function _montarVarHtmlEstoque(p) {
+    const variacoes = p.variacoes || [];
+    if (variacoes.length === 0) {
+      return '<div style="font-size:11px;color:var(--cinza-texto);padding:6px 0">Produto sem variações cadastradas.</div>';
+    }
+    return variacoes.map(v => {
+      const selId = p.id + ':' + v.id;
+      const checked = _estoqueSelecionados.includes(selId) ? 'checked' : '';
+      const estoque = parseInt(v.estoque) || 0;
+      const baixo = estoque <= 3 ? 'estoque-baixo' : '';
+      const nVinc = (v.sku) ? _anunciosPorSku(v.sku).length : 0;
+      const statusCasamento = _statusCasamentoVar(v);
+      const iconeCasamento = statusCasamento.todosOk
+        ? `<span class="estoque-casamento ok" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); alert('${escapeHtml(statusCasamento.detalhe)}')">✅</span>`
+        : (statusCasamento.temVinculo
+          ? `<span class="estoque-casamento alerta" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); alert('${escapeHtml(statusCasamento.detalhe)}')">⚠️</span>`
+          : '');
+      const btnReplicar = nVinc > 0
+        ? `<button class="estoque-replicar-btn" title="Replicar estoque ${estoque} para ${nVinc} anúncio(s) vinculado(s)" onclick="replicarEstoquePorSku('${p.id}','${v.id}')">🔄 ${nVinc}</button>`
+        : `<span style="font-size:10px;color:#cbd5e1" title="Nenhum anúncio vinculado a este SKU">—</span>`;
+      return `<div class="estoque-var-linha">
+        <input type="checkbox" class="estoque-check" ${checked} onchange="toggleEstoqueSel('${selId}')">
+        <div class="estoque-var-nome">${escapeHtml(v.nome||'Variação')}<div class="estoque-var-sku">${escapeHtml(v.sku||'sem SKU')}</div></div>
+        ${iconeCasamento}
+        <input type="number" class="estoque-var-input ${baixo}" value="${estoque}" onchange="atualizarEstoqueVar('${p.id}','${v.id}',this.value)">
+        ${btnReplicar}
+      </div>`;
+    }).join('');
+  }
+
+  function toggleVariacoesEstoque(produtoId) {
+    const box = document.getElementById('vars-' + produtoId);
+    const seta = document.getElementById('seta-' + produtoId);
+    if (!box) return;
+    if (box.style.display === 'none') {
+      // Expande: monta as variações se ainda não montou
+      if (!box.dataset.montado) {
+        const p = produtosErp.find(x => String(x.id) === String(produtoId));
+        if (p) { box.innerHTML = _montarVarHtmlEstoque(p); box.dataset.montado = '1'; }
+      }
+      box.style.display = 'block';
+      if (seta) seta.style.transform = 'rotate(90deg)';
+    } else {
+      box.style.display = 'none';
+      if (seta) seta.style.transform = '';
+    }
+  }
+  window.toggleVariacoesEstoque = toggleVariacoesEstoque;
+
   function renderEstoque() {
     const selLoja = document.getElementById('estoqueFiltroLoja');
     if (selLoja) {
@@ -24730,60 +24781,29 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     lista.innerHTML = produtosPagina.map(p => {
       const variacoes = p.variacoes || [];
       const total = variacoes.reduce((s,v) => s + (parseInt(v.estoque)||0), 0);
-      
-      let varHtml;
-      if (variacoes.length === 0) {
-        varHtml = '<div style="font-size:11px;color:var(--cinza-texto);padding:6px 0">Produto sem variações cadastradas.</div>';
-      } else {
-        varHtml = variacoes.map(v => {
-          const selId = p.id + ':' + v.id;
-          const checked = _estoqueSelecionados.includes(selId) ? 'checked' : '';
-          const estoque = parseInt(v.estoque) || 0;
-          const baixo = estoque <= 3 ? 'estoque-baixo' : '';
-          const nVinc = (v.sku) ? _anunciosPorSku(v.sku).length : 0;
-          // Indicador de casamento: compara nosso SKU com o skuExterno de cada vínculo
-          const statusCasamento = _statusCasamentoVar(v);
-          const iconeCasamento = statusCasamento.todosOk
-            ? `<span class="estoque-casamento ok" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); alert('${escapeHtml(statusCasamento.detalhe)}')">✅</span>`
-            : (statusCasamento.temVinculo
-              ? `<span class="estoque-casamento alerta" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); alert('${escapeHtml(statusCasamento.detalhe)}')">⚠️</span>`
-              : '');
-          const btnReplicar = nVinc > 0
-            ? `<button class="estoque-replicar-btn" title="Replicar estoque ${estoque} para ${nVinc} anúncio(s) vinculado(s) com o mesmo SKU" onclick="replicarEstoquePorSku('${p.id}','${v.id}')">🔄 ${nVinc}</button>`
-            : `<span style="font-size:10px;color:#cbd5e1" title="Nenhum anúncio vinculado a este SKU">—</span>`;
-          return `<div class="estoque-var-linha">
-            <input type="checkbox" class="estoque-check" ${checked} onchange="toggleEstoqueSel('${selId}')">
-            <div class="estoque-var-nome">
-              ${escapeHtml(v.nome||'Variação')}
-              <div class="estoque-var-sku">${escapeHtml(v.sku||'sem SKU')}</div>
-            </div>
-            ${iconeCasamento}
-            <input type="number" class="estoque-var-input ${baixo}" value="${estoque}"
-                   onchange="atualizarEstoqueVar('${p.id}','${v.id}',this.value)">
-            ${btnReplicar}
-          </div>`;
-        }).join('');
-      }
-      
+
       // Conta anúncios distintos vinculados ao produto inteiro
       const anunciosProd = new Set();
       variacoes.forEach(v => (v.vinculos||[]).forEach(vi => { if (vi.anuncioId) anunciosProd.add(String(vi.anuncioId)); }));
       const nAnunciosProd = anunciosProd.size;
       const vincBadge = nAnunciosProd > 0
-        ? `<span class="estoque-prod-vinc clicavel" title="Ver e gerenciar os ${nAnunciosProd} anúncios vinculados" onclick="abrirGerenciarVinculos('${p.id}')">📌 ${nAnunciosProd} anúncio(s) vinculado(s)</span>`
+        ? `<span class="estoque-prod-vinc clicavel" title="Ver e gerenciar os ${nAnunciosProd} anúncios vinculados" onclick="event.stopPropagation(); abrirGerenciarVinculos('${p.id}')">📌 ${nAnunciosProd} anúncio(s) vinculado(s)</span>`
         : `<span class="estoque-prod-vinc semvinc" title="Nenhum anúncio vinculado">sem vínculos</span>`;
 
-      return `<div class="estoque-prod">
-        <div class="estoque-prod-head">
-          <div class="estoque-prod-nome">${escapeHtml(p.nome)}</div>
-          <div class="estoque-prod-total">${total} un.</div>
+      // Variações NÃO são renderizadas de início (lazy) — só ao expandir.
+      // Isso deixa o render inicial rápido e a tela curta.
+      return `<div class="estoque-prod" data-prodid="${p.id}">
+        <div class="estoque-prod-head" style="cursor:pointer" onclick="toggleVariacoesEstoque('${p.id}')">
+          <span class="estoque-prod-seta" id="seta-${p.id}" style="transition:transform .15s;display:inline-block;margin-right:8px">▶</span>
+          <div class="estoque-prod-nome" style="flex:1">${escapeHtml(p.nome)}</div>
+          <div class="estoque-prod-total">${total} un. · ${variacoes.length} var.</div>
         </div>
         <div class="estoque-prod-subhead">
           <span class="estoque-prod-sku">SKU: ${escapeHtml(p.skuPai||'—')}</span>
           ${vincBadge}
-          <button class="estoque-consolidar-btn" title="Junta produtos duplicados do mesmo SKU e consolida as variações por cor+tamanho" onclick="consolidarProdutoPorSkuPai('${escapeHtml(p.skuPai||'')}')">🔧 Consolidar</button>
+          <button class="estoque-consolidar-btn" title="Junta produtos duplicados do mesmo SKU e consolida as variações por cor+tamanho" onclick="event.stopPropagation(); consolidarProdutoPorSkuPai('${escapeHtml(p.skuPai||'')}')">🔧 Consolidar</button>
         </div>
-        ${varHtml}
+        <div class="estoque-prod-vars" id="vars-${p.id}" style="display:none"></div>
       </div>`;
     }).join('');
 
@@ -27727,7 +27747,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32r.8-modal-fullscreen-atualizar-cirurgico';
+  const _DIAG_VERSAO_PAINEL = 'v32r.9-estoque-variacoes-colapsaveis';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
