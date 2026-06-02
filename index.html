@@ -2017,6 +2017,8 @@
     font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px;
     background: #dbeafe; color: #1d4ed8;
   }
+  .estoque-prod-vinc.clicavel { cursor: pointer; }
+  .estoque-prod-vinc.clicavel:hover { background: #bfdbfe; }
   .estoque-prod-vinc.semvinc { background: #f3f4f6; color: #9ca3af; }
   .estoque-consolidar-btn {
     font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 6px;
@@ -4837,6 +4839,18 @@
   </div>
 </div>
 
+<!-- ===== MODAL GERENCIAR VÍNCULOS DO PRODUTO ===== -->
+<div class="modal-overlay" id="gerVincOverlay" onclick="if(event.target===this)fecharGerenciarVinculos()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:520px">
+    <button class="modal-close" onclick="fecharGerenciarVinculos()" aria-label="Fechar">✕</button>
+    <div class="modal-title">📌 Anúncios vinculados</div>
+    <div class="modal-subtitle" id="gerVincTitulo"></div>
+    <div style="font-size:12px;color:#6b7280;margin:8px 0">Estes são os anúncios ligados a este produto. Se algum entrou por engano (ex: um kit que se misturou), desvincule-o.</div>
+    <div id="gerVincLista" style="max-height:360px;overflow-y:auto;margin-top:8px"></div>
+    <button class="primary-btn" style="width:100%;margin-top:12px" onclick="fecharGerenciarVinculos()">Fechar</button>
+  </div>
+</div>
+
 <!-- ===== MODAL SINCRONIZAR ESTOQUES ===== -->
 <div class="modal-overlay" id="syncEstoqueOverlay" onclick="if(event.target===this)fecharSincronizarEstoques()">
   <div class="modal" onclick="event.stopPropagation()" style="max-width:480px">
@@ -5997,6 +6011,7 @@
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="toolbar-btn" onclick="acaoMassaEstoque('zerar')">Zerar estoque</button>
         <button class="toolbar-btn" onclick="acaoMassaEstoque('definir')">Definir valor...</button>
+        <button class="toolbar-btn" style="background:#dbeafe;color:#1d4ed8;border-color:#bfdbfe" onclick="replicarSelecionadas()">🔄 Replicar selecionadas nos anúncios</button>
         <button class="toolbar-btn" onclick="limparSelecaoEstoque()">Limpar seleção</button>
       </div>
     </div>
@@ -24217,6 +24232,133 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // Abre a tela de estoque carregando o catálogo COMPLETO do backend,
   // pra que a busca e a listagem enxerguem todos os produtos (não só os ~50
   // que ficam em memória pela paginação leve). Estoque é tela de gestão total.
+  // === Gerenciar anúncios vinculados de um produto (ver / desvincular) ===
+  function _anunciosDoProduto(produto) {
+    // Agrupa os vínculos por anuncioId, com info de loja/marketplace/título
+    const mapa = new Map();
+    (produto.variacoes||[]).forEach(v => {
+      (v.vinculos||[]).forEach(vi => {
+        const aid = String(vi.anuncioId);
+        if (!mapa.has(aid)) {
+          const loja = lojasErp.find(l => String(l.idBanco) === String(vi.lojaIdBanco||vi.lojaId)) ||
+                       lojasErp.find(l => String(l.id) === String(vi.lojaId));
+          mapa.set(aid, {
+            anuncioId: aid, marketplace: vi.marketplace || (loja&&loja.marketplace) || '?',
+            loja: loja ? loja.nome : '(loja ?)', titulo: vi.titulo || '', qtdVars: 0,
+          });
+        }
+        mapa.get(aid).qtdVars++;
+      });
+    });
+    return [...mapa.values()];
+  }
+
+  let _produtoGerenciarVinculos = null;
+  function abrirGerenciarVinculos(produtoId) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!p) return;
+    _produtoGerenciarVinculos = produtoId;
+    const anuncios = _anunciosDoProduto(p);
+    const lista = document.getElementById('gerVincLista');
+    if (!anuncios.length) {
+      lista.innerHTML = '<div style="color:#9ca3af;padding:12px">Nenhum anúncio vinculado.</div>';
+    } else {
+      lista.innerHTML = anuncios.map(a => {
+        const mk = (MK_INFO[a.marketplace] && MK_INFO[a.marketplace].nome) || a.marketplace;
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px">
+          <div style="min-width:0;flex:1">
+            <div style="font-weight:700;font-size:13px">${escapeHtml(a.loja)} · ${mk}</div>
+            <div style="font-size:11px;color:#6b7280">Anúncio ${escapeHtml(a.anuncioId)} · ${a.qtdVars} variação(ões)${a.titulo ? ' · ' + escapeHtml(a.titulo.slice(0,40)) : ''}</div>
+          </div>
+          <button class="delete-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap" onclick="desvincularAnuncio('${escapeHtml(a.anuncioId)}')">✕ Desvincular</button>
+        </div>`;
+      }).join('');
+    }
+    document.getElementById('gerVincTitulo').textContent = (p.nome||'').slice(0,50);
+    document.getElementById('gerVincOverlay').classList.add('active');
+  }
+  window.abrirGerenciarVinculos = abrirGerenciarVinculos;
+
+  function fecharGerenciarVinculos() {
+    document.getElementById('gerVincOverlay').classList.remove('active');
+  }
+  window.fecharGerenciarVinculos = fecharGerenciarVinculos;
+
+  async function desvincularAnuncio(anuncioId) {
+    const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
+    if (!p) return;
+    if (!confirm('Desvincular o anúncio ' + anuncioId + ' deste produto?\n\nIsso remove os vínculos desse anúncio em todas as variações (o anúncio continua existindo no marketplace, só deixa de estar ligado a este produto).')) return;
+    let removidos = 0;
+    (p.variacoes||[]).forEach(v => {
+      if (v.vinculos) {
+        const antes = v.vinculos.length;
+        v.vinculos = v.vinculos.filter(vi => String(vi.anuncioId) !== String(anuncioId));
+        removidos += antes - v.vinculos.length;
+      }
+    });
+    p.atualizadoEm = new Date().toISOString();
+    try {
+      await fetch(BACKEND_URL + '/api/produtos/' + p.id, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify(p),
+      });
+      showToast('✓ Anúncio desvinculado (' + removidos + ' vínculo(s) removido(s))');
+      abrirGerenciarVinculos(p.id); // re-renderiza a lista
+      if (typeof renderEstoque === 'function') renderEstoque();
+    } catch(e) {
+      showToast('Erro ao salvar: ' + e.message, true);
+    }
+  }
+  window.desvincularAnuncio = desvincularAnuncio;
+
+  // Replica o estoque das variações SELECIONADAS para os anúncios vinculados.
+  // Agrupa por SKU, monta uma lista de (sku, estoque, anuncios) e dispara em lote.
+  async function replicarSelecionadas() {
+    if (!_estoqueSelecionados.length) { showToast('Selecione variações primeiro', true); return; }
+    // Monta as tarefas: pra cada variação selecionada, acha SKU, estoque e anúncios
+    const tarefas = [];
+    _estoqueSelecionados.forEach(selId => {
+      const [pid, vid] = selId.split(':');
+      const p = produtosErp.find(x => String(x.id) === String(pid));
+      const v = p && (p.variacoes||[]).find(x => String(x.id) === String(vid));
+      if (!v || !v.sku) return;
+      const anuncios = _anunciosPorSku(v.sku);
+      if (anuncios.length) {
+        tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios });
+      }
+    });
+    if (!tarefas.length) { showToast('Nenhuma das selecionadas tem SKU com anúncios vinculados', true); return; }
+
+    const totalAnuncios = tarefas.reduce((s,t)=>s+t.anuncios.length,0);
+    if (!confirm(`Replicar o estoque de ${tarefas.length} variação(ões) selecionada(s) para ${totalAnuncios} anúncio(s) vinculado(s)?`)) return;
+
+    showToast(`🔄 Replicando ${tarefas.length} variação(ões)...`);
+    let okTotal = 0, falhaTotal = 0;
+    const erros = [];
+    for (const t of tarefas) {
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify(t),
+        });
+        const data = await resp.json();
+        const d = data.dados || {};
+        okTotal += d.sucesso || 0;
+        falhaTotal += d.falhas || 0;
+        (d.resultados||[]).filter(r=>!r.ok).forEach(r => erros.push(`${t.sku}: ${r.erro}`));
+      } catch(e) {
+        falhaTotal++; erros.push(`${t.sku}: ${e.message}`);
+      }
+    }
+    if (falhaTotal === 0) {
+      showToast(`✓ ${okTotal} atualização(ões) concluída(s) com sucesso`);
+    } else {
+      showToast(`⚠ ${okTotal} ok, ${falhaTotal} falha(s). Ver console pra detalhes.`, true);
+      console.warn('[replicar selecionadas] falhas:', erros);
+    }
+  }
+  window.replicarSelecionadas = replicarSelecionadas;
+
   function _chaveVar(v) {
     const norm = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
     const cor = norm(v.cor), tam = norm(v.tamanho);
@@ -24407,7 +24549,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       variacoes.forEach(v => (v.vinculos||[]).forEach(vi => { if (vi.anuncioId) anunciosProd.add(String(vi.anuncioId)); }));
       const nAnunciosProd = anunciosProd.size;
       const vincBadge = nAnunciosProd > 0
-        ? `<span class="estoque-prod-vinc" title="Este produto está em ${nAnunciosProd} anúncio(s). Ao editar uma variação e replicar, o estoque vai pra todos eles.">📌 ${nAnunciosProd} anúncio(s) vinculado(s)</span>`
+        ? `<span class="estoque-prod-vinc clicavel" title="Ver e gerenciar os ${nAnunciosProd} anúncios vinculados" onclick="abrirGerenciarVinculos('${p.id}')">📌 ${nAnunciosProd} anúncio(s) vinculado(s)</span>`
         : `<span class="estoque-prod-vinc semvinc" title="Nenhum anúncio vinculado">sem vínculos</span>`;
 
       return `<div class="estoque-prod">
@@ -27345,7 +27487,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32q.7-consolidar-profundo';
+  const _DIAG_VERSAO_PAINEL = 'v32q.8-desvincular-replicar-massa';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
