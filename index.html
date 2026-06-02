@@ -4849,7 +4849,10 @@
     <div class="modal-subtitle" id="gerVincTitulo"></div>
     <div style="font-size:12px;color:#6b7280;margin:8px 0">Estes são os anúncios ligados a este produto. Se algum entrou por engano (ex: um kit que se misturou), desvincule-o — pode tirar o anúncio inteiro ou só uma variação.</div>
     <div id="gerVincLista" style="max-height:55vh;overflow-y:auto;margin-top:8px"></div>
-    <button class="primary-btn" style="width:100%;margin-top:12px" onclick="fecharGerenciarVinculos()">Fechar</button>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="toolbar-btn" style="flex:1;background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe" onclick="atualizarVinculosDoModal()" title="Re-sincroniza as lojas deste produto pra atualizar os dados das variações (nosso → anúncio)">🔄 Atualizar vínculos</button>
+      <button class="primary-btn" style="flex:1" onclick="fecharGerenciarVinculos()">Fechar</button>
+    </div>
   </div>
 </div>
 
@@ -18491,9 +18494,8 @@ REGRAS DURAS:
     });
     
     if (grupos.size === 0) {
-      return `<div style="margin-top:12px;padding:12px;border:1px dashed #d1d5db;border-radius:8px;text-align:center;color:#6b7280;font-size:12px">
-        Nenhum anúncio vinculado.
-        <button onclick="v31AbrirModalVincular('${p.id}')" style="margin-left:8px;padding:4px 10px;background:#10b981;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer">🔗 Vincular existente</button>
+      return `<div style="margin-top:12px;padding:10px;border:1px dashed #e5e7eb;border-radius:8px;text-align:center;color:#9ca3af;font-size:12px">
+        Nenhum anúncio vinculado a este produto.
       </div>`;
     }
     
@@ -18580,9 +18582,6 @@ REGRAS DURAS:
     return `<div style="margin-top:12px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
       <div style="background:#f9fafb;padding:8px 12px;font-weight:600;font-size:12px;color:#374151;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
         <span>🔗 ${totalAnuncios} anúncio(s) vinculado(s)</span>
-        <button onclick="v31AbrirModalVincular('${p.id}')" style="padding:3px 9px;background:#10b981;color:white;border:none;border-radius:5px;font-size:11px;cursor:pointer;font-weight:600">
-          + Vincular existente
-        </button>
       </div>
       ${linhas.join('')}
     </div>`;
@@ -22487,11 +22486,17 @@ São o mesmo produto?`;
   function aplicarVinculoNaVariacao(variacao, info) {
     if (!variacao.vinculos) variacao.vinculos = [];
     
-    // Procura vínculo existente do mesmo anúncio/loja
+    // Procura vínculo existente do mesmo anúncio/loja.
+    // v32r.6: match por anuncioId + lojaId (NÃO depende de variacaoExternaId, que
+    // frequentemente vem null). Antes, vínculos legados com variacaoExternaId=null
+    // não casavam e nunca eram atualizados — ficavam sem skuExterno/titulo pra sempre.
+    const mesmaLoja = (a, b) => {
+      const A = String(a==null?'':a), B = String(b==null?'':b);
+      return A === B;
+    };
     const idx = variacao.vinculos.findIndex(v => 
-      String(v.lojaId) === String(info.lojaId) && 
       String(v.anuncioId) === String(info.anuncioId) &&
-      String(v.variacaoExternaId || '') === String(info.variacaoExternaId || '')
+      (mesmaLoja(v.lojaId, info.lojaId) || mesmaLoja(v.lojaIdBanco, info.lojaIdBanco))
     );
     
     const novoVinculo = {
@@ -22501,9 +22506,9 @@ São o mesmo produto?`;
       marketplace: info.marketplace,
       anuncioId: info.anuncioId,
       variacaoExternaId: info.variacaoExternaId || null,
-      skuExterno: info.skuExterno,
+      skuExterno: info.skuExterno || (idx >= 0 ? variacao.vinculos[idx].skuExterno : '') || '',
       skuSuspeito: !info.skuExatoBate,
-      titulo: info.titulo,
+      titulo: info.titulo || (idx >= 0 ? variacao.vinculos[idx].titulo : '') || '',
       vinculadoEm: idx >= 0 ? variacao.vinculos[idx].vinculadoEm : new Date().toISOString(),
       atualizadoEm: new Date().toISOString(),
       // v32b: shopId + permalink (Shopee)
@@ -24352,6 +24357,29 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     document.getElementById('gerVincOverlay').classList.remove('active');
   }
   window.fecharGerenciarVinculos = fecharGerenciarVinculos;
+
+  async function atualizarVinculosDoModal() {
+    const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
+    if (!p) return;
+    // Descobre os marketplaces distintos dos anúncios vinculados
+    const mkts = new Set();
+    (p.variacoes||[]).forEach(v => (v.vinculos||[]).forEach(vi => { if (vi.marketplace) mkts.add(vi.marketplace); }));
+    if (!mkts.size) { showToast('Este produto não tem anúncios vinculados', true); return; }
+    if (!confirm('Isso vai re-sincronizar ' + [...mkts].join(', ') + ' pra atualizar os dados das variações. Pode levar alguns segundos. Continuar?')) return;
+    showToast('🔄 Atualizando vínculos...');
+    try {
+      for (const mk of mkts) {
+        if (typeof sincronizarConta === 'function') await sincronizarConta(mk);
+      }
+      showToast('✓ Vínculos atualizados');
+      // Recarrega o produto atualizado e reabre o modal
+      const atualizado = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
+      if (atualizado) abrirGerenciarVinculos(atualizado.id);
+    } catch(e) {
+      showToast('Erro ao atualizar: ' + e.message, true);
+    }
+  }
+  window.atualizarVinculosDoModal = atualizarVinculosDoModal;
 
   async function desvincularVariacao(anuncioId, variacaoId) {
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
@@ -27650,7 +27678,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32r.4-fix-match-skupai-sync';
+  const _DIAG_VERSAO_PAINEL = 'v32r.6-sync-repreenche-skuexterno';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
