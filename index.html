@@ -11525,6 +11525,20 @@ Retorne JSON: {"ID": "valor", ...}`;
   // sem persistir no localStorage. Retorna o array — não substitui produtosErp.
   // Uso: const todos = await carregarTodosProdutos(); todos.forEach(...);
   // Se houver muitos produtos (>500), busca em chunks pra não estourar timeout.
+  // Garante que todo produto vindo do backend tenha idBanco preenchido.
+  // O backend identifica produtos pelo campo `id`; muito código do painel usa
+  // `idBanco` pra montar as URLs de PUT/DELETE. Sem este mapeamento, idBanco fica
+  // undefined e TODAS as operações de salvar/excluir vão pra /api/produtos/undefined
+  // (falham silenciosamente) — era a causa de duplicados nunca sumirem.
+  function _normalizarProdutoBackend(p) {
+    if (p && p.idBanco == null && p.id != null) p.idBanco = p.id;
+    return p;
+  }
+  function _normalizarListaBackend(arr) {
+    (arr || []).forEach(_normalizarProdutoBackend);
+    return arr || [];
+  }
+
   async function carregarTodosProdutos() {
     try {
       // Primeiro descobre o total (rápido — count=true não retorna produtos)
@@ -11540,7 +11554,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           headers: { 'x-api-token': getApiToken() }
         });
         const d = await r.json();
-        return d.ok ? (d.produtos || []) : [];
+        return d.ok ? _normalizarListaBackend(d.produtos || []) : [];
       }
       
       // Pega em chunks de 200
@@ -11553,7 +11567,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         const d = await r.json();
         if (d.ok) todos.push(...(d.produtos || []));
       }
-      return todos;
+      return _normalizarListaBackend(todos);
     } catch(err) {
       console.error('[carregarTodosProdutos]', err);
       showToast('Erro ao carregar catálogo: ' + err.message, true);
@@ -15654,7 +15668,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       
       // Substitui produtosErp pela página atual
       produtosErp.length = 0;
-      (dados.produtos || []).forEach(p => produtosErp.push(p));
+      (dados.produtos || []).forEach(p => produtosErp.push(_normalizarProdutoBackend(p)));
       
       // v32j.4 FIX: migra produtos pro modelo cores[] após carregar do backend.
       // Sem isso: produtos vêm com `fotos[]` (galeria) mas `cores[]` vazio →
@@ -27626,7 +27640,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32r.2-modal-largo-filtro-vinculo';
+  const _DIAG_VERSAO_PAINEL = 'v32r.3-fix-idbanco-raiz';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
