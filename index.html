@@ -2008,6 +2008,21 @@
     background: white; border: 1.5px solid var(--cinza-borda);
     border-radius: 12px; padding: 12px; margin-bottom: 10px;
   }
+  .estoque-prod-subhead {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin: 4px 0 8px; padding-bottom: 8px; border-bottom: 1px dashed #e5e7eb;
+  }
+  .estoque-prod-sku { font-size: 11px; color: var(--cinza-texto); font-weight: 600; }
+  .estoque-prod-vinc {
+    font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px;
+    background: #dbeafe; color: #1d4ed8;
+  }
+  .estoque-prod-vinc.semvinc { background: #f3f4f6; color: #9ca3af; }
+  .estoque-consolidar-btn {
+    font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 6px;
+    background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; cursor: pointer;
+  }
+  .estoque-consolidar-btn:hover { background: #fde68a; }
   .estoque-prod-head {
     display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
   }
@@ -24202,6 +24217,103 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // Abre a tela de estoque carregando o catálogo COMPLETO do backend,
   // pra que a busca e a listagem enxerguem todos os produtos (não só os ~50
   // que ficam em memória pela paginação leve). Estoque é tela de gestão total.
+  function _chaveVar(v) {
+    const norm = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const cor = norm(v.cor), tam = norm(v.tamanho);
+    if (cor || tam) return 'ct:' + cor + '|' + tam;
+    return 'sku:' + normalizarSku(v.sku);
+  }
+
+  function _consolidarVariacoes(variacoesTodas) {
+    const porChave = new Map();
+    variacoesTodas.forEach(v => {
+      const k = _chaveVar(v);
+      if (!porChave.has(k)) {
+        porChave.set(k, {
+          id: v.id || gerarId(),
+          nome: v.nome || ((v.cor||'') + (v.tamanho ? ' / ' + v.tamanho : '')),
+          sku: v.sku || '',
+          cor: v.cor || '', tamanho: v.tamanho || '',
+          estoque: parseInt(v.estoque) || 0,
+          preco: v.preco || '',
+          vinculos: [],
+        });
+      }
+      const base = porChave.get(k);
+      base.estoque = Math.max(base.estoque, parseInt(v.estoque) || 0);
+      if (!base.sku && v.sku) base.sku = v.sku;
+      (v.vinculos || []).forEach(vi => {
+        const ja = base.vinculos.some(x => String(x.anuncioId) === String(vi.anuncioId));
+        if (!ja) base.vinculos.push(vi);
+      });
+    });
+    return [...porChave.values()];
+  }
+
+  async function consolidarProdutoPorSkuPai(skuPai) {
+    const alvo = String(skuPai||'').trim().toLowerCase();
+    if (!alvo) return;
+    showToast('📥 Carregando catálogo...');
+    const todos = await carregarTodosProdutos();
+    if (todos.length) produtosErp = todos;
+
+    const grupo = produtosErp.filter(p =>
+      p.status !== 'excluido' && String(p.skuPai||'').trim().toLowerCase() === alvo);
+    if (grupo.length === 0) { showToast('Nenhum produto com SKU ' + skuPai, true); return; }
+
+    grupo.sort((a,b) => (b.variacoes||[]).length - (a.variacoes||[]).length);
+    const mestre = grupo[0];
+    const outros = grupo.slice(1);
+
+    const todasVars = [];
+    grupo.forEach(p => (p.variacoes||[]).forEach(v => todasVars.push(v)));
+    const consolidadas = _consolidarVariacoes(todasVars);
+
+    const anuncios = new Set();
+    consolidadas.forEach(v => (v.vinculos||[]).forEach(vi => anuncios.add(String(vi.anuncioId))));
+
+    let preview = '🔧 CONSOLIDAÇÃO — PRÉVIA\n\n';
+    preview += `SKU pai: ${skuPai}\n`;
+    preview += `Produtos a fundir: ${grupo.length} → 1\n`;
+    preview += `Variações: ${todasVars.length} → ${consolidadas.length} (por cor+tamanho)\n`;
+    preview += `Anúncios vinculados (distintos): ${anuncios.size}\n\n`;
+    preview += `Produto mestre: "${(mestre.nome||'').slice(0,50)}" (id ${mestre.id})\n`;
+    preview += outros.length ? `Vão pra lixeira: ${outros.map(o=>o.id).join(', ')}\n\n` : '\n';
+    preview += 'Amostra das variações consolidadas:\n';
+    consolidadas.slice(0,8).forEach(v => {
+      preview += `  • ${v.cor||'?'} ${v.tamanho||''} → ${(v.vinculos||[]).length} anúncio(s), estoque ${v.estoque}\n`;
+    });
+    preview += '\n⚠ Os produtos extras vão pra lixeira (reversível). Continuar?';
+    if (!confirm(preview)) return;
+    const c2 = prompt('Pra confirmar, digite: CONSOLIDAR');
+    if (!c2 || c2.trim().toUpperCase() !== 'CONSOLIDAR') { showToast('Cancelado', true); return; }
+
+    mestre.variacoes = consolidadas;
+    mestre.atualizadoEm = new Date().toISOString();
+
+    showToast('💾 Salvando...');
+    try {
+      await fetch(BACKEND_URL + '/api/produtos/' + mestre.id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify(mestre),
+      });
+      for (const o of outros) {
+        o.status = 'excluido';
+        await fetch(BACKEND_URL + '/api/produtos/' + o.id, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify(o),
+        });
+      }
+      showToast(`✓ Consolidado: 1 produto, ${consolidadas.length} variações, ${anuncios.size} anúncios`);
+      if (typeof abrirTelaEstoque === 'function') setTimeout(abrirTelaEstoque, 600);
+    } catch(e) {
+      showToast('Erro ao salvar: ' + e.message, true);
+    }
+  }
+  window.consolidarProdutoPorSkuPai = consolidarProdutoPorSkuPai;
+
   async function abrirTelaEstoque() {
     renderEstoque(); // render imediato com o que tem (não trava a tela)
     try {
@@ -24290,10 +24402,23 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         }).join('');
       }
       
+      // Conta anúncios distintos vinculados ao produto inteiro
+      const anunciosProd = new Set();
+      variacoes.forEach(v => (v.vinculos||[]).forEach(vi => { if (vi.anuncioId) anunciosProd.add(String(vi.anuncioId)); }));
+      const nAnunciosProd = anunciosProd.size;
+      const vincBadge = nAnunciosProd > 0
+        ? `<span class="estoque-prod-vinc" title="Este produto está em ${nAnunciosProd} anúncio(s). Ao editar uma variação e replicar, o estoque vai pra todos eles.">📌 ${nAnunciosProd} anúncio(s) vinculado(s)</span>`
+        : `<span class="estoque-prod-vinc semvinc" title="Nenhum anúncio vinculado">sem vínculos</span>`;
+
       return `<div class="estoque-prod">
         <div class="estoque-prod-head">
           <div class="estoque-prod-nome">${escapeHtml(p.nome)}</div>
           <div class="estoque-prod-total">${total} un.</div>
+        </div>
+        <div class="estoque-prod-subhead">
+          <span class="estoque-prod-sku">SKU: ${escapeHtml(p.skuPai||'—')}</span>
+          ${vincBadge}
+          <button class="estoque-consolidar-btn" title="Junta produtos duplicados do mesmo SKU e consolida as variações por cor+tamanho" onclick="consolidarProdutoPorSkuPai('${escapeHtml(p.skuPai||'')}')">🔧 Consolidar</button>
         </div>
         ${varHtml}
       </div>`;
@@ -27220,7 +27345,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32q.5-estoque-catalogo-completo';
+  const _DIAG_VERSAO_PAINEL = 'v32q.7-consolidar-profundo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
