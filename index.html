@@ -6830,6 +6830,39 @@
             </div>
           </div>
 
+          <!-- SEÇÃO: WhatsApp FINANCEIRO (instância separada pra cobranças) -->
+          <div class="settings-card" style="margin-top:16px">
+            <div class="settings-card-header">
+              <div>
+                <div class="settings-card-title">💰 WhatsApp Financeiro</div>
+                <div class="settings-card-subtitle">Número EXCLUSIVO pra cobranças e mensagens de cobrança (separado do operacional).</div>
+              </div>
+            </div>
+            <div class="wa-status-box desconectado" id="waFinStatusBox">
+              <div class="wa-status-icone">📵</div>
+              <div class="wa-status-info">
+                <div class="wa-status-titulo">WhatsApp financeiro não conectado</div>
+                <div class="wa-status-sub">Clique em "Verificar conexão"</div>
+              </div>
+              <div class="wa-bolinha off" id="waFinBolinha"></div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+              <button class="toolbar-btn" onclick="verificarStatusWhatsFin()">🔄 Verificar conexão</button>
+              <button class="toolbar-btn" onclick="gerarQrCodeWhatsFin()">📷 Gerar QR Code</button>
+              <button class="toolbar-btn" style="border-color:#ef4444;color:#dc2626" onclick="desconectarWhatsFin()">🔌 Desconectar</button>
+            </div>
+            <div class="wa-qr-area" id="waFinQrArea" style="display:none">
+              <div class="wa-qr-img" id="waFinQrImg">QR Code aparecerá aqui</div>
+              <div class="wa-passos">
+                <b>Como conectar o número financeiro:</b><br>
+                1. Abra o <b>WhatsApp do número financeiro</b> no celular<br>
+                2. Configurações → Aparelhos conectados → Conectar um aparelho<br>
+                3. Aponte a câmera para o QR Code acima<br>
+                <span style="font-size:11px;color:#6b7280">O QR atualiza sozinho a cada 20s.</span>
+              </div>
+            </div>
+          </div>
+
           <!-- SEÇÃO 4: Automação da Operação -->
           <div class="settings-card" style="margin-top:16px">
             <div class="settings-card-header">
@@ -10678,6 +10711,60 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.gerarQrCodeWhats = gerarQrCodeWhats;
   
   // Verifica se o WhatsApp está conectado (via backend, que fala com a Evolution)
+  // === WhatsApp FINANCEIRO (instância separada, ?perfil=financeiro) ===
+  let _waFinQrTimer = null;
+  function _atualizarBoxFin(estado) {
+    const box = document.getElementById('waFinStatusBox');
+    const bol = document.getElementById('waFinBolinha');
+    if (!box) return;
+    const conectado = estado === 'conectado';
+    box.className = 'wa-status-box ' + (conectado ? 'conectado' : 'desconectado');
+    box.querySelector('.wa-status-icone').textContent = conectado ? '✅' : '📵';
+    box.querySelector('.wa-status-titulo').textContent = conectado ? 'WhatsApp financeiro conectado · Pronto pra cobranças' : 'WhatsApp financeiro não conectado';
+    box.querySelector('.wa-status-sub').textContent = conectado ? '' : 'Clique em "Verificar conexão"';
+    if (bol) bol.className = 'wa-bolinha ' + (conectado ? 'on' : 'off');
+  }
+  async function verificarStatusWhatsFin() {
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/whatsapp/status?perfil=financeiro', { headers: { 'x-api-token': getApiToken() } });
+      const data = await resp.json();
+      if (!data.ok || !data.configurado) { _atualizarBoxFin('desconectado'); showToast('Financeiro: ' + (data.erro || 'não configurado'), true); return; }
+      if (data.conectado) { _atualizarBoxFin('conectado'); const qa=document.getElementById('waFinQrArea'); if(qa) qa.style.display='none'; if(_waFinQrTimer){clearInterval(_waFinQrTimer);_waFinQrTimer=null;} showToast('✓ WhatsApp financeiro conectado!'); }
+      else { _atualizarBoxFin('desconectado'); showToast('Financeiro ainda não conectado (estado: ' + (data.state||'?') + ')'); }
+    } catch(e) { _atualizarBoxFin('desconectado'); showToast('Erro: ' + e.message, true); }
+  }
+  window.verificarStatusWhatsFin = verificarStatusWhatsFin;
+
+  async function gerarQrCodeWhatsFin() {
+    const area = document.getElementById('waFinQrArea');
+    const img = document.getElementById('waFinQrImg');
+    if (area) area.style.display = 'block';
+    async function pega() {
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/whatsapp/qrcode?perfil=financeiro', { headers: { 'x-api-token': getApiToken() } });
+        const data = await resp.json();
+        if (data.ok && data.conectado) { _atualizarBoxFin('conectado'); if(area) area.style.display='none'; if(_waFinQrTimer){clearInterval(_waFinQrTimer);_waFinQrTimer=null;} showToast('✓ Conectado!'); return; }
+        if (data.ok && data.qrcode) { img.innerHTML = '<img src="' + data.qrcode + '" style="width:240px;height:240px">'; }
+        else if (img) img.textContent = data.erro || 'QR indisponível, tentando...';
+      } catch(e) { if(img) img.textContent = 'Erro: ' + e.message; }
+    }
+    pega();
+    if (_waFinQrTimer) clearInterval(_waFinQrTimer);
+    _waFinQrTimer = setInterval(pega, 20000);
+  }
+  window.gerarQrCodeWhatsFin = gerarQrCodeWhatsFin;
+
+  async function desconectarWhatsFin() {
+    if (!confirm('Desconectar o WhatsApp financeiro?')) return;
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/whatsapp/desconectar', { method:'POST', headers: { 'Content-Type':'application/json','x-api-token': getApiToken() }, body: JSON.stringify({ perfil: 'financeiro' }) });
+      const data = await resp.json();
+      if (data.ok) { _atualizarBoxFin('desconectado'); showToast('WhatsApp financeiro desconectado'); }
+      else showToast('Erro: ' + (data.erro||'?'), true);
+    } catch(e) { showToast('Erro: ' + e.message, true); }
+  }
+  window.desconectarWhatsFin = desconectarWhatsFin;
+
   async function verificarStatusWhats() {
     try {
       const resp = await fetch(BACKEND_URL + '/api/whatsapp/status', {
@@ -27886,7 +27973,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32t.1-asaas-emitir-cobranca';
+  const _DIAG_VERSAO_PAINEL = 'v32t.2-whatsapp-financeiro-conexao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
