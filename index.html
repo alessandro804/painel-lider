@@ -4841,6 +4841,20 @@
   </div>
 </div>
 
+<!-- ===== MODAL AUDITORIA DE CASAMENTO EM MASSA ===== -->
+<div class="modal-overlay" id="auditoriaOverlay" onclick="if(event.target===this)fecharAuditoria()" style="z-index:9999">
+  <div onclick="event.stopPropagation()" style="background:#fff;border-radius:16px;width:90vw;max-width:760px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:16px 22px;border-bottom:1px solid #e5e7eb;background:#f8fafc">
+      <div style="font-size:17px;font-weight:800;color:#1e293b">🔍 Auditoria de casamento</div>
+      <div id="auditoriaResumo" style="font-size:13px;color:#6b7280;margin-top:2px"></div>
+    </div>
+    <div id="auditoriaLista" style="flex:1;overflow-y:auto;padding:8px 22px"></div>
+    <div style="padding:14px 22px;border-top:1px solid #e5e7eb">
+      <button onclick="fecharAuditoria()" style="width:100%;padding:12px;background:#16a34a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:700">Fechar</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== MODAL GERENCIAR VÍNCULOS DO PRODUTO ===== -->
 <div class="modal-overlay" id="gerVincOverlay" onclick="if(event.target===this)fecharGerenciarVinculos()" style="z-index:9999">
   <div onclick="event.stopPropagation()" style="position:fixed;inset:0;background:#fff;display:flex;flex-direction:column;width:100vw;height:100vh">
@@ -5266,6 +5280,17 @@
             <button onclick="acaoMassaAtualizarPorLoja()">🏪 Escolher loja específica...</button>
             <hr>
             <button onclick="acaoMassaRecriarVinculosFaltantes()" style="background:#fef3c7">🔗 Recriar vínculos faltantes</button>
+          </div>
+        </div>
+
+        <!-- Dropdown: Vínculos & Estoque em massa (fluxo unificado) -->
+        <div style="position:relative;display:inline-block" class="dropdown-massa">
+          <button class="toolbar-btn" onclick="toggleDropdownMassa('mVinc')">📌 Vínculos & Estoque ▼</button>
+          <div id="dd-mVinc" class="dropdown-massa-menu" style="display:none">
+            <button onclick="acaoMassaProdutos('vinculos')">🔄 Atualizar vínculos</button>
+            <button onclick="acaoMassaProdutos('estoque')">📦 Replicar estoque nos anúncios</button>
+            <button onclick="acaoMassaProdutos('auditar')">🔍 Auditar casamento</button>
+            <button onclick="acaoMassaProdutos('consolidar')" style="background:#fef3c7">🔧 Consolidar duplicados</button>
           </div>
         </div>
         
@@ -6013,6 +6038,18 @@
       <button class="toolbar-btn" style="background:#fef3c7;color:#92400e;border-color:#fcd34d;white-space:nowrap" onclick="limparDuplicadosCatalogoCompleto()" title="Carrega todo o catálogo e mescla produtos duplicados (mostra prévia antes)">🔧 Limpar duplicados</button>
     </div>
     
+    <!-- Ações em massa POR PRODUTO (seleção via checkbox no cabeçalho) -->
+    <div id="estoqueMassaProd" style="display:none;align-items:center;gap:12px;flex-wrap:wrap;background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:10px 14px;margin-bottom:12px">
+      <span id="estoqueMassaProdInfo" style="font-weight:700;color:#4338ca">0 produto(s) selecionado(s)</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="toolbar-btn" style="background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe" onclick="atualizarVinculosEmMassa()">🔄 Atualizar vínculos</button>
+        <button class="toolbar-btn" style="background:#dcfce7;color:#15803d;border-color:#bbf7d0" onclick="replicarEstoqueEmMassa()">📦 Replicar estoque</button>
+        <button class="toolbar-btn" style="background:#fef9c3;color:#854d0e;border-color:#fde68a" onclick="auditarCasamentoEmMassa()">🔍 Auditar casamento</button>
+        <button class="toolbar-btn" style="background:#fef3c7;color:#92400e;border-color:#fcd34d" onclick="consolidarEmMassa()">🔧 Consolidar duplicados</button>
+        <button class="toolbar-btn" onclick="limparSelProdEstoque()">Limpar seleção</button>
+      </div>
+    </div>
+
     <!-- Ações em massa -->
     <div class="estoque-massa" id="estoqueMassa" style="display:none">
       <span id="estoqueMassaInfo">0 selecionados</span>
@@ -24275,6 +24312,182 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // ============ MÓDULO DE ESTOQUE =============================
   // ============================================================
   let _estoqueSelecionados = []; // ids de "produtoId:variacaoId"
+  let _estoqueProdSelecionados = []; // ids de produtos selecionados (ação em massa)
+
+  // Liga a barra de massa da tela de PRODUTOS (_prodSelecionados, Set) às
+  // ações em massa unificadas (que leem _estoqueProdSelecionados, array).
+  function acaoMassaProdutos(acao) {
+    if (!_prodSelecionados || _prodSelecionados.size === 0) { showToast('Selecione produtos primeiro', true); return; }
+    _estoqueProdSelecionados = [..._prodSelecionados].map(String);
+    if (acao === 'vinculos') return atualizarVinculosEmMassa();
+    if (acao === 'estoque') return replicarEstoqueEmMassa();
+    if (acao === 'auditar') return auditarCasamentoEmMassa();
+    if (acao === 'consolidar') return consolidarEmMassa();
+  }
+  window.acaoMassaProdutos = acaoMassaProdutos;
+
+  function toggleProdSelEstoque(produtoId) {
+    const id = String(produtoId);
+    const i = _estoqueProdSelecionados.indexOf(id);
+    if (i >= 0) _estoqueProdSelecionados.splice(i, 1);
+    else _estoqueProdSelecionados.push(id);
+    atualizarBarraMassaProd();
+  }
+  window.toggleProdSelEstoque = toggleProdSelEstoque;
+
+  function atualizarBarraMassaProd() {
+    const barra = document.getElementById('estoqueMassaProd');
+    const info = document.getElementById('estoqueMassaProdInfo');
+    if (!barra) return;
+    const n = _estoqueProdSelecionados.length;
+    barra.style.display = n > 0 ? 'flex' : 'none';
+    if (info) info.textContent = n + ' produto(s) selecionado(s)';
+  }
+  window.atualizarBarraMassaProd = atualizarBarraMassaProd;
+
+  function limparSelProdEstoque() {
+    _estoqueProdSelecionados = [];
+    atualizarBarraMassaProd();
+    renderEstoque();
+  }
+  window.limparSelProdEstoque = limparSelProdEstoque;
+
+  // AÇÃO EM MASSA 1: atualizar vínculos dos produtos selecionados.
+  // Reusa a mesma lógica do modal (atualizarVinculosDoModal), aplicando a cada produto.
+  async function atualizarVinculosEmMassa() {
+    const ids = [..._estoqueProdSelecionados];
+    if (!ids.length) { showToast('Selecione produtos primeiro', true); return; }
+    if (!confirm('Atualizar os vínculos de ' + ids.length + ' produto(s)? Busca a variação real de cada anúncio no marketplace. Pode levar um tempo.')) return;
+    let okProd = 0, totalVinc = 0;
+    const prog = document.getElementById('estoqueMassaProdInfo');
+    for (let k = 0; k < ids.length; k++) {
+      const p = produtosErp.find(x => String(x.id) === ids[k]);
+      if (!p) continue;
+      if (prog) prog.textContent = `Atualizando ${k+1}/${ids.length}: ${(p.nome||'').slice(0,30)}...`;
+      // coleta anúncios do produto
+      const alvos = [];
+      (p.variacoes||[]).forEach(v => (v.vinculos||[]).forEach(vi => {
+        const lid = vi.lojaIdBanco || vi.lojaId;
+        if (vi.anuncioId && lid && !alvos.some(a => a.anuncioId === String(vi.anuncioId))) {
+          alvos.push({ anuncioId: String(vi.anuncioId), lojaId: String(lid) });
+        }
+      }));
+      if (!alvos.length) continue;
+      try {
+        for (const alvo of alvos) {
+          const url = BACKEND_URL + '/api/marketplaces/loja/' + alvo.lojaId + '/item/' + alvo.anuncioId + '/models';
+          let models = [];
+          try { const r = await fetch(url, { headers: { 'x-api-token': getApiToken() } }); const d = await r.json(); if (d.ok && Array.isArray(d.models)) models = d.models; } catch(e) { continue; }
+          (p.variacoes||[]).forEach(v => (v.vinculos||[]).forEach(vi => {
+            if (String(vi.anuncioId) !== alvo.anuncioId) return;
+            const m = models.find(mm => (mm.sku && normalizarSku(mm.sku) === normalizarSku(v.sku)) ||
+              (String(mm.nome||'').toLowerCase().replace(/[^a-z0-9]/g,'') === String((v.cor||'')+(v.tamanho||'')).toLowerCase().replace(/[^a-z0-9]/g,'')));
+            if (m) { vi.skuExterno = m.sku || vi.skuExterno || ''; vi.titulo = vi.titulo || p.nome || ''; vi.variacaoExternaId = m.modelId || vi.variacaoExternaId || null; totalVinc++; }
+          }));
+        }
+        p.atualizadoEm = new Date().toISOString();
+        await fetch(BACKEND_URL + '/api/produtos/' + (p.idBanco || p.id), {
+          method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify(p),
+        });
+        okProd++;
+      } catch(e) { console.warn('[massa vínculos] produto', ids[k], e); }
+    }
+    showToast(`✓ ${okProd} produto(s), ${totalVinc} vínculo(s) atualizados`);
+    limparSelProdEstoque();
+  }
+  window.atualizarVinculosEmMassa = atualizarVinculosEmMassa;
+
+  // AÇÃO EM MASSA 2: replicar estoque dos produtos selecionados pros anúncios vinculados.
+  async function replicarEstoqueEmMassa() {
+    const ids = [..._estoqueProdSelecionados];
+    if (!ids.length) { showToast('Selecione produtos primeiro', true); return; }
+    // Monta tarefas: cada variação com SKU + anúncios vinculados
+    const tarefas = [];
+    ids.forEach(id => {
+      const p = produtosErp.find(x => String(x.id) === id);
+      if (!p) return;
+      (p.variacoes||[]).forEach(v => {
+        if (!v.sku) return;
+        const anuncios = _anunciosPorSku(v.sku);
+        if (anuncios.length) tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios });
+      });
+    });
+    if (!tarefas.length) { showToast('Nenhuma variação com anúncio vinculado nos produtos selecionados', true); return; }
+    const totalAnuncios = tarefas.reduce((s,t)=>s+t.anuncios.length,0);
+    if (!confirm(`Replicar o estoque de ${tarefas.length} variação(ões) de ${ids.length} produto(s) para ${totalAnuncios} anúncio(s)?`)) return;
+    const prog = document.getElementById('estoqueMassaProdInfo');
+    let ok = 0, falha = 0;
+    for (let i = 0; i < tarefas.length; i++) {
+      const t = tarefas[i];
+      if (prog) prog.textContent = `Replicando ${i+1}/${tarefas.length}...`;
+      try {
+        const r = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          body: JSON.stringify(t),
+        });
+        const d = await r.json();
+        ok += (d.dados?.sucesso)||0; falha += (d.dados?.falhas)||0;
+      } catch(e) { falha++; }
+    }
+    showToast(falha===0 ? `✓ ${ok} atualização(ões) concluída(s)` : `⚠ ${ok} ok, ${falha} falha(s)`, falha>0);
+    limparSelProdEstoque();
+  }
+  window.replicarEstoqueEmMassa = replicarEstoqueEmMassa;
+
+  // AÇÃO EM MASSA 3: auditar casamento — abre uma visão com ✅/⚠️ dos produtos selecionados.
+  function auditarCasamentoEmMassa() {
+    const ids = [..._estoqueProdSelecionados];
+    if (!ids.length) { showToast('Selecione produtos primeiro', true); return; }
+    let html = '';
+    let totalOk = 0, totalDiv = 0, totalSemVinc = 0;
+    ids.forEach(id => {
+      const p = produtosErp.find(x => String(x.id) === id);
+      if (!p) return;
+      let pOk = 0, pDiv = 0, pSem = 0;
+      (p.variacoes||[]).forEach(v => {
+        const st = _statusCasamentoVar(v);
+        if (!st.temVinculo) pSem++;
+        else if (st.todosOk) pOk++;
+        else pDiv++;
+      });
+      totalOk += pOk; totalDiv += pDiv; totalSemVinc += pSem;
+      const icone = pDiv > 0 ? '⚠️' : (pOk > 0 ? '✅' : '○');
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid #f1f5f9">
+        <span style="font-size:16px">${icone}</span>
+        <div style="flex:1;min-width:0"><div style="font-weight:600">${escapeHtml((p.nome||'').slice(0,55))}</div>
+        <div style="font-size:12px;color:#6b7280">SKU: ${escapeHtml(p.skuPai||'—')}</div></div>
+        <div style="font-size:12px;text-align:right">
+          <span style="color:#16a34a">${pOk} ok</span>${pDiv?` · <span style="color:#b45309">${pDiv} diverg.</span>`:''}${pSem?` · <span style="color:#9ca3af">${pSem} s/vínc</span>`:''}
+          <button onclick="abrirGerenciarVinculos('${p.id}')" style="margin-left:8px;padding:3px 9px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:6px;cursor:pointer;font-size:11px">abrir</button>
+        </div></div>`;
+    });
+    const overlay = document.getElementById('auditoriaOverlay');
+    document.getElementById('auditoriaResumo').textContent = `${ids.length} produto(s) · ${totalOk} ok · ${totalDiv} divergente(s) · ${totalSemVinc} sem vínculo`;
+    document.getElementById('auditoriaLista').innerHTML = html;
+    overlay.classList.add('active');
+  }
+  window.auditarCasamentoEmMassa = auditarCasamentoEmMassa;
+  function fecharAuditoria() { const o=document.getElementById('auditoriaOverlay'); if(o) o.classList.remove('active'); }
+  window.fecharAuditoria = fecharAuditoria;
+
+  // AÇÃO EM MASSA 4: consolidar duplicados dos SKUs dos produtos selecionados.
+  async function consolidarEmMassa() {
+    const ids = [..._estoqueProdSelecionados];
+    if (!ids.length) { showToast('Selecione produtos primeiro', true); return; }
+    // SKUs pai distintos dos selecionados
+    const skus = [...new Set(ids.map(id => { const p = produtosErp.find(x=>String(x.id)===id); return p ? (p.skuPai||'').trim() : ''; }).filter(Boolean))];
+    if (!skus.length) { showToast('Produtos sem SKU pai', true); return; }
+    if (!confirm(`Consolidar duplicados de ${skus.length} SKU(s)? Cada SKU vira 1 produto só. Os extras vão pra lixeira (reversível).`)) return;
+    let consolidados = 0;
+    for (const sku of skus) {
+      try { await consolidarProdutoPorSkuPai(sku, true); consolidados++; } catch(e) { console.warn('[massa consolidar]', sku, e); }
+    }
+    showToast(`✓ ${consolidados} SKU(s) consolidado(s)`);
+    limparSelProdEstoque();
+    if (typeof abrirTelaEstoque === 'function') abrirTelaEstoque();
+  }
+  window.consolidarEmMassa = consolidarEmMassa;
   let _estoquePagina = 1;
   const _ESTOQUE_POR_PAGINA = 20;
   
@@ -24581,7 +24794,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     return [...porChave.values()];
   }
 
-  async function consolidarProdutoPorSkuPai(skuPai) {
+  async function consolidarProdutoPorSkuPai(skuPai, silencioso) {
     const alvo = String(skuPai||'').trim().toLowerCase();
     if (!alvo) return;
     showToast('📥 Carregando catálogo...');
@@ -24615,9 +24828,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       preview += `  • ${v.cor||'?'} ${v.tamanho||''} → ${(v.vinculos||[]).length} anúncio(s), estoque ${v.estoque}\n`;
     });
     preview += '\n⚠ Os produtos extras vão pra lixeira (reversível). Continuar?';
-    if (!confirm(preview)) return;
-    const c2 = prompt('Pra confirmar, digite: CONSOLIDAR');
-    if (!c2 || c2.trim().toUpperCase() !== 'CONSOLIDAR') { showToast('Cancelado', true); return; }
+    if (!silencioso) {
+      if (!confirm(preview)) return;
+      const c2 = prompt('Pra confirmar, digite: CONSOLIDAR');
+      if (!c2 || c2.trim().toUpperCase() !== 'CONSOLIDAR') { showToast('Cancelado', true); return; }
+    }
 
     mestre.variacoes = consolidadas;
     mestre.atualizadoEm = new Date().toISOString();
@@ -24637,8 +24852,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           body: JSON.stringify(o),
         });
       }
-      showToast(`✓ Consolidado: 1 produto, ${consolidadas.length} variações, ${anuncios.size} anúncios`);
-      if (typeof abrirTelaEstoque === 'function') setTimeout(abrirTelaEstoque, 600);
+      if (!silencioso) {
+        showToast(`✓ Consolidado: 1 produto, ${consolidadas.length} variações, ${anuncios.size} anúncios`);
+        if (typeof abrirTelaEstoque === 'function') setTimeout(abrirTelaEstoque, 600);
+      }
     } catch(e) {
       showToast('Erro ao salvar: ' + e.message, true);
     }
@@ -24792,10 +25009,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       // Variações NÃO são renderizadas de início (lazy) — só ao expandir.
       // Isso deixa o render inicial rápido e a tela curta.
       return `<div class="estoque-prod" data-prodid="${p.id}">
-        <div class="estoque-prod-head" style="cursor:pointer" onclick="toggleVariacoesEstoque('${p.id}')">
-          <span class="estoque-prod-seta" id="seta-${p.id}" style="transition:transform .15s;display:inline-block;margin-right:8px">▶</span>
-          <div class="estoque-prod-nome" style="flex:1">${escapeHtml(p.nome)}</div>
-          <div class="estoque-prod-total">${total} un. · ${variacoes.length} var.</div>
+        <div class="estoque-prod-head" style="cursor:pointer">
+          <input type="checkbox" class="estoque-prod-check" ${_estoqueProdSelecionados.includes(String(p.id))?'checked':''} onclick="event.stopPropagation(); toggleProdSelEstoque('${p.id}')" style="width:18px;height:18px;margin-right:6px;cursor:pointer">
+          <span class="estoque-prod-seta" id="seta-${p.id}" style="transition:transform .15s;display:inline-block;margin-right:8px" onclick="toggleVariacoesEstoque('${p.id}')">▶</span>
+          <div class="estoque-prod-nome" style="flex:1" onclick="toggleVariacoesEstoque('${p.id}')">${escapeHtml(p.nome)}</div>
+          <div class="estoque-prod-total" onclick="toggleVariacoesEstoque('${p.id}')">${total} un. · ${variacoes.length} var.</div>
         </div>
         <div class="estoque-prod-subhead">
           <span class="estoque-prod-sku">SKU: ${escapeHtml(p.skuPai||'—')}</span>
@@ -27746,7 +27964,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32s.0-produtos-modal-unificado';
+  const _DIAG_VERSAO_PAINEL = 'v32s.2-massa-4-acoes-2-telas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
