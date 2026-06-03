@@ -28033,7 +28033,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32t.6-fech-telefone-filtro-tag';
+  const _DIAG_VERSAO_PAINEL = 'v32t.7-cobranca-pdf-mensagem-cenario';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30215,18 +30215,36 @@ REGRAS DE OURO:
       }
       showToast('✓ Cobrança emitida! Link: ' + (d.cobranca.linkBoleto||'gerado'));
 
-      // Envia o boleto no WhatsApp (se tiver telefone)
-      if (telefone && d.cobranca.linkBoleto) {
-        const textoWa = `Olá ${f.cliente}! Segue a cobrança referente ao fechamento de ${_fmtMesExt(f.mes)}.\n\n` +
-          `Valor: ${_fmtBRL(f.totalPagar)}\nVencimento: ${venc.split('-').reverse().join('/')}\n\n` +
-          `Boleto/Pix: ${d.cobranca.linkBoleto}`;
+      // Envia a mensagem + o PDF no WhatsApp (se tiver telefone)
+      if (telefone) {
+        // 1) Mensagem: usa o cenário ativo "Na criação da cobrança", se houver
+        const cenCriacao = (cenariosCobranca||[]).find(c => c.tipo === 'criacao' && c.ativo);
+        let textoWa;
+        if (cenCriacao && cenCriacao.mensagem) {
+          textoWa = cenCriacao.mensagem
+            .replace(/\[NOME CLIENTE\]/g, f.cliente || '')
+            .replace(/\[VALOR A RECEBER\]/g, _fmtBRL(f.totalPagar))
+            .replace(/\[DATA VENCIMENTO\]/g, venc.split('-').reverse().join('/'));
+        } else {
+          textoWa = `Olá ${f.cliente}! Segue a cobrança do fechamento de ${_fmtMesExt(f.mes)}.`;
+        }
+        // acrescenta o link do boleto/pix
+        if (d.cobranca.linkBoleto) textoWa += `\n\nBoleto/Pix: ${d.cobranca.linkBoleto}`;
         try {
           await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
             method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
-            body: JSON.stringify({ numero: telefone, texto: textoWa }),
+            body: JSON.stringify({ numero: telefone, texto: textoWa, perfil: 'financeiro' }),
           });
-          showToast('✓ Boleto enviado ao cliente no WhatsApp');
-        } catch(e) { showToast('Cobrança emitida, mas falhou enviar no WhatsApp', true); }
+          // 2) Anexa o PDF do fechamento
+          const pdf = _gerarPdfFechamento(f, { retornarBase64: true });
+          if (pdf && pdf.dataUri) {
+            await fetch(BACKEND_URL + '/api/whatsapp/documento', {
+              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+              body: JSON.stringify({ numero: telefone, url: pdf.dataUri, nomeArquivo: pdf.nomeArq, legenda: 'Fechamento ' + _fmtMesExt(f.mes), perfil: 'financeiro' }),
+            });
+          }
+          showToast('✓ Mensagem + PDF + boleto enviados no WhatsApp');
+        } catch(e) { showToast('Cobrança emitida, mas falhou enviar no WhatsApp: ' + e.message, true); }
       } else {
         showToast('Cobrança emitida. (Sem telefone do cliente — não enviei no WhatsApp)', false);
       }
@@ -30300,7 +30318,7 @@ REGRAS DE OURO:
 
   const LOGO_LIDER = 'data:image/jpeg;base64,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';
   // Gera o PDF de apresentação do fechamento (padrão verde, estilo slides)
-  function _gerarPdfFechamento(f) {
+  function _gerarPdfFechamento(f, opts) {
     try {
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' }); // 297x210
@@ -30412,11 +30430,16 @@ REGRAS DE OURO:
       doc.text('por venda e o status de cada pedido em tempo real. Até o próximo mês!', 28, 182);
 
       const nomeArq = `Fechamento_${(f.cliente||'cliente').replace(/\s+/g,'_')}_${f.mes||''}.pdf`;
+      if (opts && opts.retornarBase64) {
+        // retorna data-URI base64 (pra anexar no WhatsApp), sem baixar
+        return { nomeArq, dataUri: doc.output('datauristring') };
+      }
       doc.save(nomeArq);
       showToast('📄 PDF gerado!');
     } catch(e) {
       console.error('[pdf fechamento]', e);
       showToast('Erro ao gerar PDF: ' + e.message, true);
+      return null;
     }
   }
 
