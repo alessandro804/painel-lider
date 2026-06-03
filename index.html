@@ -4088,6 +4088,38 @@
       </div>
 
       <div class="content">
+        <!-- DASHBOARD FINANCEIRA -->
+        <div id="fechDashboard" style="margin-bottom:14px">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px">
+            <div style="background:#dcfce7;border-radius:14px;padding:16px">
+              <div style="font-size:12px;color:#15803d;font-weight:600">💵 Total em aberto</div>
+              <div style="font-size:24px;font-weight:800;color:#166534;margin-top:4px" id="dashEmAberto">R$ 0,00</div>
+            </div>
+            <div style="background:#dbeafe;border-radius:14px;padding:16px">
+              <div style="font-size:12px;color:#1d4ed8;font-weight:600">👍 Total recebido</div>
+              <div style="font-size:24px;font-weight:800;color:#1e40af;margin-top:4px" id="dashRecebido">R$ 0,00</div>
+            </div>
+            <div style="background:#fee2e2;border-radius:14px;padding:16px">
+              <div style="font-size:12px;color:#b91c1c;font-weight:600">⚠️ Atrasados</div>
+              <div style="font-size:24px;font-weight:800;color:#991b1b;margin-top:4px" id="dashAtrasado">R$ 0,00</div>
+            </div>
+            <div style="background:#fef3c7;border-radius:14px;padding:16px">
+              <div style="font-size:12px;color:#92400e;font-weight:600">♻️ Recuperação</div>
+              <div style="font-size:24px;font-weight:800;color:#854d0e;margin-top:4px" id="dashRecuperacao">0%</div>
+            </div>
+          </div>
+          <div class="transactions-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+              <h3 style="margin:0">📊 Situação das cobranças</h3>
+              <button class="toolbar-btn" onclick="atualizarStatusCobrancas()">🔄 Atualizar status (Asaas)</button>
+            </div>
+            <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;margin-top:14px">
+              <div id="dashRosca" style="flex:0 0 auto"></div>
+              <div id="dashLegenda" style="flex:1;min-width:200px;font-size:13px"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Histórico / novo -->
         <div class="transactions-card" style="margin-bottom:14px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
@@ -6649,6 +6681,7 @@
         <div class="settings-tabs">
           <button class="settings-tab active" onclick="setSettingsTab('financas', this)">💰 Finanças</button>
           <button class="settings-tab" onclick="setSettingsTab('gerais', this)">⚙️ Config. Gerais</button>
+          <button class="settings-tab" onclick="setSettingsTab('cobrancas', this); renderCenarios()">📨 Cobranças</button>
           <button class="settings-tab" onclick="setSettingsTab('prompts', this)">🤖 Prompts da IA</button>
           <button class="settings-tab" onclick="setSettingsTab('backup', this)">💾 Backup</button>
           <button class="settings-tab" onclick="setSettingsTab('profile', this)">👤 Perfil</button>
@@ -6958,6 +6991,25 @@
         </div>
 
         <!-- Tab: Prompts da IA -->
+        <!-- Tab: Cobranças (cenários de disparo da régua) -->
+        <div class="settings-panel" id="panel-cobrancas">
+          <div class="settings-card">
+            <div class="settings-card-header">
+              <div>
+                <div class="settings-card-title">📨 Cenários de disparo de cobrança</div>
+                <div class="settings-card-subtitle">Configure quais mensagens o sistema envia e quando (antes, no dia e após o vencimento, ou na criação da cobrança). Quem paga sai da fila automaticamente.</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+              <button class="toolbar-btn" onclick="novoCenario('antes')">+ Antes do vencimento</button>
+              <button class="toolbar-btn" onclick="novoCenario('no_dia')">+ No dia do vencimento</button>
+              <button class="toolbar-btn" onclick="novoCenario('apos')">+ Após o vencimento</button>
+              <button class="toolbar-btn" onclick="novoCenario('criacao')">+ Na criação da cobrança</button>
+            </div>
+            <div id="cenariosLista" style="display:flex;gap:14px;flex-wrap:wrap"></div>
+          </div>
+        </div>
+
         <div class="settings-panel" id="panel-prompts">
           <div class="settings-card" style="border:2px solid #7c3aed">
             <div class="settings-card-title">🤖 Prompts da IA</div>
@@ -27973,7 +28025,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32t.2-whatsapp-financeiro-conexao';
+  const _DIAG_VERSAO_PAINEL = 'v32t.5-regua-cobranca';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29613,6 +29665,7 @@ REGRAS DE OURO:
 
   function renderFechamento() {
     renderFechamentosList();
+    if (typeof renderDashboardFinanceira === 'function') renderDashboardFinanceira();
     document.getElementById('fechamentoEditor').style.display = 'none';
   }
   window.renderFechamento = renderFechamento;
@@ -29661,7 +29714,148 @@ REGRAS DE OURO:
   }
   window._resolverTelefoneCliente = _resolverTelefoneCliente;
 
-  // === Asaas: vínculo cliente→conta, CPF/CNPJ, contas ===
+  // === Dashboard financeira (totais + rosca, dados reais dos fechamentos) ===
+  function renderDashboardFinanceira() {
+    let emAberto = 0, recebido = 0, atrasado = 0;
+    let nAberto = 0, nPago = 0, nVencido = 0;
+    const hoje = new Date().toISOString().slice(0,10);
+    (fechamentos||[]).forEach(f => {
+      if (!f.cobranca) return; // só conta os que viraram cobrança
+      const valor = Number(f.totalPagar) || 0;
+      const pago = f.statusPagamento === 'pago';
+      const venc = (f.vencimento || '');
+      if (pago) { recebido += valor; nPago++; }
+      else if (venc && venc < hoje) { atrasado += valor; emAberto += valor; nVencido++; }
+      else { emAberto += valor; nAberto++; }
+    });
+    const totalCobrado = recebido + emAberto;
+    const recup = totalCobrado > 0 ? Math.round((recebido/totalCobrado)*100) : 0;
+    const set = (id,v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
+    set('dashEmAberto', _fmtBRL(emAberto));
+    set('dashRecebido', _fmtBRL(recebido));
+    set('dashAtrasado', _fmtBRL(atrasado));
+    set('dashRecuperacao', recup + '%');
+
+    // Rosca SVG (pago / em aberto / vencido) por contagem
+    const total = nPago + nAberto + nVencido;
+    const rosca = document.getElementById('dashRosca');
+    const leg = document.getElementById('dashLegenda');
+    if (!rosca) return;
+    if (total === 0) {
+      rosca.innerHTML = '<div style="width:160px;height:160px;border-radius:50%;border:18px solid #f1f5f9;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:12px;text-align:center">Sem<br>cobranças</div>';
+      if (leg) leg.innerHTML = '<div style="color:#9ca3af">Nenhuma cobrança emitida ainda. Crie um fechamento com cobrança pra ver os dados aqui.</div>';
+      return;
+    }
+    const segs = [
+      { nome:'Pago', n:nPago, cor:'#eab308' },
+      { nome:'Em aberto', n:nAberto, cor:'#3b82f6' },
+      { nome:'Vencido', n:nVencido, cor:'#22c55e' },
+    ];
+    // monta o conic-gradient
+    let acc = 0; const partes = [];
+    segs.forEach(s => { const ini=acc/total*360; acc+=s.n; const fim=acc/total*360; if(s.n>0) partes.push(`${s.cor} ${ini}deg ${fim}deg`); });
+    rosca.innerHTML = `<div style="width:170px;height:170px;border-radius:50%;background:conic-gradient(${partes.join(',')});display:flex;align-items:center;justify-content:center">
+      <div style="width:100px;height:100px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px">${total}</div></div>`;
+    if (leg) leg.innerHTML = segs.map(s => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="width:12px;height:12px;border-radius:3px;background:${s.cor};display:inline-block"></span>${s.nome}: <b>${s.n}</b> (${total?Math.round(s.n/total*100):0}%)</div>`).join('');
+  }
+  window.renderDashboardFinanceira = renderDashboardFinanceira;
+
+  // Atualiza o status de pagamento consultando o Asaas (baixa automática)
+  async function atualizarStatusCobrancas() {
+    const comCobranca = (fechamentos||[]).filter(f => f.cobranca && f.cobranca.id && f.statusPagamento !== 'pago');
+    if (!comCobranca.length) { showToast('Nenhuma cobrança pendente pra checar'); return; }
+    showToast('🔄 Checando ' + comCobranca.length + ' cobrança(s) no Asaas...');
+    let pagos = 0;
+    for (const f of comCobranca) {
+      try {
+        const r = await fetch(BACKEND_URL + '/api/asaas/cobranca/' + f.cobranca.contaId + '/' + f.cobranca.id, { headers: { 'x-api-token': getApiToken() } });
+        const d = await r.json();
+        if (d.ok && d.pago) {
+          const i = fechamentos.findIndex(x=>x.id===f.id);
+          if (i>=0) { fechamentos[i].statusPagamento = 'pago'; pagos++; }
+        }
+      } catch(e) { /* segue */ }
+    }
+    if (pagos) saveFechamentos();
+    renderDashboardFinanceira();
+    showToast(pagos ? `✓ ${pagos} cobrança(s) baixada(s) como paga(s)` : 'Nenhum pagamento novo identificado');
+  }
+  window.atualizarStatusCobrancas = atualizarStatusCobrancas;
+
+  // === Cenários de disparo de cobrança (régua) ===
+  let cenariosCobranca = JSON.parse(localStorage.getItem('lider_cenarios_cobranca') || 'null') || _cenariosPadrao();
+  function _cenariosPadrao() {
+    return [
+      { id:'c1', tipo:'criacao', ativo:true, dias:0, horario:'09:00', mensagem:'Bom dia! Tudo bem?\n\nSegue o fechamento do mês anterior juntamente com o boleto.\n\nSua contribuição é essencial pra manter a qualidade dos nossos serviços. Qualquer dúvida, estamos à disposição!' },
+      { id:'c2', tipo:'antes', ativo:true, dias:1, horario:'13:00', mensagem:'Olá, [NOME CLIENTE]\n\nGostaria de lembrar que o pagamento referente ao fechamento vence amanhã, dia [DATA VENCIMENTO]. Caso já tenha pago, desconsidere este aviso.' },
+      { id:'c3', tipo:'no_dia', ativo:true, dias:0, horario:'10:00', mensagem:'Olá, [NOME CLIENTE]\n\nHoje, [DATA VENCIMENTO], vence o pagamento no valor de [VALOR A RECEBER]. Pedimos que realize o pagamento ainda hoje pra evitar juros e encargos.' },
+      { id:'c4', tipo:'apos', ativo:true, dias:3, horario:'09:00', mensagem:'Olá, [NOME CLIENTE]\n\nIdentificamos que o pagamento com vencimento em [DATA VENCIMENTO] ainda não foi realizado. Pedimos que regularize o quanto antes pra evitar juros adicionais.' },
+    ];
+  }
+  function saveCenarios() {
+    try {
+      localStorage.setItem('lider_cenarios_cobranca', JSON.stringify(cenariosCobranca));
+      LiderSync.schedulePush('cenariosCobranca', () => LiderSync.pushAppData('cenariosCobranca', cenariosCobranca));
+    } catch(e) { console.error('[cenarios]', e); }
+  }
+  const _CENARIO_LABEL = { antes:'Antes do vencimento', no_dia:'No dia do vencimento', apos:'Após o vencimento', criacao:'Na criação da cobrança' };
+
+  function renderCenarios() {
+    const wrap = document.getElementById('cenariosLista');
+    if (!wrap) return;
+    if (!cenariosCobranca.length) { wrap.innerHTML = '<div style="color:#9ca3af;padding:12px">Nenhum cenário. Adicione um acima.</div>'; return; }
+    wrap.innerHTML = cenariosCobranca.map(c => {
+      const temDias = (c.tipo === 'antes' || c.tipo === 'apos');
+      return `<div style="flex:1;min-width:280px;max-width:340px;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb">
+          <b style="font-size:14px">${_CENARIO_LABEL[c.tipo]}</b>
+          <button onclick="excluirCenario('${c.id}')" style="background:none;border:none;cursor:pointer;font-size:16px;color:#9ca3af">✕</button>
+        </div>
+        <div style="padding:14px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;margin-bottom:10px">
+            <input type="checkbox" ${c.ativo?'checked':''} onchange="updCenario('${c.id}','ativo',this.checked)" style="width:18px;height:18px"> Ativo
+          </label>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            ${temDias ? `<div style="flex:1"><label class="form-label">Dias</label><input type="number" min="0" class="form-input" value="${c.dias}" onchange="updCenario('${c.id}','dias',parseInt(this.value)||0)"></div>` : ''}
+            <div style="flex:1"><label class="form-label">Horário</label><input type="time" class="form-input" value="${c.horario}" onchange="updCenario('${c.id}','horario',this.value)"></div>
+          </div>
+          <label class="form-label">Variáveis (clique pra inserir)</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+            <button class="toolbar-btn" style="font-size:11px;padding:3px 8px" onclick="insVarCenario('${c.id}','[NOME CLIENTE]')">Nome</button>
+            <button class="toolbar-btn" style="font-size:11px;padding:3px 8px" onclick="insVarCenario('${c.id}','[VALOR A RECEBER]')">Valor</button>
+            <button class="toolbar-btn" style="font-size:11px;padding:3px 8px" onclick="insVarCenario('${c.id}','[DATA VENCIMENTO]')">Vencimento</button>
+          </div>
+          <label class="form-label">Mensagem</label>
+          <textarea id="cenMsg-${c.id}" class="form-input" rows="6" onchange="updCenario('${c.id}','mensagem',this.value)" style="resize:vertical">${escapeHtml(c.mensagem||'')}</textarea>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  window.renderCenarios = renderCenarios;
+
+  function novoCenario(tipo) {
+    cenariosCobranca.push({ id:'c'+Date.now(), tipo, ativo:true, dias: tipo==='apos'?3:(tipo==='antes'?1:0), horario:'09:00', mensagem:'Olá, [NOME CLIENTE]\n\n' });
+    saveCenarios(); renderCenarios();
+  }
+  window.novoCenario = novoCenario;
+  function updCenario(id, campo, valor) {
+    const c = cenariosCobranca.find(x=>x.id===id); if(!c) return;
+    c[campo] = valor; saveCenarios();
+  }
+  window.updCenario = updCenario;
+  function excluirCenario(id) {
+    if (!confirm('Excluir este cenário?')) return;
+    cenariosCobranca = cenariosCobranca.filter(x=>x.id!==id); saveCenarios(); renderCenarios();
+  }
+  window.excluirCenario = excluirCenario;
+  function insVarCenario(id, variavel) {
+    const ta = document.getElementById('cenMsg-'+id); if(!ta) return;
+    const pos = ta.selectionStart || ta.value.length;
+    ta.value = ta.value.slice(0,pos) + variavel + ta.value.slice(pos);
+    updCenario(id, 'mensagem', ta.value);
+    ta.focus();
+  }
+  window.insVarCenario = insVarCenario;
   let _asaasContas = []; // [{id, nome, configurada}]
   let _clientesAsaas = JSON.parse(localStorage.getItem('lider_clientes_asaas') || '{}'); // nome → {contaId, doc}
 
@@ -29907,6 +30101,7 @@ REGRAS DE OURO:
       tipoComissao: _fechTipoComissao, dadosFixo,
       contaAsaas: (document.getElementById('fechContaAsaas')||{}).value || '',
       clienteDoc: (document.getElementById('fechClienteDoc')||{}).value || '',
+      clienteTelefone: (typeof _resolverTelefoneCliente === 'function' ? _resolverTelefoneCliente((document.getElementById('fechCliente')||{}).value) : '') || '',
       vencimento: (document.getElementById('fechVencimento')||{}).value || '',
       criadoEm: new Date().toISOString()
     };
