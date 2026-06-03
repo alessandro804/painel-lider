@@ -4868,6 +4868,7 @@
     <div id="gerVincLista" style="flex:1;overflow-y:auto;padding:20px 24px;max-width:1100px;margin:0 auto;width:100%"></div>
     <div style="display:flex;gap:10px;padding:16px 24px;border-top:1px solid #e5e7eb;background:#f8fafc;max-width:1100px;margin:0 auto;width:100%;box-sizing:border-box">
       <button onclick="atualizarVinculosDoModal()" style="flex:1;padding:12px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:10px;cursor:pointer;font-weight:700">🔄 Atualizar vínculos</button>
+      <button onclick="replicarEstoqueProdutoModal()" style="flex:1;padding:12px;background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;border-radius:10px;cursor:pointer;font-weight:700">📦 Replicar estoque nos anúncios</button>
       <button onclick="fecharGerenciarVinculos()" style="flex:1;padding:12px;background:#16a34a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:700">Fechar</button>
     </div>
   </div>
@@ -24584,6 +24585,35 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.fecharGerenciarVinculos = fecharGerenciarVinculos;
 
+  // Replica o estoque de TODAS as variações deste produto pros anúncios vinculados.
+  async function replicarEstoqueProdutoModal() {
+    const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
+    if (!p) return;
+    const tarefas = [];
+    (p.variacoes||[]).forEach(v => {
+      if (!v.sku) return;
+      const anuncios = _anunciosPorSku(v.sku);
+      if (anuncios.length) tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios });
+    });
+    if (!tarefas.length) { showToast('Nenhuma variação com anúncio vinculado', true); return; }
+    const totalAnuncios = tarefas.reduce((s,t)=>s+t.anuncios.length,0);
+    if (!confirm(`Replicar o estoque de ${tarefas.length} variação(ões) deste produto para ${totalAnuncios} anúncio(s)? O valor do painel prevalece.`)) return;
+    showToast(`📦 Replicando ${tarefas.length} variação(ões)...`);
+    let ok = 0, falha = 0;
+    for (const t of tarefas) {
+      try {
+        const r = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          body: JSON.stringify(t),
+        });
+        const d = await r.json();
+        ok += (d.dados?.sucesso)||0; falha += (d.dados?.falhas)||0;
+      } catch(e) { falha++; }
+    }
+    showToast(falha===0 ? `✓ Estoque replicado em ${ok} anúncio(s)` : `⚠ ${ok} ok, ${falha} falha(s)`, falha>0);
+  }
+  window.replicarEstoqueProdutoModal = replicarEstoqueProdutoModal;
+
   async function atualizarVinculosDoModal() {
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
     if (!p) return;
@@ -27964,7 +27994,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32s.2-massa-4-acoes-2-telas';
+  const _DIAG_VERSAO_PAINEL = 'v32s.3-replicar-produto-no-modal';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
