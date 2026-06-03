@@ -4124,7 +4124,11 @@
         <div class="transactions-card" style="margin-bottom:14px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <h3 style="margin:0">Fechamentos salvos</h3>
-            <button class="primary-btn" style="background:#38A83A" onclick="novoFechamento()">+ Novo fechamento</button>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="month" id="fechFiltroMes" class="form-input" style="width:auto" onchange="renderFechamento()">
+              <button class="toolbar-btn" onclick="document.getElementById('fechFiltroMes').value=''; renderFechamento()">Todos os meses</button>
+              <button class="primary-btn" style="background:#38A83A" onclick="novoFechamento()">+ Novo fechamento</button>
+            </div>
           </div>
           <div id="fechamentosList" style="margin-top:12px"></div>
         </div>
@@ -4157,6 +4161,10 @@
             <div style="flex:1;min-width:160px">
               <label class="form-label">CPF/CNPJ do cliente</label>
               <input type="text" class="form-input" id="fechClienteDoc" placeholder="Só números" oninput="salvarDocCliente()">
+            </div>
+            <div style="flex:1;min-width:150px">
+              <label class="form-label">📱 WhatsApp do cliente</label>
+              <input type="text" class="form-input" id="fechClienteTel" placeholder="(DDD) número" oninput="salvarTelCliente()">
             </div>
             <div style="flex:1;min-width:140px">
               <label class="form-label">Vencimento</label>
@@ -28025,7 +28033,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32t.5-regua-cobranca';
+  const _DIAG_VERSAO_PAINEL = 'v32t.6-fech-telefone-filtro-tag';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29670,25 +29678,45 @@ REGRAS DE OURO:
   }
   window.renderFechamento = renderFechamento;
 
+  function _fechamentosFiltrados() {
+    const filtroMes = (document.getElementById('fechFiltroMes')||{}).value || '';
+    let lista = fechamentos.slice();
+    if (filtroMes) lista = lista.filter(f => (f.mes||'') === filtroMes);
+    return lista.sort((a,b)=>(b.mes||'').localeCompare(a.mes||''));
+  }
+  window._fechamentosFiltrados = _fechamentosFiltrados;
+
   function renderFechamentosList() {
     const wrap = document.getElementById('fechamentosList');
     if (!wrap) return;
-    if (!fechamentos.length) {
-      wrap.innerHTML = '<div style="color:#9ca3af;font-size:13px;padding:8px">Nenhum fechamento salvo ainda. Clique em "+ Novo fechamento".</div>';
+    const lista = _fechamentosFiltrados();
+    if (!lista.length) {
+      wrap.innerHTML = '<div style="color:#9ca3af;font-size:13px;padding:8px">Nenhum fechamento neste período. Mude o filtro de mês ou clique em "+ Novo fechamento".</div>';
       return;
     }
-    wrap.innerHTML = fechamentos.slice().sort((a,b)=>(b.mes||'').localeCompare(a.mes||'')).map(f => `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px">
+    // Resumo de quantos receberam mensagem (têm cobrança = mensagem foi enviada ao criar)
+    const comMsg = lista.filter(f => f.cobranca).length;
+    const resumo = `<div style="font-size:12px;color:#6b7280;margin-bottom:8px">📨 ${comMsg} de ${lista.length} fechamento(s) com cobrança/mensagem enviada</div>`;
+    wrap.innerHTML = resumo + lista.map(f => {
+      const enviada = !!f.cobranca;
+      const pago = f.statusPagamento === 'pago';
+      const tag = pago
+        ? '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:#dcfce7;color:#166534">✓ Pago</span>'
+        : (enviada
+          ? '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:#dbeafe;color:#1d4ed8">📨 Cobrança enviada</span>'
+          : '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:#f3f4f6;color:#9ca3af">Sem cobrança</span>');
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;flex-wrap:wrap;gap:8px">
         <div>
-          <div style="font-weight:700">${escapeHtml(f.cliente || '—')}</div>
-          <div style="font-size:12px;color:#6b7280">${_fmtMesExt(f.mes)} · Total: ${_fmtBRL(f.totalPagar)}</div>
+          <div style="font-weight:700">${escapeHtml(f.cliente || '—')} ${tag}</div>
+          <div style="font-size:12px;color:#6b7280">${_fmtMesExt(f.mes)} · Total: ${_fmtBRL(f.totalPagar)}${f.clienteTelefone ? ' · 📱 '+escapeHtml(f.clienteTelefone) : ''}</div>
         </div>
         <div style="display:flex;gap:6px">
           <button class="toolbar-btn" style="font-size:12px" onclick="editarFechamento('${f.id}')">Editar</button>
           <button class="toolbar-btn" style="font-size:12px" onclick="gerarPdfFechamentoSalvo('${f.id}')">📄 PDF</button>
           <button class="delete-btn" style="font-size:12px;padding:4px 8px" onclick="excluirFechamento('${f.id}')">🗑</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }
 
   function _fmtMesExt(mes) {
@@ -29719,7 +29747,8 @@ REGRAS DE OURO:
     let emAberto = 0, recebido = 0, atrasado = 0;
     let nAberto = 0, nPago = 0, nVencido = 0;
     const hoje = new Date().toISOString().slice(0,10);
-    (fechamentos||[]).forEach(f => {
+    const baseList = (typeof _fechamentosFiltrados === 'function') ? _fechamentosFiltrados() : (fechamentos||[]);
+    (baseList).forEach(f => {
       if (!f.cobranca) return; // só conta os que viraram cobrança
       const valor = Number(f.totalPagar) || 0;
       const pago = f.statusPagamento === 'pago';
@@ -29907,6 +29936,16 @@ REGRAS DE OURO:
   }
   window.salvarDocCliente = salvarDocCliente;
 
+  function salvarTelCliente() {
+    const cliente = _clienteAtualFech();
+    if (!cliente) return;
+    const tel = (document.getElementById('fechClienteTel').value || '').trim();
+    if (!_clientesAsaas[cliente]) _clientesAsaas[cliente] = {};
+    _clientesAsaas[cliente].telefone = tel;
+    _saveClientesAsaas();
+  }
+  window.salvarTelCliente = salvarTelCliente;
+
   // Carrega o vínculo Asaas salvo do cliente selecionado nos campos
   function _carregarAsaasDoCliente() {
     const cliente = _clienteAtualFech();
@@ -29915,6 +29954,11 @@ REGRAS DE OURO:
     const inpDoc = document.getElementById('fechClienteDoc');
     if (selConta) selConta.value = info.contaId || '';
     if (inpDoc) inpDoc.value = info.doc || '';
+    const inpTel = document.getElementById('fechClienteTel');
+    if (inpTel) {
+      const cliente = _clienteAtualFech();
+      inpTel.value = info.telefone || (typeof _resolverTelefoneCliente==='function' ? _resolverTelefoneCliente(cliente) : '') || '';
+    }
   }
 
   // Vencimento padrão: dia 10 do mês de referência (ou próximo mês se já passou)
@@ -30101,7 +30145,7 @@ REGRAS DE OURO:
       tipoComissao: _fechTipoComissao, dadosFixo,
       contaAsaas: (document.getElementById('fechContaAsaas')||{}).value || '',
       clienteDoc: (document.getElementById('fechClienteDoc')||{}).value || '',
-      clienteTelefone: (typeof _resolverTelefoneCliente === 'function' ? _resolverTelefoneCliente((document.getElementById('fechCliente')||{}).value) : '') || '',
+      clienteTelefone: (document.getElementById('fechClienteTel')||{}).value || (typeof _resolverTelefoneCliente === 'function' ? _resolverTelefoneCliente((document.getElementById('fechCliente')||{}).value) : '') || '',
       vencimento: (document.getElementById('fechVencimento')||{}).value || '',
       criadoEm: new Date().toISOString()
     };
@@ -30201,6 +30245,7 @@ REGRAS DE OURO:
     // Carrega contas Asaas e restaura o vínculo do cliente (após as contas chegarem)
     carregarContasAsaas().then(() => _carregarAsaasDoCliente());
     document.getElementById('fechVencimento').value = f.vencimento || _vencimentoPadrao(f.mes);
+    const _tel = document.getElementById('fechClienteTel'); if (_tel) _tel.value = f.clienteTelefone || '';
     document.getElementById('fechMes').value = f.mes || '';
     document.getElementById('fechPlataformas').innerHTML = '';
     (f.plataformas||[]).forEach(p => fechAddPlataforma(p.nome, _fmtNum(p.valor)));
