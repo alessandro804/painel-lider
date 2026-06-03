@@ -4113,6 +4113,25 @@
             </div>
           </div>
 
+          <!-- Dados de cobrança Asaas -->
+          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:12px">
+            <div style="flex:1;min-width:180px">
+              <label class="form-label" style="color:#0369a1">💳 Conta Asaas que cobra este cliente</label>
+              <select class="form-select" id="fechContaAsaas" onchange="salvarVinculoAsaas()">
+                <option value="">— Selecione —</option>
+              </select>
+              <div class="settings-help" style="font-size:11px;margin-top:3px">Fica salvo pra este cliente até você alterar.</div>
+            </div>
+            <div style="flex:1;min-width:160px">
+              <label class="form-label">CPF/CNPJ do cliente</label>
+              <input type="text" class="form-input" id="fechClienteDoc" placeholder="Só números" oninput="salvarDocCliente()">
+            </div>
+            <div style="flex:1;min-width:140px">
+              <label class="form-label">Vencimento</label>
+              <input type="date" class="form-input" id="fechVencimento">
+            </div>
+          </div>
+
           <!-- Tipo de comissão (no topo — reconfigura os campos abaixo) -->
           <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px;margin-bottom:14px">
             <label class="form-label" style="color:#1d4ed8;font-weight:700">Tipo de cobrança</label>
@@ -27867,7 +27886,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32s.5-faxina-copias';
+  const _DIAG_VERSAO_PAINEL = 'v32t.0-asaas-vinculo-cliente';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29547,15 +29566,88 @@ REGRAS DE OURO:
     html += `<option value="__novo__">+ Novo cliente (digitar)</option>`;
     sel.innerHTML = html;
   }
+  // === Asaas: vínculo cliente→conta, CPF/CNPJ, contas ===
+  let _asaasContas = []; // [{id, nome, configurada}]
+  let _clientesAsaas = JSON.parse(localStorage.getItem('lider_clientes_asaas') || '{}'); // nome → {contaId, doc}
+
+  function _saveClientesAsaas() {
+    try {
+      localStorage.setItem('lider_clientes_asaas', JSON.stringify(_clientesAsaas));
+      LiderSync.schedulePush('clientesAsaas', () => LiderSync.pushAppData('clientesAsaas', _clientesAsaas));
+    } catch(e) { console.error('[clientesAsaas]', e); }
+  }
+
+  async function carregarContasAsaas() {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/asaas/contas', { headers: { 'x-api-token': getApiToken() } });
+      const d = await r.json();
+      _asaasContas = (d.contas || []).filter(c => c.configurada);
+    } catch(e) { _asaasContas = []; }
+    const sel = document.getElementById('fechContaAsaas');
+    if (sel) {
+      sel.innerHTML = '<option value="">— Selecione —</option>' +
+        _asaasContas.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+    }
+  }
+  window.carregarContasAsaas = carregarContasAsaas;
+
+  function _clienteAtualFech() {
+    const sel = document.getElementById('fechCliente');
+    let c = sel ? sel.value : '';
+    if (c === '__novo__') c = (document.getElementById('fechClienteNovo').value || '').trim();
+    return c;
+  }
+
+  function salvarVinculoAsaas() {
+    const cliente = _clienteAtualFech();
+    if (!cliente) return;
+    const contaId = document.getElementById('fechContaAsaas').value;
+    if (!_clientesAsaas[cliente]) _clientesAsaas[cliente] = {};
+    _clientesAsaas[cliente].contaId = contaId;
+    _saveClientesAsaas();
+  }
+  window.salvarVinculoAsaas = salvarVinculoAsaas;
+
+  function salvarDocCliente() {
+    const cliente = _clienteAtualFech();
+    if (!cliente) return;
+    const doc = (document.getElementById('fechClienteDoc').value || '').trim();
+    if (!_clientesAsaas[cliente]) _clientesAsaas[cliente] = {};
+    _clientesAsaas[cliente].doc = doc;
+    _saveClientesAsaas();
+  }
+  window.salvarDocCliente = salvarDocCliente;
+
+  // Carrega o vínculo Asaas salvo do cliente selecionado nos campos
+  function _carregarAsaasDoCliente() {
+    const cliente = _clienteAtualFech();
+    const info = _clientesAsaas[cliente] || {};
+    const selConta = document.getElementById('fechContaAsaas');
+    const inpDoc = document.getElementById('fechClienteDoc');
+    if (selConta) selConta.value = info.contaId || '';
+    if (inpDoc) inpDoc.value = info.doc || '';
+  }
+
+  // Vencimento padrão: dia 10 do mês de referência (ou próximo mês se já passou)
+  function _vencimentoPadrao(mesRef) {
+    let ano, mes;
+    if (mesRef && /^\d{4}-\d{2}$/.test(mesRef)) { [ano, mes] = mesRef.split('-').map(Number); }
+    else { const h = new Date(); ano = h.getFullYear(); mes = h.getMonth()+1; }
+    // dia 10 do mês de referência
+    const d = new Date(ano, mes-1, 10);
+    const off = d.getTimezoneOffset()*60000;
+    return new Date(d - off).toISOString().slice(0,10);
+  }
+
   function onFechClienteChange() {
     const sel = document.getElementById('fechCliente');
     const novo = document.getElementById('fechClienteNovo');
     novo.style.display = (sel.value === '__novo__') ? 'block' : 'none';
-    // sugere o % de comissão salvo pra esse cliente
     if (sel.value && sel.value !== '__novo__') {
       const ult = fechamentos.filter(f => f.cliente === sel.value).sort((a,b)=>(b.mes||'').localeCompare(a.mes||''))[0];
       if (ult && ult.percentual != null) document.getElementById('fechPercentual').value = ult.percentual;
     }
+    _carregarAsaasDoCliente();
   }
   window.onFechClienteChange = onFechClienteChange;
 
@@ -29568,6 +29660,10 @@ REGRAS DE OURO:
     document.getElementById('fechClienteNovo').value = '';
     const hoje = new Date();
     document.getElementById('fechMes').value = hoje.toISOString().slice(0,7);
+    carregarContasAsaas();
+    document.getElementById('fechContaAsaas').value = '';
+    document.getElementById('fechClienteDoc').value = '';
+    document.getElementById('fechVencimento').value = _vencimentoPadrao(hoje.toISOString().slice(0,7));
     document.getElementById('fechPlataformas').innerHTML = '';
     fechAddPlataforma(); fechAddPlataforma();
     ['fechCanceladas','fechReembolsos','fechReajustes','fechMensalidade','fechFaturador','fechFotos'].forEach(id => document.getElementById(id).value = '0');
