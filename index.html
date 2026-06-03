@@ -27886,7 +27886,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32t.0-asaas-vinculo-cliente';
+  const _DIAG_VERSAO_PAINEL = 'v32t.1-asaas-emitir-cobranca';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29566,6 +29566,14 @@ REGRAS DE OURO:
     html += `<option value="__novo__">+ Novo cliente (digitar)</option>`;
     sel.innerHTML = html;
   }
+  function _resolverTelefoneCliente(nomeCliente) {
+    try {
+      const c = (listarClientesUnicos() || []).find(x => x.nome === nomeCliente);
+      return c ? (c.telefone || '') : '';
+    } catch(e) { return ''; }
+  }
+  window._resolverTelefoneCliente = _resolverTelefoneCliente;
+
   // === Asaas: vínculo cliente→conta, CPF/CNPJ, contas ===
   let _asaasContas = []; // [{id, nome, configurada}]
   let _clientesAsaas = JSON.parse(localStorage.getItem('lider_clientes_asaas') || '{}'); // nome → {contaId, doc}
@@ -29810,11 +29818,14 @@ REGRAS DE OURO:
       plataformas, receita, canceladas: canc, reembolsos: reemb, reajustes: reaj,
       liquido, percentual: perc, comissao, mensalidade: mens, faturador: fat, fotos, extras, totalPagar,
       tipoComissao: _fechTipoComissao, dadosFixo,
+      contaAsaas: (document.getElementById('fechContaAsaas')||{}).value || '',
+      clienteDoc: (document.getElementById('fechClienteDoc')||{}).value || '',
+      vencimento: (document.getElementById('fechVencimento')||{}).value || '',
       criadoEm: new Date().toISOString()
     };
   }
 
-  function salvarFechamento() {
+  async function salvarFechamento() {
     const f = _coletarFechamento();
     if (!f.cliente) { showToast('Selecione ou digite um cliente', true); return; }
     if (_fechEditando) {
@@ -29826,8 +29837,77 @@ REGRAS DE OURO:
     saveFechamentos();
     renderFechamento();
     showToast('✓ Fechamento salvo');
+
+    // BLOCO 2: emitir cobrança Asaas (com confirmação de segurança — dinheiro real)
+    await _oferecerEmitirCobranca(f);
   }
   window.salvarFechamento = salvarFechamento;
+
+  // Emite a cobrança no Asaas (após confirmação) e manda o boleto no WhatsApp.
+  async function _oferecerEmitirCobranca(f) {
+    if (!f.contaAsaas) {
+      showToast('Fechamento salvo. (Sem conta Asaas vinculada — não emiti cobrança)', false);
+      return;
+    }
+    if (!f.clienteDoc) { showToast('Faltou o CPF/CNPJ do cliente pra emitir o boleto', true); return; }
+    if (!f.totalPagar || f.totalPagar <= 0) { showToast('Total a pagar é zero — não emiti cobrança', true); return; }
+
+    const contaNome = (_asaasContas.find(c => c.id === f.contaAsaas) || {}).nome || f.contaAsaas;
+    const venc = f.vencimento || _vencimentoPadrao(f.mes);
+    // CONFIRMAÇÃO — cobrança real
+    const msg = `Emitir cobrança REAL no Asaas?\n\n` +
+      `Cliente: ${f.cliente}\n` +
+      `Conta: ${contaNome}\n` +
+      `Valor: ${_fmtBRL(f.totalPagar)}\n` +
+      `Vencimento: ${venc.split('-').reverse().join('/')}\n` +
+      `Multa 5% · Juros 2% · Boleto/Pix (sem cartão)\n\n` +
+      `O boleto será gerado e enviado ao cliente no WhatsApp.`;
+    if (!confirm(msg)) { showToast('Cobrança não emitida (cancelada)', false); return; }
+
+    showToast('💳 Emitindo cobrança no Asaas...');
+    try {
+      const telefone = (_resolverTelefoneCliente ? _resolverTelefoneCliente(f.cliente) : '') || '';
+      const resp = await fetch(BACKEND_URL + '/api/asaas/cobranca', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({
+          contaId: f.contaAsaas,
+          cliente: { nome: f.cliente, cpfCnpj: f.clienteDoc, telefone },
+          valor: f.totalPagar,
+          vencimento: venc,
+          descricao: 'Fechamento ' + _fmtMesExt(f.mes) + ' - ' + f.cliente,
+          multa: 5, juros: 2,
+        }),
+      });
+      const d = await resp.json();
+      if (!d.ok) { showToast('Erro ao emitir cobrança: ' + (d.erro||'?'), true); return; }
+      // Guarda os dados da cobrança no fechamento
+      const idx = fechamentos.findIndex(x => x.id === f.id);
+      if (idx >= 0) {
+        fechamentos[idx].cobranca = d.cobranca;
+        fechamentos[idx].statusPagamento = 'pendente';
+        saveFechamentos();
+      }
+      showToast('✓ Cobrança emitida! Link: ' + (d.cobranca.linkBoleto||'gerado'));
+
+      // Envia o boleto no WhatsApp (se tiver telefone)
+      if (telefone && d.cobranca.linkBoleto) {
+        const textoWa = `Olá ${f.cliente}! Segue a cobrança referente ao fechamento de ${_fmtMesExt(f.mes)}.\n\n` +
+          `Valor: ${_fmtBRL(f.totalPagar)}\nVencimento: ${venc.split('-').reverse().join('/')}\n\n` +
+          `Boleto/Pix: ${d.cobranca.linkBoleto}`;
+        try {
+          await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
+            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+            body: JSON.stringify({ numero: telefone, texto: textoWa }),
+          });
+          showToast('✓ Boleto enviado ao cliente no WhatsApp');
+        } catch(e) { showToast('Cobrança emitida, mas falhou enviar no WhatsApp', true); }
+      } else {
+        showToast('Cobrança emitida. (Sem telefone do cliente — não enviei no WhatsApp)', false);
+      }
+    } catch(e) {
+      showToast('Erro ao emitir cobrança: ' + e.message, true);
+    }
+  }
 
   function editarFechamento(id) {
     const f = fechamentos.find(x => x.id === id);
@@ -29836,6 +29916,9 @@ REGRAS DE OURO:
     document.getElementById('fechEditorTitulo').textContent = 'Editar fechamento';
     document.getElementById('fechamentoEditor').style.display = 'block';
     _popularClientesFech(f.cliente);
+    // Carrega contas Asaas e restaura o vínculo do cliente (após as contas chegarem)
+    carregarContasAsaas().then(() => _carregarAsaasDoCliente());
+    document.getElementById('fechVencimento').value = f.vencimento || _vencimentoPadrao(f.mes);
     document.getElementById('fechMes').value = f.mes || '';
     document.getElementById('fechPlataformas').innerHTML = '';
     (f.plataformas||[]).forEach(p => fechAddPlataforma(p.nome, _fmtNum(p.valor)));
