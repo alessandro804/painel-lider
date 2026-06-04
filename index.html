@@ -5479,19 +5479,7 @@
     
     <div style="background:#eff6ff;padding:10px;border-radius:8px;margin-bottom:12px" id="dupSeletorBox"></div>
 
-    <div style="background:#f0fdf4;padding:10px;border-radius:8px;margin-bottom:12px">
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#15803d;cursor:pointer">
-        <input type="checkbox" id="dupReguaAtiva" onchange="dupToggleRegua()"> 💰 Régua de preços (promoção)
-      </label>
-      <div id="dupReguaBox" style="display:none;margin-top:8px">
-        <div style="font-size:10px;color:#6b7280;margin-bottom:6px">Ao exportar, o anúncio entra na promoção vigente. Defina o desconto imediato e mudanças futuras (a partir da exportação).</div>
-        <label style="font-size:11px;font-weight:700;color:#374151">Desconto imediato (R$) — opcional</label>
-        <input type="number" id="dupReguaImediato" step="0.01" min="0" class="form-input" placeholder="ex: 59.90" style="font-size:13px;margin-bottom:8px">
-        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:4px">Degraus futuros</div>
-        <div id="dupReguaDegraus"></div>
-        <button type="button" onclick="dupAddDegrau()" id="dupBtnAddDegrau" style="margin-top:6px;padding:6px 10px;background:#fff;border:1px dashed #16a34a;color:#15803d;border-radius:6px;cursor:pointer;font-size:12px">+ Adicionar degrau</button>
-      </div>
-    </div>
+    <div id="dupReguaContainer" style="margin-bottom:12px"></div>
     
     <div style="background:#fef3c7;padding:10px;border-radius:8px;margin-bottom:14px;font-size:11px;color:#92400e">
       ⚠ Pode demorar alguns minutos (IA + exportação por cópia). Não feche a aba durante o processo.
@@ -17073,6 +17061,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     // injeta o seletor Agora/Agendar (default: Agora)
     const segBox = document.getElementById('dupSeletorBox');
     if (segBox) { segBox.innerHTML = htmlSeletorAgendamento('dup', '📅 Quando exportar'); selAgendamento('dup', false); }
+    if (typeof dupMontarRegua === 'function') dupMontarRegua();
 
     document.getElementById('dupConfigOverlay').classList.add('active');
   }
@@ -17446,44 +17435,26 @@ REGRAS DURAS:
   }
   
   // ── Régua de preços (UI do modal Duplicar) ──────────────────────
-  function dupToggleRegua() {
-    const box = document.getElementById('dupReguaBox');
-    const on = document.getElementById('dupReguaAtiva').checked;
-    if (box) box.style.display = on ? 'block' : 'none';
-    if (on && document.getElementById('dupReguaDegraus').children.length === 0) dupAddDegrau();
+  // Injeta o componente ReguaUI no modal de duplicação (chamar ao abrir o modal)
+  function dupMontarRegua() {
+    const cont = document.getElementById('dupReguaContainer');
+    if (cont && !cont.dataset.montado) {
+      cont.innerHTML = ReguaUI.html('dup', { titulo: '💰 Régua de preços (promoção)' });
+      cont.dataset.montado = '1';
+    }
   }
-  window.dupToggleRegua = dupToggleRegua;
+  window.dupMontarRegua = dupMontarRegua;
 
-  function dupAddDegrau() {
-    const cont = document.getElementById('dupReguaDegraus');
-    if (!cont) return;
-    const div = document.createElement('div');
-    div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px';
-    div.innerHTML = `
-      <span style="font-size:11px;color:#6b7280">daqui</span>
-      <input type="number" class="form-input dup-degrau-dias" min="1" placeholder="dias" style="width:70px;font-size:12px">
-      <span style="font-size:11px;color:#6b7280">dias → R$</span>
-      <input type="number" class="form-input dup-degrau-preco" step="0.01" min="0" placeholder="preço" style="width:90px;font-size:12px">
-      <button type="button" onclick="this.parentElement.remove()" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
-    cont.appendChild(div);
-  }
+  function dupToggleRegua() { ReguaUI.toggle('dup'); }
+  window.dupToggleRegua = dupToggleRegua;
+  function dupAddDegrau() { ReguaUI.addDegrau('dup'); }
   window.dupAddDegrau = dupAddDegrau;
 
-  // Lê a régua configurada no modal → { imediato?, degraus:[{dias,preco}] } ou null
+  // Lê a régua do modal de duplicação. Como o modo de preço depende do preço
+  // atual de cada anúncio, retorna a CONFIG (modo/valor/degraus); a resolução
+  // do preço inicial é feita por anúncio na hora de exportar.
   function dupLerRegua() {
-    const ativa = document.getElementById('dupReguaAtiva');
-    if (!ativa || !ativa.checked) return null;
-    const imediatoVal = parseFloat(document.getElementById('dupReguaImediato').value);
-    const degraus = [];
-    document.querySelectorAll('#dupReguaDegraus > div').forEach(div => {
-      const dias = parseInt(div.querySelector('.dup-degrau-dias').value);
-      const preco = parseFloat(div.querySelector('.dup-degrau-preco').value);
-      if (dias > 0 && preco > 0) degraus.push({ dias, preco });
-    });
-    const regua = {};
-    if (imediatoVal > 0) regua.imediato = imediatoVal;
-    if (degraus.length > 0) regua.degraus = degraus;
-    return (regua.imediato != null || (regua.degraus && regua.degraus.length)) ? regua : null;
+    return ReguaUI.ler('dup'); // { modo, valor, degraus } ou null
   }
   window.dupLerRegua = dupLerRegua;
 
@@ -17524,6 +17495,121 @@ REGRAS DURAS:
     return (regua.imediato != null || (regua.degraus && regua.degraus.length)) ? regua : null;
   }
   window.demLerRegua = demLerRegua;
+
+  // ============================================================
+  // COMPONENTE DE RÉGUA DE PREÇOS REUTILIZÁVEL (ReguaUI)
+  // Um só componente pra todos os cenários (duplicação, promoção, criação,
+  // duplicar pra loja). Gera o HTML e lê os valores. Use prefixos diferentes
+  // pra ter vários na mesma tela.
+  //
+  // Modos de preço (aplicados a TODAS as variações igualmente):
+  //   'fixo'      → preço inicial = valor R$ informado
+  //   'menos_rs'  → preço atual − R$ X
+  //   'mais_rs'   → preço atual + R$ X
+  //   'menos_pct' → preço atual − X%
+  //   'mais_pct'  → preço atual + X%
+  //   'manter'    → mantém o preço atual (sem desconto inicial)
+  // + degraus: dias → novo preço (mudança programada de preço)
+  // ============================================================
+  const ReguaUI = {
+    html(prefixo, opts) {
+      opts = opts || {};
+      const titulo = opts.titulo || '💸 Régua de preços';
+      return `<div class="regua-ui" data-prefixo="${prefixo}" style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fafbff">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="${prefixo}_reguaAtiva" onchange="ReguaUI.toggle('${prefixo}')" style="width:16px;height:16px"> ${titulo}
+        </label>
+        <div id="${prefixo}_reguaBox" style="display:none;margin-top:10px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <div style="flex:2;min-width:160px">
+              <label class="form-label" style="font-size:11px">Preço inicial (promoção)</label>
+              <select class="form-select" id="${prefixo}_reguaModo" style="font-size:12px" onchange="ReguaUI.onModo('${prefixo}')">
+                <option value="manter">Manter preço atual</option>
+                <option value="menos_pct">Preço atual − X%</option>
+                <option value="menos_rs">Preço atual − R$ X</option>
+                <option value="mais_pct">Preço atual + X%</option>
+                <option value="mais_rs">Preço atual + R$ X</option>
+                <option value="fixo">Valor fixo R$</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:90px" id="${prefixo}_reguaValorWrap">
+              <label class="form-label" style="font-size:11px" id="${prefixo}_reguaValorLabel">Valor</label>
+              <input type="number" step="0.01" min="0" class="form-input" id="${prefixo}_reguaValor" style="font-size:12px" placeholder="0">
+            </div>
+          </div>
+          <div style="margin-top:10px">
+            <label class="form-label" style="font-size:11px">Régua: subir o preço ao longo dos dias (opcional)</label>
+            <div id="${prefixo}_reguaDegraus"></div>
+            <button type="button" class="toolbar-btn" style="font-size:11px;margin-top:4px" onclick="ReguaUI.addDegrau('${prefixo}')">+ Adicionar degrau</button>
+          </div>
+        </div>
+      </div>`;
+    },
+    toggle(prefixo) {
+      const box = document.getElementById(prefixo+'_reguaBox');
+      const on = document.getElementById(prefixo+'_reguaAtiva').checked;
+      if (box) box.style.display = on ? 'block' : 'none';
+      ReguaUI.onModo(prefixo);
+    },
+    onModo(prefixo) {
+      const modo = (document.getElementById(prefixo+'_reguaModo')||{}).value;
+      const wrap = document.getElementById(prefixo+'_reguaValorWrap');
+      const label = document.getElementById(prefixo+'_reguaValorLabel');
+      if (!wrap) return;
+      if (modo === 'manter') { wrap.style.display = 'none'; return; }
+      wrap.style.display = 'block';
+      if (label) label.textContent = (modo.includes('pct')) ? 'Percentual (%)' : 'Valor (R$)';
+    },
+    addDegrau(prefixo) {
+      const cont = document.getElementById(prefixo+'_reguaDegraus');
+      if (!cont) return;
+      const div = document.createElement('div');
+      div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px';
+      div.innerHTML = `<span style="font-size:11px;color:#6b7280">daqui</span>
+        <input type="number" class="form-input ${prefixo}-deg-dias" min="1" placeholder="dias" style="width:70px;font-size:12px">
+        <span style="font-size:11px;color:#6b7280">dias → R$</span>
+        <input type="number" class="form-input ${prefixo}-deg-preco" step="0.01" min="0" placeholder="novo preço" style="width:100px;font-size:12px">
+        <button type="button" onclick="this.parentElement.remove()" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
+      cont.appendChild(div);
+    },
+    // Calcula o preço inicial a partir do modo + preço atual da variação
+    calcularPrecoInicial(prefixo, precoAtual) {
+      const modo = (document.getElementById(prefixo+'_reguaModo')||{}).value || 'manter';
+      const v = parseFloat((document.getElementById(prefixo+'_reguaValor')||{}).value) || 0;
+      precoAtual = Number(precoAtual) || 0;
+      let p = precoAtual;
+      if (modo === 'fixo') p = v;
+      else if (modo === 'menos_rs') p = precoAtual - v;
+      else if (modo === 'mais_rs') p = precoAtual + v;
+      else if (modo === 'menos_pct') p = precoAtual * (1 - v/100);
+      else if (modo === 'mais_pct') p = precoAtual * (1 + v/100);
+      return Math.max(0, Math.round(p*100)/100);
+    },
+    // Lê a config da régua. Retorna null se não está ativa.
+    ler(prefixo) {
+      const ativa = document.getElementById(prefixo+'_reguaAtiva');
+      if (!ativa || !ativa.checked) return null;
+      const modo = (document.getElementById(prefixo+'_reguaModo')||{}).value || 'manter';
+      const valor = parseFloat((document.getElementById(prefixo+'_reguaValor')||{}).value) || 0;
+      const degraus = [];
+      document.querySelectorAll('#'+prefixo+'_reguaDegraus > div').forEach(div => {
+        const dias = parseInt(div.querySelector('.'+prefixo+'-deg-dias').value);
+        const preco = parseFloat(div.querySelector('.'+prefixo+'-deg-preco').value);
+        if (dias > 0 && preco > 0) degraus.push({ dias, preco });
+      });
+      return { modo, valor, degraus };
+    },
+    // Converte a config + preço atual num _regua pronto pro backend (imediato + degraus)
+    resolver(cfg, precoAtual, prefixo) {
+      if (!cfg) return null;
+      let imediato = null;
+      if (cfg.modo !== 'manter') {
+        imediato = ReguaUI.calcularPrecoInicial(prefixo, precoAtual);
+      }
+      return { imediato, degraus: cfg.degraus || [] };
+    },
+  };
+  window.ReguaUI = ReguaUI;
   // injeta o seletor da Nova Demanda quando o container existir
   function demInitSeletor() {
     const box = document.getElementById('demSeletorBox');
@@ -17595,9 +17681,19 @@ REGRAS DURAS:
     });
     if (coletadas.length === 0) { showToast('Nenhuma cópia foi criada para agendar', true); return; }
 
-    // anexa a régua de preços (se configurada) a cada cópia
-    const reguaCfg = dupLerRegua();
-    if (reguaCfg) coletadas.forEach(c => { c.regua = reguaCfg; });
+    // anexa a régua de preços (se configurada) a cada cópia.
+    // O modo de preço (±R$, ±%, fixo, manter) é resolvido por cópia, com base no
+    // preço de cada uma — o mesmo valor/modo replica pra todas as variações da cópia.
+    const reguaCfg = dupLerRegua(); // { modo, valor, degraus } ou null
+    if (reguaCfg) coletadas.forEach(c => {
+      const precoBase = Number(c.preco) || Number((c.variacoes && c.variacoes[0] && c.variacoes[0].preco)) || 0;
+      const resolvida = ReguaUI.resolver(reguaCfg, precoBase, 'dup'); // { imediato, degraus }
+      // monta no formato que o backend já entende: { imediato?, degraus:[] }
+      const r = {};
+      if (resolvida.imediato != null) r.imediato = resolvida.imediato;
+      if (resolvida.degraus && resolvida.degraus.length) r.degraus = resolvida.degraus;
+      if (r.imediato != null || (r.degraus && r.degraus.length)) c.regua = r;
+    });
 
     // 2. resolve loja no banco
     let lojaIdBanco = null;
@@ -28095,7 +28191,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32u.6-nf-default-1706';
+  const _DIAG_VERSAO_PAINEL = 'v32v.1-duplicacao-regua-modos-preco';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
