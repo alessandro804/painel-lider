@@ -4170,6 +4170,14 @@
               <label class="form-label">Vencimento</label>
               <input type="date" class="form-input" id="fechVencimento">
             </div>
+            <div style="flex:1;min-width:200px">
+              <label class="form-label">Este fechamento gera cobrança?</label>
+              <div style="display:flex;gap:8px;margin-top:4px">
+                <button type="button" id="fechGeraCobSim" onclick="setGeraCobranca(true)" style="flex:1;padding:8px;border:2px solid #16a34a;background:#16a34a;color:#fff;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px">Sim (boleto)</button>
+                <button type="button" id="fechGeraCobNao" onclick="setGeraCobranca(false)" style="flex:1;padding:8px;border:2px solid #d1d5db;background:#fff;color:#6b7280;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px">Não (só PDF)</button>
+              </div>
+              <div class="settings-help" style="font-size:11px;margin-top:3px">"Não" = manda só o fechamento no WhatsApp, sem boleto (cliente com saldo).</div>
+            </div>
           </div>
 
           <!-- Tipo de comissão (no topo — reconfigura os campos abaixo) -->
@@ -4394,14 +4402,23 @@
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
               <h3 style="margin:0">👤 Cadastro de Clientes</h3>
-              <div style="font-size:12px;color:#6b7280">CPF/CNPJ, telefone e conta Asaas. Usado automaticamente em todo o sistema (fechamento, cobrança...).</div>
+              <div style="font-size:12px;color:#6b7280">CPF/CNPJ, telefone e conta Asaas. <span id="cadClientesMetricas" style="font-weight:700;color:#1e293b"></span></div>
             </div>
-            <div style="display:flex;gap:8px">
-              <input type="text" id="cadClienteBusca" class="form-input" placeholder="🔍 Buscar cliente..." style="width:auto" oninput="renderCadastroClientes()">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <input type="text" id="cadClienteBusca" class="form-input" placeholder="🔍 Buscar..." style="width:auto" oninput="renderCadastroClientes()">
+              <button class="toolbar-btn" onclick="toggleClientesInativos()">👥 Clientes inativos</button>
               <button class="primary-btn" onclick="novoClienteCadastro()">+ Novo cliente</button>
             </div>
           </div>
           <div id="cadastroClientesLista" style="margin-top:12px"></div>
+          <!-- Box de inativos (escondido por padrão) -->
+          <div id="clientesInativosBox" style="display:none;margin-top:14px;border-top:1px dashed #e5e7eb;padding-top:14px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+              <b style="font-size:14px">Clientes inativos (que saíram)</b>
+              <input type="text" id="cadClienteInativoBusca" class="form-input" placeholder="🔍 Buscar inativo..." style="width:auto" oninput="renderClientesInativos()">
+            </div>
+            <div id="clientesInativosLista"></div>
+          </div>
         </div>
 
         <!-- Top clientes -->
@@ -28048,7 +28065,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32u.0-cadastro-central-clientes';
+  const _DIAG_VERSAO_PAINEL = 'v32u.2-excluir-cliente';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29749,6 +29766,21 @@ REGRAS DE OURO:
     html += `<option value="__novo__">+ Novo cliente (digitar)</option>`;
     sel.innerHTML = html;
   }
+  let _fechGeraCobranca = true;
+  function setGeraCobranca(sim) {
+    _fechGeraCobranca = !!sim;
+    const bSim = document.getElementById('fechGeraCobSim'), bNao = document.getElementById('fechGeraCobNao');
+    if (!bSim || !bNao) return;
+    if (sim) {
+      bSim.style.background='#16a34a'; bSim.style.color='#fff'; bSim.style.borderColor='#16a34a';
+      bNao.style.background='#fff'; bNao.style.color='#6b7280'; bNao.style.borderColor='#d1d5db';
+    } else {
+      bNao.style.background='#374151'; bNao.style.color='#fff'; bNao.style.borderColor='#374151';
+      bSim.style.background='#fff'; bSim.style.color='#16a34a'; bSim.style.borderColor='#16a34a';
+    }
+  }
+  window.setGeraCobranca = setGeraCobranca;
+
   function _resolverTelefoneCliente(nomeCliente) {
     // Prioriza o cadastro central; cai pro telefone da carteira
     const cad = (_clientesAsaas && _clientesAsaas[nomeCliente]) || {};
@@ -29763,21 +29795,30 @@ REGRAS DE OURO:
   // === CADASTRO CENTRAL DE CLIENTES ===
   // Junta os clientes da carteira (billings) + os dados centrais (_clientesAsaas:
   // doc, telefone, contaId) + clientes criados manualmente. Fonte única de dados.
-  function listarClientesCadastro() {
+  function listarClientesCadastro(incluirInativos) {
     const mapa = {};
-    // 1) clientes da carteira
     (listarClientesUnicos() || []).forEach(c => {
-      mapa[c.nome] = { nome: c.nome, telefone: c.telefone || '', doc: '', contaId: '', origem: 'carteira' };
+      mapa[c.nome] = { nome: c.nome, telefone: c.telefone || '', doc: '', contaId: '', ativo: true, origem: 'carteira' };
     });
-    // 2) dados centrais (sobrescreve/completa)
     Object.keys(_clientesAsaas || {}).forEach(nome => {
       const d = _clientesAsaas[nome] || {};
-      if (!mapa[nome]) mapa[nome] = { nome, telefone: '', doc: '', contaId: '', origem: 'manual' };
+      if (!mapa[nome]) mapa[nome] = { nome, telefone: '', doc: '', contaId: '', ativo: true, origem: 'manual' };
       if (d.doc) mapa[nome].doc = d.doc;
       if (d.telefone) mapa[nome].telefone = d.telefone;
       if (d.contaId) mapa[nome].contaId = d.contaId;
+      // status: ativo por padrão; só inativo se marcado explicitamente
+      mapa[nome].ativo = (d.ativo !== false);
+      mapa[nome].inativadoEm = d.inativadoEm || null;
     });
-    return Object.values(mapa).sort((a,b) => a.nome.localeCompare(b.nome));
+    let lista = Object.values(mapa);
+    // Remove os EXCLUÍDOS de tudo (cadastro errado — não conta em métrica nenhuma)
+    lista = lista.filter(c => {
+      const d = _clientesAsaas[c.nome] || {};
+      return d.excluido !== true;
+    });
+    if (!incluirInativos) lista = lista.filter(c => c.ativo);
+    else lista = lista.filter(c => !c.ativo);
+    return lista.sort((a,b) => a.nome.localeCompare(b.nome));
   }
   window.listarClientesCadastro = listarClientesCadastro;
 
@@ -29786,13 +29827,54 @@ REGRAS DE OURO:
   }
   window.getClienteCadastro = getClienteCadastro;
 
+  function inativarCliente(nome) {
+    if (!confirm('Inativar o cliente "' + nome + '"? Ele sai da lista de ativos (pode reativar depois).')) return;
+    if (!_clientesAsaas[nome]) _clientesAsaas[nome] = {};
+    _clientesAsaas[nome].ativo = false;
+    _clientesAsaas[nome].inativadoEm = new Date().toISOString();
+    _saveClientesAsaas();
+    renderCadastroClientes();
+    if (typeof renderClientesInativos === 'function') renderClientesInativos();
+    showToast('Cliente inativado');
+  }
+  window.inativarCliente = inativarCliente;
+
+  function reativarCliente(nome) {
+    if (!_clientesAsaas[nome]) _clientesAsaas[nome] = {};
+    _clientesAsaas[nome].ativo = true;
+    _clientesAsaas[nome].inativadoEm = null;
+    _clientesAsaas[nome].excluido = false;
+    _saveClientesAsaas();
+    renderCadastroClientes();
+    renderClientesInativos();
+    showToast('✓ Cliente reativado');
+  }
+  window.reativarCliente = reativarCliente;
+
+  function excluirClienteCadastro(nome) {
+    if (!confirm('EXCLUIR o cliente "' + nome + '" de vez?\n\nUse isso só pra cadastro ERRADO. Ele sai de todas as listas e NÃO conta em nenhuma métrica (comercial, IA, etc.). Diferente de "inativar" (que conta como cliente que saiu).')) return;
+    if (!_clientesAsaas[nome]) _clientesAsaas[nome] = {};
+    _clientesAsaas[nome].excluido = true;
+    _clientesAsaas[nome].ativo = false;
+    _saveClientesAsaas();
+    renderCadastroClientes();
+    if (typeof renderClientesInativos === 'function') renderClientesInativos();
+    showToast('Cliente excluído (fora das métricas)');
+  }
+  window.excluirClienteCadastro = excluirClienteCadastro;
+
   function renderCadastroClientes() {
     const wrap = document.getElementById('cadastroClientesLista');
     if (!wrap) return;
     const busca = (document.getElementById('cadClienteBusca')||{}).value || '';
-    let clientes = listarClientesCadastro();
+    let clientes = listarClientesCadastro(false); // só ativos
     if (busca) clientes = clientes.filter(c => c.nome.toLowerCase().includes(busca.toLowerCase()));
-    if (!clientes.length) { wrap.innerHTML = '<div style="color:#9ca3af;padding:8px">Nenhum cliente. Clique em "+ Novo cliente".</div>'; return; }
+    // atualiza contador de métricas
+    const ativos = listarClientesCadastro(false).length;
+    const inativos = listarClientesCadastro(true).length;
+    const elM = document.getElementById('cadClientesMetricas');
+    if (elM) elM.textContent = `${ativos} ativo(s) · ${inativos} inativo(s)`;
+    if (!clientes.length) { wrap.innerHTML = '<div style="color:#9ca3af;padding:8px">Nenhum cliente ativo.</div>'; return; }
     const nomeConta = (id) => (_asaasContas.find(c=>c.id===id)||{}).nome || (id||'—');
     wrap.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase">
@@ -29803,10 +29885,39 @@ REGRAS DE OURO:
         <td style="padding:8px;color:${c.doc?'#1e293b':'#cbd5e1'}">${escapeHtml(c.doc||'(faltando)')}</td>
         <td style="padding:8px;color:${c.telefone?'#1e293b':'#cbd5e1'}">${escapeHtml(c.telefone||'(faltando)')}</td>
         <td style="padding:8px;color:${c.contaId?'#1e293b':'#cbd5e1'}">${escapeHtml(c.contaId?nomeConta(c.contaId):'(não definida)')}</td>
-        <td style="padding:8px;text-align:right"><button class="toolbar-btn" style="font-size:12px" onclick="editarClienteCadastro('${escapeHtml(c.nome).replace(/'/g,'')}')">Editar</button></td>
+        <td style="padding:8px;text-align:right;white-space:nowrap">
+          <button class="toolbar-btn" style="font-size:12px" onclick="editarClienteCadastro('${escapeHtml(c.nome).replace(/'/g,'')}')">Editar</button>
+          <button class="toolbar-btn" style="font-size:12px;color:#b45309" onclick="inativarCliente('${escapeHtml(c.nome).replace(/'/g,'')}')">Inativar</button>
+          <button class="toolbar-btn" style="font-size:12px;color:#dc2626" onclick="excluirClienteCadastro('${escapeHtml(c.nome).replace(/'/g,'')}')" title="Excluir cadastro errado (fora das métricas)">🗑</button>
+        </td>
       </tr>`).join('') + '</tbody></table></div>';
   }
   window.renderCadastroClientes = renderCadastroClientes;
+
+  function renderClientesInativos() {
+    const wrap = document.getElementById('clientesInativosLista');
+    if (!wrap) return;
+    const busca = (document.getElementById('cadClienteInativoBusca')||{}).value || '';
+    let clientes = listarClientesCadastro(true); // só inativos
+    if (busca) clientes = clientes.filter(c => c.nome.toLowerCase().includes(busca.toLowerCase()));
+    if (!clientes.length) { wrap.innerHTML = '<div style="color:#9ca3af;padding:8px">Nenhum cliente inativo.</div>'; return; }
+    wrap.innerHTML = clientes.map(c => {
+      const quando = c.inativadoEm ? new Date(c.inativadoEm).toLocaleDateString('pt-BR') : '—';
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px">
+        <div><div style="font-weight:600">${escapeHtml(c.nome)}</div><div style="font-size:12px;color:#6b7280">Saiu em ${quando}</div></div>
+        <button class="toolbar-btn" style="font-size:12px;color:#16a34a" onclick="reativarCliente('${escapeHtml(c.nome).replace(/'/g,'')}')">↩ Reativar</button>
+      </div>`;
+    }).join('');
+  }
+  window.renderClientesInativos = renderClientesInativos;
+  function toggleClientesInativos() {
+    const box = document.getElementById('clientesInativosBox');
+    if (!box) return;
+    const mostrar = box.style.display === 'none';
+    box.style.display = mostrar ? 'block' : 'none';
+    if (mostrar) renderClientesInativos();
+  }
+  window.toggleClientesInativos = toggleClientesInativos;
 
   async function editarClienteCadastro(nome) {
     if (typeof carregarContasAsaas === 'function') await carregarContasAsaas();
@@ -30098,6 +30209,7 @@ REGRAS DE OURO:
     document.getElementById('fechContaAsaas').value = '';
     document.getElementById('fechClienteDoc').value = '';
     document.getElementById('fechVencimento').value = _vencimentoPadrao(hoje.toISOString().slice(0,7));
+    if (typeof setGeraCobranca === 'function') setGeraCobranca(true);
     document.getElementById('fechPlataformas').innerHTML = '';
     fechAddPlataforma(); fechAddPlataforma();
     ['fechCanceladas','fechReembolsos','fechReajustes','fechMensalidade','fechFaturador','fechFotos'].forEach(id => document.getElementById(id).value = '0');
@@ -30247,6 +30359,7 @@ REGRAS DE OURO:
       contaAsaas: (document.getElementById('fechContaAsaas')||{}).value || '',
       clienteDoc: (document.getElementById('fechClienteDoc')||{}).value || '',
       clienteTelefone: (document.getElementById('fechClienteTel')||{}).value || (typeof _resolverTelefoneCliente === 'function' ? _resolverTelefoneCliente((document.getElementById('fechCliente')||{}).value) : '') || '',
+      geraCobranca: _fechGeraCobranca,
       vencimento: (document.getElementById('fechVencimento')||{}).value || '',
       criadoEm: new Date().toISOString()
     };
@@ -30272,6 +30385,38 @@ REGRAS DE OURO:
 
   // Emite a cobrança no Asaas (após confirmação) e manda o boleto no WhatsApp.
   async function _oferecerEmitirCobranca(f) {
+    // Caso "não gera cobrança" (cliente com saldo): manda só o PDF do fechamento no WhatsApp.
+    if (f.geraCobranca === false) {
+      const telefone = (f.clienteTelefone || (typeof _resolverTelefoneCliente==='function' ? _resolverTelefoneCliente(f.cliente) : '') || '');
+      if (!telefone) { showToast('Fechamento salvo (sem cobrança). Sem telefone — não enviei o PDF.', false); return; }
+      if (!confirm(`Este fechamento NÃO gera cobrança.\nEnviar só o PDF do fechamento de ${f.cliente} no WhatsApp?`)) { showToast('Fechamento salvo (sem envio)'); return; }
+      try {
+        const cenCriacao = (cenariosCobranca||[]).find(c => c.tipo === 'criacao' && c.ativo);
+        let textoWa = cenCriacao && cenCriacao.mensagem
+          ? cenCriacao.mensagem.replace(/\[NOME CLIENTE\]/g, f.cliente||'').replace(/\[VALOR A RECEBER\]/g, _fmtBRL(f.totalPagar)).replace(/\[DATA VENCIMENTO\]/g, (f.vencimento||'').split('-').reverse().join('/'))
+          : `Olá ${f.cliente}! Segue o fechamento de ${_fmtMesExt(f.mes)}.`;
+        await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          body: JSON.stringify({ numero: telefone, texto: textoWa, perfil: 'financeiro' }),
+        });
+        const pdf = _gerarPdfFechamento(f, { retornarBase64: true });
+        if (pdf && pdf.dataUri) {
+          const up = await fetch(BACKEND_URL + '/api/upload-foto/pdf', {
+            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+            body: JSON.stringify({ dataUrl: pdf.dataUri, nome: pdf.nomeArq }),
+          });
+          const upD = await up.json();
+          if (upD.ok && upD.url) {
+            await fetch(BACKEND_URL + '/api/whatsapp/documento', {
+              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+              body: JSON.stringify({ numero: telefone, url: upD.url, nomeArquivo: pdf.nomeArq, legenda: 'Fechamento ' + _fmtMesExt(f.mes), perfil: 'financeiro' }),
+            });
+          }
+        }
+        showToast('✓ Fechamento (só PDF, sem cobrança) enviado no WhatsApp');
+      } catch(e) { showToast('Erro ao enviar PDF: ' + e.message, true); }
+      return;
+    }
     if (!f.contaAsaas) {
       showToast('Fechamento salvo. (Sem conta Asaas vinculada — não emiti cobrança)', false);
       return;
@@ -30375,6 +30520,7 @@ REGRAS DE OURO:
     carregarContasAsaas().then(() => _carregarAsaasDoCliente());
     document.getElementById('fechVencimento').value = f.vencimento || _vencimentoPadrao(f.mes);
     const _tel = document.getElementById('fechClienteTel'); if (_tel) _tel.value = f.clienteTelefone || '';
+    if (typeof setGeraCobranca === 'function') setGeraCobranca(f.geraCobranca !== false);
     document.getElementById('fechMes').value = f.mes || '';
     document.getElementById('fechPlataformas').innerHTML = '';
     (f.plataformas||[]).forEach(p => fechAddPlataforma(p.nome, _fmtNum(p.valor)));
