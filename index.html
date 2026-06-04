@@ -7048,6 +7048,36 @@
             </div>
             <div id="cenariosLista" style="display:flex;gap:14px;flex-wrap:wrap"></div>
           </div>
+          <div class="settings-card">
+            <div class="settings-card-header">
+              <div>
+                <div class="settings-card-title">🧾 Nota Fiscal (Asaas Lider Commerce)</div>
+                <div class="settings-card-subtitle">Configure o serviço municipal e impostos. A NF é emitida automaticamente quando o cliente PAGA o boleto (só conta Lider Commerce).</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+              <div style="flex:2;min-width:240px">
+                <label class="form-label">Buscar serviço municipal</label>
+                <div style="display:flex;gap:6px">
+                  <input type="text" id="nfBuscaServico" class="form-input" placeholder="ex: análise, sistemas, gestão...">
+                  <button class="toolbar-btn" onclick="buscarServicosNF()">🔍</button>
+                </div>
+                <select id="nfServicoSelect" class="form-select" style="margin-top:6px" onchange="selecionarServicoNF()">
+                  <option value="">— Busque e selecione o serviço —</option>
+                </select>
+              </div>
+              <div style="flex:1;min-width:120px">
+                <label class="form-label">ISS (%)</label>
+                <input type="number" step="0.01" id="nfIss" class="form-input" placeholder="ex: 2.5">
+              </div>
+            </div>
+            <div style="margin-top:10px">
+              <label class="form-label">Descrição do serviço (na NF)</label>
+              <input type="text" id="nfDescricao" class="form-input" placeholder="ex: Serviços de gestão de marketplace">
+            </div>
+            <button class="primary-btn" style="margin-top:12px;background:#16a34a" onclick="salvarConfigNF()">Salvar config da NF</button>
+            <div id="nfConfigStatus" style="font-size:12px;color:#6b7280;margin-top:8px"></div>
+          </div>
         </div>
 
         <div class="settings-panel" id="panel-prompts">
@@ -28065,7 +28095,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32u.2-excluir-cliente';
+  const _DIAG_VERSAO_PAINEL = 'v32u.3-nota-fiscal';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29766,6 +29796,53 @@ REGRAS DE OURO:
     html += `<option value="__novo__">+ Novo cliente (digitar)</option>`;
     sel.innerHTML = html;
   }
+  // === Config de Nota Fiscal (Asaas Lider Commerce) ===
+  let _nfServicos = [];
+  async function buscarServicosNF() {
+    const desc = (document.getElementById('nfBuscaServico')||{}).value || '';
+    showToast('Buscando serviços municipais...');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/asaas/servicos-municipais/lider?descricao=' + encodeURIComponent(desc), { headers: { 'x-api-token': getApiToken() } });
+      const d = await r.json();
+      _nfServicos = d.servicos || [];
+      const sel = document.getElementById('nfServicoSelect');
+      if (!_nfServicos.length) { sel.innerHTML = '<option value="">Nenhum serviço encontrado — refine a busca</option>'; return; }
+      sel.innerHTML = '<option value="">— Selecione —</option>' + _nfServicos.map((s,i) => `<option value="${i}">${escapeHtml((s.description||'').slice(0,80))}</option>`).join('');
+      showToast('✓ ' + _nfServicos.length + ' serviço(s) encontrado(s)');
+    } catch(e) { showToast('Erro ao buscar serviços: ' + e.message, true); }
+  }
+  window.buscarServicosNF = buscarServicosNF;
+
+  function selecionarServicoNF() {
+    const i = (document.getElementById('nfServicoSelect')||{}).value;
+    if (i === '' || !_nfServicos[i]) return;
+    const s = _nfServicos[i];
+    if (!document.getElementById('nfDescricao').value) {
+      document.getElementById('nfDescricao').value = (s.description||'').split(' - ').pop() || s.description || '';
+    }
+  }
+  window.selecionarServicoNF = selecionarServicoNF;
+
+  function salvarConfigNF() {
+    const i = (document.getElementById('nfServicoSelect')||{}).value;
+    const servico = (i !== '' && _nfServicos[i]) ? _nfServicos[i] : null;
+    const antiga = JSON.parse(localStorage.getItem('lider_nf_config')||'{}');
+    const issVal = parseFloat((document.getElementById('nfIss')||{}).value) || 0;
+    const cfg = {
+      municipalServiceId: servico ? servico.id : (antiga.municipalServiceId || ''),
+      municipalServiceName: servico ? (servico.name || servico.description) : (antiga.municipalServiceName||''),
+      municipalServiceCode: servico ? servico.code : (antiga.municipalServiceCode||''),
+      descricaoServico: (document.getElementById('nfDescricao')||{}).value || '',
+      iss: issVal,
+      impostos: { retainIss: false, iss: issVal, cofins:0, csll:0, inss:0, ir:0, pis:0 },
+    };
+    localStorage.setItem('lider_nf_config', JSON.stringify(cfg));
+    LiderSync.schedulePush('nfConfig', () => LiderSync.pushAppData('nfConfig', cfg));
+    document.getElementById('nfConfigStatus').textContent = '✓ Config salva: ' + (cfg.descricaoServico||cfg.municipalServiceName||'serviço') + ' · ISS ' + cfg.iss + '%';
+    showToast('✓ Config da NF salva');
+  }
+  window.salvarConfigNF = salvarConfigNF;
+
   let _fechGeraCobranca = true;
   function setGeraCobranca(sim) {
     _fechGeraCobranca = !!sim;
@@ -30006,22 +30083,65 @@ REGRAS DE OURO:
     const comCobranca = (fechamentos||[]).filter(f => f.cobranca && f.cobranca.id && f.statusPagamento !== 'pago');
     if (!comCobranca.length) { showToast('Nenhuma cobrança pendente pra checar'); return; }
     showToast('🔄 Checando ' + comCobranca.length + ' cobrança(s) no Asaas...');
-    let pagos = 0;
+    let pagos = 0, nfsEmitidas = 0;
     for (const f of comCobranca) {
       try {
         const r = await fetch(BACKEND_URL + '/api/asaas/cobranca/' + f.cobranca.contaId + '/' + f.cobranca.id, { headers: { 'x-api-token': getApiToken() } });
         const d = await r.json();
         if (d.ok && d.pago) {
           const i = fechamentos.findIndex(x=>x.id===f.id);
-          if (i>=0) { fechamentos[i].statusPagamento = 'pago'; pagos++; }
+          if (i>=0) {
+            fechamentos[i].statusPagamento = 'pago'; pagos++;
+            // NOTA FISCAL: só pra conta Lider Commerce, e só se ainda não emitiu
+            if (f.cobranca.contaId === 'lider' && !fechamentos[i].notaFiscal) {
+              const nfOk = await _emitirNotaFiscalFechamento(fechamentos[i]);
+              if (nfOk) nfsEmitidas++;
+            }
+          }
         }
       } catch(e) { /* segue */ }
     }
     if (pagos) saveFechamentos();
     renderDashboardFinanceira();
-    showToast(pagos ? `✓ ${pagos} cobrança(s) baixada(s) como paga(s)` : 'Nenhum pagamento novo identificado');
+    let msg = pagos ? `✓ ${pagos} cobrança(s) baixada(s)` : 'Nenhum pagamento novo';
+    if (nfsEmitidas) msg += ` · ${nfsEmitidas} NF emitida(s)`;
+    showToast(msg);
   }
   window.atualizarStatusCobrancas = atualizarStatusCobrancas;
+
+  // Emite a NFS-e de um fechamento pago (conta Lider Commerce). Usa a config de NF.
+  async function _emitirNotaFiscalFechamento(f) {
+    const cfg = JSON.parse(localStorage.getItem('lider_nf_config') || '{}');
+    if (!cfg.municipalServiceId && !cfg.municipalServiceCode) {
+      console.warn('[NF] config de serviço municipal não definida — pulando emissão');
+      return false;
+    }
+    try {
+      const hoje = new Date().toISOString().slice(0,10);
+      const resp = await fetch(BACKEND_URL + '/api/asaas/nota-fiscal', {
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        body: JSON.stringify({
+          contaId: 'lider',
+          paymentId: f.cobranca.id,
+          valor: f.totalPagar,
+          descricaoServico: cfg.descricaoServico || ('Serviços de gestão de marketplace - ' + _fmtMesExt(f.mes)),
+          effectiveDate: hoje,
+          municipalServiceId: cfg.municipalServiceId,
+          municipalServiceCode: cfg.municipalServiceCode,
+          municipalServiceName: cfg.municipalServiceName,
+          impostos: cfg.impostos || { retainIss: false, iss: cfg.iss || 0, cofins: 0, csll: 0, inss: 0, ir: 0, pis: 0 },
+        }),
+      });
+      const d = await resp.json();
+      if (d.ok && d.notaFiscal) {
+        f.notaFiscal = { id: d.notaFiscal.id, status: d.notaFiscal.status, emitidaEm: new Date().toISOString() };
+        return true;
+      }
+      console.warn('[NF] falha:', d.erro);
+      return false;
+    } catch(e) { console.warn('[NF] erro:', e); return false; }
+  }
+  window._emitirNotaFiscalFechamento = _emitirNotaFiscalFechamento;
 
   // === Cenários de disparo de cobrança (régua) ===
   let cenariosCobranca = JSON.parse(localStorage.getItem('lider_cenarios_cobranca') || 'null') || _cenariosPadrao();
