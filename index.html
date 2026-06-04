@@ -6721,7 +6721,7 @@
         <div class="settings-tabs">
           <button class="settings-tab active" onclick="setSettingsTab('financas', this)">💰 Finanças</button>
           <button class="settings-tab" onclick="setSettingsTab('gerais', this)">⚙️ Config. Gerais</button>
-          <button class="settings-tab" onclick="setSettingsTab('cobrancas', this); renderCenarios()">📨 Cobranças</button>
+          <button class="settings-tab" onclick="setSettingsTab('cobrancas', this); renderCenarios(); if(typeof _preencherDefaultsNF==='function')_preencherDefaultsNF()">📨 Cobranças</button>
           <button class="settings-tab" onclick="setSettingsTab('prompts', this)">🤖 Prompts da IA</button>
           <button class="settings-tab" onclick="setSettingsTab('backup', this)">💾 Backup</button>
           <button class="settings-tab" onclick="setSettingsTab('profile', this)">👤 Perfil</button>
@@ -28095,7 +28095,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32u.3-nota-fiscal';
+  const _DIAG_VERSAO_PAINEL = 'v32u.5-nf-envio-30min';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29827,21 +29827,34 @@ REGRAS DE OURO:
     const i = (document.getElementById('nfServicoSelect')||{}).value;
     const servico = (i !== '' && _nfServicos[i]) ? _nfServicos[i] : null;
     const antiga = JSON.parse(localStorage.getItem('lider_nf_config')||'{}');
-    const issVal = parseFloat((document.getElementById('nfIss')||{}).value) || 0;
+    const issVal = parseFloat((document.getElementById('nfIss')||{}).value) || 2.871;
     const cfg = {
       municipalServiceId: servico ? servico.id : (antiga.municipalServiceId || ''),
       municipalServiceName: servico ? (servico.name || servico.description) : (antiga.municipalServiceName||''),
-      municipalServiceCode: servico ? servico.code : (antiga.municipalServiceCode||''),
-      descricaoServico: (document.getElementById('nfDescricao')||{}).value || '',
+      municipalServiceCode: servico ? servico.code : (antiga.municipalServiceCode || '802'),
+      descricaoServico: (document.getElementById('nfDescricao')||{}).value ||
+        'SERVIÇOS PRESTADOS DE INSTRUÇÃO, TREINAMENTO, ORIENTAÇÃO NA ADMINISTRAÇÃO DE CONTAS EM MARKETPLACES.',
       iss: issVal,
       impostos: { retainIss: false, iss: issVal, cofins:0, csll:0, inss:0, ir:0, pis:0 },
     };
     localStorage.setItem('lider_nf_config', JSON.stringify(cfg));
     LiderSync.schedulePush('nfConfig', () => LiderSync.pushAppData('nfConfig', cfg));
-    document.getElementById('nfConfigStatus').textContent = '✓ Config salva: ' + (cfg.descricaoServico||cfg.municipalServiceName||'serviço') + ' · ISS ' + cfg.iss + '%';
+    document.getElementById('nfConfigStatus').textContent = '✓ Config salva: ' + (cfg.descricaoServico||cfg.municipalServiceName||'serviço').slice(0,50) + ' · ISS ' + cfg.iss + '%';
     showToast('✓ Config da NF salva');
   }
   window.salvarConfigNF = salvarConfigNF;
+
+  // Pré-preenche os campos de NF com os defaults da Lider Commerce
+  function _preencherDefaultsNF() {
+    const cfg = JSON.parse(localStorage.getItem('lider_nf_config')||'{}');
+    const dDesc = document.getElementById('nfDescricao');
+    const dIss = document.getElementById('nfIss');
+    if (dDesc && !dDesc.value) dDesc.value = cfg.descricaoServico || 'SERVIÇOS PRESTADOS DE INSTRUÇÃO, TREINAMENTO, ORIENTAÇÃO NA ADMINISTRAÇÃO DE CONTAS EM MARKETPLACES.';
+    if (dIss && !dIss.value) dIss.value = cfg.iss || 2.871;
+    const st = document.getElementById('nfConfigStatus');
+    if (st && cfg.municipalServiceId) st.textContent = '✓ Config ativa · ISS ' + (cfg.iss||2.871) + '% · cód. municipal ' + (cfg.municipalServiceCode||'802');
+  }
+  window._preencherDefaultsNF = _preencherDefaultsNF;
 
   let _fechGeraCobranca = true;
   function setGeraCobranca(sim) {
@@ -30134,7 +30147,10 @@ REGRAS DE OURO:
       });
       const d = await resp.json();
       if (d.ok && d.notaFiscal) {
-        f.notaFiscal = { id: d.notaFiscal.id, status: d.notaFiscal.status, emitidaEm: new Date().toISOString() };
+        const nf = d.notaFiscal;
+        // NÃO envia agora — uma tarefa no backend envia 30min após a emissão
+        // (tempo pra a prefeitura autorizar e gerar o PDF). enviadaWhats=false.
+        f.notaFiscal = { id: nf.id, status: nf.status, emitidaEm: new Date().toISOString(), pdfUrl: nf.pdfUrl || '', enviadaWhats: false };
         return true;
       }
       console.warn('[NF] falha:', d.erro);
@@ -30142,6 +30158,28 @@ REGRAS DE OURO:
     } catch(e) { console.warn('[NF] erro:', e); return false; }
   }
   window._emitirNotaFiscalFechamento = _emitirNotaFiscalFechamento;
+
+  // Envia a NF ao cliente no WhatsApp (PDF anexado se tiver URL; senão manda o link).
+  async function _enviarNotaFiscalWhats(f, nf) {
+    const telefone = f.clienteTelefone || (typeof _resolverTelefoneCliente==='function' ? _resolverTelefoneCliente(f.cliente) : '');
+    if (!telefone) return;
+    const linkNf = nf.pdfUrl || nf.xmlUrl || '';
+    try {
+      const texto = `Olá ${f.cliente}! Segue a nota fiscal referente ao fechamento de ${_fmtMesExt(f.mes)}.` + (linkNf && !nf.pdfUrl ? `\n\nNota fiscal: ${linkNf}` : '');
+      await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        body: JSON.stringify({ numero: telefone, texto, perfil: 'financeiro' }),
+      });
+      // Se tem PDF, anexa como documento
+      if (nf.pdfUrl) {
+        await fetch(BACKEND_URL + '/api/whatsapp/documento', {
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          body: JSON.stringify({ numero: telefone, url: nf.pdfUrl, nomeArquivo: 'NotaFiscal_' + (f.cliente||'').replace(/\s+/g,'_') + '.pdf', legenda: 'Nota Fiscal', perfil: 'financeiro' }),
+        });
+      }
+    } catch(e) { console.warn('[NF whats] erro:', e); }
+  }
+  window._enviarNotaFiscalWhats = _enviarNotaFiscalWhats;
 
   // === Cenários de disparo de cobrança (régua) ===
   let cenariosCobranca = JSON.parse(localStorage.getItem('lider_cenarios_cobranca') || 'null') || _cenariosPadrao();
