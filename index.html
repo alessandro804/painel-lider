@@ -4389,6 +4389,21 @@
         <!-- Stats principais -->
         <div class="commercial-stats" id="commercialStats"></div>
 
+        <!-- Cadastro central de clientes -->
+        <div class="transactions-card" style="margin-bottom:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <h3 style="margin:0">👤 Cadastro de Clientes</h3>
+              <div style="font-size:12px;color:#6b7280">CPF/CNPJ, telefone e conta Asaas. Usado automaticamente em todo o sistema (fechamento, cobrança...).</div>
+            </div>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="cadClienteBusca" class="form-input" placeholder="🔍 Buscar cliente..." style="width:auto" oninput="renderCadastroClientes()">
+              <button class="primary-btn" onclick="novoClienteCadastro()">+ Novo cliente</button>
+            </div>
+          </div>
+          <div id="cadastroClientesLista" style="margin-top:12px"></div>
+        </div>
+
         <!-- Top clientes -->
         <div class="top-clients-card">
           <div class="top-clients-header">
@@ -28033,7 +28048,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32t.9-pdf-via-url';
+  const _DIAG_VERSAO_PAINEL = 'v32u.0-cadastro-central-clientes';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -29728,19 +29743,105 @@ REGRAS DE OURO:
 
   function _popularClientesFech(selecionado) {
     const sel = document.getElementById('fechCliente');
-    const clientes = (typeof listarClientesUnicos === 'function') ? listarClientesUnicos() : [];
+    const clientes = (typeof listarClientesCadastro === 'function') ? listarClientesCadastro() : (listarClientesUnicos ? listarClientesUnicos() : []);
     let html = '';
     clientes.forEach(c => { html += `<option value="${escapeHtml(c.nome)}" ${c.nome===selecionado?'selected':''}>${escapeHtml(c.nome)}</option>`; });
     html += `<option value="__novo__">+ Novo cliente (digitar)</option>`;
     sel.innerHTML = html;
   }
   function _resolverTelefoneCliente(nomeCliente) {
+    // Prioriza o cadastro central; cai pro telefone da carteira
+    const cad = (_clientesAsaas && _clientesAsaas[nomeCliente]) || {};
+    if (cad.telefone) return cad.telefone;
     try {
       const c = (listarClientesUnicos() || []).find(x => x.nome === nomeCliente);
       return c ? (c.telefone || '') : '';
     } catch(e) { return ''; }
   }
   window._resolverTelefoneCliente = _resolverTelefoneCliente;
+
+  // === CADASTRO CENTRAL DE CLIENTES ===
+  // Junta os clientes da carteira (billings) + os dados centrais (_clientesAsaas:
+  // doc, telefone, contaId) + clientes criados manualmente. Fonte única de dados.
+  function listarClientesCadastro() {
+    const mapa = {};
+    // 1) clientes da carteira
+    (listarClientesUnicos() || []).forEach(c => {
+      mapa[c.nome] = { nome: c.nome, telefone: c.telefone || '', doc: '', contaId: '', origem: 'carteira' };
+    });
+    // 2) dados centrais (sobrescreve/completa)
+    Object.keys(_clientesAsaas || {}).forEach(nome => {
+      const d = _clientesAsaas[nome] || {};
+      if (!mapa[nome]) mapa[nome] = { nome, telefone: '', doc: '', contaId: '', origem: 'manual' };
+      if (d.doc) mapa[nome].doc = d.doc;
+      if (d.telefone) mapa[nome].telefone = d.telefone;
+      if (d.contaId) mapa[nome].contaId = d.contaId;
+    });
+    return Object.values(mapa).sort((a,b) => a.nome.localeCompare(b.nome));
+  }
+  window.listarClientesCadastro = listarClientesCadastro;
+
+  function getClienteCadastro(nome) {
+    return (_clientesAsaas && _clientesAsaas[nome]) || {};
+  }
+  window.getClienteCadastro = getClienteCadastro;
+
+  function renderCadastroClientes() {
+    const wrap = document.getElementById('cadastroClientesLista');
+    if (!wrap) return;
+    const busca = (document.getElementById('cadClienteBusca')||{}).value || '';
+    let clientes = listarClientesCadastro();
+    if (busca) clientes = clientes.filter(c => c.nome.toLowerCase().includes(busca.toLowerCase()));
+    if (!clientes.length) { wrap.innerHTML = '<div style="color:#9ca3af;padding:8px">Nenhum cliente. Clique em "+ Novo cliente".</div>'; return; }
+    const nomeConta = (id) => (_asaasContas.find(c=>c.id===id)||{}).nome || (id||'—');
+    wrap.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase">
+        <th style="padding:8px">Cliente</th><th style="padding:8px">CPF/CNPJ</th><th style="padding:8px">Telefone</th><th style="padding:8px">Conta Asaas</th><th></th>
+      </tr></thead><tbody>` +
+      clientes.map(c => `<tr style="border-top:1px solid #f1f5f9">
+        <td style="padding:8px;font-weight:600">${escapeHtml(c.nome)}</td>
+        <td style="padding:8px;color:${c.doc?'#1e293b':'#cbd5e1'}">${escapeHtml(c.doc||'(faltando)')}</td>
+        <td style="padding:8px;color:${c.telefone?'#1e293b':'#cbd5e1'}">${escapeHtml(c.telefone||'(faltando)')}</td>
+        <td style="padding:8px;color:${c.contaId?'#1e293b':'#cbd5e1'}">${escapeHtml(c.contaId?nomeConta(c.contaId):'(não definida)')}</td>
+        <td style="padding:8px;text-align:right"><button class="toolbar-btn" style="font-size:12px" onclick="editarClienteCadastro('${escapeHtml(c.nome).replace(/'/g,'')}')">Editar</button></td>
+      </tr>`).join('') + '</tbody></table></div>';
+  }
+  window.renderCadastroClientes = renderCadastroClientes;
+
+  async function editarClienteCadastro(nome) {
+    if (typeof carregarContasAsaas === 'function') await carregarContasAsaas();
+    const d = getClienteCadastro(nome);
+    const contasOpts = ['<option value="">— Sem conta —</option>'].concat(
+      (_asaasContas||[]).map(c => `<option value="${c.id}" ${d.contaId===c.id?'selected':''}>${c.nome}</option>`)
+    ).join('');
+    const doc = prompt('CPF/CNPJ de ' + nome + ' (só números):', d.doc || '');
+    if (doc === null) return;
+    const tel = prompt('Telefone de ' + nome + ' (com DDD):', d.telefone || '');
+    if (tel === null) return;
+    // conta Asaas via prompt simples (lista)
+    const contasLista = (_asaasContas||[]).map((c,i)=>`${i+1}) ${c.nome}`).join('\n');
+    const escolha = prompt('Conta Asaas que cobra ' + nome + ':\n' + contasLista + '\n\nDigite o número (ou deixe vazio):', '');
+    let contaId = d.contaId || '';
+    if (escolha && _asaasContas[parseInt(escolha)-1]) contaId = _asaasContas[parseInt(escolha)-1].id;
+    if (!_clientesAsaas[nome]) _clientesAsaas[nome] = {};
+    _clientesAsaas[nome].doc = (doc||'').trim();
+    _clientesAsaas[nome].telefone = (tel||'').trim();
+    _clientesAsaas[nome].contaId = contaId;
+    _saveClientesAsaas();
+    renderCadastroClientes();
+    showToast('✓ Cliente atualizado');
+  }
+  window.editarClienteCadastro = editarClienteCadastro;
+
+  function novoClienteCadastro() {
+    const nome = (prompt('Nome do novo cliente:') || '').trim();
+    if (!nome) return;
+    if (!_clientesAsaas[nome]) _clientesAsaas[nome] = {};
+    _saveClientesAsaas();
+    renderCadastroClientes();
+    editarClienteCadastro(nome);
+  }
+  window.novoClienteCadastro = novoClienteCadastro;
 
   // === Dashboard financeira (totais + rosca, dados reais dos fechamentos) ===
   function renderDashboardFinanceira() {
@@ -31603,6 +31704,7 @@ ${JSON.stringify(metricas, null, 2)}`
 
   function renderCommercial() {
     document.getElementById('billingMonthLabel').textContent = `${meses[billingMes]} · ${billingAno}`;
+    if (typeof renderCadastroClientes === 'function') renderCadastroClientes();
     const period = getBillingPeriod();
     const cur = getBillingsOfPeriod(period);
     
