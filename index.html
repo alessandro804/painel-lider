@@ -28033,7 +28033,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32t.7-cobranca-pdf-mensagem-cenario';
+  const _DIAG_VERSAO_PAINEL = 'v32t.9-pdf-via-url';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -30235,13 +30235,23 @@ REGRAS DE OURO:
             method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
             body: JSON.stringify({ numero: telefone, texto: textoWa, perfil: 'financeiro' }),
           });
-          // 2) Anexa o PDF do fechamento
+          // 2) Anexa o PDF: faz upload pro Storage (URL pública) e envia por URL
+          //    (a Evolution lida melhor com URL do que com base64 grande).
           const pdf = _gerarPdfFechamento(f, { retornarBase64: true });
           if (pdf && pdf.dataUri) {
-            await fetch(BACKEND_URL + '/api/whatsapp/documento', {
-              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
-              body: JSON.stringify({ numero: telefone, url: pdf.dataUri, nomeArquivo: pdf.nomeArq, legenda: 'Fechamento ' + _fmtMesExt(f.mes), perfil: 'financeiro' }),
-            });
+            try {
+              const up = await fetch(BACKEND_URL + '/api/upload-foto/pdf', {
+                method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+                body: JSON.stringify({ dataUrl: pdf.dataUri, nome: pdf.nomeArq }),
+              });
+              const upD = await up.json();
+              if (upD.ok && upD.url) {
+                await fetch(BACKEND_URL + '/api/whatsapp/documento', {
+                  method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+                  body: JSON.stringify({ numero: telefone, url: upD.url, nomeArquivo: pdf.nomeArq, legenda: 'Fechamento ' + _fmtMesExt(f.mes), perfil: 'financeiro' }),
+                });
+              }
+            } catch(ePdf) { console.warn('[cobranca] falha ao anexar PDF:', ePdf); }
           }
           showToast('✓ Mensagem + PDF + boleto enviados no WhatsApp');
         } catch(e) { showToast('Cobrança emitida, mas falhou enviar no WhatsApp: ' + e.message, true); }
