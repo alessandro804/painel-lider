@@ -6243,12 +6243,14 @@
         <button class="prod-filtro-btn" data-promo="cupom" onclick="filtrarPromocoes('cupom')">🎫 Cupons</button>
       </div>
       <button class="op-new-btn" onclick="abrirPromocoesShopee()" style="background:#ea580c;margin-right:8px">🟠 Promoções Shopee</button>
+      <button class="op-new-btn" onclick="abrirPromocoesML()" style="background:#fff159;color:#2d3277;margin-right:8px">📦 Promoções Mercado Livre</button>
       <button class="op-new-btn" onclick="abrirFlashSaleShopee()" style="background:#dc2626;margin-right:8px">⚡ Flash Sale Shopee</button>
       <button class="op-new-btn" onclick="abrirNovaPromocao()">+ Nova Promoção</button>
     </div>
     
     <!-- Painel de Promoções Shopee (live) — escondido até abrir -->
     <div id="promoShopeePanel" style="display:none"></div>
+    <div id="promoMLPanel" style="display:none"></div>
     <div id="flashSalePanel" style="display:none"></div>
     
     <div class="prod-resumo" id="promoResumo"></div>
@@ -28593,7 +28595,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32x.0-promocoes-ml';
+  const _DIAG_VERSAO_PAINEL = 'v32x.1-promocoes-ml-painel';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33743,6 +33745,76 @@ ${JSON.stringify(metricas, null, 2)}`
     await carregarPromocoesShopee();
   }
   window.abrirPromocoesShopee = abrirPromocoesShopee;
+
+  // ===== PROMOÇÕES MERCADO LIVRE (live) =====
+  function _lojasML() {
+    return (lojasErp || []).filter(l => /mercadolivre/i.test(l.marketplace) && l.idBanco && (l.contaConectada || l.conectada));
+  }
+  async function abrirPromocoesML() {
+    const painel = document.getElementById('promoMLPanel');
+    if (!painel) return;
+    painel.style.display = 'block';
+    ['promoLista', 'promoResumo', 'promoStatsV2', 'mktPeriodoBar', 'promoShopeePanel', 'flashSalePanel'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+    const lojas = _lojasML();
+    const optsLojas = lojas.map(l => `<option value="${l.idBanco}">${escapeHtml(l.nome)}</option>`).join('');
+    painel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <button onclick="fecharPromocoesML()" style="padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;cursor:pointer">← Voltar</button>
+          <h2 style="margin:0;font-size:18px;color:#1f2937">📦 Promoções Mercado Livre</h2>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="promoMLLoja" onchange="carregarPromocoesML()" style="padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+            ${optsLojas || '<option value="">Nenhuma loja ML conectada</option>'}
+          </select>
+          <button onclick="abrirNovaPromocao()" style="padding:8px 14px;background:#fff159;color:#2d3277;border:none;border-radius:8px;cursor:pointer;font-weight:700">+ Nova campanha</button>
+          <button onclick="carregarPromocoesML()" style="padding:8px 14px;background:#2d3277;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">↻ Atualizar</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Campanhas do vendedor (SELLER_CAMPAIGN). Prazo máximo 14 dias. Pra subir preço, remova o item e adicione de novo.</div>
+      <div id="promoMLList"></div>`;
+    if (lojas.length) await carregarPromocoesML();
+    else document.getElementById('promoMLList').innerHTML = '<div style="padding:16px;text-align:center;color:#6b7280">Conecte uma loja Mercado Livre primeiro.</div>';
+  }
+  window.abrirPromocoesML = abrirPromocoesML;
+
+  function fecharPromocoesML() {
+    const painel = document.getElementById('promoMLPanel');
+    if (painel) { painel.style.display = 'none'; painel.innerHTML = ''; }
+    ['promoLista', 'promoResumo', 'promoStatsV2'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = '';
+    });
+  }
+  window.fecharPromocoesML = fecharPromocoesML;
+
+  async function carregarPromocoesML() {
+    const lista = document.getElementById('promoMLList');
+    const lojaId = (document.getElementById('promoMLLoja')||{}).value;
+    if (!lista || !lojaId) return;
+    lista.innerHTML = '<div style="padding:16px;text-align:center;color:#6b7280">Carregando campanhas…</div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaId + '/ml/campanhas', { headers: { 'x-api-token': getApiToken() } });
+      const d = await r.json();
+      if (!d.ok) { lista.innerHTML = '<div style="padding:16px;color:#dc2626">Erro: ' + (d.erro||'?') + '</div>'; return; }
+      const campanhas = d.campanhas || [];
+      if (!campanhas.length) { lista.innerHTML = '<div style="padding:16px;text-align:center;color:#6b7280">Nenhuma campanha. Clique em "+ Nova campanha".</div>'; return; }
+      const statusLabel = { started:'🟢 Ativa', pending:'🔵 Agendada', finished:'⚪ Encerrada' };
+      lista.innerHTML = campanhas.map(c => `
+        <div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-weight:700">${escapeHtml(c.name||c.id)} <span style="font-size:12px;font-weight:600;color:#6b7280">${statusLabel[c.status]||c.status}</span></div>
+            <div style="font-size:12px;color:#6b7280">${(c.start_date||'').slice(0,10)} → ${(c.finish_date||'').slice(0,10)} · ${c.sub_type||''} · ${c.id}</div>
+          </div>
+        </div>`).join('');
+    } catch(e) {
+      lista.innerHTML = '<div style="padding:16px;color:#dc2626">Erro: ' + e.message + '</div>';
+    }
+  }
+  window.carregarPromocoesML = carregarPromocoesML;
 
   function fecharPromocoesShopee() {
     const painel = document.getElementById('promoShopeePanel');
