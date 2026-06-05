@@ -28595,7 +28595,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32x.1-promocoes-ml-painel';
+  const _DIAG_VERSAO_PAINEL = 'v32x.2-ml-gerenciar-campanha';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -33804,17 +33804,112 @@ ${JSON.stringify(metricas, null, 2)}`
       if (!campanhas.length) { lista.innerHTML = '<div style="padding:16px;text-align:center;color:#6b7280">Nenhuma campanha. Clique em "+ Nova campanha".</div>'; return; }
       const statusLabel = { started:'🟢 Ativa', pending:'🔵 Agendada', finished:'⚪ Encerrada' };
       lista.innerHTML = campanhas.map(c => `
-        <div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div onclick="gerenciarCampanhaML('${c.id}','${escapeHtml((c.name||'').replace(/'/g,''))}','${(c.start_date||'').slice(0,10)}','${(c.finish_date||'').slice(0,10)}','${c.status}')" style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='#fefce8'" onmouseout="this.style.background=''">
           <div>
             <div style="font-weight:700">${escapeHtml(c.name||c.id)} <span style="font-size:12px;font-weight:600;color:#6b7280">${statusLabel[c.status]||c.status}</span></div>
             <div style="font-size:12px;color:#6b7280">${(c.start_date||'').slice(0,10)} → ${(c.finish_date||'').slice(0,10)} · ${c.sub_type||''} · ${c.id}</div>
           </div>
+          <span style="font-size:13px;color:#2d3277;font-weight:700">Gerenciar produtos →</span>
         </div>`).join('');
     } catch(e) {
       lista.innerHTML = '<div style="padding:16px;color:#dc2626">Erro: ' + e.message + '</div>';
     }
   }
   window.carregarPromocoesML = carregarPromocoesML;
+
+  // Gerencia os produtos de uma campanha ML: lista produtos pai (ativos) da loja,
+  // define o desconto por produto e adiciona à campanha. Por PRODUTO PAI (preço único).
+  let _mlCampanhaAtual = null;
+  function gerenciarCampanhaML(promotionId, nome, inicio, fim, status) {
+    _mlCampanhaAtual = { promotionId, nome, inicio, fim, status };
+    const lojaId = (document.getElementById('promoMLLoja')||{}).value;
+    const painel = document.getElementById('promoMLPanel');
+    if (!painel) return;
+    // produtos pai ativos com anúncio ML vinculado nesta loja
+    const produtos = (produtosErp||[]).filter(p => {
+      if ((p.status||'ativo') !== 'ativo') return false;
+      return (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
+        vi.marketplace === 'mercadolivre' && String(vi.lojaIdBanco||vi.lojaId) === String(lojaId) && vi.anuncioId));
+    });
+    const linhas = produtos.map(p => {
+      const vinc = (p.variacoes||[]).flatMap(v=>v.vinculos||[]).find(vi => vi.marketplace==='mercadolivre' && String(vi.lojaIdBanco||vi.lojaId)===String(lojaId));
+      const mlb = vinc ? vinc.anuncioId : '';
+      return `<tr style="border-top:1px solid #f1f5f9">
+        <td style="padding:8px;width:36px"><input type="checkbox" class="mlcamp-ck" data-mlb="${mlb}" data-preco="${p.preco||0}" style="width:16px;height:16px"></td>
+        <td style="padding:8px"><div style="font-weight:600;font-size:13px">${escapeHtml((p.nome||'').slice(0,55))}</div><div style="font-size:11px;color:#9ca3af">${mlb} · de ${_fmtBRL(p.preco)}</div></td>
+        <td style="padding:8px;width:130px"><input type="number" step="0.01" class="mlcamp-preco" data-mlb="${mlb}" placeholder="preço promo" style="width:110px;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px"></td>
+      </tr>`;
+    }).join('');
+    painel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <button onclick="abrirPromocoesML()" style="padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;cursor:pointer">← Voltar</button>
+          <h2 style="margin:0;font-size:17px;color:#1f2937">📦 ${escapeHtml(nome)} <span style="font-size:12px;color:#6b7280">(${inicio} → ${fim})</span></h2>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:10px;margin-bottom:12px">
+        <span style="font-size:12px;font-weight:700;color:#854d0e">Aplicar desconto em massa aos marcados:</span>
+        <select id="mlCampModo" style="padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">
+          <option value="menos_pct">− X%</option>
+          <option value="menos_rs">− R$ X</option>
+        </select>
+        <input type="number" id="mlCampValor" placeholder="valor" style="width:90px;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">
+        <button onclick="aplicarDescontoMassaML()" style="padding:6px 12px;background:#854d0e;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700">Aplicar</button>
+      </div>
+      <div style="max-height:50vh;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:#fafbfc;font-size:11px;color:#94a3b8;text-transform:uppercase">
+            <th style="padding:6px"></th><th style="padding:6px;text-align:left">Produto (anúncio)</th><th style="padding:6px;text-align:left">Preço promo</th></tr></thead>
+          <tbody>${linhas || '<tr><td colspan="3" style="padding:16px;text-align:center;color:#6b7280">Nenhum produto ML ativo nesta loja.</td></tr>'}</tbody>
+        </table>
+      </div>
+      <button onclick="adicionarProdutosCampanhaML()" style="margin-top:12px;width:100%;padding:12px;background:#fff159;color:#2d3277;border:none;border-radius:8px;cursor:pointer;font-weight:700">📦 Adicionar marcados à campanha</button>`;
+  }
+  window.gerenciarCampanhaML = gerenciarCampanhaML;
+
+  function aplicarDescontoMassaML() {
+    const modo = (document.getElementById('mlCampModo')||{}).value;
+    const valor = parseFloat((document.getElementById('mlCampValor')||{}).value) || 0;
+    if (valor <= 0) { showToast('Informe um valor', true); return; }
+    document.querySelectorAll('.mlcamp-ck:checked').forEach(ck => {
+      const mlb = ck.dataset.mlb;
+      const base = parseFloat(ck.dataset.preco) || 0;
+      const novo = modo === 'menos_pct' ? base*(1-valor/100) : base - valor;
+      const inp = document.querySelector('.mlcamp-preco[data-mlb="'+mlb+'"]');
+      if (inp) inp.value = Math.max(0, Math.round(novo*100)/100);
+    });
+    showToast('✓ Desconto aplicado aos marcados');
+  }
+  window.aplicarDescontoMassaML = aplicarDescontoMassaML;
+
+  async function adicionarProdutosCampanhaML() {
+    if (!_mlCampanhaAtual) return;
+    const lojaId = (document.getElementById('promoMLLoja')||{}).value;
+    const itens = [];
+    document.querySelectorAll('.mlcamp-ck:checked').forEach(ck => {
+      const mlb = ck.dataset.mlb;
+      const inp = document.querySelector('.mlcamp-preco[data-mlb="'+mlb+'"]');
+      const preco = parseFloat(inp ? inp.value : 0) || 0;
+      if (mlb && preco > 0) itens.push({ itemId: mlb, dealPrice: preco });
+    });
+    if (!itens.length) { showToast('Marque produtos e defina o preço promocional', true); return; }
+    if (!confirm(`Adicionar ${itens.length} produto(s) à campanha "${_mlCampanhaAtual.nome}"?`)) return;
+    showToast('📦 Adicionando à campanha…');
+    let ok = 0, falha = 0;
+    for (const it of itens) {
+      try {
+        const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaId + '/ml/promocao/item', {
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          body: JSON.stringify({ itemId: it.itemId, promotionId: _mlCampanhaAtual.promotionId, dealPrice: it.dealPrice }),
+        });
+        const d = await r.json();
+        if (d.ok) ok++; else { falha++; console.warn('[ml campanha] item', it.itemId, d.erro); }
+      } catch(e) { falha++; }
+      await new Promise(r => setTimeout(r, 400));
+    }
+    showToast(`✓ ${ok} produto(s) adicionado(s)` + (falha?` · ${falha} falha(s)`:''), falha>0);
+  }
+  window.adicionarProdutosCampanhaML = adicionarProdutosCampanhaML;
 
   function fecharPromocoesShopee() {
     const painel = document.getElementById('promoShopeePanel');
