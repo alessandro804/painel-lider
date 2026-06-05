@@ -6420,6 +6420,7 @@
       <div class="modal-v2-actions" style="margin-left:auto">
         <button class="modal-v2-btn modal-v2-btn-secondary" onclick="closePromocao()">Cancelar</button>
         <button class="modal-v2-btn" id="promoEfetivarBtn" onclick="efetivarPromocaoShopee()" style="display:none;background:#ee4d2d;color:#fff">🛒 Efetivar na Shopee</button>
+        <button class="modal-v2-btn" id="promoEfetivarMLBtn" onclick="efetivarPromocaoML()" style="display:none;background:#fff159;color:#2d3277">📦 Efetivar no Mercado Livre</button>
         <button class="modal-v2-btn modal-v2-btn-primary" onclick="salvarPromocao()">💾 Salvar promoção</button>
       </div>
     </div>
@@ -26060,6 +26061,14 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     return !!(loja && String(loja.marketplace || '').toLowerCase() === 'shopee');
   }
 
+  function _promoLojaEhML() {
+    const sel = document.getElementById('promoLoja');
+    if (!sel) return false;
+    const loja = (typeof lojasErp !== 'undefined' ? lojasErp : []).find(l => String(l.id) === String(sel.value));
+    return !!(loja && String(loja.marketplace || '').toLowerCase() === 'mercadolivre');
+  }
+  window._promoLojaEhML = _promoLojaEhML;
+
   // Produtos da loja selecionada no modal
   function _promoProdutosDaLoja() {
     const sel = document.getElementById('promoLoja');
@@ -26236,13 +26245,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       var mostra = !!(pEdit && _promoLojaEhShopee() && tipoAtual !== 'cupom' && !pEdit.efetivadoShopee && Array.isArray(pEdit.itens) && pEdit.itens.length);
       btnEf.style.display = mostra ? 'inline-flex' : 'none';
     }
+    var btnEfML = document.getElementById('promoEfetivarMLBtn');
+    if (btnEfML) {
+      var pEditML = _promocaoEditandoId ? promocoesErp.find(function(x){return String(x.id)===String(_promocaoEditandoId);}) : null;
+      var tipoML = document.getElementById('promoTipo').value;
+      var mostraML = !!(pEditML && _promoLojaEhML() && tipoML !== 'cupom' && !pEditML.efetivadoML && Array.isArray(pEditML.itens) && pEditML.itens.length);
+      btnEfML.style.display = mostraML ? 'inline-flex' : 'none';
+    }
     var wrap = document.getElementById('promoItensBloco');
     const lista = document.getElementById('promoItensLista');
     if (!wrap || !lista) return;
 
-    // Só mostra o bloco pra Shopee e tipo != cupom
+    // Mostra o bloco pra Shopee OU Mercado Livre (tipo != cupom)
     const tipo = document.getElementById('promoTipo').value;
-    if (!_promoLojaEhShopee() || tipo === 'cupom') {
+    if ((!_promoLojaEhShopee() && !_promoLojaEhML()) || tipo === 'cupom') {
       wrap.style.display = 'none';
       return;
     }
@@ -26392,6 +26408,78 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     }
   }
 
+
+  // Efetiva uma promoção no Mercado Livre: cria a campanha (SELLER_CAMPAIGN) e
+  // adiciona cada item selecionado com seu preço promocional.
+  async function efetivarPromocaoML() {
+    if (!_promocaoEditandoId) { showToast('Salve a promoção antes de efetivar', true); return; }
+    const p = promocoesErp.find(x => String(x.id) === String(_promocaoEditandoId));
+    if (!p) return;
+    if (p.efetivadoML) { showToast('Esta promoção já foi efetivada no Mercado Livre', true); return; }
+
+    const sel = document.getElementById('promoLoja');
+    const loja = lojasErp.find(l => String(l.id) === String(sel.value));
+    if (!loja) { showToast('Loja não encontrada', true); return; }
+    const lojaIdBanco = loja.idBanco || loja.id;
+
+    // valida prazo (ML: máx 14 dias)
+    const inicio = (p.inicio || '').slice(0,10);
+    const fim = (p.fim || '').slice(0,10);
+    if (!inicio || !fim) { showToast('Defina início e fim da promoção', true); return; }
+    const dias = Math.round((new Date(fim) - new Date(inicio)) / 86400000);
+    if (dias > 14) { showToast('No Mercado Livre a campanha pode durar no máximo 14 dias', true); return; }
+
+    // coleta os itens selecionados (anúncios ML) + preço promocional
+    const itensML = [];
+    _promoProdutosDaLoja().forEach(prod => {
+      const item = window._promoItens[prod.id];
+      if (!item || !item.selecionado) return;
+      // pega o anúncio ML (MLB) vinculado a este produto nesta loja
+      const vinc = (prod.variacoes||[]).flatMap(v => v.vinculos||[])
+        .find(vi => vi.marketplace === 'mercadolivre' && String(vi.lojaIdBanco||vi.lojaId) === String(lojaIdBanco));
+      if (!vinc || !vinc.anuncioId) return;
+      const dealPrice = item.precoAnuncio || prod.preco;
+      if (!itensML.some(x => x.itemId === vinc.anuncioId)) {
+        itensML.push({ itemId: vinc.anuncioId, dealPrice: Number(dealPrice) });
+      }
+    });
+    if (!itensML.length) { showToast('Nenhum anúncio ML selecionado com preço', true); return; }
+    if (!confirm(`Criar campanha no Mercado Livre (${dias} dias) e adicionar ${itensML.length} anúncio(s)?`)) return;
+
+    showToast('📦 Criando campanha no Mercado Livre…');
+    try {
+      // 1) cria a campanha
+      const rc = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/campanha', {
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        body: JSON.stringify({ nome: p.nome || 'Campanha Lider', inicio, fim }),
+      });
+      const dc = await rc.json();
+      if (!dc.ok) { showToast('Falha ao criar campanha: ' + (dc.erro||'?'), true); return; }
+      const promotionId = dc.promotionId;
+      // 2) adiciona cada item
+      let ok = 0, falha = 0;
+      for (const it of itensML) {
+        try {
+          const ri = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/promocao/item', {
+            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+            body: JSON.stringify({ itemId: it.itemId, promotionId, dealPrice: it.dealPrice }),
+          });
+          const di = await ri.json();
+          if (di.ok) ok++; else { falha++; console.warn('[efetivar-ml] item', it.itemId, di.erro); }
+        } catch(e) { falha++; }
+        await new Promise(r => setTimeout(r, 400));
+      }
+      p.promotionIdML = promotionId;
+      p.efetivadoML = true;
+      p.status = 'agendada';
+      savePromocoes();
+      renderPromocoes();
+      showToast(`✓ Campanha ML criada (${promotionId}) · ${ok} item(ns)` + (falha?` · ${falha} falha(s)`:''), falha>0);
+    } catch (e) {
+      showToast('Erro: ' + e.message, true);
+    }
+  }
+  window.efetivarPromocaoML = efetivarPromocaoML;
 
   function closePromocao() {
     document.getElementById('promocaoOverlay').classList.remove('active');
@@ -28505,7 +28593,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32v.8-export-massa-grupos-regua';
+  const _DIAG_VERSAO_PAINEL = 'v32x.0-promocoes-ml';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
