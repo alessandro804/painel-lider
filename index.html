@@ -12472,10 +12472,21 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Carrega os produtos do backend e atualiza o cache local
   async function carregarProdutosDoBackend() {
     try {
-      const resp = await fetch(BACKEND_URL + '/api/produtos', {
-        headers: { 'x-api-token': getApiToken() }
-      });
-      const data = await resp.json();
+      // Busca TODOS os produtos paginando (a rota sem limit corta em 1000 no Supabase).
+      // Primeiro o total, depois em chunks de 200.
+      let produtosBanco = [];
+      const respCount = await fetch(BACKEND_URL + '/api/produtos?count=true', { headers: { 'x-api-token': getApiToken() } });
+      const dCount = await respCount.json();
+      const total = (dCount.ok && dCount.total) || 0;
+      if (total > 0) {
+        const totalPaginas = Math.ceil(total / 200);
+        for (let p = 1; p <= totalPaginas; p++) {
+          const r = await fetch(BACKEND_URL + '/api/produtos?page=' + p + '&limit=200', { headers: { 'x-api-token': getApiToken() } });
+          const dp = await r.json();
+          if (dp.ok && Array.isArray(dp.produtos)) produtosBanco.push(...dp.produtos);
+        }
+      }
+      const data = { ok: true, produtos: produtosBanco };
       if (data.ok && Array.isArray(data.produtos)) {
         // Mapeia: id do banco vira idBanco. Pra preservar id local de cópias
         // recém-criadas, faz merge com o cache atual usando idBanco como chave.
@@ -26440,8 +26451,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
 
 
-  // Cria a campanha ML e adiciona os itens, a partir de uma promoção salva.
-  // Chamado automaticamente no salvar (loja ML).
+  // Cria a campanha ML em SEGUNDO PLANO: garante o push da promoção pra app_data,
+  // dispara a tarefa no backend e fecha o modal na hora (não trava a tela).
   async function _criarCampanhaMLDeProm(promo) {
     const loja = lojasErp.find(l => String(l.id) === String(promo.lojaId));
     if (!loja) { showToast('Loja não encontrada', true); closePromocao(); renderPromocoes(); return; }
@@ -26452,77 +26463,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const dias = Math.round((new Date(fim) - new Date(inicio))/86400000);
     if (dias > 14) { showToast('No ML a campanha dura no máximo 14 dias', true); return; }
 
-    let itensML = [];
-    (promo.itens||[]).forEach(it => {
-      const prod = produtosErp.find(p => String(p.id) === String(it.produtoId));
-      if (!prod) return;
-      const preco = it.precoAnuncio || (it.variacoes && it.variacoes[0] && it.variacoes[0].preco) || prod.preco;
-      if (!(preco > 0)) return;
-      // TODOS os MLBs ativos deste produto (cada tamanho/cor é um MLB separado no ML).
-      // Antes pegava só o 1º (.find) — por isso só parte entrava. Agora envia todos.
-      const vincs = (prod.variacoes||[]).flatMap(v=>v.vinculos||[])
-        .filter(vi => vi.marketplace==='mercadolivre' && String(vi.lojaIdBanco||vi.lojaId)===String(lojaIdBanco) && vi.anuncioId);
-      vincs.forEach(vi => {
-        if (!itensML.some(x => x.itemId === vi.anuncioId)) {
-          itensML.push({ itemId: vi.anuncioId, dealPrice: Number(preco) });
-        }
-      });
-    });
-    if (!itensML.length) { showToast('Nenhum anúncio ML válido nos produtos selecionados', true); closePromocao(); renderPromocoes(); return; }
-
-    // Verifica o status REAL no ML — só promove os ATIVOS (o ML recusa pausados/encerrados)
-    showToast('🔎 Verificando status dos anúncios no ML…');
-    let pausados = [];
+    showToast('💾 Salvando e enviando pro Mercado Livre…');
     try {
-      const rs = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/itens-status', {
-        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
-        body: JSON.stringify({ itens: itensML.map(i => i.itemId) }),
-      });
-      const ds = await rs.json();
-      if (ds.ok && ds.status) {
-        const ativos = itensML.filter(i => ds.status[i.itemId] === 'active' || !ds.status[i.itemId]);
-        pausados = itensML.filter(i => ds.status[i.itemId] && ds.status[i.itemId] !== 'active');
-        if (pausados.length && !confirm(`${pausados.length} anúncio(s) estão PAUSADOS/inativos no ML e não podem entrar na promoção. Continuar com os ${ativos.length} ativos?`)) {
-          closePromocao(); renderPromocoes(); return;
-        }
-        itensML = ativos;
+      // garante que a promoção está na app_data (a tarefa lê de lá)
+      if (window.LiderSync && LiderSync.pushAppData) {
+        await LiderSync.pushAppData('promocoes', promocoesErp);
+        // produtos também (a tarefa precisa dos vínculos/MLBs)
+        if (typeof produtosErp !== 'undefined') await LiderSync.pushAppData('produtos', produtosErp);
       }
-    } catch(e) { console.warn('[ml prom] checagem de status falhou, segue com todos:', e); }
-    if (!itensML.length) { showToast('Nenhum anúncio ativo pra promover', true); closePromocao(); renderPromocoes(); return; }
-
-    showToast('📦 Criando campanha no Mercado Livre…');
-    try {
-      const rc = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/campanha', {
+      const r = await fetch(BACKEND_URL + '/api/tarefas/promocao-ml/efetivar', {
         method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
-        body: JSON.stringify({ nome: promo.nome, inicio, fim }),
+        body: JSON.stringify({ promocaoId: promo.id, lojaIdBanco }),
       });
-      const dc = await rc.json();
-      if (!dc.ok) { showToast('Falha ao criar campanha no ML: ' + (dc.erro||'?'), true); closePromocao(); renderPromocoes(); return; }
-      const promotionId = dc.promotionId;
-      let ok = 0, falha = 0, ajustados = 0, i = 0;
-      const total = itensML.length;
-      for (const it of itensML) {
-        i++;
-        if (i % 10 === 0 || i === total) showToast(`📦 Adicionando ${i}/${total} anúncios…`);
-        try {
-          const ri = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/promocao/item', {
-            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
-            body: JSON.stringify({ itemId: it.itemId, promotionId, dealPrice: it.dealPrice }),
-          });
-          const di = await ri.json();
-          if (di.ok) { ok++; if (di.ajustado) ajustados++; } else { falha++; console.warn('[ml prom] item', it.itemId, di.erro); }
-        } catch(e) { falha++; }
-        await new Promise(r => setTimeout(r, 150));
+      const d = await r.json();
+      if (d.ok) {
+        promo.efetivadoML = true; // marca como enviada (a criação roda em background)
+        savePromocoes();
+        showToast('✓ Promoção sendo criada no ML em segundo plano. Acompanhe em "Promoções Mercado Livre".');
+      } else {
+        showToast('Erro ao disparar: ' + (d.erro||'?'), true);
       }
-      promo.promotionIdML = promotionId;
-      promo.efetivadoML = true;
-      savePromocoes();
-      let msg = `✓ Campanha ML criada · ${ok} produto(s)`;
-      if (ajustados) msg += ` · ${ajustados} com preço ajustado ao limite do ML`;
-      if (falha) msg += ` · ${falha} falha(s)`;
-      showToast(msg, falha>0);
     } catch(e) {
-      showToast('Erro ao criar campanha: ' + e.message, true);
+      showToast('Erro: ' + e.message, true);
     }
     closePromocao();
     renderPromocoes();
@@ -28713,7 +28675,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32x.9-ml-todos-mlbs-por-produto';
+  const _DIAG_VERSAO_PAINEL = 'v32y.1-carrega-todos-produtos-boot';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
