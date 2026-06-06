@@ -26456,13 +26456,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     (promo.itens||[]).forEach(it => {
       const prod = produtosErp.find(p => String(p.id) === String(it.produtoId));
       if (!prod) return;
-      const vinc = (prod.variacoes||[]).flatMap(v=>v.vinculos||[])
-        .find(vi => vi.marketplace==='mercadolivre' && String(vi.lojaIdBanco||vi.lojaId)===String(lojaIdBanco));
-      if (!vinc || !vinc.anuncioId) return;
       const preco = it.precoAnuncio || (it.variacoes && it.variacoes[0] && it.variacoes[0].preco) || prod.preco;
-      if (preco > 0 && !itensML.some(x => x.itemId === vinc.anuncioId)) {
-        itensML.push({ itemId: vinc.anuncioId, dealPrice: Number(preco) });
-      }
+      if (!(preco > 0)) return;
+      // TODOS os MLBs ativos deste produto (cada tamanho/cor é um MLB separado no ML).
+      // Antes pegava só o 1º (.find) — por isso só parte entrava. Agora envia todos.
+      const vincs = (prod.variacoes||[]).flatMap(v=>v.vinculos||[])
+        .filter(vi => vi.marketplace==='mercadolivre' && String(vi.lojaIdBanco||vi.lojaId)===String(lojaIdBanco) && vi.anuncioId);
+      vincs.forEach(vi => {
+        if (!itensML.some(x => x.itemId === vi.anuncioId)) {
+          itensML.push({ itemId: vi.anuncioId, dealPrice: Number(preco) });
+        }
+      });
     });
     if (!itensML.length) { showToast('Nenhum anúncio ML válido nos produtos selecionados', true); closePromocao(); renderPromocoes(); return; }
 
@@ -26495,8 +26499,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const dc = await rc.json();
       if (!dc.ok) { showToast('Falha ao criar campanha no ML: ' + (dc.erro||'?'), true); closePromocao(); renderPromocoes(); return; }
       const promotionId = dc.promotionId;
-      let ok = 0, falha = 0, ajustados = 0;
+      let ok = 0, falha = 0, ajustados = 0, i = 0;
+      const total = itensML.length;
       for (const it of itensML) {
+        i++;
+        if (i % 10 === 0 || i === total) showToast(`📦 Adicionando ${i}/${total} anúncios…`);
         try {
           const ri = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/promocao/item', {
             method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
@@ -26505,7 +26512,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           const di = await ri.json();
           if (di.ok) { ok++; if (di.ajustado) ajustados++; } else { falha++; console.warn('[ml prom] item', it.itemId, di.erro); }
         } catch(e) { falha++; }
-        await new Promise(r => setTimeout(r, 400));
+        await new Promise(r => setTimeout(r, 150));
       }
       promo.promotionIdML = promotionId;
       promo.efetivadoML = true;
@@ -28706,7 +28713,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32x.8-ml-promove-so-ativos';
+  const _DIAG_VERSAO_PAINEL = 'v32x.9-ml-todos-mlbs-por-produto';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
