@@ -25925,24 +25925,36 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       atualizadoEm: new Date().toISOString()
     };
 
-    // P.1: para Shopee (não-cupom), coleta e valida os itens com preço
-    if (typeof _promoLojaEhShopee === 'function' && _promoLojaEhShopee() && tipo !== 'cupom') {
+    // Coleta e valida os itens com preço — pra Shopee E pra Mercado Livre
+    const ehShopee = (typeof _promoLojaEhShopee === 'function' && _promoLojaEhShopee());
+    const ehML = (typeof _promoLojaEhML === 'function' && _promoLojaEhML());
+    if ((ehShopee || ehML) && tipo !== 'cupom') {
       const v = validarItensPromo();
       if (!v.ok) { showToast(v.msg, true); return; }
       dados.itens = v.itens;
-      dados.efetivadoShopee = false; // ainda não enviado à Shopee (Leva P.2)
+      if (ehShopee) dados.efetivadoShopee = false;
+      if (ehML) dados.efetivadoML = false;
     }
     
+    let promoSalva;
     if (_promocaoEditandoId) {
       const p = promocoesErp.find(x => String(x.id) === String(_promocaoEditandoId));
-      if (p) Object.assign(p, dados);
+      if (p) { Object.assign(p, dados); promoSalva = p; }
     } else {
-      promocoesErp.push({ id: gerarId(), ...dados, criadoEm: new Date().toISOString() });
+      promoSalva = { id: gerarId(), ...dados, criadoEm: new Date().toISOString() };
+      promocoesErp.push(promoSalva);
     }
     savePromocoes();
+    showToast('✓ Promoção salva');
+
+    // Pra Mercado Livre: cria a campanha e adiciona os itens AUTOMATICAMENTE ao salvar
+    if (ehML && tipo !== 'cupom' && dados.itens && dados.itens.length) {
+      _criarCampanhaMLDeProm(promoSalva);  // assíncrono — mostra progresso
+      return; // não fecha o modal ainda; a função fecha ao terminar
+    }
+
     closePromocao();
     renderPromocoes();
-    showToast('✓ Promoção salva');
   }
   
   function excluirPromocao() {
@@ -26367,10 +26379,19 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   function validarItensPromo() {
     const itens = coletarItensPromo();
     if (itens.length === 0) return { ok: false, msg: 'Selecione ao menos um anúncio para a promoção.' };
+    const ehML = (typeof _promoLojaEhML === 'function' && _promoLojaEhML());
     for (const it of itens) {
-      for (const v of it.variacoes) {
-        if (v.preco === null || v.preco <= 0) {
-          return { ok: false, msg: 'Há variações sem preço promocional. Preencha todas ou desmarque o anúncio.' };
+      if (ehML) {
+        // ML: preço por PRODUTO (precoAnuncio). Não exige preço por variação.
+        if (it.precoAnuncio === null || it.precoAnuncio === undefined || it.precoAnuncio <= 0) {
+          return { ok: false, msg: 'Há produtos sem preço promocional. Preencha o preço de todos ou desmarque.' };
+        }
+      } else {
+        // Shopee: preço por variação
+        for (const v of it.variacoes) {
+          if (v.preco === null || v.preco <= 0) {
+            return { ok: false, msg: 'Há variações sem preço promocional. Preencha todas ou desmarque o anúncio.' };
+          }
         }
       }
     }
@@ -26418,6 +26439,68 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     }
   }
 
+
+  // Cria a campanha ML e adiciona os itens, a partir de uma promoção salva.
+  // Chamado automaticamente no salvar (loja ML).
+  async function _criarCampanhaMLDeProm(promo) {
+    const loja = lojasErp.find(l => String(l.id) === String(promo.lojaId));
+    if (!loja) { showToast('Loja não encontrada', true); closePromocao(); renderPromocoes(); return; }
+    const lojaIdBanco = loja.idBanco || loja.id;
+    const inicio = (promo.inicio||'').slice(0,10);
+    const fim = (promo.fim||'').slice(0,10);
+    if (!inicio || !fim) { showToast('Defina início e fim', true); return; }
+    const dias = Math.round((new Date(fim) - new Date(inicio))/86400000);
+    if (dias > 14) { showToast('No ML a campanha dura no máximo 14 dias', true); return; }
+
+    const itensML = [];
+    (promo.itens||[]).forEach(it => {
+      const prod = produtosErp.find(p => String(p.id) === String(it.produtoId));
+      if (!prod) return;
+      const vinc = (prod.variacoes||[]).flatMap(v=>v.vinculos||[])
+        .find(vi => vi.marketplace==='mercadolivre' && String(vi.lojaIdBanco||vi.lojaId)===String(lojaIdBanco));
+      if (!vinc || !vinc.anuncioId) return;
+      const preco = it.precoAnuncio || (it.variacoes && it.variacoes[0] && it.variacoes[0].preco) || prod.preco;
+      if (preco > 0 && !itensML.some(x => x.itemId === vinc.anuncioId)) {
+        itensML.push({ itemId: vinc.anuncioId, dealPrice: Number(preco) });
+      }
+    });
+    if (!itensML.length) { showToast('Nenhum anúncio ML válido nos produtos selecionados', true); closePromocao(); renderPromocoes(); return; }
+
+    showToast('📦 Criando campanha no Mercado Livre…');
+    try {
+      const rc = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/campanha', {
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        body: JSON.stringify({ nome: promo.nome, inicio, fim }),
+      });
+      const dc = await rc.json();
+      if (!dc.ok) { showToast('Falha ao criar campanha no ML: ' + (dc.erro||'?'), true); closePromocao(); renderPromocoes(); return; }
+      const promotionId = dc.promotionId;
+      let ok = 0, falha = 0, ajustados = 0;
+      for (const it of itensML) {
+        try {
+          const ri = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/promocao/item', {
+            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+            body: JSON.stringify({ itemId: it.itemId, promotionId, dealPrice: it.dealPrice }),
+          });
+          const di = await ri.json();
+          if (di.ok) { ok++; if (di.ajustado) ajustados++; } else { falha++; console.warn('[ml prom] item', it.itemId, di.erro); }
+        } catch(e) { falha++; }
+        await new Promise(r => setTimeout(r, 400));
+      }
+      promo.promotionIdML = promotionId;
+      promo.efetivadoML = true;
+      savePromocoes();
+      let msg = `✓ Campanha ML criada · ${ok} produto(s)`;
+      if (ajustados) msg += ` · ${ajustados} com preço ajustado ao limite do ML`;
+      if (falha) msg += ` · ${falha} falha(s)`;
+      showToast(msg, falha>0);
+    } catch(e) {
+      showToast('Erro ao criar campanha: ' + e.message, true);
+    }
+    closePromocao();
+    renderPromocoes();
+  }
+  window._criarCampanhaMLDeProm = _criarCampanhaMLDeProm;
 
   // Efetiva uma promoção no Mercado Livre: cria a campanha (SELLER_CAMPAIGN) e
   // adiciona cada item selecionado com seu preço promocional.
@@ -28603,7 +28686,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32x.6-promo-produtos-idbanco';
+  const _DIAG_VERSAO_PAINEL = 'v32x.7-promo-ml-salvar-cria-campanha';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
