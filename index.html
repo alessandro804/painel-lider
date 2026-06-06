@@ -5107,6 +5107,23 @@
       <textarea id="demandaDescricao" class="form-input" rows="5" placeholder="Escreva o que precisa ser feito. Ex: editar o anúncio X, criar loja no TikTok, etc. Você pode colar prints com Ctrl+V." style="resize:vertical;line-height:1.5;min-height:110px"></textarea>
     </div>
     <div class="demanda-checklist-area" id="demandaChecklistArea" style="display:none"></div>
+
+    <!-- BLOCO AJUSTAR PREÇO (régua) — aparece só quando tipo = ajustar_preco -->
+    <div id="demandaAjustePrecoBloco" style="display:none">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <div style="flex:1;min-width:180px">
+          <label class="form-label">Loja</label>
+          <select class="form-select" id="apLoja" onchange="apCarregarProdutos()"></select>
+        </div>
+        <div style="flex:2;min-width:200px">
+          <label class="form-label">Buscar produto</label>
+          <input type="text" class="form-input" id="apBusca" placeholder="🔍 nome ou SKU..." oninput="apRenderProdutos()">
+        </div>
+      </div>
+      <div id="apProdutosLista" style="max-height:240px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:10px;padding:8px;margin-bottom:12px"></div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px"><b id="apSelecionadosCount">0</b> produto(s) selecionado(s). Os preços das variações são agrupados abaixo.</div>
+      <div id="apGruposPreco"></div>
+    </div>
     
     <!-- Upload de imagens da demanda -->
     <!-- v32g.7: bloco com id pra esconder quando for SÓ ML (que não usa fotos gerais) -->
@@ -10692,7 +10709,8 @@ Retorne JSON: {"ID": "valor", ...}`;
         { v: 'adicionar_ean',      l: '🔢 Adicionar códigos EAN' },
         { v: 'duplicar_anuncio',   l: '📑 Duplicar anúncios' },
         { v: 'adicionar_variacao', l: '🎨 Adicionar variação (cor/tamanho)' },
-        { v: 'otimizacao',         l: '📈 Otimização de anúncio' }
+        { v: 'otimizacao',         l: '📈 Otimização de anúncio' },
+        { v: 'ajustar_preco',      l: '💰 Ajustar preço (régua)' }
       ]
     },
     design: {
@@ -27213,9 +27231,110 @@ Responda APENAS com JSON válido (sem markdown), formato:
     return 'marketplaces';
   }
   
+  // ===== AJUSTE DE PREÇO (demanda) — seleção + grupos por preço + régua =====
+  let _apSelecionados = new Set(); // ids de produtos selecionados
+
+  function apInit() {
+    // popula o select de loja (todas) e carrega
+    const sel = document.getElementById('apLoja');
+    if (sel && !sel.dataset.pop) {
+      sel.innerHTML = '<option value="">Selecione a loja</option>' +
+        (lojasErp||[]).map(l => `<option value="${l.id}">${escapeHtml(l.nome)} [${l.marketplace}]</option>`).join('');
+      sel.dataset.pop = '1';
+    }
+  }
+  window.apInit = apInit;
+
+  // produtos da loja selecionada (por vínculo idBanco — consistente)
+  function _apProdutosDaLoja() {
+    const lojaLocal = (document.getElementById('apLoja')||{}).value;
+    if (!lojaLocal) return [];
+    const loja = (lojasErp||[]).find(l => String(l.id) === String(lojaLocal));
+    const idBanco = loja ? String(loja.idBanco) : null;
+    return (produtosErp||[]).filter(p => {
+      if ((p.status||'ativo') !== 'ativo') return false;
+      return (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi => {
+        const vl = String(vi.lojaIdBanco||vi.lojaId);
+        return (idBanco && vl === idBanco) || vl === String(lojaLocal);
+      }));
+    });
+  }
+
+  function apCarregarProdutos() { _apSelecionados.clear(); apRenderProdutos(); apRenderGruposPreco(); }
+  window.apCarregarProdutos = apCarregarProdutos;
+
+  function apRenderProdutos() {
+    const wrap = document.getElementById('apProdutosLista');
+    if (!wrap) return;
+    const busca = ((document.getElementById('apBusca')||{}).value || '').toLowerCase();
+    let lista = _apProdutosDaLoja();
+    if (busca) lista = lista.filter(p => (p.nome||'').toLowerCase().includes(busca) || (p.skuPai||'').toLowerCase().includes(busca));
+    if (!lista.length) { wrap.innerHTML = '<div style="color:#9ca3af;padding:10px;text-align:center">Selecione uma loja / nenhum produto.</div>'; return; }
+    wrap.innerHTML = lista.slice(0, 100).map(p => {
+      const foto = (p.fotos && p.fotos[0]) || ((p.variacoes||[]).flatMap(v=>v.fotos||[])[0]) || '';
+      const sel = _apSelecionados.has(String(p.id));
+      return `<label style="display:flex;align-items:center;gap:10px;padding:6px;border-radius:8px;cursor:pointer;${sel?'background:#eef2ff':''}">
+        <input type="checkbox" ${sel?'checked':''} onchange="apToggle('${p.id}')" style="width:16px;height:16px">
+        ${foto ? `<img src="${foto}" style="width:40px;height:40px;object-fit:cover;border-radius:6px">` : '<div style="width:40px;height:40px;background:#f1f5f9;border-radius:6px"></div>'}
+        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(p.nome||'')}</div>
+        <div style="font-size:11px;color:#9ca3af">${escapeHtml(p.skuPai||'')} · ${(p.variacoes||[]).length} var.</div></div>
+      </label>`;
+    }).join('');
+  }
+  window.apRenderProdutos = apRenderProdutos;
+
+  function apToggle(id) {
+    id = String(id);
+    if (_apSelecionados.has(id)) _apSelecionados.delete(id); else _apSelecionados.add(id);
+    document.getElementById('apSelecionadosCount').textContent = _apSelecionados.size;
+    apRenderGruposPreco();
+  }
+  window.apToggle = apToggle;
+
+  // Agrupa as variações dos produtos selecionados pelo PREÇO ATUAL, e mostra
+  // uma régua por grupo. Cada grupo: "Variações de R$X → [régua]".
+  function apRenderGruposPreco() {
+    const wrap = document.getElementById('apGruposPreco');
+    if (!wrap) return;
+    if (!_apSelecionados.size) { wrap.innerHTML = ''; return; }
+    // junta todas as variações dos produtos selecionados, agrupadas por preço
+    const grupos = {}; // preco -> [{produtoId, variacaoId, ...}]
+    _apSelecionados.forEach(pid => {
+      const p = produtosErp.find(x => String(x.id) === pid);
+      if (!p) return;
+      (p.variacoes||[]).forEach(v => {
+        const preco = (parseFloat(v.preco)||parseFloat(p.preco)||0).toFixed(2);
+        (grupos[preco] = grupos[preco] || []).push({ produtoId: pid, variacaoId: v.id, nome: v.nome });
+      });
+    });
+    const precos = Object.keys(grupos).sort((a,b)=>parseFloat(a)-parseFloat(b));
+    wrap.innerHTML = precos.map((preco, i) => {
+      const prefixo = 'apg' + i;
+      const n = grupos[preco].length;
+      return `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:10px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:8px">Variações de ${_fmtBRL(parseFloat(preco))} <span style="font-weight:400;color:#6b7280;font-size:12px">(${n} variação${n>1?'ões':''})</span></div>
+        <div id="${prefixo}_box"></div>
+      </div>`;
+    }).join('');
+    // injeta a ReguaUI em cada grupo
+    precos.forEach((preco, i) => {
+      const box = document.getElementById('apg' + i + '_box');
+      if (box) { box.innerHTML = ReguaUI.html('apg'+i, { titulo: '💸 Régua deste grupo' }); }
+    });
+    // guarda o mapa grupo→variações pra usar ao salvar
+    window._apGrupos = precos.map((preco,i) => ({ prefixo:'apg'+i, preco: parseFloat(preco), variacoes: grupos[preco] }));
+  }
+  window.apRenderGruposPreco = apRenderGruposPreco;
+
   function sugerirFluxoPorTipo() {
     const sel = document.getElementById('demandaFluxo');
     const tipo = document.getElementById('demandaTipo').value;
+    // Adapta o modal pra "ajustar preço": mostra seleção de produtos + régua por grupo
+    const apBloco = document.getElementById('demandaAjustePrecoBloco');
+    if (apBloco) {
+      apBloco.style.display = (tipo === 'ajustar_preco') ? 'block' : 'none';
+      if (tipo === 'ajustar_preco' && typeof apInit === 'function') apInit();
+    }
     if (!sel) return;
     // Só sugere se ainda não escolheu nada
     if (sel.value) return;
@@ -28804,7 +28923,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32z.3-essencial-separar-desvincular';
+  const _DIAG_VERSAO_PAINEL = 'v33a.0-ajustar-preco-selecao-grupos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
