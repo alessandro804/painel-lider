@@ -26452,7 +26452,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const dias = Math.round((new Date(fim) - new Date(inicio))/86400000);
     if (dias > 14) { showToast('No ML a campanha dura no máximo 14 dias', true); return; }
 
-    const itensML = [];
+    let itensML = [];
     (promo.itens||[]).forEach(it => {
       const prod = produtosErp.find(p => String(p.id) === String(it.produtoId));
       if (!prod) return;
@@ -26465,6 +26465,26 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       }
     });
     if (!itensML.length) { showToast('Nenhum anúncio ML válido nos produtos selecionados', true); closePromocao(); renderPromocoes(); return; }
+
+    // Verifica o status REAL no ML — só promove os ATIVOS (o ML recusa pausados/encerrados)
+    showToast('🔎 Verificando status dos anúncios no ML…');
+    let pausados = [];
+    try {
+      const rs = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/itens-status', {
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        body: JSON.stringify({ itens: itensML.map(i => i.itemId) }),
+      });
+      const ds = await rs.json();
+      if (ds.ok && ds.status) {
+        const ativos = itensML.filter(i => ds.status[i.itemId] === 'active' || !ds.status[i.itemId]);
+        pausados = itensML.filter(i => ds.status[i.itemId] && ds.status[i.itemId] !== 'active');
+        if (pausados.length && !confirm(`${pausados.length} anúncio(s) estão PAUSADOS/inativos no ML e não podem entrar na promoção. Continuar com os ${ativos.length} ativos?`)) {
+          closePromocao(); renderPromocoes(); return;
+        }
+        itensML = ativos;
+      }
+    } catch(e) { console.warn('[ml prom] checagem de status falhou, segue com todos:', e); }
+    if (!itensML.length) { showToast('Nenhum anúncio ativo pra promover', true); closePromocao(); renderPromocoes(); return; }
 
     showToast('📦 Criando campanha no Mercado Livre…');
     try {
@@ -28686,7 +28706,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32x.7-promo-ml-salvar-cria-campanha';
+  const _DIAG_VERSAO_PAINEL = 'v32x.8-ml-promove-so-ativos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
