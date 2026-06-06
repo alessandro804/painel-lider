@@ -15986,9 +15986,16 @@ Retorne JSON: {"ID": "valor", ...}`;
       const dados = await resp.json();
       if (!dados.ok) throw new Error(dados.erro || 'Erro ao carregar produtos');
       
-      // Substitui produtosErp pela página atual
-      produtosErp.length = 0;
-      (dados.produtos || []).forEach(p => produtosErp.push(_normalizarProdutoBackend(p)));
+      // NÃO zera o produtosErp (ele é o CATÁLOGO COMPLETO usado por estoque,
+      // promoções, vínculos, filtros...). Faz MERGE: atualiza os que vieram,
+      // adiciona os novos. Guarda os ids da página pra a tela renderizar só eles.
+      const pagina = (dados.produtos || []).map(p => _normalizarProdutoBackend(p));
+      window._prodPaginaIds = pagina.map(p => String(p.idBanco || p.id));
+      pagina.forEach(np => {
+        const idx = produtosErp.findIndex(p => String(p.idBanco||p.id) === String(np.idBanco||np.id));
+        if (idx >= 0) produtosErp[idx] = { ...produtosErp[idx], ...np };
+        else produtosErp.push(np);
+      });
       
       // v32j.4 FIX: migra produtos pro modelo cores[] após carregar do backend.
       // Sem isso: produtos vêm com `fotos[]` (galeria) mas `cores[]` vazio →
@@ -16173,7 +16180,15 @@ Retorne JSON: {"ID": "valor", ...}`;
       return false;
     };
     
-    let filtrados = produtosErp.filter(p => {
+    // A tela de Produtos mostra a PÁGINA atual (o backend já filtrou/paginou).
+    // Usa os ids da página; o produtosErp continua sendo o catálogo completo.
+    const idsPagina = window._prodPaginaIds;
+    let baseLista = produtosErp;
+    if (Array.isArray(idsPagina)) {
+      const setIds = new Set(idsPagina.map(String));
+      baseLista = produtosErp.filter(p => setIds.has(String(p.idBanco||p.id)));
+    }
+    let filtrados = baseLista.filter(p => {
       // ESCONDE DUPLICADOS: produtos com duplicadoDeId não aparecem na lista
       // principal — só são acessíveis pelo modal "Ver cópias" do pai.
       // Exceção: se o pai foi excluído, mostra como produto normal (orfão).
@@ -28675,7 +28690,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v32y.2-recarrega-produtos-pos-login';
+  const _DIAG_VERSAO_PAINEL = 'v32y.3-produtoserp-catalogo-completo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
