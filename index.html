@@ -27287,11 +27287,12 @@ Responda APENAS com JSON válido (sem markdown), formato:
       const tarefasMap = {}; // chave loja|preco|em -> {lojaIdBanco, marketplace, itens:Set}
       lancamentos.forEach(l => {
         const passos = [];
-        if (l.resolvida.imediato != null) passos.push({ preco: l.resolvida.imediato, em: new Date(agora-1000).toISOString() });
-        (l.resolvida.degraus||[]).forEach(d => passos.push({ preco: d.preco, em: new Date(agora + d.dias*86400000).toISOString() }));
+        let anterior = g.preco;
+        if (l.resolvida.imediato != null) { passos.push({ de: anterior, para: l.resolvida.imediato, em: new Date(agora-1000).toISOString() }); anterior = l.resolvida.imediato; }
+        (l.resolvida.degraus||[]).forEach(d => { passos.push({ de: anterior, para: d.preco, em: new Date(agora + d.dias*86400000).toISOString() }); anterior = d.preco; });
         passos.forEach(passo => {
-          const k = l.lojaIdBanco + '|' + passo.preco + '|' + passo.em.slice(0,10);
-          tarefasMap[k] = tarefasMap[k] || { lojaIdBanco: l.lojaIdBanco, marketplace: l.marketplace, preco: passo.preco, em: passo.em, itens: new Set() };
+          const k = l.lojaIdBanco + '|' + passo.para + '|' + passo.em.slice(0,10);
+          tarefasMap[k] = tarefasMap[k] || { lojaIdBanco: l.lojaIdBanco, marketplace: l.marketplace, preco: passo.para, precoDe: passo.de, em: passo.em, itens: new Set() };
           tarefasMap[k].itens.add(l.itemId);
         });
       });
@@ -27299,23 +27300,45 @@ Responda APENAS com JSON válido (sem markdown), formato:
       for (const k of Object.keys(tarefasMap)) {
         const t = tarefasMap[k];
         const itens = [...t.itens].map(itemId => ({ itemId, preco: t.preco }));
+        // 1) cria uma DEMANDA no Kanban pra este passo (selo IA, status aguardando)
+        const demIA = {
+          id: gerarId(),
+          cliente: demanda.cliente, produto: '', tipo: 'ajustar_preco', setor: 'marketplaces',
+          contas: demanda.contas || [], marketplace: t.marketplace,
+          descricao: `Ajuste de preços em alguns produtos de ${_fmtBRL(t.precoDe)} para ${_fmtBRL(t.preco)}`,
+          prioridade: 'media', status: 'aguardando',
+          avisarCliente: true, clienteAvisado: false,
+          _origemIA: true,                    // selo IA
+          _agendadoPara: t.em,                // dia/hora que roda
+          criadoEm: new Date().toISOString(), atualizadoEm: new Date().toISOString(), concluidoEm: null,
+        };
+        if (typeof demandas !== 'undefined') demandas.unshift(demIA);
+        // 2) cria a tarefa que processa a demanda no dia (aplica preço + concluído + whats)
         try {
           await fetch(BACKEND_URL + '/api/tarefas', {
             method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
             body: JSON.stringify({
-              tipo: 'aplicar_preco_promocional',
-              descricao: `Régua: ${_fmtBRL(g.preco)} → ${_fmtBRL(t.preco)} (${itens.length} item)`,
+              tipo: 'processar_demanda_ia',
+              descricao: `IA: ${_fmtBRL(t.precoDe)} → ${_fmtBRL(t.preco)} (${itens.length} item)`,
               rodar_em: t.em,
-              params: { lojaIdBanco: t.lojaIdBanco, marketplace: t.marketplace, itens, nomeCampanha: 'Régua ' + (demanda.nome||demanda.id) }
+              params: {
+                demandaId: demIA.id, lojaIdBanco: t.lojaIdBanco, marketplace: t.marketplace,
+                itens, precoDe: t.precoDe, precoPara: t.preco,
+                telefoneCliente: (demanda.cliente && demanda.cliente.telefone) || null,
+                nomeCliente: (demanda.cliente && demanda.cliente.nome) || '',
+                perfilWhats: 'financeiro', nomeCampanha: 'Régua ' + (demanda.nome||demanda.id)
+              }
             })
           });
           tarefasCriadas++;
         } catch(e) { console.warn('[ap agendamento]', e); }
       }
     }
-    // persiste os selos nas variações
+    // persiste os selos nas variações e as demandas criadas
     if (typeof saveProdutosLocal === 'function') saveProdutosLocal();
-    showToast(`✓ ${tarefasCriadas} agendamento(s) de preço criado(s)`);
+    if (typeof saveDemandas === 'function') saveDemandas();
+    if (typeof renderKanban === 'function') renderKanban();
+    showToast(`✓ ${tarefasCriadas} demanda(s) agendada(s) com IA`);
   }
   window.apProcessarAgendamentos = apProcessarAgendamentos;
 
@@ -29050,7 +29073,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33b.1-tag-na-promocao-shopee';
+  const _DIAG_VERSAO_PAINEL = 'v33c.0-demandas-ia-automaticas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37300,7 +37323,7 @@ ${JSON.stringify(metricas, null, 2)}`
       card.onclick = () => abrirNovaDemanda(d.id);
       card.innerHTML = `
         <div class="kanban-card-top">
-          <span class="kanban-card-tipo">${tipoLabel}</span>
+          <span class="kanban-card-tipo">${tipoLabel}${d._origemIA ? ' <span style="background:linear-gradient(90deg,#7c3aed,#a855f7);color:#fff;font-size:9px;padding:1px 6px;border-radius:6px;font-weight:700;letter-spacing:.5px">IA</span>' : ''}</span>
           <span class="kanban-card-prio">${prioIcon}</span>
         </div>
         <div class="kanban-card-cliente">${(function(){ try { const r = _resolverClienteDaDemanda(d); return r.clienteNome || d.cliente || 'Sem cliente'; } catch(e) { return d.cliente || 'Sem cliente'; } })()}</div>
