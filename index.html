@@ -27399,7 +27399,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
         descricao, prioridade: 'media', status: 'aguardando',
         avisarCliente: true, clienteAvisado: false,
         fluxoId: fluxoAjuste ? fluxoAjuste.id : null,
-        _origemIA: true, _agendadoPara: dia.em,
+        _origemIA: true,
+        _agendarExportarEm: dia.em,   // PERSISTE (vira coluna agendar_em na tabela)
         criadoEm: new Date().toISOString(), atualizadoEm: new Date().toISOString(), concluidoEm: null,
       };
       if (typeof demandas !== 'undefined') demandas.unshift(demIA);
@@ -27500,12 +27501,16 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const wrap = document.getElementById('apGruposPreco');
     if (!wrap) return;
     if (!_apSelecionados.size) { wrap.innerHTML = ''; return; }
-    // junta todas as variações dos produtos selecionados, agrupadas por preço
+    // junta SÓ as variações vinculadas às lojas selecionadas (não as de outras lojas)
+    const idsBanco = _apLojasSelecionadas();
     const grupos = {}; // preco -> [{produtoId, variacaoId, ...}]
     _apSelecionados.forEach(pid => {
       const p = produtosErp.find(x => String(x.id) === pid);
       if (!p) return;
       (p.variacoes||[]).forEach(v => {
+        // só inclui a variação se ela tem vínculo numa das lojas selecionadas
+        const naLoja = (v.vinculos||[]).some(vi => idsBanco.includes(String(vi.lojaIdBanco||vi.lojaId)));
+        if (!naLoja) return;
         const preco = (parseFloat(v.preco)||parseFloat(p.preco)||0).toFixed(2);
         (grupos[preco] = grupos[preco] || []).push({ produtoId: pid, variacaoId: v.id, nome: v.nome });
       });
@@ -29160,7 +29165,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33f.0-demanda-agrupa-por-dia';
+  const _DIAG_VERSAO_PAINEL = 'v33f.2-agendar-em-persiste';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -38477,11 +38482,18 @@ ${JSON.stringify(metricas, null, 2)}`
     saveDemandas();
   }
   
-  function excluirDemanda() {
+  async function excluirDemanda() {
     if (!editingDemanda) return;
     if (!confirm('Excluir esta demanda? Esta ação não pode ser desfeita.')) return;
-    demandas = demandas.filter(d => d.id !== editingDemanda);
+    const idExcluir = editingDemanda;
+    demandas = demandas.filter(d => d.id !== idExcluir);
     saveDemandas();
+    // deleta da TABELA também, senão a recarga traz de volta ao atualizar
+    try {
+      if (window.LiderSync && LiderSync.client) {
+        await LiderSync.client.from('demandas').delete().eq('id', String(idExcluir));
+      }
+    } catch(e) { console.warn('[excluir demanda tabela]', e); }
     closeDemandaModal();
     renderOperacao();
     showToast('Demanda excluída');
