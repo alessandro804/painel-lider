@@ -6898,6 +6898,7 @@
               <div style="display:flex;gap:6px">
                 <button class="toolbar-btn" onclick="criarTemplateAnuncioNovoML()" title="Cria um fluxo pronto pra Criar Anúncio Novo no ML — passos automatizados">🧙 Template: Anúncio Novo ML</button>
                 <button class="toolbar-btn" onclick="criarTemplateAnuncioNovoShopee()" title="Cria um fluxo pronto pra Criar Anúncio Novo na Shopee — categoria, atributos e variações automáticos">🛒 Template: Anúncio Novo Shopee</button>
+                <button class="toolbar-btn" onclick="criarTemplateAjustePreco()" title="Cria o fluxo de Ajuste de Preço (régua IA) — passos automáticos">💰 Template: Ajuste de Preço</button>
                 <button class="toolbar-btn primary" onclick="abrirEditorFluxo()">+ Novo Fluxo</button>
               </div>
             </div>
@@ -8661,6 +8662,47 @@
   // ============================================================
   // Igual ao de ML, mas o passo de categoria usa o predictor da Shopee
   // (categoria + atributos + defaults) e publica via adapter Shopee.
+  function criarTemplateAjustePreco() {
+    const jaExiste = fluxosDemanda.find(f => f.tipoDemanda === 'ajustar_preco');
+    if (jaExiste) {
+      if (!confirm('Já existe um template de Ajuste de Preço. Criar outro mesmo assim?')) return;
+    }
+    const idFluxo = gerarId();
+    const ids = {};
+    ['inicio','aguardar','aplicar','whats','fim'].forEach(k => ids[k] = gerarId());
+    let x = 80;
+    const passo = (chave, tipo, titulo, desc, quem) => {
+      const p = { id: ids[chave], tipo, titulo, desc: desc || '', quem: quem || 'ia', x: x, y: 100 };
+      x += 200; return p;
+    };
+    const ligar = (de, para, label) => ({ id: gerarId(), de: ids[de], para: ids[para], label: label || '' });
+    const fluxo = {
+      id: idFluxo,
+      nome: '💰 Template — Ajuste de Preço (régua IA)',
+      tipoDemanda: 'ajustar_preco',
+      versao: 1,
+      criadoEm: new Date().toISOString(),
+      passos: [
+        passo('inicio',  'inicio',  'Agendada',                  'Aguardando o dia/hora da régua',           'ia'),
+        passo('aguardar','espera',  'Aguardando horário',        'No dia agendado, entra em produção',       'ia'),
+        passo('aplicar', 'preco',   'Aplica preço na campanha',  'Atualiza o preço promocional dos anúncios','ia'),
+        passo('whats',   'whats',   'Avisa o cliente',           'IA gera e envia a mensagem no WhatsApp',   'ia'),
+        passo('fim',     'fim',     'Concluído',                 'Preço aplicado e cliente avisado',         'ia'),
+      ],
+      conexoes: [
+        ligar('inicio','aguardar'),
+        ligar('aguardar','aplicar'),
+        ligar('aplicar','whats'),
+        ligar('whats','fim'),
+      ],
+    };
+    fluxosDemanda.push(fluxo);
+    saveFluxos();
+    if (typeof renderFluxos === 'function') renderFluxos();
+    showToast('✓ Template de Ajuste de Preço criado');
+  }
+  window.criarTemplateAjustePreco = criarTemplateAjustePreco;
+
   function criarTemplateAnuncioNovoShopee() {
     const jaExiste = fluxosDemanda.find(f => 
       f.tipoDemanda === 'anuncio_novo' && (f.nome || '').includes('Shopee')
@@ -27341,8 +27383,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
           descricao: `Ajuste de preços em alguns produtos de ${_fmtBRL(t.precoDe)} para ${_fmtBRL(t.preco)}`,
           prioridade: 'media', status: 'aguardando',
           avisarCliente: true, clienteAvisado: false,
-          _origemIA: true,                    // selo IA
-          _agendadoPara: t.em,                // dia/hora que roda
+          // vincula ao fluxo de ajuste de preço (o fluxoId PERSISTE na tabela e
+          // serve pra identificar a demanda como IA — o selo lê disso).
+          fluxoId: (function(){ const f = (fluxosDemanda||[]).find(x => x.tipoDemanda === 'ajustar_preco'); return f ? f.id : null; })(),
+          _origemIA: true,
+          _agendadoPara: t.em,
           criadoEm: new Date().toISOString(), atualizadoEm: new Date().toISOString(), concluidoEm: null,
         };
         if (typeof demandas !== 'undefined') demandas.unshift(demIA);
@@ -29114,7 +29159,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33e.0-demanda-ia-push-tabela';
+  const _DIAG_VERSAO_PAINEL = 'v33e.1-fluxo-ajuste-preco-selo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37364,7 +37409,7 @@ ${JSON.stringify(metricas, null, 2)}`
       card.onclick = () => abrirNovaDemanda(d.id);
       card.innerHTML = `
         <div class="kanban-card-top">
-          <span class="kanban-card-tipo">${tipoLabel}${d._origemIA ? ' <span style="background:linear-gradient(90deg,#7c3aed,#a855f7);color:#fff;font-size:9px;padding:1px 6px;border-radius:6px;font-weight:700;letter-spacing:.5px">IA</span>' : ''}</span>
+          <span class="kanban-card-tipo">${tipoLabel}${(d._origemIA || d.tipo === 'ajustar_preco') ? ' <span style="background:linear-gradient(90deg,#7c3aed,#a855f7);color:#fff;font-size:9px;padding:1px 6px;border-radius:6px;font-weight:700;letter-spacing:.5px">IA</span>' : ''}</span>
           <span class="kanban-card-prio">${prioIcon}</span>
         </div>
         <div class="kanban-card-cliente">${(function(){ try { const r = _resolverClienteDaDemanda(d); return r.clienteNome || d.cliente || 'Sem cliente'; } catch(e) { return d.cliente || 'Sem cliente'; } })()}</div>
