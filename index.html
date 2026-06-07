@@ -29159,7 +29159,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33e.1-fluxo-ajuste-preco-selo';
+  const _DIAG_VERSAO_PAINEL = 'v33e.2-kanban-reflete-conclusao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37327,7 +37327,39 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.kanbanTodosOsDias = kanbanTodosOsDias;
 
+  // Recarrega as demandas da TABELA (reflete o que o backend processou — ex: a IA
+  // moveu pra concluído). Mescla pelo id: atualiza status/concluido das existentes.
+  let _ultimaRecargaDemandas = 0;
+  async function recarregarDemandasDoBanco(force) {
+    try {
+      if (!force && Date.now() - _ultimaRecargaDemandas < 15000) return; // no máx a cada 15s
+      _ultimaRecargaDemandas = Date.now();
+      if (!window.LiderSync || !LiderSync.client || !LiderSync._fromDbDemanda) return;
+      const dm = await LiderSync.client.from('demandas').select('*');
+      if (dm.error || !dm.data) return;
+      const doBanco = dm.data.map(r => LiderSync._fromDbDemanda(r));
+      // atualiza as existentes (status/concluido/descricao) e adiciona novas
+      doBanco.forEach(db => {
+        const idx = demandas.findIndex(d => String(d.id) === String(db.id));
+        if (idx >= 0) {
+          demandas[idx].status = db.status;
+          demandas[idx].concluidoEm = db.concluidoEm;
+          demandas[idx].descricao = db.descricao || demandas[idx].descricao;
+        } else {
+          demandas.unshift(db);
+        }
+      });
+      if (typeof saveDemandas === 'function') saveDemandas();
+    } catch(e) { console.warn('[recarregarDemandas]', e); }
+  }
+  window.recarregarDemandasDoBanco = recarregarDemandasDoBanco;
+
   function renderKanban() {
+    // ao renderizar o Kanban, puxa o estado atualizado do banco (demanda IA concluída etc.)
+    recarregarDemandasDoBanco().then(() => { try { _renderKanbanInterno(); } catch(e){} });
+    _renderKanbanInterno();
+  }
+  function _renderKanbanInterno() {
     const filtroPrio = document.getElementById('opFilterPrioridade')?.value || '';
     const filtroCliente = (document.getElementById('opFilterCliente')?.value || '').toLowerCase();
     
