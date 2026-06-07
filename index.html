@@ -5111,11 +5111,7 @@
     <!-- BLOCO AJUSTAR PREÇO (régua) — aparece só quando tipo = ajustar_preco -->
     <div id="demandaAjustePrecoBloco" style="display:none">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
-        <div style="flex:1;min-width:180px">
-          <label class="form-label">Loja</label>
-          <select class="form-select" id="apLoja" onchange="apCarregarProdutos()"></select>
-        </div>
-        <div style="flex:2;min-width:200px">
+        <div style="flex:1;min-width:200px">
           <label class="form-label">Buscar produto</label>
           <input type="text" class="form-input" id="apBusca" placeholder="🔍 nome ou SKU..." oninput="apRenderProdutos()">
         </div>
@@ -26464,8 +26460,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         const label = [v.cor, v.tamanho].filter(Boolean).join(' ') || v.nome || v.id;
         const vOrig = (parseFloat(v.preco) || parseFloat(prod.preco) || 0).toFixed(2);
         const flagManual = st.manual ? '<span style="font-size:10px;color:#7c3aed;margin-left:6px">✎ editado</span>' : '';
+        const flagAgendada = v._alteracaoAgendada ? '<span style="font-size:10px;color:#fff;background:#f59e0b;padding:1px 6px;border-radius:6px;margin-left:6px" title="Esta variação tem régua de preço agendada">⏱ alteração agendada</span>' : '';
         return '<div class="promo-var-linha">'
-          + '<span class="promo-var-nome">' + escapeHtml(label) + flagManual + '</span>'
+          + '<span class="promo-var-nome">' + escapeHtml(label) + flagManual + flagAgendada + '</span>'
           + '<span class="promo-var-orig">de ' + _promoFmt(vOrig) + '</span>'
           + '<input type="text" class="promo-var-preco form-input" '
           +   'value="' + (st.preco !== null ? st.preco.toFixed(2) : '') + '" '
@@ -27231,32 +27228,91 @@ Responda APENAS com JSON válido (sem markdown), formato:
     return 'marketplaces';
   }
   
+  // Processa a régua de preço de cada grupo: cria as tarefas (imediato + degraus)
+  // que entram em promoção com o preço, e marca as variações com selo "alteração agendada".
+  async function apProcessarAgendamentos(demanda) {
+    const grupos = window._apGrupos || [];
+    const idsBanco = _apLojasSelecionadas();
+    if (!grupos.length || !idsBanco.length) { showToast('Nada pra agendar (sem grupos/lojas)', true); return; }
+
+    let tarefasCriadas = 0;
+    const agora = Date.now();
+
+    for (const g of grupos) {
+      const regua = ReguaUI.ler(g.prefixo);
+      if (!regua) continue;
+      const resolvida = ReguaUI.resolver(regua, g.preco, g.prefixo); // {imediato, degraus:[{dias,preco}]}
+
+      // monta os itens (itemId por loja) das variações deste grupo
+      // agrupa por loja+marketplace
+      const porLoja = {}; // idBanco -> { marketplace, itens:[{itemId, preco}] }
+      g.variacoes.forEach(ref => {
+        const p = produtosErp.find(x => String(x.id) === String(ref.produtoId));
+        if (!p) return;
+        const v = (p.variacoes||[]).find(x => String(x.id) === String(ref.variacaoId));
+        if (!v) return;
+        (v.vinculos||[]).forEach(vi => {
+          const lb = String(vi.lojaIdBanco||vi.lojaId);
+          if (!idsBanco.includes(lb) || !vi.anuncioId) return;
+          porLoja[lb] = porLoja[lb] || { marketplace: vi.marketplace, itens: [] };
+          if (!porLoja[lb].itens.some(x => x.itemId === vi.anuncioId)) porLoja[lb].itens.push({ itemId: vi.anuncioId, preco: null });
+        });
+        // marca a variação com alteração agendada (selo)
+        v._alteracaoAgendada = { demandaId: demanda.id, em: new Date().toISOString(), regua: resolvida };
+      });
+
+      // cria as tarefas: imediato + cada degrau
+      const passos = [];
+      if (resolvida.imediato != null) passos.push({ preco: resolvida.imediato, em: new Date(agora - 1000).toISOString() });
+      (resolvida.degraus||[]).forEach(d => passos.push({ preco: d.preco, em: new Date(agora + d.dias*86400000).toISOString() }));
+
+      for (const lb of Object.keys(porLoja)) {
+        const info = porLoja[lb];
+        for (const passo of passos) {
+          const itens = info.itens.map(it => ({ itemId: it.itemId, preco: passo.preco }));
+          try {
+            await fetch(BACKEND_URL + '/api/tarefas', {
+              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+              body: JSON.stringify({
+                tipo: 'aplicar_preco_promocional',
+                descricao: `Régua: ${_fmtBRL(g.preco)} → ${_fmtBRL(passo.preco)} (${itens.length} item)`,
+                rodar_em: passo.em,
+                params: { lojaIdBanco: lb, marketplace: info.marketplace, itens, nomeCampanha: 'Régua ' + (demanda.nome||demanda.id) }
+              })
+            });
+            tarefasCriadas++;
+          } catch(e) { console.warn('[ap agendamento]', e); }
+        }
+      }
+    }
+    // persiste os selos nas variações
+    if (typeof saveProdutosLocal === 'function') saveProdutosLocal();
+    showToast(`✓ ${tarefasCriadas} agendamento(s) de preço criado(s)`);
+  }
+  window.apProcessarAgendamentos = apProcessarAgendamentos;
+
   // ===== AJUSTE DE PREÇO (demanda) — seleção + grupos por preço + régua =====
   let _apSelecionados = new Set(); // ids de produtos selecionados
 
   function apInit() {
-    // popula o select de loja (todas) e carrega
-    const sel = document.getElementById('apLoja');
-    if (sel && !sel.dataset.pop) {
-      sel.innerHTML = '<option value="">Selecione a loja</option>' +
-        (lojasErp||[]).map(l => `<option value="${l.id}">${escapeHtml(l.nome)} [${l.marketplace}]</option>`).join('');
-      sel.dataset.pop = '1';
-    }
+    apRenderProdutos();
+    apRenderGruposPreco();
   }
   window.apInit = apInit;
 
-  // produtos da loja selecionada (por vínculo idBanco — consistente)
+  // lojas (idBanco) marcadas no topo do modal de demanda
+  function _apLojasSelecionadas() {
+    return Array.from(document.querySelectorAll('#demandaContasList .sync-estoque-check:checked')).map(c => String(c.value));
+  }
+
+  // produtos vinculados a alguma das lojas selecionadas no topo (por idBanco)
   function _apProdutosDaLoja() {
-    const lojaLocal = (document.getElementById('apLoja')||{}).value;
-    if (!lojaLocal) return [];
-    const loja = (lojasErp||[]).find(l => String(l.id) === String(lojaLocal));
-    const idBanco = loja ? String(loja.idBanco) : null;
+    const idsBanco = _apLojasSelecionadas();
+    if (!idsBanco.length) return [];
     return (produtosErp||[]).filter(p => {
       if ((p.status||'ativo') !== 'ativo') return false;
-      return (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi => {
-        const vl = String(vi.lojaIdBanco||vi.lojaId);
-        return (idBanco && vl === idBanco) || vl === String(lojaLocal);
-      }));
+      return (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
+        idsBanco.includes(String(vi.lojaIdBanco||vi.lojaId))));
     });
   }
 
@@ -28923,7 +28979,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33a.0-ajustar-preco-selecao-grupos';
+  const _DIAG_VERSAO_PAINEL = 'v33a.2-ajuste-preco-agenda-selo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37837,6 +37893,11 @@ ${JSON.stringify(metricas, null, 2)}`
       // Marca como demanda atual pra que próximas atualizações de foto persistam direto
       _demandaIdAtual = novaDemanda.id;
       showToast('✓ Demanda criada');
+
+      // AJUSTE DE PREÇO: cria os agendamentos de preço (régua por grupo) pras variações
+      if (tipo === 'ajustar_preco' && typeof apProcessarAgendamentos === 'function') {
+        apProcessarAgendamentos(novaDemanda);
+      }
       
       // Se marcou pra avisar cliente, abre o WhatsApp
       if (avisarCliente) {
