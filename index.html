@@ -27239,50 +27239,62 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const agora = Date.now();
 
     for (const g of grupos) {
-      const regua = ReguaUI.ler(g.prefixo);
-      if (!regua) continue;
-      const resolvida = ReguaUI.resolver(regua, g.preco, g.prefixo); // {imediato, degraus:[{dias,preco}]}
+      const reguaGrupo = ReguaUI.ler(g.prefixo);
+      const resolvidaGrupo = reguaGrupo ? ReguaUI.resolver(reguaGrupo, g.preco, g.prefixo) : null;
 
-      // monta os itens (itemId por loja) das variações deste grupo
-      // agrupa por loja+marketplace
-      const porLoja = {}; // idBanco -> { marketplace, itens:[{itemId, preco}] }
+      // monta os itens por loja, mas respeitando régua INDIVIDUAL de cada variação
+      // estrutura: porLoja[idBanco] = { marketplace, passosPorVariacao: { 'item|preco': [...] } }
+      // simplificação: agrupa por loja+passos idênticos
+      const lancamentos = []; // { lojaIdBanco, marketplace, itemId, resolvida }
       g.variacoes.forEach(ref => {
         const p = produtosErp.find(x => String(x.id) === String(ref.produtoId));
         if (!p) return;
         const v = (p.variacoes||[]).find(x => String(x.id) === String(ref.variacaoId));
         if (!v) return;
+        // régua individual?
+        const prefInd = (window._apReguasIndividuais||{})[ref.produtoId + '|' + ref.variacaoId];
+        let resolvida = resolvidaGrupo;
+        if (prefInd) {
+          const ri = ReguaUI.ler(prefInd);
+          if (ri) resolvida = ReguaUI.resolver(ri, g.preco, prefInd);
+        }
+        if (!resolvida) return;
         (v.vinculos||[]).forEach(vi => {
           const lb = String(vi.lojaIdBanco||vi.lojaId);
           if (!idsBanco.includes(lb) || !vi.anuncioId) return;
-          porLoja[lb] = porLoja[lb] || { marketplace: vi.marketplace, itens: [] };
-          if (!porLoja[lb].itens.some(x => x.itemId === vi.anuncioId)) porLoja[lb].itens.push({ itemId: vi.anuncioId, preco: null });
+          lancamentos.push({ lojaIdBanco: lb, marketplace: vi.marketplace, itemId: vi.anuncioId, resolvida });
         });
-        // marca a variação com alteração agendada (selo)
         v._alteracaoAgendada = { demandaId: demanda.id, em: new Date().toISOString(), regua: resolvida };
       });
 
-      // cria as tarefas: imediato + cada degrau
-      const passos = [];
-      if (resolvida.imediato != null) passos.push({ preco: resolvida.imediato, em: new Date(agora - 1000).toISOString() });
-      (resolvida.degraus||[]).forEach(d => passos.push({ preco: d.preco, em: new Date(agora + d.dias*86400000).toISOString() }));
+      // agrupa lançamentos por loja+passo (mesmo preço+data) pra criar menos tarefas
+      const tarefasMap = {}; // chave loja|preco|em -> {lojaIdBanco, marketplace, itens:Set}
+      lancamentos.forEach(l => {
+        const passos = [];
+        if (l.resolvida.imediato != null) passos.push({ preco: l.resolvida.imediato, em: new Date(agora-1000).toISOString() });
+        (l.resolvida.degraus||[]).forEach(d => passos.push({ preco: d.preco, em: new Date(agora + d.dias*86400000).toISOString() }));
+        passos.forEach(passo => {
+          const k = l.lojaIdBanco + '|' + passo.preco + '|' + passo.em.slice(0,10);
+          tarefasMap[k] = tarefasMap[k] || { lojaIdBanco: l.lojaIdBanco, marketplace: l.marketplace, preco: passo.preco, em: passo.em, itens: new Set() };
+          tarefasMap[k].itens.add(l.itemId);
+        });
+      });
 
-      for (const lb of Object.keys(porLoja)) {
-        const info = porLoja[lb];
-        for (const passo of passos) {
-          const itens = info.itens.map(it => ({ itemId: it.itemId, preco: passo.preco }));
-          try {
-            await fetch(BACKEND_URL + '/api/tarefas', {
-              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
-              body: JSON.stringify({
-                tipo: 'aplicar_preco_promocional',
-                descricao: `Régua: ${_fmtBRL(g.preco)} → ${_fmtBRL(passo.preco)} (${itens.length} item)`,
-                rodar_em: passo.em,
-                params: { lojaIdBanco: lb, marketplace: info.marketplace, itens, nomeCampanha: 'Régua ' + (demanda.nome||demanda.id) }
-              })
-            });
-            tarefasCriadas++;
-          } catch(e) { console.warn('[ap agendamento]', e); }
-        }
+      for (const k of Object.keys(tarefasMap)) {
+        const t = tarefasMap[k];
+        const itens = [...t.itens].map(itemId => ({ itemId, preco: t.preco }));
+        try {
+          await fetch(BACKEND_URL + '/api/tarefas', {
+            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+            body: JSON.stringify({
+              tipo: 'aplicar_preco_promocional',
+              descricao: `Régua: ${_fmtBRL(g.preco)} → ${_fmtBRL(t.preco)} (${itens.length} item)`,
+              rodar_em: t.em,
+              params: { lojaIdBanco: t.lojaIdBanco, marketplace: t.marketplace, itens, nomeCampanha: 'Régua ' + (demanda.nome||demanda.id) }
+            })
+          });
+          tarefasCriadas++;
+        } catch(e) { console.warn('[ap agendamento]', e); }
       }
     }
     // persiste os selos nas variações
@@ -27301,8 +27313,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
   window.apInit = apInit;
 
   // lojas (idBanco) marcadas no topo do modal de demanda
+  // lojas marcadas no topo do modal de demanda (_demandaContasSel = ids locais).
+  // Converte pra idBanco (que é o que os vínculos usam).
   function _apLojasSelecionadas() {
-    return Array.from(document.querySelectorAll('#demandaContasList .sync-estoque-check:checked')).map(c => String(c.value));
+    const idsLocais = (typeof _demandaContasSel !== 'undefined' ? _demandaContasSel : []).map(String);
+    const idsBanco = [];
+    idsLocais.forEach(idLocal => {
+      const loja = (lojasErp||[]).find(l => String(l.id) === idLocal);
+      if (loja && loja.idBanco != null) idsBanco.push(String(loja.idBanco));
+      idsBanco.push(idLocal); // mantém o local também como fallback
+    });
+    return idsBanco;
   }
 
   // produtos vinculados a alguma das lojas selecionadas no topo (por idBanco)
@@ -27367,9 +27388,22 @@ Responda APENAS com JSON válido (sem markdown), formato:
     wrap.innerHTML = precos.map((preco, i) => {
       const prefixo = 'apg' + i;
       const n = grupos[preco].length;
+      const linhasVar = grupos[preco].map((ref, j) => {
+        const p = produtosErp.find(x => String(x.id) === String(ref.produtoId));
+        const v = p ? (p.variacoes||[]).find(x => String(x.id) === String(ref.variacaoId)) : null;
+        const label = v ? ([v.cor, v.tamanho].filter(Boolean).join(' ') || v.nome || v.id) : ref.variacaoId;
+        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 8px;border-top:1px solid #f1f5f9;font-size:12px">
+          <span>${escapeHtml((p?p.nome:'').slice(0,25))} · <b>${escapeHtml(String(label))}</b></span>
+          <button type="button" onclick="apToggleIndividual('${prefixo}','${ref.produtoId}','${ref.variacaoId}')" style="font-size:11px;padding:3px 8px;background:#eef2ff;color:#4f46e5;border:none;border-radius:6px;cursor:pointer">régua própria</button>
+        </div>
+        <div id="${prefixo}_ind_${j}" style="display:none;padding:6px 8px"></div>`;
+      }).join('');
       return `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:10px">
         <div style="font-weight:700;font-size:14px;margin-bottom:8px">Variações de ${_fmtBRL(parseFloat(preco))} <span style="font-weight:400;color:#6b7280;font-size:12px">(${n} variação${n>1?'ões':''})</span></div>
         <div id="${prefixo}_box"></div>
+        <details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#6b7280">Ver/ajustar variações individuais (${n})</summary>
+          <div style="margin-top:6px">${linhasVar}</div>
+        </details>
       </div>`;
     }).join('');
     // injeta a ReguaUI em cada grupo
@@ -27381,6 +27415,27 @@ Responda APENAS com JSON válido (sem markdown), formato:
     window._apGrupos = precos.map((preco,i) => ({ prefixo:'apg'+i, preco: parseFloat(preco), variacoes: grupos[preco] }));
   }
   window.apRenderGruposPreco = apRenderGruposPreco;
+
+  // Abre/fecha a régua individual de uma variação específica (sobrescreve a do grupo)
+  window._apReguasIndividuais = window._apReguasIndividuais || {};
+  function apToggleIndividual(prefixoGrupo, produtoId, variacaoId) {
+    // acha o container (precisa do índice j — busca pelo data)
+    const grupo = (window._apGrupos||[]).find(g => g.prefixo === prefixoGrupo);
+    if (!grupo) return;
+    const j = grupo.variacoes.findIndex(r => String(r.produtoId)===String(produtoId) && String(r.variacaoId)===String(variacaoId));
+    const box = document.getElementById(prefixoGrupo + '_ind_' + j);
+    if (!box) return;
+    if (box.style.display === 'none') {
+      const prefInd = 'apind_' + produtoId + '_' + variacaoId;
+      box.innerHTML = ReguaUI.html(prefInd, { titulo: '💸 Régua só desta variação (sobrescreve o grupo)' });
+      box.style.display = 'block';
+      window._apReguasIndividuais[produtoId + '|' + variacaoId] = prefInd;
+    } else {
+      box.style.display = 'none';
+      delete window._apReguasIndividuais[produtoId + '|' + variacaoId];
+    }
+  }
+  window.apToggleIndividual = apToggleIndividual;
 
   function sugerirFluxoPorTipo() {
     const sel = document.getElementById('demandaFluxo');
@@ -28979,7 +29034,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33a.2-ajuste-preco-agenda-selo';
+  const _DIAG_VERSAO_PAINEL = 'v33a.4-fix-leitura-lojas-demanda';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37572,6 +37627,11 @@ ${JSON.stringify(metricas, null, 2)}`
     else _demandaContasSel.push(id);
     renderDemandaContas();
     atualizarProdutosDaDemanda();
+    // ajuste de preço: atualiza a lista quando muda as lojas marcadas
+    if (document.getElementById('demandaTipo')?.value === 'ajustar_preco') {
+      if (typeof apRenderProdutos === 'function') apRenderProdutos();
+      if (typeof apRenderGruposPreco === 'function') apRenderGruposPreco();
+    }
     // v32g.3: sincroniza a "Loja destino" automaticamente com a seleção
     if (typeof sincronizarLojaDestinoDemanda === 'function') sincronizarLojaDestinoDemanda();
     // v32g.7: ajusta visibilidade de bloco de fotos gerais + limites
