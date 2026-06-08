@@ -20989,6 +20989,26 @@ REGRAS DURAS:
       };
       
       const itemIdCriado = data.dados && data.dados.itemId;
+      // PROMOÇÃO AUTOMÁTICA: se o produto tem _promo (o pai está em promoção) e não
+      // foi passada régua manual, coloca o anúncio novo em promoção com o mesmo valor.
+      if (!opts.regua && itemIdCriado) {
+        try {
+          // pega o menor preço promo das variações do produto (o valor da promoção do pai)
+          const promos = [];
+          (produtoParaExportar.variacoes||[]).forEach(v => { if (v._promo && v._promo.min > 0) promos.push(v._promo.min); });
+          if (promos.length) {
+            const precoPromo = Math.min(...promos);
+            const lojaIdReg = lojaIdBanco || (lojasErp.find(l => l.marketplace === mkBackend) || {}).idBanco;
+            await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+              tipo:'aplicar_preco_promocional',
+              descricao:'Promoção automática (R$ '+precoPromo.toFixed(2)+') item '+itemIdCriado,
+              rodar_em:new Date(Date.now()-1000).toISOString(),
+              params:{ lojaIdBanco: lojaIdReg, marketplace: mkBackend, itens:[{ itemId: itemIdCriado, preco: precoPromo }] }
+            }) });
+            if (!opts.silencioso) showToast('💰 Anúncio criado e colocado em promoção (R$ '+precoPromo.toFixed(2)+')');
+          }
+        } catch(ePromo) { console.warn('[promo auto export]', ePromo); }
+      }
       // RÉGUA DE PREÇOS (exportação imediata via modal): cria as tarefas de promoção
       // pro item recém-criado — desconto imediato + degraus futuros.
       if (opts.regua && itemIdCriado) {
@@ -21318,6 +21338,18 @@ REGRAS DURAS:
     return clone;
   }
 
+  // Preço NORMAL pra exportação: ignora o promocional. Usa o maior valor conhecido
+  // entre v.preco, p.preco e v._promo.max (o promo nunca é maior que o normal).
+  // Evita exportar com o preço de promoção.
+  function _precoNormalExport(v, p) {
+    const cands = [];
+    if (v && parseFloat(v.preco) > 0) cands.push(parseFloat(v.preco));
+    if (p && parseFloat(p.preco) > 0) cands.push(parseFloat(p.preco));
+    if (v && v._promo && parseFloat(v._promo.max) > 0) cands.push(parseFloat(v._promo.max));
+    return cands.length ? Math.max(...cands) : (parseFloat(v && v.preco) || parseFloat(p && p.preco) || 0);
+  }
+  window._precoNormalExport = _precoNormalExport;
+
   function montarPayloadExport(p, marketplace) {
     // garante 1 variação mínima (corrige export com estoque zerado p/ produto sem variação)
     p = garantirVariacaoMinima(p);
@@ -21336,7 +21368,7 @@ REGRAS DURAS:
       variacoes: (p.variacoes||[]).map(v => ({
         nome: v.nome, sku: v.sku,
         estoque: parseInt(v.estoque)||0,
-        preco: parseFloat(v.preco) || p.preco
+        preco: _precoNormalExport(v, p)
       }))
     };
     
@@ -21384,7 +21416,7 @@ REGRAS DURAS:
           tamanho: v.tamanho || '',
           sku: v.sku || '',
           estoque: parseInt(v.estoque) || 0,
-          preco: parseFloat(v.preco) || parseFloat(p.preco) || 0,
+          preco: _precoNormalExport(v, p),
           // v32f.5: EAN/GTIN por variação (pro gtin_code do model na Shopee)
           ean: v.ean || '',
         })),
@@ -29187,7 +29219,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33h.2-reagenda-ou-recria-tarefa';
+  const _DIAG_VERSAO_PAINEL = 'v33i.1-export-preco-normal-mais-promo-auto';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
