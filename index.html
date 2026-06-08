@@ -27380,7 +27380,16 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const fluxoAjuste = (fluxosDemanda||[]).find(x => x.tipoDemanda === 'ajustar_preco');
     const nomeCliente = typeof demanda.cliente === 'string' ? demanda.cliente : ((demanda.cliente && demanda.cliente.nome) || '');
     let telefoneCliente = null;
-    try { const c = (typeof listarClientesCadastro === 'function' ? listarClientesCadastro(true) : []).find(x => x.nome === nomeCliente); telefoneCliente = c && c.telefone ? c.telefone : null; } catch(e){}
+    try {
+      // listarClientesUnicos tem o telefone (listarClientesCadastro não traz pra todos)
+      const lista = (typeof listarClientesUnicos === 'function') ? listarClientesUnicos() : [];
+      let c = lista.find(x => x.nome === nomeCliente);
+      // fallback: _clientesAsaas por nome
+      if ((!c || !c.telefone) && typeof _clientesAsaas !== 'undefined' && _clientesAsaas[nomeCliente]) {
+        c = { telefone: _clientesAsaas[nomeCliente].telefone };
+      }
+      telefoneCliente = c && c.telefone ? c.telefone : null;
+    } catch(e){}
 
     for (const diaKey of Object.keys(porDia)) {
       const dia = porDia[diaKey];
@@ -29165,7 +29174,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33f.3-valida-ajuste-preco';
+  const _DIAG_VERSAO_PAINEL = 'v33f.4-telefone-e-sem-demanda-pai';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -38024,7 +38033,7 @@ ${JSON.stringify(metricas, null, 2)}`
     });
   }
   
-  function salvarDemanda() {
+  async function salvarDemanda() {
     const cliente = (document.getElementById('demandaCliente')||{}).value || '';
     // v32g.6: cliente é opcional agora (campo removido da UI)
     
@@ -38162,15 +38171,22 @@ ${JSON.stringify(metricas, null, 2)}`
         atualizadoEm: new Date().toISOString(),
         concluidoEm: null
       };
+      // AJUSTE DE PREÇO: NÃO cria a demanda "pai" (ficaria em branco) — só cria as
+      // demandas-filhas (1 por dia) via apProcessarAgendamentos.
+      if (tipo === 'ajustar_preco') {
+        if (typeof apProcessarAgendamentos === 'function') {
+          // passa a novaDemanda só como referência (cliente/contas), mas não a adiciona
+          await apProcessarAgendamentos(novaDemanda);
+        }
+        closeDemandaModal();
+        renderOperacao();
+        return; // não cria a pai
+      }
+
       demandas.unshift(novaDemanda);
       // Marca como demanda atual pra que próximas atualizações de foto persistam direto
       _demandaIdAtual = novaDemanda.id;
       showToast('✓ Demanda criada');
-
-      // AJUSTE DE PREÇO: cria os agendamentos de preço (régua por grupo) pras variações
-      if (tipo === 'ajustar_preco' && typeof apProcessarAgendamentos === 'function') {
-        apProcessarAgendamentos(novaDemanda);
-      }
       
       // Se marcou pra avisar cliente, abre o WhatsApp
       if (avisarCliente) {
