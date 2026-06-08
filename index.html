@@ -29187,7 +29187,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33g.3-reagendar-tarefa-ao-editar';
+  const _DIAG_VERSAO_PAINEL = 'v33g.5-editar-data-agendamento';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37725,6 +37725,23 @@ ${JSON.stringify(metricas, null, 2)}`
         document.getElementById('demandaDescricao').value = d.descricao || '';
         document.getElementById('demandaAvisarCliente').checked = !!d.avisarCliente;
         document.getElementById('demandaFluxo').value = d.fluxoId || '';
+        // Demanda agendada (ex: ajuste de preço IA): mostra o seletor de data preenchido
+        // com a data dela, pra poder editar/reagendar.
+        if (d._agendarExportarEm) {
+          const box = document.getElementById('demSeletorBox');
+          if (box && typeof htmlSeletorAgendamento === 'function') {
+            box.innerHTML = htmlSeletorAgendamento('dem', '📅 Quando rodar');
+            box.dataset.init = '1';
+            if (typeof selAgendamento === 'function') selAgendamento('dem', true); // modo agendar
+            const campo = document.getElementById('demAgendarEm');
+            if (campo) {
+              // datetime-local precisa de 'YYYY-MM-DDTHH:MM' no horário local
+              const dt = new Date(d._agendarExportarEm);
+              const local = new Date(dt.getTime() - dt.getTimezoneOffset()*60000).toISOString().slice(0,16);
+              campo.value = local;
+            }
+          }
+        }
         setDemandaPrio(d.prioridade || 'media');
         document.getElementById('demandaDeleteBtn').style.display = 'block';
         renderChecklistDemanda(d.id);
@@ -38620,6 +38637,16 @@ ${JSON.stringify(metricas, null, 2)}`
         await LiderSync.client.from('demandas').delete().eq('id', String(idExcluir));
       }
     } catch(e) { console.warn('[excluir demanda tabela]', e); }
+    // cancela as TAREFAS vinculadas (senão ficam órfãs e disparam mensagens de demanda excluída)
+    try {
+      const rt = await fetch(BACKEND_URL + '/api/tarefas?limit=100', { headers: {'x-api-token': getApiToken()} });
+      const dt = await rt.json();
+      const orfas = (dt.tarefas||[]).filter(t => t.tipo === 'processar_demanda_ia' && t.params && String(t.params.demandaId) === String(idExcluir) && t.status === 'pendente');
+      for (const t of orfas) {
+        await fetch(BACKEND_URL + '/api/tarefas/' + t.id, { method:'DELETE', headers:{'x-api-token':getApiToken()} });
+        console.log('[excluir demanda] tarefa órfã', t.id, 'cancelada');
+      }
+    } catch(e) { console.warn('[cancelar tarefas órfãs]', e); }
     closeDemandaModal();
     renderOperacao();
     showToast('Demanda excluída');
