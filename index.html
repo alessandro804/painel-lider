@@ -10545,6 +10545,18 @@ Retorne JSON: {"ID": "valor", ...}`;
     const sel = document.getElementById('demandaFluxo');
     if (!sel) return;
     const atual = sel.value;
+
+    // Se o tipo de demanda é "ajustar_preco", mostra SÓ os fluxos de ajuste de preço
+    // (não o de criar anúncio) — evita escolher o fluxo errado.
+    const tipoDem = (document.getElementById('demandaTipo')||{}).value;
+    if (tipoDem === 'ajustar_preco') {
+      const fluxosAjuste = fluxosDemanda.filter(f => f.tipoDemanda === 'ajustar_preco');
+      sel.innerHTML = '<option value="">— Selecione o fluxo —</option>' +
+        fluxosAjuste.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join('');
+      if (atual && fluxosAjuste.some(f => f.id === atual)) sel.value = atual;
+      else if (fluxosAjuste.length === 1) sel.value = fluxosAjuste[0].id; // auto-seleciona o único
+      return;
+    }
     
     // v32h.4 #1: Filtra fluxos pelos marketplaces das contas marcadas em cima.
     // Cada fluxo tem f.marketplace ('shopee'|'mercadolivre'|null). Se for null,
@@ -27585,6 +27597,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (apBloco) {
       apBloco.style.display = (tipo === 'ajustar_preco') ? 'block' : 'none';
       if (tipo === 'ajustar_preco' && typeof apInit === 'function') apInit();
+      if (typeof popularDropdownFluxos === 'function') popularDropdownFluxos();
     }
     if (!sel) return;
     // Só sugere se ainda não escolheu nada
@@ -29174,7 +29187,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33f.4-telefone-e-sem-demanda-pai';
+  const _DIAG_VERSAO_PAINEL = 'v33g.2-agendamento-manual-promocao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -34812,6 +34825,9 @@ ${JSON.stringify(metricas, null, 2)}`
         <button onclick="promoAplicarMassa()" style="padding:6px 10px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" title="Define este preço nas selecionadas">= Definir</button>
         <button onclick="promoAjustarMassa(-1)" style="padding:6px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-size:12px" title="Diminui este valor das selecionadas">− Baixar</button>
         <button onclick="promoAjustarMassa(1)" style="padding:6px 10px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-size:12px" title="Aumenta este valor nas selecionadas">+ Aumentar</button>
+        <span style="width:1px;height:20px;background:#e5e7eb"></span>
+        <input type="datetime-local" id="promoAgendarData" style="padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px" title="Quando aplicar o preço">
+        <button onclick="promoAgendarAlteracao()" style="padding:6px 10px;background:#f59e0b;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700" title="Agenda o preço (do campo R$) nas variações marcadas pra essa data">⏱ Agendar</button>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button onclick="promoRemoverSelecionados()" style="padding:10px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700">🗑 Remover selecionados</button>
@@ -34849,6 +34865,60 @@ ${JSON.stringify(metricas, null, 2)}`
     promoToast('✓ R$ ' + val + ' aplicado em ' + aplicados + ' variação(ões). Clique em Salvar pra enviar.');
   }
   window.promoAplicarMassa = promoAplicarMassa;
+
+  // Agenda a alteração de preço (do campo R$ + data) nas variações marcadas.
+  // Cria UMA tarefa aplicar_preco_promocional na data, e marca a tag de agendado.
+  async function promoAgendarAlteracao() {
+    if (!_promoEditando) return;
+    const { loja, campanha, itens } = _promoEditando;
+    const preco = _parsePrecoPromo((document.getElementById('promoShopeeMassaPreco')||{}).value);
+    if (preco == null || preco <= 0) { promoToast('Informe o preço (campo R$) pra agendar', true); return; }
+    const dataVal = (document.getElementById('promoAgendarData')||{}).value;
+    if (!dataVal) { promoToast('Escolha a data/hora do agendamento', true); return; }
+    const quando = new Date(dataVal);
+    if (isNaN(quando.getTime()) || quando.getTime() < Date.now()) { promoToast('Data/hora inválida ou no passado', true); return; }
+    const sel = document.querySelectorAll('.promo-chk:checked');
+    if (sel.length === 0) { promoToast('Marque as variações pra agendar', true); return; }
+
+    // coleta os item_id distintos das variações marcadas (o handler aplica por item+models)
+    const itemIds = new Set();
+    sel.forEach(chk => {
+      const it = itens[chk.dataset.ii];
+      if (it && it.item_id) itemIds.add(String(it.item_id));
+    });
+    if (!itemIds.size) { promoToast('Não consegui identificar os anúncios', true); return; }
+
+    const lojaIdBanco = loja.idBanco || loja.id;
+    const itensTarefa = [...itemIds].map(itemId => ({ itemId, preco }));
+    try {
+      await fetch(BACKEND_URL + '/api/tarefas', {
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        body: JSON.stringify({
+          tipo: 'aplicar_preco_promocional',
+          descricao: `Agendamento manual: R$ ${preco.toFixed(2)} em ${itensTarefa.length} anúncio(s)`,
+          rodar_em: quando.toISOString(),
+          params: { lojaIdBanco, marketplace: 'shopee', itens: itensTarefa, nomeCampanha: campanha.name || 'Promoção' }
+        })
+      });
+      // marca a tag de agendado nos produtos correspondentes (pelo anuncioId)
+      const dataFmt = quando.toLocaleString('pt-BR').slice(0,16);
+      itemIds.forEach(itemId => {
+        produtosErp.forEach(p => (p.variacoes||[]).forEach(v => {
+          if ((v.vinculos||[]).some(vi => String(vi.anuncioId) === String(itemId))) {
+            v._alteracaoAgendada = v._alteracaoAgendada || { passos: [] };
+            v._alteracaoAgendada.passos = v._alteracaoAgendada.passos || [];
+            v._alteracaoAgendada.passos.push({ data: dataFmt, de: parseFloat(v.preco)||0, para: preco });
+          }
+        }));
+      });
+      if (typeof saveProdutosLocal === 'function') saveProdutosLocal();
+      promoToast(`✓ Agendado R$ ${preco.toFixed(2)} pra ${dataFmt} em ${itensTarefa.length} anúncio(s)`);
+      carregarPromocoesShopee(); // recarrega pra mostrar a tag
+    } catch(e) {
+      promoToast('Erro ao agendar: ' + e.message, true);
+    }
+  }
+  window.promoAgendarAlteracao = promoAgendarAlteracao;
 
   // Aumenta (+1) ou baixa (-1) o valor do campo sobre o preço ATUAL de cada selecionada
   function promoAjustarMassa(sinal) {
@@ -37357,9 +37427,10 @@ ${JSON.stringify(metricas, null, 2)}`
       doBanco.forEach(db => {
         const idx = demandas.findIndex(d => String(d.id) === String(db.id));
         if (idx >= 0) {
-          if (demandas[idx].status !== db.status || demandas[idx].concluidoEm !== db.concluidoEm) mudou = true;
+          if (demandas[idx].status !== db.status || demandas[idx].concluidoEm !== db.concluidoEm || demandas[idx].clienteAvisado !== db.clienteAvisado) mudou = true;
           demandas[idx].status = db.status;
           demandas[idx].concluidoEm = db.concluidoEm;
+          demandas[idx].clienteAvisado = db.clienteAvisado;
           demandas[idx].descricao = db.descricao || demandas[idx].descricao;
         } else {
           demandas.unshift(db); mudou = true;
