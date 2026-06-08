@@ -29187,7 +29187,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33h.1-editar-demanda-ia-so-data';
+  const _DIAG_VERSAO_PAINEL = 'v33h.2-reagenda-ou-recria-tarefa';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -38229,19 +38229,41 @@ ${JSON.stringify(metricas, null, 2)}`
         }
         d.atualizadoEm = new Date().toISOString();
       }
-      // Se é demanda IA (ajustar_preco) e a data mudou, REAGENDA a tarefa vinculada
-      // (o agendador segue a tarefa, não a demanda — sem isso, não roda na nova data).
+      // Demanda IA (ajustar_preco): garante que a TAREFA rode na data escolhida.
+      // Se a tarefa está pendente → atualiza a data. Se já rodou (concluída) ou não
+      // existe → recria uma nova com os mesmos params (loja/itens/preço) + nova data.
       if (tipo === 'ajustar_preco' && d && d._agendarExportarEm) {
         try {
-          const rt = await fetch(BACKEND_URL + '/api/tarefas?limit=50', { headers: {'x-api-token': getApiToken()} });
+          const novaDataISO = new Date(d._agendarExportarEm).toISOString();
+          const rt = await fetch(BACKEND_URL + '/api/tarefas?limit=100', { headers: {'x-api-token': getApiToken()} });
           const dt = await rt.json();
-          const tarefa = (dt.tarefas||[]).find(t => t.tipo === 'processar_demanda_ia' && t.params && String(t.params.demandaId) === String(d.id) && t.status === 'pendente');
-          if (tarefa) {
-            await fetch(BACKEND_URL + '/api/tarefas/' + tarefa.id, {
+          const tarefasDaDemanda = (dt.tarefas||[]).filter(t => t.tipo === 'processar_demanda_ia' && t.params && String(t.params.demandaId) === String(d.id));
+          const pendente = tarefasDaDemanda.find(t => t.status === 'pendente');
+          if (pendente) {
+            // atualiza a data da tarefa pendente
+            await fetch(BACKEND_URL + '/api/tarefas/' + pendente.id, {
               method:'PUT', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
-              body: JSON.stringify({ rodar_em: new Date(d._agendarExportarEm).toISOString() })
+              body: JSON.stringify({ rodar_em: novaDataISO })
             });
-            console.log('[demanda IA] tarefa', tarefa.id, 'reagendada pra', d._agendarExportarEm);
+            console.log('[demanda IA] tarefa', pendente.id, 'reagendada pra', novaDataISO);
+          } else if (tarefasDaDemanda.length) {
+            // todas concluídas → recria com os params da última + status pendente
+            const base = tarefasDaDemanda[tarefasDaDemanda.length - 1];
+            await fetch(BACKEND_URL + '/api/tarefas', {
+              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+              body: JSON.stringify({
+                tipo: 'processar_demanda_ia',
+                descricao: base.descricao || ('IA: ' + (d.descricao||'').slice(0,50)),
+                rodar_em: novaDataISO,
+                params: base.params
+              })
+            });
+            // a demanda volta pra aguardando (vai rodar de novo)
+            d.status = 'aguardando'; d.concluidoEm = null;
+            if (window.LiderSync && LiderSync.client) {
+              await LiderSync.client.from('demandas').update({ status: 'aguardando', concluido_em: null }).eq('id', String(d.id));
+            }
+            console.log('[demanda IA] tarefa RECRIADA pra', novaDataISO);
           }
         } catch(e) { console.warn('[reagendar tarefa IA]', e); }
       }
