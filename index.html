@@ -12739,14 +12739,20 @@ Retorne JSON: {"ID": "valor", ...}`;
     fecharTodosDropdownsMassa();
     const ids = Array.from(_prodSelecionados);
     if (ids.length === 0) { alert('Selecione produtos primeiro'); return; }
-    
     if (lojasErp.length === 0) {
       alert('Nenhuma loja cadastrada. Vá em 🏪 Lojas & Conexões pra adicionar.');
       return;
     }
-    
-    // Modal de configuração
-    const modal = document.createElement('div');
+    // UNIFICADO (v33j.6): usa o MESMO modal do "Duplicar anúncio" individual —
+    // com régua de promoções, promo do pai, Title Case e fila síncrona. Substitui
+    // o modal de massa antigo (que não tinha régua).
+    return abrirDuplicarEmMassa(ids);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // [LEGADO — desativado em v33j.6] Modal de massa antigo, mantido pra referência.
+  // Não é mais chamado; a função acima delega ao modal unificado.
+  async function _acaoMassaDuplicarParaLoja_LEGADO() {
     modal.id = 'massaDupModal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
     
@@ -17252,6 +17258,10 @@ Retorne JSON: {"ID": "valor", ...}`;
   // exportação automática pra uma loja.
   
   let _dupProdutoId = null;
+  // Lista de produtos pra duplicação EM MASSA. Quando preenchida (length>0), o
+  // fluxo de duplicação itera sobre cada produto reusando o MESMO modal/motor do
+  // individual. Quando null/vazia, é duplicação individual (comportamento original).
+  let _dupProdutoIds = null;
   let _dupCancelar = false;
   
   function abrirDuplicarAnuncio(produtoId) {
@@ -17259,6 +17269,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!p) { showToast('Produto não encontrado', true); return; }
     
     _dupProdutoId = produtoId;
+    _dupProdutoIds = null; // individual: limpa qualquer lista de massa anterior
     _dupCancelar = false;
     
     document.getElementById('dupProdutoNome').textContent = '"' + p.nome + '"';
@@ -17291,12 +17302,82 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     // injeta o seletor Agora/Agendar (default: Agora)
     const segBox = document.getElementById('dupSeletorBox');
-    if (segBox) { segBox.innerHTML = htmlSeletorAgendamento('dup', '📅 Quando exportar'); selAgendamento('dup', false); }
+    if (segBox) { segBox.style.display = ''; segBox.innerHTML = htmlSeletorAgendamento('dup', '📅 Quando exportar'); selAgendamento('dup', false); }
     if (typeof dupMontarRegua === 'function') dupMontarRegua();
+    // destrava o seletor de modo da régua (caso massa o tenha travado antes) e
+    // remove o aviso de massa
+    const modoSel = document.getElementById('dup_reguaModo');
+    if (modoSel) modoSel.disabled = false;
+    const avisoMassa = document.getElementById('dupMassaReguaAviso');
+    if (avisoMassa) avisoMassa.remove();
 
     document.getElementById('dupConfigOverlay').classList.add('active');
   }
-  
+
+  // DUPLICAÇÃO EM MASSA — reusa 100% o modal individual (dupConfigOverlay), só que
+  // pra vários produtos. Mesma régua, mesma promo do pai, mesmo Title Case, mesma
+  // fila síncrona. Diferenças: texto adaptado, sem opção rascunho/agendar (sempre
+  // exporta na hora), e a lista de produtos fica em _dupProdutoIds.
+  function abrirDuplicarEmMassa(ids) {
+    const lista = (ids || []).map(id => produtosErp.find(x => String(x.id) === String(id))).filter(Boolean);
+    if (!lista.length) { showToast('Selecione produtos primeiro', true); return; }
+    if (!lojasErp.length) { alert('Nenhuma loja cadastrada. Vá em 🏪 Lojas & Conexões pra adicionar.'); return; }
+
+    _dupProdutoIds = lista.map(p => String(p.id));
+    _dupProdutoId = _dupProdutoIds[0]; // referência base (a régua usa preço do 1º como base)
+    _dupCancelar = false;
+
+    // Texto do cabeçalho adaptado pra massa
+    const nomeEl = document.getElementById('dupProdutoNome');
+    if (nomeEl) nomeEl.textContent = lista.length + ' produto(s) selecionado(s) — cada um vira cópia(s) nas lojas marcadas';
+    document.getElementById('dupQuantidade').value = 1; // default 1 cópia por produto no massa
+
+    // Lojas (multi) — default: nenhuma marcada (no massa os produtos vêm de lojas diferentes)
+    const boxLojas = document.getElementById('dupLojasDestino');
+    if (boxLojas) {
+      boxLojas.innerHTML = lojasErp.length
+        ? lojasErp.map(l => `<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer">
+            <input type="checkbox" class="dup-loja-ck" value="${l.id}" style="width:16px;height:16px">
+            ${escapeHtml(l.nome)} <span style="font-size:11px;color:#6b7280">[${l.marketplace}]</span>
+          </label>`).join('')
+        : '<div style="color:#dc2626;font-size:12px">⚠ Nenhuma loja conectada</div>';
+    }
+    const selHidden = document.getElementById('dupLojaDestino');
+    if (selHidden) selHidden.innerHTML = lojasErp.map(l => `<option value="${l.id}">${escapeHtml(l.nome)}</option>`).join('');
+
+    // Esconde o seletor Agora/Agendar no massa (sempre exporta na hora)
+    const segBox = document.getElementById('dupSeletorBox');
+    if (segBox) segBox.style.display = 'none';
+
+    // Monta a régua (mesma do individual)
+    if (typeof dupMontarRegua === 'function') dupMontarRegua();
+
+    // No massa, a régua fica FIXA no modo "manter preço atual (promo do pai)" —
+    // o único confiável nos dois marketplaces sem agendar. Ativa, seleciona e trava.
+    setTimeout(() => {
+      const ativa = document.getElementById('dup_reguaAtiva');
+      const modo = document.getElementById('dup_reguaModo');
+      if (ativa && !ativa.checked) { ativa.checked = true; if (typeof ReguaUI !== 'undefined') ReguaUI.toggle('dup'); }
+      if (modo) {
+        modo.value = 'manter';
+        if (typeof ReguaUI !== 'undefined') ReguaUI.onModo('dup');
+        modo.disabled = true; // trava: no massa só "manter"
+        // aviso curto
+        if (!document.getElementById('dupMassaReguaAviso')) {
+          const av = document.createElement('div');
+          av.id = 'dupMassaReguaAviso';
+          av.style.cssText = 'font-size:10px;color:#6b21a8;margin-top:6px;background:#faf5ff;padding:6px 8px;border-radius:6px';
+          av.textContent = 'Em massa, a régua fica em "Manter preço atual (promo do pai)" — exporta na hora com o mesmo preço/promoção do produto original, nas duas plataformas.';
+          const cont = document.getElementById('dupReguaContainer');
+          if (cont) cont.appendChild(av);
+        }
+      }
+    }, 50);
+
+    document.getElementById('dupConfigOverlay').classList.add('active');
+  }
+  window.abrirDuplicarEmMassa = abrirDuplicarEmMassa;
+
   function fecharDupConfig() {
     document.getElementById('dupConfigOverlay').classList.remove('active');
   }
@@ -17965,21 +18046,51 @@ REGRAS DURAS:
     const marcadas = Array.from(document.querySelectorAll('.dup-loja-ck:checked')).map(c => c.value);
     if (!marcadas.length) { showToast('Marque ao menos uma loja destino', true); return; }
     const selHidden = document.getElementById('dupLojaDestino');
-    for (let i = 0; i < marcadas.length; i++) {
-      const lojaId = marcadas[i];
-      const loja = lojasErp.find(l => String(l.id) === String(lojaId));
-      if (selHidden) selHidden.value = lojaId; // o fluxo existente lê daqui
-      if (marcadas.length > 1) showToast(`🏪 Loja ${i+1}/${marcadas.length}: ${loja ? loja.nome : lojaId}`);
-      await iniciarDuplicacaoComAgendamento();
+
+    // MASSA: itera sobre todos os produtos selecionados. INDIVIDUAL: lista de 1.
+    const produtosAlvo = (Array.isArray(_dupProdutoIds) && _dupProdutoIds.length)
+      ? _dupProdutoIds.slice()
+      : [_dupProdutoId];
+    const ehMassa = produtosAlvo.length > 1;
+
+    for (let pIdx = 0; pIdx < produtosAlvo.length; pIdx++) {
+      if (_dupCancelar) { showToast('Duplicação cancelada', true); break; }
+      _dupProdutoId = produtosAlvo[pIdx]; // o fluxo existente lê _dupProdutoId
+      const pAlvo = produtosErp.find(x => String(x.id) === String(_dupProdutoId));
+      if (ehMassa) showToast(`📦 Produto ${pIdx+1}/${produtosAlvo.length}: ${pAlvo ? (pAlvo.nome||'').slice(0,40) : _dupProdutoId}`);
+
+      for (let i = 0; i < marcadas.length; i++) {
+        const lojaId = marcadas[i];
+        const loja = lojasErp.find(l => String(l.id) === String(lojaId));
+        if (selHidden) selHidden.value = lojaId; // o fluxo existente lê daqui
+        if (marcadas.length > 1) showToast(`🏪 Loja ${i+1}/${marcadas.length}: ${loja ? loja.nome : lojaId}`);
+        try {
+          await iniciarDuplicacaoComAgendamento();
+        } catch (e) {
+          console.warn('[massa-dup] produto', _dupProdutoId, 'loja', lojaId, 'falhou:', e.message);
+        }
+      }
     }
-    if (marcadas.length > 1) showToast(`✓ Duplicação concluída para ${marcadas.length} loja(s)`);
+
+    if (ehMassa) {
+      showToast(`✓ Duplicação em massa concluída (${produtosAlvo.length} produto(s) × ${marcadas.length} loja(s))`);
+      _dupProdutoIds = null; // limpa o estado de massa ao terminar
+      // recarrega a tela paginada pras cópias aparecerem
+      if (typeof _prodSelecionados !== 'undefined' && _prodSelecionados.clear) _prodSelecionados.clear();
+      if (typeof atualizarBarraSelecao === 'function') atualizarBarraSelecao();
+      if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
+    } else if (marcadas.length > 1) {
+      showToast(`✓ Duplicação concluída para ${marcadas.length} loja(s)`);
+    }
   }
   window.iniciarDuplicacaoMultiLoja = iniciarDuplicacaoMultiLoja;
 
   // Decide: duplicar agora (fluxo normal) ou criar cópias como rascunho + agendar exportação.
   async function iniciarDuplicacaoComAgendamento() {
     const agEl = document.getElementById('dupAgendarEm');
-    const quandoVal = agEl ? agEl.value : '';
+    // MASSA (v33j.6): sempre exporta na hora — ignora qualquer agendamento.
+    const ehMassaAtual = Array.isArray(_dupProdutoIds) && _dupProdutoIds.length > 0;
+    const quandoVal = ehMassaAtual ? '' : (agEl ? agEl.value : '');
     const reguaCfgBranch = dupLerRegua();
     const temRegua = !!reguaCfgBranch;
     // Sem data E sem régua → fluxo normal intacto.
@@ -29383,7 +29494,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33j.5-export-preco-cheio-blindado';
+  const _DIAG_VERSAO_PAINEL = 'v33j.6-duplicacao-massa-modal-unificado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
