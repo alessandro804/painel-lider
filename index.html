@@ -17452,8 +17452,21 @@ Retorne JSON: {"ID": "valor", ...}`;
     const ehShopee = marketplaceDestino === 'shopee';
     const limite = ehShopee ? 100 : 60;
     const nomeMkt = ehShopee ? 'Shopee Brasil' : 'Mercado Livre Brasil';
+
+    // Sinônimos regionais — em TODOS os marketplaces (o comprador chama o produto
+    // de jeitos diferentes dependendo da região do Brasil). Ex: chinelo/chinela/
+    // sandália/havaiana; tênis/sapatênis. Amplia o alcance da busca.
+    const dicaSinonimos = '\n✓ INCLUA sinônimos/variações regionais que o comprador busca — no Brasil o mesmo produto tem nomes diferentes por região. Ex: chinelo pode ser "chinelo", "chinela", "sandália"; tênis pode ser "tênis", "sapatênis". Use os termos que fizerem sentido pro produto, sem repetir à toa.';
+
+    // Gatilhos mentais — FORTES na Shopee (espaço de sobra, plataforma tolerante);
+    // no ML são CONDICIONAIS: só se sobrar espaço nos 60 chars E sem usar termos
+    // que o ML penaliza ("promoção"/"oferta" no título podem despriorizar o anúncio).
+    const dicaGatilhos = ehShopee
+      ? '\n✓ ADICIONE 1-2 gatilhos mentais de venda quando couber: "Oferta", "Promoção", "Poucas Unidades", "Pronta Entrega", "Lançamento". Use com moderação, sem poluir.'
+      : '\n✓ Se (e SOMENTE se) sobrar espaço dentro dos 60 caracteres, pode usar UM gatilho leve como "Pronta Entrega" ou "Lançamento". NÃO use as palavras "Promoção" nem "Oferta" no título do Mercado Livre (a plataforma penaliza). Priorize palavra-chave de busca real.';
+
     const dicaShopee = ehShopee
-      ? '\n✓ APROVEITE o espaço maior (até 100 chars) pra incluir SINÔNIMOS e variações regionais que o comprador busca. Ex: um chinelo pode ser buscado como "chinelo", "chinela", "sandália", "havaiana"; um tênis como "tênis", "sapatênis casual". Inclua 2-3 desses termos relevantes pra ampliar o alcance da busca.'
+      ? '\n✓ APROVEITE o espaço maior (até 100 chars) pra combinar palavra-chave + sinônimos + gatilho de forma natural.'
       : '';
     
     const prompt = `Você cria títulos OTIMIZADOS pra busca no ${nomeMkt}.
@@ -17473,7 +17486,7 @@ Crie um NOVO título de no máximo ${limite} caracteres que:
 ✓ Use palavras-chave de busca relevantes (exemplos pra calçados: "leve", "confortável", "antiderrapante", "macio", "esportivo", "casual", "trabalho", "lançamento", "premium")
 ✓ Tenha uma abordagem DIFERENTE do original — não seja simples reordenação
 ✓ Use linguagem natural, sem CAPS LOCK, sem emojis, sem aspas
-✓ Pense em como um comprador buscaria esse produto${dicaShopee}
+✓ Pense em como um comprador buscaria esse produto${dicaSinonimos}${dicaGatilhos}${dicaShopee}
 
 Responda APENAS o título novo. Nada mais.`;
     
@@ -17881,6 +17894,33 @@ REGRAS DURAS:
     return promoAlvo;
   }
   window.precoPromoParaReplicar = precoPromoParaReplicar;
+
+  // ── Helper: Title Case PT-BR pra títulos de anúncio ───────────────────────
+  // "chinela feminina de bico quadrado" → "Chinela Feminina de Bico Quadrado".
+  // Palavras pequenas (preposições/artigos/conjunções) ficam minúsculas, EXCETO
+  // quando são a primeira palavra do título. Preserva números/medidas e siglas
+  // já em CAPS (ex: "LED", "3D", "PU"). Acentuação PT-BR tratada via toLocaleLowerCase.
+  const _TITLE_MINUSCULAS = new Set([
+    'de','da','do','das','dos','e','com','para','pra','por','a','o','as','os',
+    'em','no','na','nos','nas','ao','aos','à','às','um','uma','ou'
+  ]);
+  function tituloTitleCase(str) {
+    const s = String(str || '').trim();
+    if (!s) return s;
+    const palavras = s.split(/\s+/);
+    return palavras.map((w, i) => {
+      if (!w) return w;
+      // preserva siglas/medidas já em maiúsculas ou com número (LED, 3D, R$, 38)
+      if (/[0-9]/.test(w)) return w;
+      if (w.length >= 2 && w === w.toLocaleUpperCase('pt-BR') && /[A-ZÀ-Ý]/.test(w)) return w;
+      const lower = w.toLocaleLowerCase('pt-BR');
+      // palavra pequena no meio do título → minúscula
+      if (i > 0 && _TITLE_MINUSCULAS.has(lower)) return lower;
+      // capitaliza a primeira letra (respeitando acento)
+      return lower.charAt(0).toLocaleUpperCase('pt-BR') + lower.slice(1);
+    }).join(' ');
+  }
+  window.tituloTitleCase = tituloTitleCase;
   // injeta o seletor da Nova Demanda quando o container existir
   function demInitSeletor() {
     const box = document.getElementById('demSeletorBox');
@@ -18121,6 +18161,11 @@ REGRAS DURAS:
           dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: gerando título com IA...`);
           novo.nome = await gerarTituloVariadoIA(p, lojaDestino.marketplace);
           dupLogStep(`  ✓ Título: "${novo.nome.slice(0,50)}"`, 'ok');
+        }
+        // Title Case no nome salvo da cópia (com ou sem IA — se não variou título,
+        // herdou o do pai no clone e mesmo assim normaliza a capitalização).
+        if (novo.nome && typeof tituloTitleCase === 'function') {
+          novo.nome = tituloTitleCase(novo.nome);
         }
         
         // 3. Descrição via IA
@@ -21437,6 +21482,11 @@ REGRAS DURAS:
   function montarPayloadExport(p, marketplace) {
     // garante 1 variação mínima (corrige export com estoque zerado p/ produto sem variação)
     p = garantirVariacaoMinima(p);
+    // Title Case no título de exportação (não muta o produto salvo — só o payload).
+    // Garante que TODA exportação saia "Chinela Feminina de Bico" e não minúsculo.
+    if (p && p.nome && typeof tituloTitleCase === 'function') {
+      p = Object.assign({}, p, { nome: tituloTitleCase(p.nome) });
+    }
     const mapa = categoriasMapErp.find(c => c.categoriaInterna === p.categoria);
     const categoriaMkt = mapa && mapa.vinculos ? mapa.vinculos[marketplace] : null;
     
@@ -29303,7 +29353,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33j.3-dup-manter-promo-do-pai';
+  const _DIAG_VERSAO_PAINEL = 'v33j.4-titulo-titlecase-sinonimos-gatilhos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
