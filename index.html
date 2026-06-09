@@ -21471,11 +21471,36 @@ REGRAS DURAS:
   // entre v.preco, p.preco e v._promo.max (o promo nunca é maior que o normal).
   // Evita exportar com o preço de promoção.
   function _precoNormalExport(v, p) {
+    // Preço de VENDA (cheio) pra exportação. Estratégia em camadas, da mais
+    // confiável pra menos:
+    //  1. candidatos diretos da própria variação: v.preco, p.preco, v._promo.max
+    //  2. BLINDAGEM (produtos corrompidos pré-v33j.5): se o maior candidato direto
+    //     ainda parecer "promocional", usa o MAIOR preço cheio do produto INTEIRO
+    //     (maior entre todos os v.preco e v._promo.max de todas as variações).
+    //     Isso recupera o 69,90 que sobrou em alguma variação irmã.
     const cands = [];
     if (v && parseFloat(v.preco) > 0) cands.push(parseFloat(v.preco));
     if (p && parseFloat(p.preco) > 0) cands.push(parseFloat(p.preco));
     if (v && v._promo && parseFloat(v._promo.max) > 0) cands.push(parseFloat(v._promo.max));
-    return cands.length ? Math.max(...cands) : (parseFloat(v && v.preco) || parseFloat(p && p.preco) || 0);
+    const diretoMax = cands.length ? Math.max(...cands) : 0;
+
+    // maior preço cheio observável no produto inteiro
+    let cheioProduto = 0;
+    if (p && Array.isArray(p.variacoes)) {
+      p.variacoes.forEach(vv => {
+        const pc = parseFloat(vv.preco) || 0;
+        const pm = (vv._promo && parseFloat(vv._promo.max)) || 0;
+        if (pc > cheioProduto) cheioProduto = pc;
+        if (pm > cheioProduto) cheioProduto = pm;
+      });
+    }
+
+    // Usa o MAIOR entre o candidato direto e o maior cheio do produto.
+    // (se o produto inteiro tem uma variação com 69,90, exporta 69,90 mesmo que
+    // esta variação esteja corrompida com 29,90.)
+    const escolhido = Math.max(diretoMax, cheioProduto);
+    if (escolhido > 0) return escolhido;
+    return (parseFloat(v && v.preco) || parseFloat(p && p.preco) || 0);
   }
   window._precoNormalExport = _precoNormalExport;
 
@@ -23630,10 +23655,15 @@ São o mesmo produto?`;
           const resultado = aplicarVinculoNaVariacao(varInterna, infoVinculo);
           if (resultado === 'criado') stats.vinculadosNovos++;
           else stats.vinculadosAtualizados++;
-          // Atualiza PREÇO e ESTOQUE com o valor real do marketplace (o backend já
-          // manda o preço de VENDA correto — original_price, não o promocional).
+          // Atualiza PREÇO e ESTOQUE com o valor real do marketplace. O backend
+          // (v33j.5) agora manda o preço de VENDA CHEIO (original_price) em varExt.preco
+          // — não mais o promocional. Se houver promo ativa, o backend manda varExt._promo.
           if (varExt.preco != null && Number(varExt.preco) > 0) varInterna.preco = varExt.preco;
           if (varExt.estoque != null) varInterna.estoque = varExt.estoque;
+          // _promo: o cron sincronizar_precos_promo é o dono autoritativo (lê das
+          // campanhas). Só absorvemos o _promo da importação se a variação ainda
+          // não tiver um — preenchimento inicial, sem sobrescrever o do cron.
+          if (varExt._promo && !varInterna._promo) varInterna._promo = varExt._promo;
         } else {
           // Cria variação nova no produto interno
           const novaVar = {
@@ -29353,7 +29383,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33j.4-titulo-titlecase-sinonimos-gatilhos';
+  const _DIAG_VERSAO_PAINEL = 'v33j.5-export-preco-cheio-blindado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
