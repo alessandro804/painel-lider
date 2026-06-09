@@ -17755,7 +17755,7 @@ REGRAS DURAS:
             <div style="flex:2;min-width:160px">
               <label class="form-label" style="font-size:11px">Preço inicial (promoção)</label>
               <select class="form-select" id="${prefixo}_reguaModo" style="font-size:12px" onchange="ReguaUI.onModo('${prefixo}')">
-                <option value="manter">Manter preço atual</option>
+                <option value="manter">Manter preço atual (com promoção do pai)</option>
                 <option value="menos_pct">Preço atual − X%</option>
                 <option value="menos_rs">Preço atual − R$ X</option>
                 <option value="mais_pct">Preço atual + X%</option>
@@ -17831,16 +17831,56 @@ REGRAS DURAS:
       return { modo, valor, degraus };
     },
     // Converte a config + preço atual num _regua pronto pro backend (imediato + degraus)
-    resolver(cfg, precoAtual, prefixo) {
+    // precoPromoPai (opcional): quando o modo é 'manter', em vez de "manter preço cheio
+    // sem promoção", replica a promoção do produto pai — o anúncio é criado com o preço
+    // CHEIO e entra em promoção com este valor (mesmo valor em R$ do pai). A guarda de
+    // segurança (promo < preço cheio) é responsabilidade do chamador.
+    resolver(cfg, precoAtual, prefixo, precoPromoPai) {
       if (!cfg) return null;
       let imediato = null;
       if (cfg.modo !== 'manter') {
         imediato = ReguaUI.calcularPrecoInicial(prefixo, precoAtual);
+      } else if (precoPromoPai != null && parseFloat(precoPromoPai) > 0) {
+        // modo "manter preço atual" agora = manter a PROMOÇÃO atual do pai
+        imediato = parseFloat(precoPromoPai);
       }
       return { imediato, degraus: cfg.degraus || [] };
     },
   };
   window.ReguaUI = ReguaUI;
+
+  // ── Helper: valor da promoção a replicar do produto pai ───────────────────
+  // Dado um produto (cópia ou pai) que carrega _promo nas variações (gravado
+  // pelo cron), retorna o MENOR valor de promo (em R$) entre as variações que
+  // seja seguro aplicar — ou seja, ESTRITAMENTE menor que o preço cheio da
+  // própria cópia. Se nenhuma variação tiver promo válida/segura, retorna null
+  // (a cópia é exportada só com preço cheio, sem promoção).
+  //
+  // Regra (definida com Alessandro):
+  //  - usa o MESMO VALOR em R$ da promo do pai (não percentual)
+  //  - se a promo >= preço cheio da cópia (pode acontecer pelo +R$0,01 das
+  //    cópias), PULA a promo nessa cópia
+  function precoPromoParaReplicar(prod) {
+    if (!prod || !Array.isArray(prod.variacoes)) return null;
+    // preço cheio de referência da cópia: menor preço normal entre as variações
+    const cheios = prod.variacoes
+      .map(v => parseFloat(v.preco) || parseFloat(prod.preco) || 0)
+      .filter(x => x > 0);
+    const cheioRef = cheios.length ? Math.min(...cheios) : (parseFloat(prod.preco) || 0);
+    if (!(cheioRef > 0)) return null;
+
+    const promos = [];
+    prod.variacoes.forEach(v => {
+      if (v._promo && parseFloat(v._promo.min) > 0) promos.push(parseFloat(v._promo.min));
+    });
+    if (!promos.length) return null;
+
+    const promoAlvo = Math.min(...promos);
+    // guarda de segurança: promo precisa ser MENOR que o preço cheio da cópia
+    if (promoAlvo >= cheioRef - 0.009) return null; // tolerância de 1 centavo
+    return promoAlvo;
+  }
+  window.precoPromoParaReplicar = precoPromoParaReplicar;
   // injeta o seletor da Nova Demanda quando o container existir
   function demInitSeletor() {
     const box = document.getElementById('demSeletorBox');
@@ -17900,10 +17940,20 @@ REGRAS DURAS:
   async function iniciarDuplicacaoComAgendamento() {
     const agEl = document.getElementById('dupAgendarEm');
     const quandoVal = agEl ? agEl.value : '';
-    const temRegua = !!dupLerRegua();
+    const reguaCfgBranch = dupLerRegua();
+    const temRegua = !!reguaCfgBranch;
     // Sem data E sem régua → fluxo normal intacto.
-    // Com régua mas sem data → roteia pela tarefa (exporta "agora" via backend, que orquestra a régua com o itemId real).
     if (!quandoVal && !temRegua) { return iniciarDuplicacao(); }
+
+    // Modo "manter preço atual" SEM data → exporta NA HORA (síncrono) e replica a
+    // promoção do pai via aplicar_preco_promocional (cobre ML e Shopee). Não passa
+    // pela tarefa agendada/backend (que usa entrar_promocao, só Shopee).
+    if (!quandoVal && temRegua && reguaCfgBranch.modo === 'manter') {
+      return iniciarDuplicacao();
+    }
+
+    // Demais modos de régua (±R$, ±%, fixo, degraus) sem data → roteia pela tarefa
+    // (exporta "agora" via backend, que orquestra a régua com o itemId real).
 
     const quando = quandoVal ? new Date(quandoVal) : new Date(Date.now() + 2000); // sem data mas com régua → daqui 2s
     if (isNaN(quando.getTime()) || (quandoVal && quando.getTime() < Date.now())) { showToast('Data/hora de agendamento inválida ou no passado', true); return; }
@@ -17935,7 +17985,11 @@ REGRAS DURAS:
     const reguaCfg = dupLerRegua(); // { modo, valor, degraus } ou null
     if (reguaCfg) coletadas.forEach(c => {
       const precoBase = Number(c.preco) || Number((c.variacoes && c.variacoes[0] && c.variacoes[0].preco)) || 0;
-      const resolvida = ReguaUI.resolver(reguaCfg, precoBase, 'dup'); // { imediato, degraus }
+      // No modo "manter", replica a PROMOÇÃO do pai (mesmo valor R$, com guarda
+      // de segurança); nos demais modos, precoPromoPai fica undefined e o
+      // resolver calcula o imediato pelo modo escolhido normalmente.
+      const promoPai = (reguaCfg.modo === 'manter') ? precoPromoParaReplicar(c) : undefined;
+      const resolvida = ReguaUI.resolver(reguaCfg, precoBase, 'dup', promoPai); // { imediato, degraus }
       // monta no formato que o backend já entende: { imediato?, degraus:[] }
       const r = {};
       if (resolvida.imediato != null) r.imediato = resolvida.imediato;
@@ -18276,6 +18330,26 @@ REGRAS DURAS:
               } catch (ePersist) {
                 console.warn('[dup vínculos] persist falhou:', ePersist.message);
               }
+
+              // PROMOÇÃO AUTOMÁTICA (duplicação imediata, sem régua manual):
+              // se a cópia herdou _promo do pai, coloca o anúncio recém-criado
+              // em promoção com o MESMO valor em R$ do pai. Usa a guarda de
+              // segurança (promoParaReplicar pula se promo >= preço cheio da cópia).
+              // Quando há régua no modo "manter", o fluxo passa pela tarefa
+              // agendada (backend orquestra), então este bloco não dispara.
+              try {
+                const promoCopia = (typeof precoPromoParaReplicar === 'function')
+                  ? precoPromoParaReplicar(novo) : null;
+                if (promoCopia != null && itemId && itemId !== '?') {
+                  await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+                    tipo:'aplicar_preco_promocional',
+                    descricao:'Promoção automática (cópia, R$ '+promoCopia.toFixed(2)+') item '+itemId,
+                    rodar_em:new Date(Date.now()-1000).toISOString(),
+                    params:{ lojaIdBanco: lojaIdBanco, marketplace: lojaDestino.marketplace, itens:[{ itemId, preco: promoCopia }] }
+                  }) });
+                  dupLogStep(`  💰 Promoção do pai replicada (R$ ${promoCopia.toFixed(2)})`, 'ok');
+                }
+              } catch(ePromo) { console.warn('[dup promo auto]', ePromo); dupLogStep('  ⚠ Falha ao replicar promoção: '+ePromo.message, 'err'); }
             }
           } else {
             // Mostra detalhes do erro
@@ -29229,7 +29303,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33i.2-sync-zero-remove-vinculos';
+  const _DIAG_VERSAO_PAINEL = 'v33j.3-dup-manter-promo-do-pai';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
