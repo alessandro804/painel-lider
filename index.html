@@ -28034,16 +28034,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
         });
         // gera os passos com de->para encadeado
         seq.forEach(passo => {
-          (v.vinculos||[]).forEach(vi => {
-            const lb = String(vi.lojaIdBanco||vi.lojaId);
-            if (!idsBanco.includes(lb) || !vi.anuncioId) return;
+          // usa a loja/anúncio DESTE item do grupo (ref), não todos os vínculos —
+          // cada item do grupo já é uma combinação loja+variação específica.
+          const lb = String(ref.lojaIdBanco);
+          if (idsBanco.includes(lb) && ref.anuncioId) {
             const dataEm = new Date(agora + passo.dias*86400000);
             passosTodos.push({
-              lojaIdBanco: lb, marketplace: vi.marketplace, itemId: vi.anuncioId,
+              lojaIdBanco: lb, marketplace: ref.marketplace, itemId: ref.anuncioId,
               diaKey: lb + '|' + dataEm.toISOString().slice(0,10),
               em: dataEm.toISOString(), precoDe: anterior, precoPara: passo.preco,
             });
-          });
+          }
           anterior = passo.preco;
         });
         // marca a variação com os passos (selo + hover)
@@ -28231,28 +28232,29 @@ Responda APENAS com JSON válido (sem markdown), formato:
       const p = produtosErp.find(x => String(x.id) === pid);
       if (!p) return;
       (p.variacoes||[]).forEach(v => {
-        // só inclui a variação se ela tem vínculo numa das lojas selecionadas
-        const vincNaLoja = (v.vinculos||[]).filter(vi => idsBanco.includes(String(vi.lojaIdBanco||vi.lojaId)));
-        if (!vincNaLoja.length) return;
-        // Preço do grupo = preço da PROMOÇÃO. Preferência:
-        //  1. _promoPorLoja[loja selecionada] — promo específica daquela loja (correto p/
-        //     produto em várias lojas com preços diferentes)
-        //  2. _promo.min (global) — fallback
-        //  3. v.preco (cheio) — se não há promo
-        let promoMin = 0;
-        if (v._promoPorLoja) {
-          // pega a menor promo entre as lojas selecionadas que têm vínculo nesta variação
-          vincNaLoja.forEach(vi => {
-            const lk = String(vi.lojaIdBanco || vi.lojaId);
-            const pl = v._promoPorLoja[lk];
-            if (pl && parseFloat(pl.min) > 0) {
-              if (!promoMin || parseFloat(pl.min) < promoMin) promoMin = parseFloat(pl.min);
-            }
+        // Itera por VÍNCULO (loja), não por variação. A mesma variação pode estar em
+        // várias lojas com promoções diferentes (Shoes HB 89,90 / Milly 99,90), e cada
+        // combinação loja+variação entra no grupo do SEU próprio preço. Assim, ao
+        // selecionar as duas lojas, os 89,90 de ambas caem juntos no grupo 89,90, e os
+        // 99,90 no grupo 99,90.
+        (v.vinculos||[]).forEach(vi => {
+          const lk = String(vi.lojaIdBanco || vi.lojaId);
+          if (!idsBanco.includes(lk)) return; // só lojas selecionadas
+          // preço deste vínculo: promo da loja → promo global → preço cheio
+          let preco = 0;
+          if (v._promoPorLoja && v._promoPorLoja[lk] && parseFloat(v._promoPorLoja[lk].min) > 0) {
+            preco = parseFloat(v._promoPorLoja[lk].min);
+          } else if (v._promo && parseFloat(v._promo.min) > 0) {
+            preco = parseFloat(v._promo.min);
+          } else {
+            preco = parseFloat(v.preco) || parseFloat(p.preco) || 0;
+          }
+          const chave = preco.toFixed(2);
+          (grupos[chave] = grupos[chave] || []).push({
+            produtoId: pid, variacaoId: v.id, nome: v.nome,
+            lojaIdBanco: lk, anuncioId: vi.anuncioId, marketplace: vi.marketplace,
           });
-        }
-        if (!promoMin && v._promo && parseFloat(v._promo.min) > 0) promoMin = parseFloat(v._promo.min);
-        const preco = (promoMin || parseFloat(v.preco) || parseFloat(p.preco) || 0).toFixed(2);
-        (grupos[preco] = grupos[preco] || []).push({ produtoId: pid, variacaoId: v.id, nome: v.nome });
+        });
       });
     });
     const precos = Object.keys(grupos).sort((a,b)=>parseFloat(a)-parseFloat(b));
@@ -29979,7 +29981,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.3-promo-por-loja-completo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.4-grupos-preco-por-loja';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
