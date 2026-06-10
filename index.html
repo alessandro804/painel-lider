@@ -5115,6 +5115,8 @@
           <label class="form-label">Buscar produto</label>
           <input type="text" class="form-input" id="apBusca" placeholder="🔍 nome ou SKU..." oninput="apRenderProdutos()">
         </div>
+        <button type="button" onclick="apSelecionarTodos()" style="padding:9px 12px;background:#eef2ff;color:#4f46e5;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:12px;white-space:nowrap">☑ Selecionar todos</button>
+        <button type="button" onclick="apLimparSelecao()" style="padding:9px 12px;background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:12px;white-space:nowrap">Limpar</button>
       </div>
       <div id="apProdutosLista" style="max-height:240px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:10px;padding:8px;margin-bottom:12px"></div>
       <div style="font-size:12px;color:#6b7280;margin-bottom:8px"><b id="apSelecionadosCount">0</b> produto(s) selecionado(s). Os preços das variações são agrupados abaixo.</div>
@@ -18188,30 +18190,48 @@ REGRAS DURAS:
           <option value="mais_pct">+ % sobre anterior</option>
         </select>
         <input type="number" class="form-input ${prefixo}-deg-preco" step="0.01" min="0" placeholder="valor" style="width:90px;font-size:12px" oninput="ReguaUI.previa('${prefixo}')">
+        <span class="${prefixo}-deg-resultado" style="font-size:11px;color:#9ca3af;min-width:64px">—</span>
         <button type="button" onclick="this.parentElement.remove();ReguaUI.previa('${prefixo}')" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
       cont.appendChild(div);
       ReguaUI.previa(prefixo);
     },
+    // Define o preço base de referência de um prefixo (ex: preço do grupo), usado
+    // pra calcular o valor de cada degrau ao lado do X.
+    setPreviaBase(prefixo, preco) {
+      ReguaUI._basePorPrefixo = ReguaUI._basePorPrefixo || {};
+      ReguaUI._basePorPrefixo[prefixo] = Number(preco) || 0;
+    },
+    _baseDoPrefixo(prefixo, modo, cfg) {
+      // 1) base explícita setada pra esse prefixo (preço do grupo)
+      const mapa = ReguaUI._basePorPrefixo || {};
+      if (mapa[prefixo] > 0) return mapa[prefixo];
+      // 2) modo fixo usa o próprio valor
+      if (modo === 'fixo' && cfg && cfg.valor > 0) return cfg.valor;
+      // 3) fallback de exemplo
+      return ReguaUI._previaBase || 25;
+    },
     // Prévia ao vivo da cascata de preços (parte do preço inicial/imediato).
-    // Usa um preço base de exemplo quando não há imediato (pra ilustrar a sequência).
     previa(prefixo) {
+      const cfg = ReguaUI.ler(prefixo);
+      const modo = cfg ? cfg.modo : 'manter';
+      const base = ReguaUI._baseDoPrefixo(prefixo, modo, cfg);
+      const degraus = (cfg && cfg.degraus) || [];
+      const seq = ReguaUI._cascata(base, degraus);
+      // atualiza o resultado ao lado de cada X (sem destaque)
+      const divs = document.querySelectorAll('#'+prefixo+'_reguaDegraus > div');
+      divs.forEach((div, i) => {
+        const span = div.querySelector('.'+prefixo+'-deg-resultado');
+        if (span) span.textContent = (seq[i] != null) ? ('= R$ '+seq[i].toFixed(2)) : '—';
+      });
+      // linha-resumo (se existir o container de prévia)
       const box = document.getElementById(prefixo+'_reguaPrevia');
       if (!box) return;
-      const cfg = ReguaUI.ler(prefixo);
-      if (!cfg || !cfg.degraus || !cfg.degraus.length) { box.textContent = ''; return; }
-      // base: preço inicial calculado pelo modo, OU um exemplo de R$25 pra ilustrar
-      let base = 0;
-      const modo = cfg.modo;
-      if (modo === 'fixo') base = cfg.valor || 0;
-      else if (modo === 'manter') base = ReguaUI._previaBase || 25; // exemplo
-      else base = ReguaUI._previaBase || 25; // +/- dependem do preço real da variação; usa exemplo
-      const seq = ReguaUI._cascata(base, cfg.degraus);
+      if (!degraus.length) { box.textContent = ''; return; }
+      const usouExemplo = !((ReguaUI._basePorPrefixo||{})[prefixo] > 0) && modo !== 'fixo';
       const partes = ['R$ '+base.toFixed(2)+' (início)'].concat(
-        seq.map((p,i) => `${cfg.degraus[i].dias}d → R$ ${p.toFixed(2)}`)
+        seq.map((p,i) => `${degraus[i].dias}d → R$ ${p.toFixed(2)}`)
       );
-      const exemplo = (modo === 'manter' || modo.includes('mais') || modo.includes('menos')) && !ReguaUI._previaBase
-        ? ' (exemplo base R$25)' : '';
-      box.innerHTML = '📈 ' + partes.join('  →  ') + exemplo;
+      box.innerHTML = '📈 ' + partes.join('  →  ') + (usouExemplo ? ' (exemplo base R$25)' : '');
     },
     // Calcula a cascata: cada degrau aplica seu tipo sobre o resultado do anterior.
     // Retorna array de preços absolutos (1 por degrau), na ordem dada.
@@ -28176,6 +28196,28 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   window.apToggle = apToggle;
 
+  // Marca TODOS os produtos atualmente visíveis (respeitando o filtro de busca e a
+  // loja selecionada). Mais rápido que clicar 1 a 1.
+  function apSelecionarTodos() {
+    const busca = ((document.getElementById('apBusca')||{}).value || '').toLowerCase();
+    let lista = _apProdutosDaLoja();
+    if (busca) lista = lista.filter(p => (p.nome||'').toLowerCase().includes(busca) || (p.skuPai||'').toLowerCase().includes(busca));
+    lista.slice(0, 100).forEach(p => _apSelecionados.add(String(p.id)));
+    document.getElementById('apSelecionadosCount').textContent = _apSelecionados.size;
+    apRenderProdutos();
+    apRenderGruposPreco();
+    showToast(`✓ ${_apSelecionados.size} produto(s) selecionado(s)`);
+  }
+  window.apSelecionarTodos = apSelecionarTodos;
+
+  function apLimparSelecao() {
+    _apSelecionados.clear();
+    document.getElementById('apSelecionadosCount').textContent = 0;
+    apRenderProdutos();
+    apRenderGruposPreco();
+  }
+  window.apLimparSelecao = apLimparSelecao;
+
   // Agrupa as variações dos produtos selecionados pelo PREÇO ATUAL, e mostra
   // uma régua por grupo. Cada grupo: "Variações de R$X → [régua]".
   function apRenderGruposPreco() {
@@ -28222,6 +28264,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     precos.forEach((preco, i) => {
       const box = document.getElementById('apg' + i + '_box');
       if (box) { box.innerHTML = ReguaUI.html('apg'+i, { titulo: '💸 Régua deste grupo' }); }
+      // define o preço base do grupo pra calcular o valor de cada degrau ao lado do X
+      if (typeof ReguaUI.setPreviaBase === 'function') ReguaUI.setPreviaBase('apg'+i, parseFloat(preco));
     });
     // guarda o mapa grupo→variações pra usar ao salvar
     window._apGrupos = precos.map((preco,i) => ({ prefixo:'apg'+i, preco: parseFloat(preco), variacoes: grupos[preco] }));
@@ -29918,7 +29962,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.0-ajuste-preco-regua-todos-grupos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1-valor-por-degrau-e-selecionar-todos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
