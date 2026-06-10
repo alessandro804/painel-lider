@@ -4111,7 +4111,7 @@
           <div class="transactions-card">
             <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
               <h3 style="margin:0">📊 Situação das cobranças</h3>
-              <button class="toolbar-btn" onclick="atualizarStatusCobrancas()">🔄 Atualizar status (Asaas)</button>
+              <button class="toolbar-btn" onclick="forcarBaixaPagamentos()">🔄 Checar pagamentos agora</button>
             </div>
             <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;margin-top:14px">
               <div id="dashRosca" style="flex:0 0 auto"></div>
@@ -29962,7 +29962,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1-valor-por-degrau-e-selecionar-todos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2-persistencia-nf-auto-timeline';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -31630,30 +31630,83 @@ REGRAS DE OURO:
       wrap.innerHTML = '<div style="color:#9ca3af;font-size:13px;padding:8px">Nenhum fechamento neste período. Mude o filtro de mês ou clique em "+ Novo fechamento".</div>';
       return;
     }
-    // Resumo de quantos receberam mensagem (têm cobrança = mensagem foi enviada ao criar)
     const comMsg = lista.filter(f => f.cobranca).length;
-    const resumo = `<div style="font-size:12px;color:#6b7280;margin-bottom:8px">📨 ${comMsg} de ${lista.length} fechamento(s) com cobrança/mensagem enviada</div>`;
+    const pagos = lista.filter(f => f.statusPagamento === 'pago').length;
+    const resumo = `<div style="font-size:12px;color:#6b7280;margin-bottom:8px">📨 ${comMsg} com cobrança enviada · ✓ ${pagos} pago(s) · ${lista.length} no total</div>`;
     wrap.innerHTML = resumo + lista.map(f => {
-      const enviada = !!f.cobranca;
-      const pago = f.statusPagamento === 'pago';
-      const tag = pago
-        ? '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:#dcfce7;color:#166534">✓ Pago</span>'
-        : (enviada
-          ? '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:#dbeafe;color:#1d4ed8">📨 Cobrança enviada</span>'
-          : '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:#f3f4f6;color:#9ca3af">Sem cobrança</span>');
-      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;flex-wrap:wrap;gap:8px">
-        <div>
-          <div style="font-weight:700">${escapeHtml(f.cliente || '—')} ${tag}</div>
-          <div style="font-size:12px;color:#6b7280">${_fmtMesExt(f.mes)} · Total: ${_fmtBRL(f.totalPagar)}${f.clienteTelefone ? ' · 📱 '+escapeHtml(f.clienteTelefone) : ''}</div>
+      const est = _fechEstado(f);
+      return `<div style="padding:12px;border:1px solid #e5e7eb;border-left:4px solid ${est.cor};border-radius:8px;margin-bottom:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div>
+            <div style="font-weight:700">${escapeHtml(f.cliente || '—')} <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:${est.bg};color:${est.cor}">${est.icone} ${est.label}</span></div>
+            <div style="font-size:12px;color:#6b7280">${_fmtMesExt(f.mes)} · Total: ${_fmtBRL(f.totalPagar)}${f.clienteTelefone ? ' · 📱 '+escapeHtml(f.clienteTelefone) : ''}${f.vencimento ? ' · vence '+ (f.vencimento.split('-').reverse().join('/')) : ''}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="toolbar-btn" style="font-size:12px" onclick="editarFechamento('${f.id}')">Editar</button>
+            <button class="toolbar-btn" style="font-size:12px" onclick="gerarPdfFechamentoSalvo('${f.id}')">📄 PDF</button>
+            <button class="delete-btn" style="font-size:12px;padding:4px 8px" onclick="excluirFechamento('${f.id}')">🗑</button>
+          </div>
         </div>
-        <div style="display:flex;gap:6px">
-          <button class="toolbar-btn" style="font-size:12px" onclick="editarFechamento('${f.id}')">Editar</button>
-          <button class="toolbar-btn" style="font-size:12px" onclick="gerarPdfFechamentoSalvo('${f.id}')">📄 PDF</button>
-          <button class="delete-btn" style="font-size:12px;padding:4px 8px" onclick="excluirFechamento('${f.id}')">🗑</button>
-        </div>
+        ${_fechTimelineHTML(f)}
       </div>`;
     }).join('');
   }
+
+  // Determina o estado geral do fechamento (cor + label) pra borda e tag.
+  function _fechEstado(f) {
+    const pago = f.statusPagamento === 'pago';
+    const temCobranca = !!f.cobranca;
+    if (pago) return { label:'Pago', icone:'✓', cor:'#16a34a', bg:'#dcfce7' };
+    if (!temCobranca) return { label:'Sem cobrança', icone:'•', cor:'#9ca3af', bg:'#f3f4f6' };
+    // tem cobrança e não pago: vê se está vencido
+    const venc = f.vencimento ? new Date(f.vencimento + 'T23:59:59') : null;
+    const hoje = new Date();
+    if (venc && venc < hoje) return { label:'Vencido / devendo', icone:'⚠', cor:'#dc2626', bg:'#fee2e2' };
+    return { label:'Em aberto', icone:'⏳', cor:'#2563eb', bg:'#dbeafe' };
+  }
+
+  // Monta a linha do tempo (timeline) do processo de cobrança do fechamento.
+  function _fechTimelineHTML(f) {
+    const pago = f.statusPagamento === 'pago';
+    const venc = f.vencimento ? new Date(f.vencimento + 'T23:59:59') : null;
+    const vencido = venc && venc < new Date() && !pago;
+    const nf = f.notaFiscal;
+
+    // cada etapa: { label, ok (concluída), ativa (estado atual), cor }
+    const etapas = [];
+    // 1. Fechamento criado
+    etapas.push({ label:'Fechamento criado', ok:true });
+    // 2. Cobrança/mensagem enviada
+    etapas.push({ label:'Cobrança enviada', ok: !!f.cobranca });
+    // 3. Pagamento
+    if (pago) etapas.push({ label:'Pago', ok:true, cor:'#16a34a' });
+    else if (vencido) etapas.push({ label:'Vencido / devendo', ok:false, cor:'#dc2626', ativa:true });
+    else etapas.push({ label:'Aguardando pagamento', ok:false, cor:'#2563eb', ativa:true });
+    // 4. Nota fiscal (só conta lider e quando pago)
+    if (pago && f.cobranca && f.cobranca.contaId === 'lider') {
+      if (nf && nf.enviadaWhats) etapas.push({ label:'NF enviada ao cliente', ok:true, cor:'#16a34a' });
+      else if (nf && nf.id) etapas.push({ label:'NF emitida (enviando…)', ok:true, cor:'#7c3aed' });
+      else etapas.push({ label:'NF pendente', ok:false, cor:'#9ca3af', ativa:true });
+    }
+
+    const bolinhas = etapas.map((e, i) => {
+      const cor = e.ok ? (e.cor || '#16a34a') : (e.ativa ? (e.cor || '#2563eb') : '#d1d5db');
+      const fill = e.ok || e.ativa ? cor : '#fff';
+      const linha = i < etapas.length - 1
+        ? `<div style="flex:1;height:2px;background:${etapas[i+1].ok || etapas[i+1].ativa ? cor : '#e5e7eb'};min-width:14px"></div>`
+        : '';
+      return `<div style="display:flex;align-items:center;gap:0;flex:1;min-width:0">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+          <div style="width:14px;height:14px;border-radius:50%;border:2px solid ${cor};background:${fill};flex-shrink:0"></div>
+          <span style="font-size:9px;color:${e.ok||e.ativa?cor:'#9ca3af'};white-space:nowrap;text-align:center;${e.ativa?'font-weight:700':''}">${e.label}</span>
+        </div>
+        ${linha}
+      </div>`;
+    }).join('');
+
+    return `<div style="display:flex;align-items:flex-start;padding:4px 2px 0">${bolinhas}</div>`;
+  }
+  window._fechTimelineHTML = _fechTimelineHTML;
 
   function _fmtMesExt(mes) {
     if (!mes) return '—';
@@ -31995,6 +32048,32 @@ REGRAS DE OURO:
     showToast(msg);
   }
   window.atualizarStatusCobrancas = atualizarStatusCobrancas;
+
+  // Força a checagem automática do backend na hora (mesma lógica que roda 1x/h).
+  // Depois recarrega os fechamentos da nuvem pra refletir o que o backend baixou.
+  async function forcarBaixaPagamentos() {
+    showToast('🔄 Checando pagamentos no Asaas (via servidor)...');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/tarefas/rodar-handler/baixar_pagamentos_e_emitir_nf', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: '{}'
+      });
+      const d = await r.json();
+      // o handler roda em 2º plano; espera um pouco e recarrega da nuvem
+      setTimeout(async () => {
+        const cloud = await LiderSync.pullAll();
+        if (cloud && Array.isArray(cloud.appData.fechamentos)) {
+          fechamentos = cloud.appData.fechamentos;
+          localStorage.setItem('lider_fechamentos_v1', JSON.stringify(fechamentos));
+          renderFechamentosList();
+          renderDashboardFinanceira();
+        }
+        showToast('✓ Checagem concluída — veja os status atualizados');
+      }, 4000);
+    } catch (e) {
+      showToast('Erro ao checar pagamentos: ' + e.message, true);
+    }
+  }
+  window.forcarBaixaPagamentos = forcarBaixaPagamentos;
 
   // Emite a NFS-e de um fechamento pago (conta Lider Commerce). Usa a config de NF.
   async function _emitirNotaFiscalFechamento(f) {
@@ -40596,6 +40675,27 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       if (typeof cloudData.appData.prompt_reconciliacao === 'string') {
         promptReconciliacao = cloudData.appData.prompt_reconciliacao;
         localStorage.setItem('lider_prompt_reconciliacao_v1', promptReconciliacao);
+      }
+      // === FIX v33k.2: chaves que eram SALVAS mas nunca RESTAURADAS ===
+      // (por isso sumiam ao abrir em outro navegador). Restaura todas.
+      if (Array.isArray(cloudData.appData.fechamentos)) {
+        fechamentos = cloudData.appData.fechamentos;
+        localStorage.setItem('lider_fechamentos_v1', JSON.stringify(fechamentos));
+      }
+      if (Array.isArray(cloudData.appData.cenariosCobranca)) {
+        cenariosCobranca = cloudData.appData.cenariosCobranca;
+        localStorage.setItem('lider_cenarios_cobranca', JSON.stringify(cenariosCobranca));
+      }
+      if (cloudData.appData.clientesAsaas && typeof cloudData.appData.clientesAsaas === 'object') {
+        _clientesAsaas = cloudData.appData.clientesAsaas;
+        localStorage.setItem('lider_clientes_asaas', JSON.stringify(_clientesAsaas));
+      }
+      if (cloudData.appData.nfConfig && typeof cloudData.appData.nfConfig === 'object') {
+        localStorage.setItem('lider_nf_config', JSON.stringify(cloudData.appData.nfConfig));
+      }
+      if (Array.isArray(cloudData.appData.skus_shein)) {
+        skusUsadosShein = cloudData.appData.skus_shein;
+        localStorage.setItem('lider_skus_shein_v1', JSON.stringify(skusUsadosShein));
       }
     }
     // Garante IDs íntegros após baixar da nuvem
