@@ -28034,15 +28034,18 @@ Responda APENAS com JSON válido (sem markdown), formato:
         });
         // gera os passos com de->para encadeado
         seq.forEach(passo => {
-          // usa a loja/anúncio DESTE item do grupo (ref), não todos os vínculos —
-          // cada item do grupo já é uma combinação loja+variação específica.
+          // usa a loja DESTE item do grupo (ref) e TODOS os anúncios daquela
+          // variação+loja (a mesma variação pode ter vários anúncios na mesma loja).
           const lb = String(ref.lojaIdBanco);
-          if (idsBanco.includes(lb) && ref.anuncioId) {
+          const anuncios = (ref.anuncioIds && ref.anuncioIds.length) ? ref.anuncioIds : (ref.anuncioId ? [ref.anuncioId] : []);
+          if (idsBanco.includes(lb) && anuncios.length) {
             const dataEm = new Date(agora + passo.dias*86400000);
-            passosTodos.push({
-              lojaIdBanco: lb, marketplace: ref.marketplace, itemId: ref.anuncioId,
-              diaKey: lb + '|' + dataEm.toISOString().slice(0,10),
-              em: dataEm.toISOString(), precoDe: anterior, precoPara: passo.preco,
+            anuncios.forEach(itemId => {
+              passosTodos.push({
+                lojaIdBanco: lb, marketplace: ref.marketplace, itemId,
+                diaKey: lb + '|' + dataEm.toISOString().slice(0,10),
+                em: dataEm.toISOString(), precoDe: anterior, precoPara: passo.preco,
+              });
             });
           }
           anterior = passo.preco;
@@ -28232,27 +28235,38 @@ Responda APENAS com JSON válido (sem markdown), formato:
       const p = produtosErp.find(x => String(x.id) === pid);
       if (!p) return;
       (p.variacoes||[]).forEach(v => {
-        // Itera por VÍNCULO (loja), não por variação. A mesma variação pode estar em
-        // várias lojas com promoções diferentes (Shoes HB 89,90 / Milly 99,90), e cada
-        // combinação loja+variação entra no grupo do SEU próprio preço. Assim, ao
-        // selecionar as duas lojas, os 89,90 de ambas caem juntos no grupo 89,90, e os
-        // 99,90 no grupo 99,90.
+        // Consolida por VARIAÇÃO + LOJA. A mesma variação pode ter VÁRIOS anúncios na
+        // MESMA loja (ex: 7 anúncios da mesma cor/tamanho na Shoes HB) — antes isso
+        // gerava 7 linhas idênticas. Agora vira 1 linha por variação+loja, guardando
+        // TODOS os anuncioIds num array (pra a régua atingir todos os anúncios).
+        // Continua separando por loja: 89,90 (Shoes HB) e 99,90 (Milly) em grupos distintos.
+        const porLojaVar = {}; // lk -> { preco, anuncios:Set, marketplace }
         (v.vinculos||[]).forEach(vi => {
           const lk = String(vi.lojaIdBanco || vi.lojaId);
-          if (!idsBanco.includes(lk)) return; // só lojas selecionadas
-          // preço deste vínculo: promo da loja → promo global → preço cheio
-          let preco = 0;
-          if (v._promoPorLoja && v._promoPorLoja[lk] && parseFloat(v._promoPorLoja[lk].min) > 0) {
-            preco = parseFloat(v._promoPorLoja[lk].min);
-          } else if (v._promo && parseFloat(v._promo.min) > 0) {
-            preco = parseFloat(v._promo.min);
-          } else {
-            preco = parseFloat(v.preco) || parseFloat(p.preco) || 0;
+          if (!idsBanco.includes(lk)) return;
+          if (!vi.anuncioId) return;
+          if (!porLojaVar[lk]) {
+            let preco = 0;
+            if (v._promoPorLoja && v._promoPorLoja[lk] && parseFloat(v._promoPorLoja[lk].min) > 0) {
+              preco = parseFloat(v._promoPorLoja[lk].min);
+            } else if (v._promo && parseFloat(v._promo.min) > 0) {
+              preco = parseFloat(v._promo.min);
+            } else {
+              preco = parseFloat(v.preco) || parseFloat(p.preco) || 0;
+            }
+            porLojaVar[lk] = { preco, anuncios: new Set(), marketplace: vi.marketplace };
           }
-          const chave = preco.toFixed(2);
+          porLojaVar[lk].anuncios.add(vi.anuncioId);
+        });
+        // 1 entrada por loga+variação, com todos os anúncios daquele par
+        Object.keys(porLojaVar).forEach(lk => {
+          const info = porLojaVar[lk];
+          const chave = info.preco.toFixed(2);
           (grupos[chave] = grupos[chave] || []).push({
             produtoId: pid, variacaoId: v.id, nome: v.nome,
-            lojaIdBanco: lk, anuncioId: vi.anuncioId, marketplace: vi.marketplace,
+            lojaIdBanco: lk, anuncioId: Array.from(info.anuncios)[0], // 1º (retrocompat)
+            anuncioIds: Array.from(info.anuncios),                    // TODOS (aplicação)
+            marketplace: info.marketplace,
           });
         });
       });
@@ -28265,8 +28279,10 @@ Responda APENAS com JSON válido (sem markdown), formato:
         const p = produtosErp.find(x => String(x.id) === String(ref.produtoId));
         const v = p ? (p.variacoes||[]).find(x => String(x.id) === String(ref.variacaoId)) : null;
         const label = v ? ([v.cor, v.tamanho].filter(Boolean).join(' ') || v.nome || v.id) : ref.variacaoId;
+        const nAnuncios = (ref.anuncioIds && ref.anuncioIds.length) || 1;
+        const tagAnuncios = nAnuncios > 1 ? ` <span style="font-size:10px;color:#9ca3af">(${nAnuncios} anúncios)</span>` : '';
         return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 8px;border-top:1px solid #f1f5f9;font-size:12px">
-          <span>${escapeHtml((p?p.nome:'').slice(0,25))} · <b>${escapeHtml(String(label))}</b></span>
+          <span>${escapeHtml((p?p.nome:'').slice(0,25))} · <b>${escapeHtml(String(label))}</b>${tagAnuncios}</span>
           <button type="button" onclick="apToggleIndividual('${prefixo}','${ref.produtoId}','${ref.variacaoId}')" style="font-size:11px;padding:3px 8px;background:#eef2ff;color:#4f46e5;border:none;border-radius:6px;cursor:pointer">régua própria</button>
         </div>
         <div id="${prefixo}_ind_${j}" style="display:none;padding:6px 8px"></div>`;
@@ -29981,7 +29997,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.4-grupos-preco-por-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.5-consolida-variacao-por-loja';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
