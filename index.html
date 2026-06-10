@@ -5421,6 +5421,7 @@
             <button onclick="acaoMassaTrocarCategoria()">📂 Trocar categoria interna</button>
             <button onclick="acaoMassaTrocarMarca()">🏷️ Trocar marca</button>
             <button onclick="acaoMassaAjustarPreco()">💰 Ajustar preço (+/-/%)</button>
+            <button onclick="acaoMassaReguaPromocao()" style="background:#f0fdf4;color:#15803d;font-weight:700">📈 Régua de promoção (7/14/21 dias)</button>
             <button onclick="acaoMassaAjustarEstoque()">📦 Ajustar estoque</button>
             <hr>
             <button onclick="acaoMassaGerarSKUs()">🏷️ Gerar SKUs das variações</button>
@@ -13356,6 +13357,153 @@ Retorne JSON: {"ID": "valor", ...}`;
     });
   }
   
+  // === AÇÃO EM MASSA: RÉGUA DE PROMOÇÃO (degraus 7/14/21) EM ANÚNCIOS EXISTENTES ===
+  // Abre um modal com a régua (mesma do resto, com cascata relativa). Ao confirmar,
+  // pra cada anúncio selecionado e cada degrau, cria uma tarefa aplicar_preco_promocional
+  // agendada — que cobre ML e Shopee. O preço base da cascata é o preço de venda atual.
+  function acaoMassaReguaPromocao() {
+    fecharTodosDropdownsMassa();
+    const ids = Array.from(_prodSelecionados);
+    if (ids.length === 0) { alert('Selecione anúncios primeiro'); return; }
+    const prods = ids.map(id => produtosErp.find(x => String(x.id) === String(id))).filter(Boolean);
+    // só anúncios já publicados (com vínculo/itemId) podem entrar em promoção
+    const comVinculo = prods.filter(p => _massaReguaTemVinculo(p));
+    const semVinculo = prods.length - comVinculo.length;
+
+    const modal = document.createElement('div');
+    modal.id = 'massaReguaModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.onclick = (e) => { if (e.target.id === 'massaReguaModal') modal.remove(); };
+    modal.innerHTML = `
+      <div style="background:white;border-radius:14px;max-width:520px;width:100%;max-height:88vh;overflow:auto;padding:0">
+        <div style="background:linear-gradient(135deg,#15803d,#22c55e);color:white;padding:18px 20px;border-radius:14px 14px 0 0">
+          <div style="font-size:17px;font-weight:800">📈 Régua de promoção em massa</div>
+          <div style="font-size:12px;opacity:.92;margin-top:4px">${comVinculo.length} anúncio(s) selecionado(s) receberão a régua de preços programada.${semVinculo ? ' ('+semVinculo+' sem anúncio publicado serão ignorados)' : ''}</div>
+        </div>
+        <div style="padding:18px 20px">
+          <div id="massaregua_reguaContainer" style="margin-bottom:14px"></div>
+          <div style="font-size:11px;color:#6b7280;margin-bottom:14px">As mudanças de preço entram em vigor nos dias indicados, em cada anúncio, na campanha de promoção vigente. Vale pra Mercado Livre e Shopee.</div>
+          <div style="display:flex;gap:10px">
+            <button type="button" onclick="document.getElementById('massaReguaModal').remove()" style="flex:1;padding:11px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:9px;font-weight:700;cursor:pointer">Cancelar</button>
+            <button type="button" onclick="_executarMassaReguaPromocao()" style="flex:1.4;padding:11px;background:#15803d;color:white;border:none;border-radius:9px;font-weight:800;cursor:pointer">Aplicar régua nos anúncios</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    // monta a régua (prefixo próprio massaregua) e ativa por padrão
+    const cont = document.getElementById('massaregua_reguaContainer');
+    cont.innerHTML = ReguaUI.html('massaregua', { titulo: '💰 Régua de preços (promoção programada)' });
+    // guarda os ids pra execução
+    _massaReguaIds = comVinculo.map(p => String(p.id));
+    setTimeout(() => {
+      const ativa = document.getElementById('massaregua_reguaAtiva');
+      if (ativa && !ativa.checked) { ativa.checked = true; ReguaUI.toggle('massaregua'); }
+      // já adiciona 3 degraus de exemplo (7/14/21) pra agilizar
+      ReguaUI.addDegrau('massaregua');
+      ReguaUI.addDegrau('massaregua');
+      ReguaUI.addDegrau('massaregua');
+      const divs = document.querySelectorAll('#massaregua_reguaDegraus > div');
+      const diasPadrao = [7, 14, 21];
+      divs.forEach((d, i) => { const di = d.querySelector('.massaregua-deg-dias'); if (di && diasPadrao[i]) di.value = diasPadrao[i]; });
+      ReguaUI.previa('massaregua');
+    }, 30);
+  }
+  window.acaoMassaReguaPromocao = acaoMassaReguaPromocao;
+  let _massaReguaIds = [];
+
+  function _massaReguaTemVinculo(p) {
+    if (!p) return false;
+    // tem marketplaces exportados OU variações com vínculos
+    if (p.marketplaces && Object.values(p.marketplaces).some(m => m && m.itemId)) return true;
+    if (Array.isArray(p.variacoes) && p.variacoes.some(v => Array.isArray(v.vinculos) && v.vinculos.length)) return true;
+    return false;
+  }
+
+  // Coleta os pares (itemId, lojaIdBanco, marketplace) de um produto publicado.
+  function _massaReguaAlvos(p) {
+    const alvos = [];
+    // 1) via p.marketplaces (export direto)
+    if (p.marketplaces) {
+      Object.entries(p.marketplaces).forEach(([mk, info]) => {
+        if (info && info.itemId) {
+          const loja = lojasErp.find(l => l.marketplace === mk && (info.lojaId ? String(l.id) === String(info.lojaId) : true));
+          alvos.push({ itemId: info.itemId, marketplace: mk, lojaIdBanco: (loja && (loja.idBanco || loja.id)) || info.lojaId });
+        }
+      });
+    }
+    // 2) via vínculos nas variações (cada vínculo = um anúncio numa loja)
+    if (Array.isArray(p.variacoes)) {
+      p.variacoes.forEach(v => (v.vinculos || []).forEach(vc => {
+        if (vc.anuncioId || vc.itemId) {
+          const loja = lojasErp.find(l => String(l.id) === String(vc.lojaId) || String(l.idBanco) === String(vc.lojaIdBanco));
+          alvos.push({
+            itemId: vc.anuncioId || vc.itemId,
+            marketplace: (loja && loja.marketplace) || vc.marketplace,
+            lojaIdBanco: (loja && (loja.idBanco || loja.id)) || vc.lojaIdBanco || vc.lojaId,
+          });
+        }
+      }));
+    }
+    // dedup por itemId+loja
+    const seen = new Set();
+    return alvos.filter(a => {
+      if (!a.itemId || !a.lojaIdBanco || !a.marketplace) return false;
+      const k = a.marketplace + ':' + a.lojaIdBanco + ':' + a.itemId;
+      if (seen.has(k)) return false; seen.add(k); return true;
+    });
+  }
+
+  async function _executarMassaReguaPromocao() {
+    const cfg = ReguaUI.ler('massaregua');
+    if (!cfg || !cfg.degraus || !cfg.degraus.length) { showToast('Adicione ao menos um degrau de preço', true); return; }
+    const prods = _massaReguaIds.map(id => produtosErp.find(x => String(x.id) === String(id))).filter(Boolean);
+    if (!prods.length) { showToast('Nenhum anúncio válido', true); return; }
+
+    const modal = document.getElementById('massaReguaModal');
+    if (modal) modal.remove();
+
+    const tk = getApiToken();
+    const agora = Date.now();
+    let tarefasCriadas = 0, anunciosOk = 0, semAlvo = 0, falhas = 0;
+
+    for (const p of prods) {
+      const alvos = _massaReguaAlvos(p);
+      if (!alvos.length) { semAlvo++; continue; }
+      // preço base da cascata: preço de venda atual do produto
+      const precoBase = parseFloat(p.preco) || parseFloat((p.variacoes && p.variacoes[0] && p.variacoes[0].preco)) || 0;
+      // resolve a cascata (degraus relativos → absolutos), sem imediato (promoção programada)
+      const resolvida = ReguaUI.resolver(cfg, precoBase, 'massaregua');
+      const degrausAbs = (resolvida && resolvida.degraus) || [];
+      if (!degrausAbs.length) continue;
+
+      for (const alvo of alvos) {
+        for (const deg of degrausAbs) {
+          try {
+            const r = await fetch(BACKEND_URL + '/api/tarefas', {
+              method: 'POST',
+              headers: { 'x-api-token': tk, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                tipo: 'aplicar_preco_promocional',
+                descricao: `Régua: R$ ${Number(deg.preco).toFixed(2)} (+${deg.dias}d) item ${alvo.itemId}`,
+                rodar_em: new Date(agora + Number(deg.dias) * 86400000).toISOString(),
+                params: { lojaIdBanco: alvo.lojaIdBanco, marketplace: alvo.marketplace, itens: [{ itemId: alvo.itemId, preco: Number(deg.preco) }] }
+              })
+            });
+            if (r.ok) tarefasCriadas++; else falhas++;
+          } catch (e) { falhas++; console.warn('[massa-regua]', e.message); }
+        }
+      }
+      anunciosOk++;
+    }
+
+    showToast(`✓ Régua aplicada: ${tarefasCriadas} tarefa(s) em ${anunciosOk} anúncio(s)` +
+      (semAlvo ? ` · ${semAlvo} sem anúncio publicado` : '') +
+      (falhas ? ` · ${falhas} falha(s)` : ''));
+    _massaReguaIds = [];
+  }
+  window._executarMassaReguaPromocao = _executarMassaReguaPromocao;
+
   // === AÇÃO EM MASSA: GERAR SKUS DAS VARIAÇÕES ===
   function acaoMassaGerarSKUs() {
     fecharTodosDropdownsMassa();
@@ -17864,8 +18012,10 @@ REGRAS DURAS:
           </div>
           <div style="margin-top:10px">
             <label class="form-label" style="font-size:11px">Régua: subir o preço ao longo dos dias (opcional)</label>
+            <div style="font-size:10px;color:#6b7280;margin-bottom:4px">Cada degrau pode ser preço exato, +R$ ou +% sobre o degrau anterior (cascata a partir do preço inicial).</div>
             <div id="${prefixo}_reguaDegraus"></div>
             <button type="button" class="toolbar-btn" style="font-size:11px;margin-top:4px" onclick="ReguaUI.addDegrau('${prefixo}')">+ Adicionar degrau</button>
+            <div id="${prefixo}_reguaPrevia" style="font-size:11px;color:#15803d;margin-top:8px;font-weight:600"></div>
           </div>
         </div>
       </div>`;
@@ -17889,13 +18039,56 @@ REGRAS DURAS:
       const cont = document.getElementById(prefixo+'_reguaDegraus');
       if (!cont) return;
       const div = document.createElement('div');
-      div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px';
+      div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px;flex-wrap:wrap';
       div.innerHTML = `<span style="font-size:11px;color:#6b7280">daqui</span>
-        <input type="number" class="form-input ${prefixo}-deg-dias" min="1" placeholder="dias" style="width:70px;font-size:12px">
-        <span style="font-size:11px;color:#6b7280">dias → R$</span>
-        <input type="number" class="form-input ${prefixo}-deg-preco" step="0.01" min="0" placeholder="novo preço" style="width:100px;font-size:12px">
-        <button type="button" onclick="this.parentElement.remove()" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
+        <input type="number" class="form-input ${prefixo}-deg-dias" min="1" placeholder="dias" style="width:62px;font-size:12px" oninput="ReguaUI.previa('${prefixo}')">
+        <span style="font-size:11px;color:#6b7280">dias →</span>
+        <select class="form-select ${prefixo}-deg-tipo" style="width:130px;font-size:11px" onchange="ReguaUI.previa('${prefixo}')">
+          <option value="abs">R$ exato</option>
+          <option value="mais_rs">+ R$ sobre anterior</option>
+          <option value="mais_pct">+ % sobre anterior</option>
+        </select>
+        <input type="number" class="form-input ${prefixo}-deg-preco" step="0.01" min="0" placeholder="valor" style="width:90px;font-size:12px" oninput="ReguaUI.previa('${prefixo}')">
+        <button type="button" onclick="this.parentElement.remove();ReguaUI.previa('${prefixo}')" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
       cont.appendChild(div);
+      ReguaUI.previa(prefixo);
+    },
+    // Prévia ao vivo da cascata de preços (parte do preço inicial/imediato).
+    // Usa um preço base de exemplo quando não há imediato (pra ilustrar a sequência).
+    previa(prefixo) {
+      const box = document.getElementById(prefixo+'_reguaPrevia');
+      if (!box) return;
+      const cfg = ReguaUI.ler(prefixo);
+      if (!cfg || !cfg.degraus || !cfg.degraus.length) { box.textContent = ''; return; }
+      // base: preço inicial calculado pelo modo, OU um exemplo de R$25 pra ilustrar
+      let base = 0;
+      const modo = cfg.modo;
+      if (modo === 'fixo') base = cfg.valor || 0;
+      else if (modo === 'manter') base = ReguaUI._previaBase || 25; // exemplo
+      else base = ReguaUI._previaBase || 25; // +/- dependem do preço real da variação; usa exemplo
+      const seq = ReguaUI._cascata(base, cfg.degraus);
+      const partes = ['R$ '+base.toFixed(2)+' (início)'].concat(
+        seq.map((p,i) => `${cfg.degraus[i].dias}d → R$ ${p.toFixed(2)}`)
+      );
+      const exemplo = (modo === 'manter' || modo.includes('mais') || modo.includes('menos')) && !ReguaUI._previaBase
+        ? ' (exemplo base R$25)' : '';
+      box.innerHTML = '📈 ' + partes.join('  →  ') + exemplo;
+    },
+    // Calcula a cascata: cada degrau aplica seu tipo sobre o resultado do anterior.
+    // Retorna array de preços absolutos (1 por degrau), na ordem dada.
+    _cascata(base, degraus) {
+      let atual = Number(base) || 0;
+      const out = [];
+      (degraus || []).forEach(d => {
+        const tipo = d.tipo || 'abs';
+        const v = Number(d.preco) || 0;
+        if (tipo === 'mais_rs') atual = atual + v;
+        else if (tipo === 'mais_pct') atual = atual * (1 + v/100);
+        else atual = v; // abs
+        atual = Math.max(0, Math.round(atual*100)/100);
+        out.push(atual);
+      });
+      return out;
     },
     // Calcula o preço inicial a partir do modo + preço atual da variação
     calcularPrecoInicial(prefixo, precoAtual) {
@@ -17920,7 +18113,10 @@ REGRAS DURAS:
       document.querySelectorAll('#'+prefixo+'_reguaDegraus > div').forEach(div => {
         const dias = parseInt(div.querySelector('.'+prefixo+'-deg-dias').value);
         const preco = parseFloat(div.querySelector('.'+prefixo+'-deg-preco').value);
-        if (dias > 0 && preco > 0) degraus.push({ dias, preco });
+        const tipoEl = div.querySelector('.'+prefixo+'-deg-tipo');
+        const tipo = tipoEl ? tipoEl.value : 'abs';
+        // abs exige preço>0; relativos (mais_rs/mais_pct) aceitam qualquer valor>0
+        if (dias > 0 && preco > 0) degraus.push({ dias, preco, tipo });
       });
       return { modo, valor, degraus };
     },
@@ -17938,7 +18134,25 @@ REGRAS DURAS:
         // modo "manter preço atual" agora = manter a PROMOÇÃO atual do pai
         imediato = parseFloat(precoPromoPai);
       }
-      return { imediato, degraus: cfg.degraus || [] };
+      // DEGRAUS: o backend só aceita preço ABSOLUTO por degrau. Os degraus relativos
+      // (+R$/+% sobre o anterior) viram cascata a partir do preço base. A base é o
+      // 'imediato' (preço inicial/promoção) quando existe; senão o preço atual da
+      // variação. Degraus 'abs' continuam absolutos.
+      const baseCascata = (imediato != null && imediato > 0)
+        ? imediato
+        : (Number(precoAtual) || 0);
+      const degrausAbs = [];
+      let atual = baseCascata;
+      (cfg.degraus || []).forEach(d => {
+        const tipo = d.tipo || 'abs';
+        const v = Number(d.preco) || 0;
+        if (tipo === 'mais_rs') atual = atual + v;
+        else if (tipo === 'mais_pct') atual = atual * (1 + v/100);
+        else atual = v; // abs: preço exato (e reinicia a cadeia a partir dele)
+        atual = Math.max(0, Math.round(atual*100)/100);
+        degrausAbs.push({ dias: d.dias, preco: atual });
+      });
+      return { imediato, degraus: degrausAbs };
     },
   };
   window.ReguaUI = ReguaUI;
@@ -29494,7 +29708,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33j.6-duplicacao-massa-modal-unificado';
+  const _DIAG_VERSAO_PAINEL = 'v33j.7-regua-cascata-e-promocao-massa';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
