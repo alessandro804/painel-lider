@@ -5243,10 +5243,12 @@
       <div id="demReguaBox" style="display:none;margin-top:8px">
         <div style="font-size:10px;color:#6b7280;margin-bottom:6px">Ao exportar, o anúncio entra na promoção vigente. Defina o desconto imediato e as mudanças futuras (a partir da exportação).</div>
         <label style="font-size:11px;font-weight:700;color:#374151">Desconto imediato (R$) — opcional</label>
-        <input type="number" id="demReguaImediato" step="0.01" min="0" class="form-input" placeholder="ex: 59.90" style="font-size:13px;margin-bottom:8px;width:100%">
+        <input type="number" id="demReguaImediato" step="0.01" min="0" class="form-input" placeholder="ex: 59.90" style="font-size:13px;margin-bottom:8px;width:100%" oninput="if(typeof demReguaPrevia==='function')demReguaPrevia()">
         <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:4px">Degraus futuros</div>
+        <div style="font-size:10px;color:#6b7280;margin-bottom:4px">Cada degrau pode ser R$ exato, +R$ ou +% sobre o anterior (cascata a partir do desconto imediato).</div>
         <div id="demReguaDegraus"></div>
         <button type="button" onclick="demAddDegrau()" style="margin-top:6px;padding:6px 10px;background:#fff;border:1px dashed #16a34a;color:#15803d;border-radius:6px;cursor:pointer;font-size:12px">+ Adicionar degrau</button>
+        <div id="demReguaPrevia" style="font-size:11px;color:#15803d;margin-top:8px;font-weight:600"></div>
       </div>
     </div>
 
@@ -13370,6 +13372,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     const comVinculo = prods.filter(p => _massaReguaTemVinculo(p));
     const semVinculo = prods.length - comVinculo.length;
 
+    // Coleta as lojas DISTINTAS onde os produtos selecionados têm anúncio. A régua
+    // só será aplicada nas lojas que o usuário marcar (importante: o mesmo produto
+    // pode estar em várias lojas e ele quer escolher quais mexer).
+    const lojasComAnuncio = _massaReguaLojasDisponiveis(comVinculo);
+
     const modal = document.createElement('div');
     modal.id = 'massaReguaModal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
@@ -13378,9 +13385,21 @@ Retorne JSON: {"ID": "valor", ...}`;
       <div style="background:white;border-radius:14px;max-width:520px;width:100%;max-height:88vh;overflow:auto;padding:0">
         <div style="background:linear-gradient(135deg,#15803d,#22c55e);color:white;padding:18px 20px;border-radius:14px 14px 0 0">
           <div style="font-size:17px;font-weight:800">📈 Régua de promoção em massa</div>
-          <div style="font-size:12px;opacity:.92;margin-top:4px">${comVinculo.length} anúncio(s) selecionado(s) receberão a régua de preços programada.${semVinculo ? ' ('+semVinculo+' sem anúncio publicado serão ignorados)' : ''}</div>
+          <div style="font-size:12px;opacity:.92;margin-top:4px">${comVinculo.length} anúncio(s) selecionado(s).${semVinculo ? ' ('+semVinculo+' sem anúncio publicado serão ignorados)' : ''}</div>
         </div>
         <div style="padding:18px 20px">
+          <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:12px;margin-bottom:14px">
+            <div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:8px">🏪 Aplicar em quais lojas?</div>
+            <div style="font-size:10px;color:#92400e;margin-bottom:8px">O mesmo produto pode estar em várias lojas. A régua será aplicada SÓ nas lojas marcadas aqui.</div>
+            <div id="massaregua_lojasBox">
+              ${lojasComAnuncio.length
+                ? lojasComAnuncio.map(l => `<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;cursor:pointer">
+                    <input type="checkbox" class="massaregua-loja-ck" value="${l.lojaIdBanco}" data-mk="${l.marketplace}" checked style="width:16px;height:16px">
+                    ${escapeHtml(l.nome)} <span style="font-size:11px;color:#6b7280">[${l.marketplace}] · ${l.qtd} anúncio(s)</span>
+                  </label>`).join('')
+                : '<div style="color:#dc2626;font-size:12px">⚠ Nenhuma loja com anúncio publicado nos produtos selecionados</div>'}
+            </div>
+          </div>
           <div id="massaregua_reguaContainer" style="margin-bottom:14px"></div>
           <div style="font-size:11px;color:#6b7280;margin-bottom:14px">As mudanças de preço entram em vigor nos dias indicados, em cada anúncio, na campanha de promoção vigente. Vale pra Mercado Livre e Shopee.</div>
           <div style="display:flex;gap:10px">
@@ -13414,44 +13433,81 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   function _massaReguaTemVinculo(p) {
     if (!p) return false;
-    // tem marketplaces exportados OU variações com vínculos
-    if (p.marketplaces && Object.values(p.marketplaces).some(m => m && m.itemId)) return true;
+    // vínculo nas variações (fonte primária) OU marketplaces exportados (fallback)
     if (Array.isArray(p.variacoes) && p.variacoes.some(v => Array.isArray(v.vinculos) && v.vinculos.length)) return true;
+    if (p.marketplaces && Object.values(p.marketplaces).some(m => m && m.itemId)) return true;
     return false;
   }
 
+  // Lista as lojas DISTINTAS onde os produtos selecionados têm anúncio, com a
+  // contagem de anúncios por loja. Usado pra montar o seletor "aplicar em quais lojas".
+  function _massaReguaLojasDisponiveis(prods) {
+    const mapa = new Map(); // lojaIdBanco → { lojaIdBanco, marketplace, nome, qtd }
+    (prods || []).forEach(p => {
+      _massaReguaAlvos(p).forEach(a => {
+        const k = String(a.lojaIdBanco);
+        if (!mapa.has(k)) {
+          const loja = lojasErp.find(l => String(l.idBanco) === k || String(l.id) === k);
+          mapa.set(k, {
+            lojaIdBanco: a.lojaIdBanco,
+            marketplace: a.marketplace,
+            nome: (loja && loja.nome) || ('Loja ' + a.lojaIdBanco),
+            qtd: 0,
+          });
+        }
+        mapa.get(k).qtd++;
+      });
+    });
+    return Array.from(mapa.values());
+  }
+
   // Coleta os pares (itemId, lojaIdBanco, marketplace) de um produto publicado.
+  // Fonte PRIMÁRIA: v.vinculos[] (tem anuncioId + lojaId + lojaIdBanco + marketplace
+  // corretos por anúncio). Fallback: p.marketplaces (só tem itemId, sem loja — usado
+  // apenas se não houver nenhum vínculo).
   function _massaReguaAlvos(p) {
     const alvos = [];
-    // 1) via p.marketplaces (export direto)
-    if (p.marketplaces) {
+    const seen = new Set();
+    const add = (itemId, marketplace, lojaIdBanco) => {
+      if (!itemId || !lojaIdBanco || !marketplace) return;
+      const k = marketplace + ':' + lojaIdBanco + ':' + itemId;
+      if (seen.has(k)) return; seen.add(k);
+      alvos.push({ itemId, marketplace, lojaIdBanco });
+    };
+
+    // 1) FONTE PRIMÁRIA: vínculos nas variações (1 vínculo = 1 anúncio numa loja)
+    if (Array.isArray(p.variacoes)) {
+      p.variacoes.forEach(v => (v.vinculos || []).forEach(vc => {
+        const itemId = vc.anuncioId || vc.itemId;
+        const lojaIdBanco = vc.lojaIdBanco || vc.lojaId;
+        let marketplace = vc.marketplace;
+        if (!marketplace && lojaIdBanco) {
+          const loja = lojasErp.find(l => String(l.id) === String(vc.lojaId) || String(l.idBanco) === String(vc.lojaIdBanco));
+          marketplace = loja && loja.marketplace;
+        }
+        add(itemId, marketplace, lojaIdBanco);
+      }));
+    }
+
+    // 2) FALLBACK: p.marketplaces (sem lojaId no objeto — tenta achar a loja pelo
+    //    marketplace; se houver mais de uma loja do mesmo marketplace, fica ambíguo,
+    //    então só usamos isto quando NÃO há vínculos).
+    if (!alvos.length && p.marketplaces) {
       Object.entries(p.marketplaces).forEach(([mk, info]) => {
         if (info && info.itemId) {
-          const loja = lojasErp.find(l => l.marketplace === mk && (info.lojaId ? String(l.id) === String(info.lojaId) : true));
-          alvos.push({ itemId: info.itemId, marketplace: mk, lojaIdBanco: (loja && (loja.idBanco || loja.id)) || info.lojaId });
+          const lojasMk = lojasErp.filter(l => l.marketplace === mk);
+          // se houver exatamente uma loja desse marketplace, usa ela; senão pula
+          // (evita aplicar na loja errada)
+          if (lojasMk.length === 1) {
+            add(info.itemId, mk, lojasMk[0].idBanco || lojasMk[0].id);
+          } else {
+            console.warn('[massa-regua] produto', p.id, 'tem marketplace', mk, 'sem vínculo e com', lojasMk.length, 'lojas — pulado por ambiguidade');
+          }
         }
       });
     }
-    // 2) via vínculos nas variações (cada vínculo = um anúncio numa loja)
-    if (Array.isArray(p.variacoes)) {
-      p.variacoes.forEach(v => (v.vinculos || []).forEach(vc => {
-        if (vc.anuncioId || vc.itemId) {
-          const loja = lojasErp.find(l => String(l.id) === String(vc.lojaId) || String(l.idBanco) === String(vc.lojaIdBanco));
-          alvos.push({
-            itemId: vc.anuncioId || vc.itemId,
-            marketplace: (loja && loja.marketplace) || vc.marketplace,
-            lojaIdBanco: (loja && (loja.idBanco || loja.id)) || vc.lojaIdBanco || vc.lojaId,
-          });
-        }
-      }));
-    }
-    // dedup por itemId+loja
-    const seen = new Set();
-    return alvos.filter(a => {
-      if (!a.itemId || !a.lojaIdBanco || !a.marketplace) return false;
-      const k = a.marketplace + ':' + a.lojaIdBanco + ':' + a.itemId;
-      if (seen.has(k)) return false; seen.add(k); return true;
-    });
+
+    return alvos;
   }
 
   async function _executarMassaReguaPromocao() {
@@ -13460,15 +13516,25 @@ Retorne JSON: {"ID": "valor", ...}`;
     const prods = _massaReguaIds.map(id => produtosErp.find(x => String(x.id) === String(id))).filter(Boolean);
     if (!prods.length) { showToast('Nenhum anúncio válido', true); return; }
 
+    // LOJAS MARCADAS — a régua só será aplicada nos anúncios destas lojas. Isso é o
+    // que garante que, num produto presente em várias lojas, só as escolhidas mudem.
+    const lojasMarcadas = new Set(
+      Array.from(document.querySelectorAll('.massaregua-loja-ck:checked')).map(c => String(c.value))
+    );
+    if (!lojasMarcadas.size) { showToast('Marque ao menos uma loja', true); return; }
+
     const modal = document.getElementById('massaReguaModal');
     if (modal) modal.remove();
 
     const tk = getApiToken();
     const agora = Date.now();
-    let tarefasCriadas = 0, anunciosOk = 0, semAlvo = 0, falhas = 0;
+    let tarefasCriadas = 0, anunciosOk = 0, semAlvo = 0, falhas = 0, pulados = 0;
 
     for (const p of prods) {
-      const alvos = _massaReguaAlvos(p);
+      // filtra os alvos do produto pelas lojas marcadas
+      const alvosTodos = _massaReguaAlvos(p);
+      const alvos = alvosTodos.filter(a => lojasMarcadas.has(String(a.lojaIdBanco)));
+      pulados += (alvosTodos.length - alvos.length);
       if (!alvos.length) { semAlvo++; continue; }
       // preço base da cascata: preço de venda atual do produto
       const precoBase = parseFloat(p.preco) || parseFloat((p.variacoes && p.variacoes[0] && p.variacoes[0].preco)) || 0;
@@ -13498,7 +13564,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
 
     showToast(`✓ Régua aplicada: ${tarefasCriadas} tarefa(s) em ${anunciosOk} anúncio(s)` +
-      (semAlvo ? ` · ${semAlvo} sem anúncio publicado` : '') +
+      (pulados ? ` · ${pulados} anúncio(s) de lojas não marcadas ignorados` : '') +
       (falhas ? ` · ${falhas} falha(s)` : ''));
     _massaReguaIds = [];
   }
@@ -17943,24 +18009,70 @@ REGRAS DURAS:
     const cont = document.getElementById('demReguaDegraus');
     if (!cont) return;
     const div = document.createElement('div');
-    div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px';
+    div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px;flex-wrap:wrap';
     div.innerHTML = `<span style="font-size:11px;color:#6b7280">daqui</span>
-      <input type="number" class="form-input dem-degrau-dias" min="1" placeholder="dias" style="width:70px;font-size:12px">
-      <span style="font-size:11px;color:#6b7280">dias → R$</span>
-      <input type="number" class="form-input dem-degrau-preco" step="0.01" min="0" placeholder="preço" style="width:90px;font-size:12px">
-      <button type="button" onclick="this.parentElement.remove()" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
+      <input type="number" class="form-input dem-degrau-dias" min="1" placeholder="dias" style="width:60px;font-size:12px" oninput="demReguaPrevia()">
+      <span style="font-size:11px;color:#6b7280">dias →</span>
+      <select class="form-select dem-degrau-tipo" style="width:128px;font-size:11px" onchange="demReguaPrevia()">
+        <option value="abs">R$ exato</option>
+        <option value="mais_rs">+ R$ sobre anterior</option>
+        <option value="mais_pct">+ % sobre anterior</option>
+      </select>
+      <input type="number" class="form-input dem-degrau-preco" step="0.01" min="0" placeholder="valor" style="width:88px;font-size:12px" oninput="demReguaPrevia()">
+      <button type="button" onclick="this.parentElement.remove();demReguaPrevia()" style="padding:3px 8px;background:#fee2e2;color:#dc2626;border:none;border-radius:5px;cursor:pointer;font-size:14px">×</button>`;
     cont.appendChild(div);
+    demReguaPrevia();
   }
   window.demAddDegrau = demAddDegrau;
-  function demLerRegua() {
-    const ativa = document.getElementById('demReguaAtiva');
-    if (!ativa || !ativa.checked) return null;
-    const imediatoVal = parseFloat(document.getElementById('demReguaImediato').value);
+
+  // Prévia ao vivo da cascata na Nova Demanda. Base: o "desconto imediato" digitado,
+  // ou um exemplo R$25 só pra ilustrar a sequência.
+  function demReguaPrevia() {
+    const box = document.getElementById('demReguaPrevia');
+    if (!box) return;
+    const imediato = parseFloat((document.getElementById('demReguaImediato')||{}).value) || 0;
+    const base = imediato > 0 ? imediato : 25;
+    const degraus = _demLerDegrausBrutos();
+    if (!degraus.length) { box.textContent = ''; return; }
+    const seq = ReguaUI._cascata(base, degraus);
+    const partes = ['R$ '+base.toFixed(2)+(imediato>0?' (imediato)':' (exemplo)')].concat(
+      seq.map((p,i) => `${degraus[i].dias}d → R$ ${p.toFixed(2)}`)
+    );
+    box.innerHTML = '📈 ' + partes.join('  →  ');
+  }
+  window.demReguaPrevia = demReguaPrevia;
+
+  // Lê os degraus "brutos" (com tipo), sem resolver a cascata.
+  function _demLerDegrausBrutos() {
     const degraus = [];
     document.querySelectorAll('#demReguaDegraus > div').forEach(div => {
       const dias = parseInt(div.querySelector('.dem-degrau-dias').value);
       const preco = parseFloat(div.querySelector('.dem-degrau-preco').value);
-      if (dias > 0 && preco > 0) degraus.push({ dias, preco });
+      const tipoEl = div.querySelector('.dem-degrau-tipo');
+      const tipo = tipoEl ? tipoEl.value : 'abs';
+      if (dias > 0 && preco > 0) degraus.push({ dias, preco, tipo });
+    });
+    return degraus;
+  }
+  function demLerRegua() {
+    const ativa = document.getElementById('demReguaAtiva');
+    if (!ativa || !ativa.checked) return null;
+    const imediatoVal = parseFloat(document.getElementById('demReguaImediato').value);
+    // lê os degraus com tipo e resolve a cascata pra ABSOLUTO (o backend e o resto
+    // do fluxo só entendem {dias, preco} absoluto — mantém compatibilidade total
+    // com demandas já salvas, que tinham só tipo 'abs').
+    const brutos = _demLerDegrausBrutos();
+    const baseCascata = (imediatoVal > 0) ? imediatoVal : 0;
+    let atual = baseCascata;
+    const degraus = [];
+    brutos.forEach(d => {
+      const tipo = d.tipo || 'abs';
+      const v = Number(d.preco) || 0;
+      if (tipo === 'mais_rs') atual = atual + v;
+      else if (tipo === 'mais_pct') atual = atual * (1 + v/100);
+      else atual = v; // abs
+      atual = Math.max(0, Math.round(atual*100)/100);
+      degraus.push({ dias: d.dias, preco: atual });
     });
     const regua = {};
     if (imediatoVal > 0) regua.imediato = imediatoVal;
@@ -29708,7 +29820,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33j.7-regua-cascata-e-promocao-massa';
+  const _DIAG_VERSAO_PAINEL = 'v33j.9-regua-massa-filtro-por-loja';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
