@@ -29997,7 +29997,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.5-consolida-variacao-por-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.7-baixa-dinheiro-asaas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -31679,6 +31679,7 @@ REGRAS DE OURO:
           <div style="display:flex;gap:6px">
             <button class="toolbar-btn" style="font-size:12px" onclick="editarFechamento('${f.id}')">Editar</button>
             <button class="toolbar-btn" style="font-size:12px" onclick="gerarPdfFechamentoSalvo('${f.id}')">📄 PDF</button>
+            ${f.statusPagamento !== 'pago' && f.cobranca ? `<button class="toolbar-btn" style="font-size:12px;background:#dcfce7;color:#15803d;font-weight:700" onclick="marcarPagoDinheiro('${f.id}')">💵 Pago em dinheiro</button>` : ''}
             <button class="delete-btn" style="font-size:12px;padding:4px 8px" onclick="excluirFechamento('${f.id}')">🗑</button>
           </div>
         </div>
@@ -32700,6 +32701,36 @@ REGRAS DE OURO:
     renderFechamento();
   }
   window.excluirFechamento = excluirFechamento;
+
+  // Marca um fechamento como pago EM DINHEIRO: dá baixa no Asaas (receiveInCash) e
+  // atualiza o status local. NÃO emite NF (decisão do Alessandro pra pagamento dinheiro).
+  async function marcarPagoDinheiro(id) {
+    const f = fechamentos.find(x => String(x.id) === String(id));
+    if (!f) return;
+    if (!f.cobranca || !f.cobranca.id) { showToast('Esse fechamento não tem cobrança no Asaas', true); return; }
+    const valor = Number(f.totalPagar) || Number(f.cobranca.valor) || 0;
+    if (!confirm(`Confirmar pagamento EM DINHEIRO de ${_fmtBRL(valor)} de ${f.cliente}?\n\nIsso dá baixa na cobrança no Asaas e marca como pago aqui. Não emite NF.`)) return;
+    showToast('💵 Dando baixa no Asaas...');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/asaas/receber-dinheiro', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contaId: f.cobranca.contaId || 'lider', paymentId: f.cobranca.id, valor })
+      });
+      const d = await r.json();
+      if (!d.ok) { showToast('Erro no Asaas: ' + (d.erro || 'falha'), true); return; }
+      // atualiza local
+      const idx = fechamentos.findIndex(x => String(x.id) === String(id));
+      fechamentos[idx].statusPagamento = 'pago';
+      fechamentos[idx].pagoEm = new Date().toISOString();
+      fechamentos[idx].formaPagamento = 'dinheiro';
+      saveFechamentos();
+      renderFechamento();
+      showToast(`✓ ${f.cliente} marcado como pago em dinheiro`);
+    } catch (e) {
+      showToast('Erro: ' + e.message, true);
+    }
+  }
+  window.marcarPagoDinheiro = marcarPagoDinheiro;
 
   function cancelarFechamento() {
     document.getElementById('fechamentoEditor').style.display = 'none';
