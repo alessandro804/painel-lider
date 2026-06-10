@@ -5118,6 +5118,33 @@
       </div>
       <div id="apProdutosLista" style="max-height:240px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:10px;padding:8px;margin-bottom:12px"></div>
       <div style="font-size:12px;color:#6b7280;margin-bottom:8px"><b id="apSelecionadosCount">0</b> produto(s) selecionado(s). Os preços das variações são agrupados abaixo.</div>
+      <div id="apMassaBar" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;margin-bottom:12px">
+        <div style="font-size:13px;font-weight:800;color:#15803d;margin-bottom:8px">⚡ Aplicar a TODOS os grupos de uma vez</div>
+        <div style="font-size:11px;color:#15803d;margin-bottom:10px">Cria a mesma régua em cascata em todos os grupos abaixo. Ex: +R$2 a cada 7 dias, repetido N vezes.</div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <div>
+            <label style="font-size:10px;color:#374151;display:block">A cada (dias)</label>
+            <input type="number" id="apMassaDias" min="1" value="7" oninput="apMassaPrevia()" style="width:80px;font-size:12px;padding:6px;border:1px solid #d1d5db;border-radius:6px">
+          </div>
+          <div>
+            <label style="font-size:10px;color:#374151;display:block">Operação</label>
+            <select id="apMassaTipo" onchange="apMassaPrevia()" style="width:150px;font-size:12px;padding:6px;border:1px solid #d1d5db;border-radius:6px">
+              <option value="mais_rs">+ R$ sobre anterior</option>
+              <option value="mais_pct">+ % sobre anterior</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:10px;color:#374151;display:block">Valor</label>
+            <input type="number" id="apMassaValor" step="0.01" min="0" value="2" oninput="apMassaPrevia()" style="width:80px;font-size:12px;padding:6px;border:1px solid #d1d5db;border-radius:6px">
+          </div>
+          <div>
+            <label style="font-size:10px;color:#374151;display:block">Qtd degraus</label>
+            <input type="number" id="apMassaQtd" min="1" max="12" value="3" oninput="apMassaPrevia()" style="width:80px;font-size:12px;padding:6px;border:1px solid #d1d5db;border-radius:6px">
+          </div>
+          <button type="button" onclick="apAplicarReguaEmMassa()" style="padding:8px 14px;background:#15803d;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:12px">Aplicar a todos</button>
+        </div>
+        <div id="apMassaPrevia" style="font-size:11px;color:#15803d;margin-top:8px;font-weight:600"></div>
+      </div>
       <div id="apGruposPreco"></div>
     </div>
     
@@ -5236,7 +5263,7 @@
     
     <div style="background:#eff6ff;padding:10px;border-radius:8px;margin-bottom:10px" id="demSeletorBox"></div>
 
-    <div style="background:#f0fdf4;padding:10px;border-radius:8px;margin-bottom:10px">
+    <div style="background:#f0fdf4;padding:10px;border-radius:8px;margin-bottom:10px" id="demReguaBlocoExport">
       <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#15803d;cursor:pointer">
         <input type="checkbox" id="demReguaAtiva" onchange="demToggleRegua()"> 💰 Régua de preços (promoção)
       </label>
@@ -28198,8 +28225,75 @@ Responda APENAS com JSON válido (sem markdown), formato:
     });
     // guarda o mapa grupo→variações pra usar ao salvar
     window._apGrupos = precos.map((preco,i) => ({ prefixo:'apg'+i, preco: parseFloat(preco), variacoes: grupos[preco] }));
+    // mostra a barra de ação em massa só quando há grupos
+    const massaBar = document.getElementById('apMassaBar');
+    if (massaBar) massaBar.style.display = precos.length ? 'block' : 'none';
+    apMassaPrevia();
   }
   window.apRenderGruposPreco = apRenderGruposPreco;
+
+  // Prévia da régua em massa (mostra a cascata com base num preço de exemplo).
+  function apMassaPrevia() {
+    const box = document.getElementById('apMassaPrevia');
+    if (!box) return;
+    const grupos = window._apGrupos || [];
+    if (!grupos.length) { box.textContent = ''; return; }
+    const dias = parseInt((document.getElementById('apMassaDias')||{}).value) || 0;
+    const tipo = (document.getElementById('apMassaTipo')||{}).value || 'mais_rs';
+    const valor = parseFloat((document.getElementById('apMassaValor')||{}).value) || 0;
+    const qtd = parseInt((document.getElementById('apMassaQtd')||{}).value) || 0;
+    if (!dias || !valor || !qtd) { box.textContent = ''; return; }
+    // usa o menor preço de grupo como exemplo
+    const base = Math.min(...grupos.map(g => g.preco));
+    const degraus = [];
+    for (let k = 1; k <= qtd; k++) degraus.push({ dias: dias*k, preco: valor, tipo });
+    const seq = ReguaUI._cascata(base, degraus);
+    const partes = ['R$ '+base.toFixed(2)].concat(seq.map((p,i)=>`${degraus[i].dias}d → R$ ${p.toFixed(2)}`));
+    box.innerHTML = `📈 Exemplo (grupo R$ ${base.toFixed(2)}): ` + partes.join('  →  ') + ` · será aplicado nos ${grupos.length} grupo(s)`;
+  }
+  window.apMassaPrevia = apMassaPrevia;
+
+  // Aplica a MESMA régua em cascata a TODOS os grupos de preço de uma vez. Preenche
+  // os degraus de cada grupo (apg0, apg1...) com a config da barra. O preço inicial
+  // de cada grupo continua sendo o que estiver selecionado lá (default "manter").
+  function apAplicarReguaEmMassa() {
+    const grupos = window._apGrupos || [];
+    if (!grupos.length) { showToast('Nenhum grupo pra aplicar', true); return; }
+    const dias = parseInt((document.getElementById('apMassaDias')||{}).value) || 0;
+    const tipo = (document.getElementById('apMassaTipo')||{}).value || 'mais_rs';
+    const valor = parseFloat((document.getElementById('apMassaValor')||{}).value) || 0;
+    const qtd = parseInt((document.getElementById('apMassaQtd')||{}).value) || 0;
+    if (!dias || !valor || !qtd) { showToast('Preencha dias, valor e quantidade de degraus', true); return; }
+
+    let aplicados = 0;
+    grupos.forEach(g => {
+      const prefixo = g.prefixo;
+      // garante a régua ativa
+      const ativa = document.getElementById(prefixo+'_reguaAtiva');
+      if (ativa && !ativa.checked) { ativa.checked = true; ReguaUI.toggle(prefixo); }
+      // limpa degraus existentes do grupo
+      const cont = document.getElementById(prefixo+'_reguaDegraus');
+      if (cont) cont.innerHTML = '';
+      // adiciona qtd degraus em cascata (dias acumulados: 7,14,21...)
+      for (let k = 1; k <= qtd; k++) {
+        ReguaUI.addDegrau(prefixo);
+        const divs = document.querySelectorAll('#'+prefixo+'_reguaDegraus > div');
+        const div = divs[divs.length - 1];
+        if (div) {
+          const elDias = div.querySelector('.'+prefixo+'-deg-dias');
+          const elTipo = div.querySelector('.'+prefixo+'-deg-tipo');
+          const elPreco = div.querySelector('.'+prefixo+'-deg-preco');
+          if (elDias) elDias.value = dias * k;
+          if (elTipo) elTipo.value = tipo;
+          if (elPreco) elPreco.value = valor;
+        }
+      }
+      if (typeof ReguaUI.previa === 'function') ReguaUI.previa(prefixo);
+      aplicados++;
+    });
+    showToast(`✓ Régua aplicada em ${aplicados} grupo(s): +${tipo==='mais_pct'?valor+'%':'R$'+valor} a cada ${dias} dias (${qtd}x)`);
+  }
+  window.apAplicarReguaEmMassa = apAplicarReguaEmMassa;
 
   // Abre/fecha a régua individual de uma variação específica (sobrescreve a do grupo)
   window._apReguasIndividuais = window._apReguasIndividuais || {};
@@ -28232,6 +28326,10 @@ Responda APENAS com JSON válido (sem markdown), formato:
       if (tipo === 'ajustar_preco' && typeof apInit === 'function') apInit();
       if (typeof popularDropdownFluxos === 'function') popularDropdownFluxos();
     }
+    // A régua de exportação (de baixo) só faz sentido pra criação de anúncio. Em
+    // "ajustar preço" ela fica duplicada com a régua por grupo (de cima) — esconde.
+    const reguaExport = document.getElementById('demReguaBlocoExport');
+    if (reguaExport) reguaExport.style.display = (tipo === 'ajustar_preco') ? 'none' : 'block';
     if (!sel) return;
     // Só sugere se ainda não escolheu nada
     if (sel.value) return;
@@ -29820,7 +29918,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33j.9-regua-massa-filtro-por-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.0-ajuste-preco-regua-todos-grupos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
