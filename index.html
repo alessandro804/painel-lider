@@ -5047,8 +5047,10 @@
         <option value="__avulso__">✍️ Avulso (digitar nome)</option>
       </select>
       <input type="text" class="form-input" id="demandaClienteAvulso" placeholder="Nome do cliente avulso" style="margin-top:6px;display:none" oninput="document.getElementById('demandaCliente').value = this.value">
+      <input type="text" class="form-input" id="demandaClienteAvulsoTel" placeholder="📱 WhatsApp do cliente (ex: 37 98410-2079)" style="margin-top:6px;display:none">
     </div>
     <input type="hidden" id="demandaCliente" value="">
+    <input type="hidden" id="demandaClienteTel" value="">
     <datalist id="demandaClienteList"></datalist>
     
     <div class="form-group">
@@ -11615,13 +11617,21 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.montarOpcoesClientes = montarOpcoesClientes;
 
-  function vincularClienteLoja(lojaId, clienteNome) {
+  async function vincularClienteLoja(lojaId, clienteNome) {
     const loja = lojasErp.find(l => String(l.id) === String(lojaId));
     if (!loja) return;
     loja.clienteVinculado = clienteNome || null;
-    if (typeof saveLojas === 'function') saveLojas();
-    else if (typeof v31_persistirLojas === 'function') v31_persistirLojas();
-    showToast(clienteNome ? `Loja vinculada a ${clienteNome}` : 'Vínculo removido');
+    // salva local imediatamente
+    try { localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp)); } catch(e){}
+    // push IMEDIATO pro Supabase (não o agendado/debounced, que se perdia se
+    // a aba fechasse antes de disparar)
+    try {
+      const r = await LiderSync.pushAppData('lojas', lojasErp);
+      showToast(clienteNome ? `✓ Loja vinculada a ${clienteNome} (salvo)` : 'Vínculo removido (salvo)');
+    } catch (e) {
+      console.warn('[vincularCliente] push falhou:', e.message);
+      showToast('⚠ Vínculo salvo local, mas falhou na nuvem. Tente novamente.', true);
+    }
   }
   window.vincularClienteLoja = vincularClienteLoja;
 
@@ -28422,9 +28432,14 @@ Responda APENAS com JSON válido (sem markdown), formato:
   function popularClientesDemanda() {
     const sel = document.getElementById('demandaClienteSelect');
     if (!sel) return;
-    const clientes = (typeof listarClientesUnicos === 'function') ? listarClientesUnicos() : [];
+    // usa listarClientesCadastro (TODOS os clientes cadastrados, com doc/conta), não
+    // só listarClientesUnicos (que só traz quem tem billing). Assim os clientes
+    // cadastrados aparecem pra seleção na demanda.
+    const clientes = (typeof listarClientesCadastro === 'function')
+      ? listarClientesCadastro()
+      : ((typeof listarClientesUnicos === 'function') ? listarClientesUnicos() : []);
     let html = '<option value="">— Pelo vínculo da loja —</option>';
-    clientes.forEach(c => { html += `<option value="${escapeHtml(c.nome)}">${escapeHtml(c.nome)}</option>`; });
+    clientes.forEach(c => { html += `<option value="${escapeHtml(c.nome)}">${escapeHtml(c.nome)}${c.telefone ? '' : ' (sem telefone)'}</option>`; });
     html += '<option value="__avulso__">✍️ Avulso (digitar nome)</option>';
     sel.innerHTML = html;
   }
@@ -28433,14 +28448,31 @@ Responda APENAS com JSON válido (sem markdown), formato:
   function onDemandaClienteSelect() {
     const sel = document.getElementById('demandaClienteSelect');
     const avulsoInp = document.getElementById('demandaClienteAvulso');
+    const avulsoTel = document.getElementById('demandaClienteAvulsoTel');
     const hidden = document.getElementById('demandaCliente');
+    const hiddenTel = document.getElementById('demandaClienteTel');
     if (!sel) return;
     if (sel.value === '__avulso__') {
-      if (avulsoInp) { avulsoInp.style.display = 'block'; avulsoInp.focus(); }
+      // avulso: mostra nome + telefone, e liga os campos aos hidden
+      if (avulsoInp) { avulsoInp.style.display = 'block'; avulsoInp.focus();
+        avulsoInp.oninput = () => { if (hidden) hidden.value = avulsoInp.value; }; }
+      if (avulsoTel) { avulsoTel.style.display = 'block';
+        avulsoTel.oninput = () => { if (hiddenTel) hiddenTel.value = avulsoTel.value; }; }
       if (hidden) hidden.value = avulsoInp ? avulsoInp.value : '';
+      if (hiddenTel) hiddenTel.value = avulsoTel ? avulsoTel.value : '';
     } else {
       if (avulsoInp) { avulsoInp.style.display = 'none'; avulsoInp.value = ''; }
+      if (avulsoTel) { avulsoTel.style.display = 'none'; avulsoTel.value = ''; }
       if (hidden) hidden.value = sel.value; // '' = pelo vínculo da loja; ou nome do cliente
+      // preenche o telefone do cliente selecionado (do cadastro), pra a demanda já ter
+      if (hiddenTel) {
+        let tel = '';
+        if (sel.value && typeof getClienteCadastro === 'function') {
+          const c = getClienteCadastro(sel.value);
+          tel = (c && c.telefone) || '';
+        }
+        hiddenTel.value = tel;
+      }
     }
   }
   window.onDemandaClienteSelect = onDemandaClienteSelect;
@@ -29997,7 +30029,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.7-baixa-dinheiro-asaas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.9-fix-clientes-persist-demanda';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -32247,10 +32279,12 @@ REGRAS DE OURO:
   let _asaasContas = []; // [{id, nome, configurada}]
   let _clientesAsaas = JSON.parse(localStorage.getItem('lider_clientes_asaas') || '{}'); // nome → {contaId, doc}
 
-  function _saveClientesAsaas() {
+  async function _saveClientesAsaas() {
     try {
       localStorage.setItem('lider_clientes_asaas', JSON.stringify(_clientesAsaas));
-      LiderSync.schedulePush('clientesAsaas', () => LiderSync.pushAppData('clientesAsaas', _clientesAsaas));
+      // push IMEDIATO pro Supabase (o schedulePush agendado se perdia se a aba
+      // fechasse antes de disparar — causava CPF/CNPJ e conta Asaas sumirem)
+      await LiderSync.pushAppData('clientesAsaas', _clientesAsaas);
     } catch(e) { console.error('[clientesAsaas]', e); }
   }
 
