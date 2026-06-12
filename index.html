@@ -11628,6 +11628,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     loja.clienteVinculado = clienteNome || null;
     // salva local imediatamente
     try { localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp)); } catch(e){}
+    // garante que o telefone do cliente esteja no clientesAsaas (fonte única do backend)
+    if (clienteNome && typeof sincronizarTelefonesClientes === 'function') {
+      try { await sincronizarTelefonesClientes(); } catch(e){}
+    }
     // push IMEDIATO pro Supabase (não o agendado/debounced, que se perdia se
     // a aba fechasse antes de disparar)
     try {
@@ -30034,7 +30038,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.10-clientes-dropdown-vinculo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.11-sync-telefones-clientes';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -32292,6 +32296,28 @@ REGRAS DE OURO:
       await LiderSync.pushAppData('clientesAsaas', _clientesAsaas);
     } catch(e) { console.error('[clientesAsaas]', e); }
   }
+
+  // Garante que cada cliente com telefone (vindo dos billings/carteira) tenha esse
+  // telefone salvo no clientesAsaas — a fonte ÚNICA que o backend usa nos disparos
+  // (avisos, cobrança, NF). Assim, atualizar o número reflete em todos os disparos.
+  // Retorna true se houve mudança (pra decidir se persiste).
+  async function sincronizarTelefonesClientes() {
+    let mudou = false;
+    const fontes = (typeof listarClientesUnicos === 'function') ? listarClientesUnicos() : [];
+    fontes.forEach(c => {
+      if (!c.nome || !c.telefone) return;
+      const telLimpo = String(c.telefone).replace(/\D/g, '');
+      if (!telLimpo) return;
+      if (!_clientesAsaas[c.nome]) _clientesAsaas[c.nome] = {};
+      if (_clientesAsaas[c.nome].telefone !== telLimpo) {
+        _clientesAsaas[c.nome].telefone = telLimpo;
+        mudou = true;
+      }
+    });
+    if (mudou) await _saveClientesAsaas();
+    return mudou;
+  }
+  window.sincronizarTelefonesClientes = sincronizarTelefonesClientes;
 
   async function carregarContasAsaas() {
     try {
@@ -40807,6 +40833,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     migrarIdsDecimais();
     renderAll();
     updateCategorias();
+    // Garante que os telefones dos clientes (vindos da carteira) estejam no
+    // clientesAsaas — fonte única que o backend usa nos disparos do WhatsApp.
+    if (typeof sincronizarTelefonesClientes === 'function') {
+      setTimeout(() => { sincronizarTelefonesClientes().catch(()=>{}); }, 2000);
+    }
   }
   
   async function forcarPushSupabase() {
