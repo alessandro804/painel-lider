@@ -10537,6 +10537,17 @@ Retorne JSON: {"ID": "valor", ...}`;
                 tipo:'entrar_promocao', descricao:'Entrar na promoção (R$ '+Number(d._regua.imediato).toFixed(2)+') item '+_itemIdReal,
                 rodar_em:new Date(agora-1000).toISOString(), params:{ lojaId:lojaIdBanco, itemId:_itemIdReal, preco:Number(d._regua.imediato) }
               }) });
+              // grava _promo no produto (pra duplicação herdar a promoção) — mesma lógica do fluxo de exportação individual
+              try {
+                const precoImediato = Number(d._regua.imediato);
+                const prodAlvo = (typeof produtosErp !== 'undefined' && Array.isArray(produtosErp))
+                  ? produtosErp.find(pp => String(pp.idBanco) === String(d.idBanco || d.produtoId) || String(pp.id) === String(d.id)) : null;
+                if (precoImediato > 0 && prodAlvo && Array.isArray(prodAlvo.variacoes)) {
+                  prodAlvo.variacoes.forEach(v => { v._promo = v._promo || {}; v._promo.min = precoImediato; if (!(v._promo.max > 0)) v._promo.max = precoImediato; });
+                  if (typeof v31_persistirProduto === 'function') { try { await v31_persistirProduto(prodAlvo); } catch(_){ saveProdutos(); } }
+                  else if (typeof saveProdutos === 'function') saveProdutos();
+                }
+              } catch(ePG) { console.warn('[acaoExportar régua _promo]', ePG.message); }
             }
             // degraus → mudar_preco daqui X dias
             for (const deg of (d._regua.degraus||[])) {
@@ -21684,6 +21695,21 @@ REGRAS DURAS:
               tipo:'entrar_promocao', descricao:'Entrar na promoção (R$ '+Number(opts.regua.imediato).toFixed(2)+') item '+itemIdCriado,
               rodar_em:new Date(agora-1000).toISOString(), params:{ lojaId:lojaIdReg, itemId:itemIdCriado, preco:Number(opts.regua.imediato) }
             }) });
+            // GRAVA _promo nas variações do produto (na hora), pra que a DUPLICAÇÃO
+            // consiga herdar a promoção. Sem isso, o preço da régua só viraria tarefa
+            // e a cópia não teria onde achá-lo (era a causa do bug: cópias sem promoção).
+            try {
+              const precoImediato = Number(opts.regua.imediato);
+              if (precoImediato > 0 && produtoParaExportar && Array.isArray(produtoParaExportar.variacoes)) {
+                produtoParaExportar.variacoes.forEach(v => {
+                  v._promo = v._promo || {};
+                  v._promo.min = precoImediato;
+                  if (!(v._promo.max > 0)) v._promo.max = precoImediato;
+                });
+                if (typeof v31_persistirProduto === 'function') { try { await v31_persistirProduto(produtoParaExportar); } catch(_){ saveProdutos(); } }
+                else if (typeof saveProdutos === 'function') saveProdutos();
+              }
+            } catch(ePromoGrava) { console.warn('[regua _promo grava]', ePromoGrava); }
           }
           (opts.regua.degraus || []).forEach(async (deg) => {
             await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':tk,'Content-Type':'application/json'}, body: JSON.stringify({
@@ -30069,7 +30095,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.40-fix-promo-duplicacao-shopee';
+  const _DIAG_VERSAO_PAINEL = 'v33k.41-promo-regua-grava-promo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
