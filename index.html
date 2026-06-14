@@ -18359,9 +18359,37 @@ REGRAS DURAS:
     if (!(cheioRef > 0)) return null;
 
     const promos = [];
+    // FONTE 1: o _promo gravado nas variações (pelo cron sincronizar_precos_promo).
     prod.variacoes.forEach(v => {
       if (v._promo && parseFloat(v._promo.min) > 0) promos.push(parseFloat(v._promo.min));
     });
+
+    // FONTE 2 (fallback): se não há _promo (ex.: produto criado + duplicado na hora,
+    // antes do cron rodar), busca o preço na PROMOÇÃO ativa que contém o produto PAI.
+    // O pai é identificado por duplicadoDeId/duplicadoDeIdBanco. A promoção guarda
+    // itens:[{produtoId, precoAnuncio, variacoes:[{variacaoId, preco}]}] — fonte
+    // confiável do preço que o usuário digitou, sem depender do cron.
+    if (!promos.length && typeof promocoesErp !== 'undefined' && Array.isArray(promocoesErp)) {
+      const paiId = prod.duplicadoDeId || prod.duplicadoDeIdBanco;
+      if (paiId != null) {
+        // promoções que contêm o pai, priorizando ativas/agendadas
+        const candidatas = promocoesErp.filter(pr =>
+          Array.isArray(pr.itens) && pr.itens.some(it => String(it.produtoId) === String(paiId))
+          && pr.status !== 'encerrada');
+        for (const pr of candidatas) {
+          const itemPai = pr.itens.find(it => String(it.produtoId) === String(paiId));
+          if (!itemPai) continue;
+          // preço por variação (Shopee) ou precoAnuncio (ML/geral)
+          (itemPai.variacoes || []).forEach(v => {
+            if (v.preco != null && parseFloat(v.preco) > 0) promos.push(parseFloat(v.preco));
+          });
+          if (itemPai.precoAnuncio != null && parseFloat(itemPai.precoAnuncio) > 0) {
+            promos.push(parseFloat(itemPai.precoAnuncio));
+          }
+        }
+      }
+    }
+
     if (!promos.length) return null;
 
     const promoAlvo = Math.min(...promos);
@@ -18778,7 +18806,7 @@ REGRAS DURAS:
             try {
               if (typeof garantirFotosUrlsPublicas === 'function') { try { await garantirFotosUrlsPublicas(novo); } catch(_){} }
               const payloadCopia = montarPayloadExport(novo, lojaDestino.marketplace);
-              opts._coletarParaAgendar.push({ produtoId: novo.idBanco, payload: payloadCopia });
+              opts._coletarParaAgendar.push({ produtoId: novo.idBanco, payload: payloadCopia, duplicadoDeId: novo.duplicadoDeId || null, variacoes: novo.variacoes, preco: novo.preco });
             } catch(eP) { dupLogStep('  ⚠ não consegui montar payload da cópia: '+eP.message, 'err'); }
           }
           dupLogStep(`  ✓ Cópia criada (sem exportar — ${novo.status})`, 'ok');
@@ -30041,7 +30069,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.39-horario-util-card-agendado';
+  const _DIAG_VERSAO_PAINEL = 'v33k.40-fix-promo-duplicacao-shopee';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
