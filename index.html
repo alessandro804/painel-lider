@@ -30095,7 +30095,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.41-promo-regua-grava-promo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.42-aviso-aprovacao-anuncio-novo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -38654,7 +38654,15 @@ ${JSON.stringify(metricas, null, 2)}`
     }
     saveDemandas();
     renderOperacao();
-    
+
+    // Ao APROVAR: se a demanda deve avisar o cliente e ainda não foi avisada,
+    // enfileira o aviso automaticamente (respeitando horário útil 08-20h seg-sáb).
+    // Vale pra qualquer tipo (inclusive anuncio_novo). O backend agenda e o card
+    // mostra "Agendado p/ ...". Disparo forçado pelo card continua disponível.
+    if (novoStatus === 'aprovado' && !d.clienteAvisado) {
+      try { enfileirarAvisoAprovacao(d); } catch(eAv) { console.warn('[aviso aprovação]', eAv); }
+    }
+
     const statusLabels = {
       recebido: 'Recebido', producao: 'Em produção', revisao: 'Em revisão',
       aprovado: 'Aprovado', reprovado: 'Reprovado'
@@ -38662,7 +38670,45 @@ ${JSON.stringify(metricas, null, 2)}`
     showToast(`${d.cliente} → ${statusLabels[novoStatus]}`);
     _dragDemandaId = null;
   }
-  
+
+  // Enfileira o aviso ao cliente quando a demanda é aprovada. Gera a mensagem com IA
+  // (inclui o nome do produto), busca o telefone do cliente e cria a tarefa de aviso
+  // no backend, que respeita a janela de horário útil. Se fora do horário, o backend
+  // grava aviso_agendado_para e o card mostra "Agendado p/ X".
+  async function enfileirarAvisoAprovacao(d) {
+    const { clienteNome, telefone } = _resolverClienteDaDemanda(d);
+    if (!telefone) {
+      // sem telefone: deixa o card no estado "A enviar" pra ação manual
+      showToast('⚠ ' + (clienteNome||'Cliente') + ' sem telefone — avise manualmente pelo card', true);
+      return;
+    }
+    // gera a mensagem com IA (mesma do modal), incluindo o nome do produto
+    let mensagem = '';
+    try {
+      const input = _montarInputDemandaIA(d, clienteNome);
+      const systemPrompt = (typeof getPrompt === 'function')
+        ? getPrompt('whatsapp_demanda_concluida').replace('{{demanda}}', input) : input;
+      mensagem = ((await chamarIA({ system: systemPrompt, prompt: 'Gere a mensagem final pronta para enviar ao cliente, seguindo as diretrizes.', maxTokens: 600 })) || '').trim();
+    } catch(eIA) { console.warn('[aviso IA]', eIA); }
+    if (!mensagem) { showToast('⚠ Não consegui gerar a mensagem — avise manualmente pelo card', true); return; }
+
+    // cria a tarefa backend de aviso (o backend respeita o horário e grava agendamento)
+    try {
+      const tk = getApiToken();
+      const r = await (await fetch(BACKEND_URL + '/api/tarefas', {
+        method: 'POST', headers: { 'x-api-token': tk, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tipo: 'enviar_aviso_demanda',
+          descricao: 'Aviso de demanda aprovada — ' + (clienteNome||'cliente'),
+          rodar_em: new Date(Date.now()-1000).toISOString(),
+          params: { demandaId: String(d.id), numero: telefone, texto: mensagem, perfil: 'financeiro' }
+        })
+      })).json();
+      if (r && r.ok) showToast('📲 Aviso ao cliente programado (respeitando horário)');
+    } catch(eT) { console.warn('[aviso tarefa]', eT); }
+  }
+  window.enfileirarAvisoAprovacao = enfileirarAvisoAprovacao;
+
   // Modal Nova Demanda
   // Contas selecionadas na demanda atual
   let _demandaContasSel = [];
@@ -39663,7 +39709,18 @@ ${JSON.stringify(metricas, null, 2)}`
       })).json();
       if (r.ok) {
         res.innerHTML = '<span style="color:#16a34a;font-weight:700">✓ Enviado!</span>';
-        if (_waConfDemandaAtual) { _waConfDemandaAtual.clienteAvisado = true; saveDemandas(); }
+        if (_waConfDemandaAtual) {
+          _waConfDemandaAtual.clienteAvisado = true;
+          _waConfDemandaAtual.avisoAgendadoPara = null; // disparo forçado cancela o agendamento futuro
+          saveDemandas();
+          // limpa também no backend pra o drenador não reenviar
+          try {
+            await fetch(BACKEND_URL + '/api/tarefas', {
+              method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ tipo: 'marcar_aviso_enviado', descricao: 'Marca aviso enviado (disparo manual)', rodar_em: new Date(Date.now()-1000).toISOString(), params: { demandaId: String(_waConfDemandaAtual.id) } })
+            });
+          } catch(_) {}
+        }
         setTimeout(fecharWaConfirm, 1200);
       } else {
         res.innerHTML = '<span style="color:#dc2626">⚠ ' + (r.erro || 'falha ao enviar') + '</span>';
