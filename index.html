@@ -661,6 +661,7 @@
   .kanban-tag-wa.enviado { background: #dcfce7; color: #166534; }
   .kanban-tag-wa.aenviar { background: #fef3c7; color: #92400e; cursor: pointer; }
   .kanban-tag-wa.aenviar:hover { background: #fde68a; }
+  .kanban-tag-wa.agendado { background: #dbeafe; color: #1e40af; }
   .kanban-card-footer {
     display: flex; align-items: center; justify-content: space-between;
     font-size: 10px; color: var(--cinza-texto);
@@ -8237,7 +8238,8 @@
         criado_em: d.criadoEm || new Date().toISOString(),
         atualizado_em: d.atualizadoEm || new Date().toISOString(),
         concluido_em: d.concluidoEm || null,
-        agendar_em: d._agendarExportarEm || null
+        agendar_em: d._agendarExportarEm || null,
+        aviso_agendado_para: d.avisoAgendadoPara || null
       };
     },
     _fromDbDemanda(r) {
@@ -8251,7 +8253,8 @@
         passosConcluidos: r.passos_concluidos || [],
         historicoPassos: r.historico_passos || [],
         criadoEm: r.criado_em, atualizadoEm: r.atualizado_em, concluidoEm: r.concluido_em,
-        _agendarExportarEm: r.agendar_em || null
+        _agendarExportarEm: r.agendar_em || null,
+        avisoAgendadoPara: r.aviso_agendado_para || null
       };
     },
     _toDbVinculo(v) {
@@ -30038,7 +30041,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.11-sync-telefones-clientes';
+  const _DIAG_VERSAO_PAINEL = 'v33k.39-horario-util-card-agendado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -38412,10 +38415,11 @@ ${JSON.stringify(metricas, null, 2)}`
       doBanco.forEach(db => {
         const idx = demandas.findIndex(d => String(d.id) === String(db.id));
         if (idx >= 0) {
-          if (demandas[idx].status !== db.status || demandas[idx].concluidoEm !== db.concluidoEm || demandas[idx].clienteAvisado !== db.clienteAvisado) mudou = true;
+          if (demandas[idx].status !== db.status || demandas[idx].concluidoEm !== db.concluidoEm || demandas[idx].clienteAvisado !== db.clienteAvisado || demandas[idx].avisoAgendadoPara !== db.avisoAgendadoPara) mudou = true;
           demandas[idx].status = db.status;
           demandas[idx].concluidoEm = db.concluidoEm;
           demandas[idx].clienteAvisado = db.clienteAvisado;
+          demandas[idx].avisoAgendadoPara = db.avisoAgendadoPara;
           demandas[idx].descricao = db.descricao || demandas[idx].descricao;
         } else {
           demandas.unshift(db); mudou = true;
@@ -38506,6 +38510,23 @@ ${JSON.stringify(metricas, null, 2)}`
       if (concluida) {
         if (d.clienteAvisado) {
           tagWhats = '<span class="kanban-tag-wa enviado" title="Cliente já avisado no WhatsApp">✓ Enviado</span>';
+        } else if (d.avisoAgendadoPara) {
+          // aviso enfileirado mas fora do horário útil (domingo / fora de 08-20h):
+          // será enviado automaticamente no próximo horário válido.
+          const _fmtAgendado = (iso) => {
+            try {
+              const dt = new Date(iso);
+              const dias = ['dom','seg','ter','qua','qui','sex','sáb'];
+              const diaSem = dias[dt.getDay()];
+              const dd = String(dt.getDate()).padStart(2,'0');
+              const mm = String(dt.getMonth()+1).padStart(2,'0');
+              const hh = String(dt.getHours()).padStart(2,'0');
+              const mi = String(dt.getMinutes()).padStart(2,'0');
+              return `${diaSem} ${dd}/${mm} às ${hh}:${mi}`;
+            } catch(e) { return ''; }
+          };
+          const quando = _fmtAgendado(d.avisoAgendadoPara);
+          tagWhats = '<span class="kanban-tag-wa agendado" title="Aviso fora do horário útil — será enviado automaticamente em horário comercial (08-20h, seg-sáb)">📅 Agendado' + (quando ? ' p/ ' + quando : '') + '</span>';
         } else {
           tagWhats = '<span class="kanban-tag-wa aenviar" title="Clique para avisar o cliente no WhatsApp" onclick="event.stopPropagation(); avisarClienteDoCard(\'' + d.id + '\')">📱 A enviar</span>';
         }
