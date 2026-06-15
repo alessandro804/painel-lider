@@ -3725,6 +3725,13 @@
 </head>
 <body>
 
+<!-- Barra de impersonação (aparece quando admin entra como outro usuário) -->
+<div id="impersonarBar" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#b45309;color:#fff;padding:8px 16px;font-size:13px;font-weight:600;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.2)">
+  <span id="impersonarTexto">Você está vendo como usuário</span>
+  <button onclick="voltarAoAdmin()" style="margin-left:12px;background:#fff;color:#b45309;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer">↩ Voltar ao admin</button>
+</div>
+
+
 <div class="toast" id="toast">
   <span id="toastIcon">✓</span>
   <span id="toastMsg">Salvo</span>
@@ -30257,7 +30264,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.69-demo-blindado';
+  const _DIAG_VERSAO_PAINEL = 'v33k.70-impersonar';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41912,6 +41919,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         </div>
         <span style="background:${cor};color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700">${ADM_PAPEL_LABEL[u.papel]||u.papel}</span>
         <div style="display:flex;gap:6px">
+          <button class="toolbar-btn" style="font-size:11px;background:#b45309;color:white" onclick="impersonarUsuario(${u.id})">👁 Entrar como</button>
           <button class="toolbar-btn" style="font-size:11px" onclick="abrirAdmUsuarioModal(${u.id})">✏️ Editar</button>
           <button class="toolbar-btn" style="font-size:11px;color:#dc2626" onclick="admRemoverUsuario(${u.id})">🗑</button>
         </div>
@@ -41990,6 +41998,61 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } catch(e) { showToast('Erro: '+e.message, true); }
   }
   window.admRemoverUsuario = admRemoverUsuario;
+
+  // ENTRAR COMO um usuário (impersonação) — só admin
+  async function impersonarUsuario(id) {
+    const u = _admUsuarios.find(x=>x.id===id);
+    if (!confirm('Entrar como '+(u?u.nome:'usuário')+'?\n\nVocê vai ver o sistema exatamente como ele vê. Use a barra no topo pra voltar ao seu acesso.')) return;
+    try {
+      const r = await (await fetch(BACKEND_URL+'/api/auth/usuarios/'+id+'/impersonar', { method:'POST', headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken(),'Content-Type':'application/json'} })).json();
+      if (!r.ok || !r.token) { showToast('Erro: '+(r.erro||'não foi possível'), true); return; }
+      // guarda o token do ADMIN atual pra poder voltar (só se ainda não está impersonando)
+      if (!localStorage.getItem('lider_token_admin_real')) {
+        localStorage.setItem('lider_token_admin_real', getTokenLogin());
+        localStorage.setItem('lider_usuario_admin_real', localStorage.getItem('lider_usuario')||'');
+      }
+      // troca pro token do usuário alvo
+      setTokenLogin(r.token);
+      if (r.usuario) { localStorage.setItem('lider_usuario', JSON.stringify(r.usuario)); _usuarioLogado = r.usuario; }
+      mostrarBarraImpersonacao(r.usuario ? r.usuario.nome : (u?u.nome:''));
+      aplicarPermissoesUI();
+      // recarrega a página pra tudo (sync, dados, telas) refletir o novo usuário
+      location.reload();
+    } catch(e) { showToast('Erro: '+e.message, true); }
+  }
+  window.impersonarUsuario = impersonarUsuario;
+
+  function mostrarBarraImpersonacao(nome) {
+    const bar = document.getElementById('impersonarBar');
+    const txt = document.getElementById('impersonarTexto');
+    if (bar) bar.style.display = 'block';
+    if (txt) txt.textContent = 'Você está vendo como ' + (nome||'usuário');
+    // empurra o conteúdo pra baixo pra não ficar atrás da barra
+    document.body.style.paddingTop = '40px';
+  }
+
+  function voltarAoAdmin() {
+    const tokenAdmin = localStorage.getItem('lider_token_admin_real');
+    const usuarioAdmin = localStorage.getItem('lider_usuario_admin_real');
+    if (!tokenAdmin) { showToast('Sessão de admin não encontrada', true); return; }
+    setTokenLogin(tokenAdmin);
+    if (usuarioAdmin) localStorage.setItem('lider_usuario', usuarioAdmin);
+    localStorage.removeItem('lider_token_admin_real');
+    localStorage.removeItem('lider_usuario_admin_real');
+    document.body.style.paddingTop = '';
+    location.reload();
+  }
+  window.voltarAoAdmin = voltarAoAdmin;
+
+  // ao carregar a página, se estiver impersonando, mostra a barra
+  (function() {
+    if (localStorage.getItem('lider_token_admin_real')) {
+      try {
+        const u = JSON.parse(localStorage.getItem('lider_usuario')||'null');
+        document.addEventListener('DOMContentLoaded', () => mostrarBarraImpersonacao(u ? u.nome : ''));
+      } catch(e) {}
+    }
+  })();
 </script>
 
 <!-- ═══ FACILITADOR COMERCIAL (v33k.48) ═══ -->
