@@ -30113,7 +30113,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.53-fluxo-mensal-timeline';
+  const _DIAG_VERSAO_PAINEL = 'v33k.54-taxa-variavel-composicao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41495,6 +41495,15 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   ];
   const EST_TAXA_SHOPEE = 0.20, EST_FRETE = 4.00, EST_COMISSAO_PRATA = 0.06, EST_COMISSAO_OURO_FIXO = 1.00;
   const EST_FIXO_PRATA = 399.90, EST_FIXO_OURO = 1999.90;
+  // Tabela de comissão Shopee por faixa de preço (a taxa acompanha o valor de venda)
+  const EST_FAIXAS_SHOPEE = [
+    { max: 79.99, pct: 0.20, fixo: 4 },
+    { max: 99.99, pct: 0.14, fixo: 16 },
+    { max: 199.99, pct: 0.14, fixo: 20 },
+    { max: 499.99, pct: 0.14, fixo: 26 },
+    { max: Infinity, pct: 0.14, fixo: 26 },
+  ];
+  function estFaixaShopee(preco) { return EST_FAIXAS_SHOPEE.find(f => preco <= f.max); }
 
   let _estProdutos = [{ nome:'', custo:0 }]; // lista de produtos {nome, custo}
 
@@ -41535,11 +41544,34 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (i >= 2000) return '4 a 5 meses';
     return '5+ meses';
   }
-  // preço por estratégia. Prata: 6% no denom. Ouro: R$1 fixo no numerador, sem 6%.
-  function estPreco(custo, imposto, margem, plano) {
-    if (plano === 'ouro') return (custo + EST_FRETE + EST_COMISSAO_OURO_FIXO) / (1 - EST_TAXA_SHOPEE - imposto - margem);
-    return (custo + EST_FRETE) / (1 - EST_TAXA_SHOPEE - EST_COMISSAO_PRATA - imposto - margem);
+  // preço por estratégia, com TAXA SHOPEE VARIÁVEL (itera até a faixa estabilizar).
+  // Retorna o preço E a composição detalhada (pra transparência).
+  function estPrecoDetalhado(custo, imposto, margem, plano) {
+    let preco = Math.max(custo * 2, 20);
+    let fx = estFaixaShopee(preco);
+    for (let i = 0; i < 12; i++) {
+      fx = estFaixaShopee(preco);
+      let numerador = custo + fx.fixo;
+      let denom = 1 - fx.pct - imposto - margem;
+      if (plano === 'ouro') numerador += EST_COMISSAO_OURO_FIXO;
+      else denom -= EST_COMISSAO_PRATA;
+      const novo = numerador / denom;
+      if (Math.abs(novo - preco) < 0.001) { preco = novo; break; }
+      preco = novo;
+    }
+    fx = estFaixaShopee(preco);
+    // composição em R$
+    const taxaShopeeRS = preco * fx.pct;
+    const freteRS = fx.fixo;
+    const comissaoLiderRS = plano === 'ouro' ? EST_COMISSAO_OURO_FIXO : preco * EST_COMISSAO_PRATA;
+    const impostoRS = preco * imposto;
+    const margemRS = preco * margem;
+    return {
+      preco, faixa: fx, taxaShopeePct: fx.pct, taxaShopeeRS, freteRS, comissaoLiderRS, impostoRS, margemRS,
+      custoRS: custo, lucroVenda: margemRS,
+    };
   }
+  function estPreco(custo, imposto, margem, plano) { return estPrecoDetalhado(custo, imposto, margem, plano).preco; }
 
   let _estUltimo = null;
   function estCalcular() {
@@ -41566,8 +41598,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const produtosCalc = produtos.map(prod => {
       let custoBase = prod.custo;
       const fases = EST_FASES.map(f => {
-        const preco = estPreco(custoBase, imposto, f.margem, plano);
-        return { id:f.id, nome:f.nome, margem:f.margem, preco, lucroVenda: preco*f.margem };
+        const det = estPrecoDetalhado(custoBase, imposto, f.margem, plano);
+        return { id:f.id, nome:f.nome, margem:f.margem, preco: det.preco, lucroVenda: det.margemRS, comp: det };
       });
       return { nome: prod.nome || 'Produto', custo: prod.custo, fases };
     });
@@ -41632,16 +41664,20 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const lucroLiq = lucroBruto - (embutir ? 0 : 0); // custo fixo tratado no resumo
       fluxo.push({ data: new Date(data), fase, fat, lucroBruto, ads, resultado: lucroBruto - ads, obs });
     };
-    // Mês 1 - Lançamento
+    // Mês 1 - Lançamento. Conforme a planilha: a verba do orçamento cobre a margem
+    // negativa, e o ADS = (qtd*lucroVenda) - verba. Lucro real da fase = a verba investida (negativa).
     const fatM1 = (m.lanc01.qtd*m.lanc01.preco)+(m.lanc02.qtd*m.lanc02.preco)+(m.lanc03.qtd*m.lanc03.preco);
-    fluxo.push({ data:new Date(hoje), fase:'Lançamento (3 semanas)', fat:fatM1, lucroBruto:resultadoVendasM1, ads:invest, resultado: resultadoVendasM1 - invest, obs:'Investimento inicial — plantio' });
-    // Meses de Expansão
+    // verba alocada por fase (planilha: 30%/30%/40% do orçamento) — é o investimento que sai do bolso
+    const verbaLanc = invest; // todo o orçamento é consumido no lançamento
+    // resultado do lançamento pro cliente = -(investimento) (ele investe e ainda não lucra)
+    fluxo.push({ data:new Date(hoje), fase:'Lançamento (3 semanas)', fat:fatM1, lucroBruto:resultadoVendasM1, ads:invest, resultado: -verbaLanc, obs:'Investimento inicial — plantio' });
+    // Meses de Expansão — LUCRO = 0 (margem 10% é toda reinvestida em Ads 10%)
     const fatExp = 50000 * expansaoPct;
-    const lucroExpBruto = fatExp * 0.10; // margem 10% bruto na expansão
-    const adsExp = fatExp * 0.10;
+    const lucroExpBruto = fatExp * 0.10; // margem bruta 10%
+    const adsExp = fatExp * 0.10;        // ads consome os 10%
     for (let k=0; k<mesesExpansao; k++) {
       const d = new Date(hoje); d.setMonth(d.getMonth()+1+k);
-      fluxo.push({ data:d, fase:'Expansão', fat:fatExp, lucroBruto:lucroExpBruto, ads:adsExp, resultado: lucroExpBruto, obs: k===0?'Reinveste o lucro pra crescer':'' });
+      fluxo.push({ data:d, fase:'Expansão', fat:fatExp, lucroBruto:lucroExpBruto, ads:adsExp, resultado: 0, obs: k===0?'Todo o lucro volta pra crescer (lucro líquido = R$0)':'' });
     }
     // Mês final - Lucro recorrente
     const dLucro = new Date(hoje); dLucro.setMonth(dLucro.getMonth()+1+mesesExpansao);
@@ -41666,12 +41702,27 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     produtosCalc.forEach(pc => {
       html += `<div style="margin-bottom:14px"><div style="font-weight:700;font-size:13px;margin-bottom:6px">📦 ${pc.nome} <span style="color:#9ca3af;font-weight:400">(custo R$ ${pc.custo.toFixed(2)}${acrescimoUnit?' +R$'+acrescimoUnit.toFixed(2)+' fixo':''})</span></div>`;
       html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
-      html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:6px">Fase</th><th style="padding:6px">Margem</th><th style="padding:6px">Preço venda</th><th style="padding:6px">Lucro/venda</th></tr>';
+      html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:6px">Fase</th><th style="padding:6px">Margem</th><th style="padding:6px">Preço venda</th><th style="padding:6px">Taxa Shopee</th><th style="padding:6px">Lucro/venda</th></tr>';
       pc.fases.forEach(f => {
         const cor = f.margem<0?'#dc2626':(f.margem===0?'#6b7280':'#16a34a');
-        html += `<tr style="border-bottom:1px solid #e5e7eb"><td style="padding:6px;font-weight:600">${f.nome}</td><td style="padding:6px;color:${cor}">${(f.margem*100).toFixed(0)}%</td><td style="padding:6px;font-weight:700">${fmt(f.preco)}</td><td style="padding:6px;color:${cor}">${fmt(f.lucroVenda)}</td></tr>`;
+        const tx = f.comp ? `${(f.comp.taxaShopeePct*100).toFixed(0)}% + R$${f.comp.freteRS}` : '—';
+        html += `<tr style="border-bottom:1px solid #e5e7eb"><td style="padding:6px;font-weight:600">${f.nome}</td><td style="padding:6px;color:${cor}">${(f.margem*100).toFixed(0)}%</td><td style="padding:6px;font-weight:700">${fmt(f.preco)}</td><td style="padding:6px;color:#6b7280">${tx}</td><td style="padding:6px;color:${cor}">${fmt(f.lucroVenda)}</td></tr>`;
       });
-      html += '</table></div></div>';
+      html += '</table></div>';
+      // composição detalhada da fase LUCRO (pra leigo entender)
+      const fl = pc.fases.find(x=>x.id==='lucro');
+      if (fl && fl.comp) {
+        const c = fl.comp;
+        html += `<div style="margin-top:8px;padding:10px;background:#f8fafc;border-radius:8px;font-size:11px;color:#475569">
+          <b style="color:#1e293b">🔍 Como chegamos no preço de R$ ${fl.preco.toFixed(2)} (fase Lucro):</b><br>
+          • Custo do produto: R$ ${c.custoRS.toFixed(2)} <span style="color:#94a3b8">(o que você paga pelo produto)</span><br>
+          • Frete fixo Shopee: R$ ${c.freteRS.toFixed(2)} <span style="color:#94a3b8">(taxa de envio por venda)</span><br>
+          • Comissão Shopee (${(c.taxaShopeePct*100).toFixed(0)}%): R$ ${c.taxaShopeeRS.toFixed(2)} <span style="color:#94a3b8">(% da plataforma sobre a venda)</span><br>
+          • Comissão Líder (${plano==='ouro'?'R$1 fixo':'6%'}): R$ ${c.comissaoLiderRS.toFixed(2)} <span style="color:#94a3b8">(nossa gestão)</span><br>
+          ${imposto>0?`• Imposto (${(imposto*100).toFixed(1)}%): R$ ${c.impostoRS.toFixed(2)} <span style="color:#94a3b8">(tributos do seu negócio)</span><br>`:''}
+          • <b style="color:#16a34a">Sua margem (${(fl.margem*100).toFixed(0)}%): R$ ${c.margemRS.toFixed(2)}</b> <span style="color:#94a3b8">(seu lucro nesta fase)</span></div>`;
+      }
+      html += '</div>';
     });
 
     // projeção (média)
@@ -41782,14 +41833,38 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
         doc.setFillColor(...VERDE); doc.rect(0,0,W,24,'F');
         doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(18);
-        doc.text('PREÇOS · ' + (pc.nome||'Produto').toUpperCase(), 18, 16);
+        doc.text('PRECOS · ' + (pc.nome||'Produto').toUpperCase(), 18, 16);
         doc.autoTable({
-          startY: 36,
-          head: [['Fase','Margem','Preço de Venda','Lucro por Venda']],
-          body: pc.fases.map(f => [f.nome, (f.margem*100).toFixed(0)+'%', money(f.preco), money(f.lucroVenda)]),
-          theme:'striped', headStyles:{fillColor:VERDE}, styles:{fontSize:11,cellPadding:4},
+          startY: 34,
+          head: [['Fase','Margem','Preco de Venda','Taxa Shopee','Lucro por Venda']],
+          body: pc.fases.map(f => [f.nome, (f.margem*100).toFixed(0)+'%', money(f.preco), f.comp?((f.comp.taxaShopeePct*100).toFixed(0)+'% + R$'+f.comp.freteRS):'-', money(f.lucroVenda)]),
+          theme:'striped', headStyles:{fillColor:VERDE}, styles:{fontSize:10,cellPadding:3.5},
           margin:{left:18,right:18},
         });
+        // composição detalhada da fase lucro
+        const fl = pc.fases.find(x=>x.id==='lucro');
+        if (fl && fl.comp) {
+          const c = fl.comp;
+          let yc = doc.lastAutoTable.finalY + 10;
+          doc.setFillColor(248,250,252); doc.roundedRect(18,yc,W-36,H-yc-16,3,3,'F');
+          doc.setTextColor(...ESCURO); doc.setFont('helvetica','bold'); doc.setFontSize(11);
+          doc.text('Como chegamos no preco de ' + money(fl.preco) + ' (fase Lucro):', 24, yc+10);
+          doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...CINZA);
+          const comps = [
+            ['Custo do produto', money(c.custoRS), 'o que voce paga pelo produto'],
+            ['Frete fixo Shopee', money(c.freteRS), 'taxa de envio por venda'],
+            ['Comissao Shopee ('+(c.taxaShopeePct*100).toFixed(0)+'%)', money(c.taxaShopeeRS), 'percentual da plataforma'],
+            ['Comissao Lider ('+(E.plano==='ouro'?'R$1 fixo':'6%')+')', money(c.comissaoLiderRS), 'nossa gestao'],
+          ];
+          if (E.imposto>0) comps.push(['Imposto ('+(E.imposto*100).toFixed(1)+'%)', money(c.impostoRS), 'tributos do seu negocio']);
+          comps.push(['Sua margem ('+(fl.margem*100).toFixed(0)+'%)', money(c.margemRS), 'seu lucro nesta fase']);
+          let yl = yc+20;
+          comps.forEach(cp => {
+            doc.setTextColor(...ESCURO); doc.text('- ' + cp[0] + ': ' + cp[1], 26, yl);
+            doc.setTextColor(...CINZA); doc.setFontSize(8); doc.text('(' + cp[2] + ')', 130, yl);
+            doc.setFontSize(9.5); yl += 8;
+          });
+        }
       });
 
       // ───── PÁGINA: PROJEÇÃO + PLANO ─────
