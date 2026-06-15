@@ -18809,7 +18809,6 @@ REGRAS DURAS:
       exportar: params.opts.exportar !== false, // default true; massa pode passar false (só rascunho)
       marcarRascunho: !!params.opts.marcarRascunho,
       _coletarParaAgendar: params.opts._coletarParaAgendar || null,
-      _reguaDemanda: params.opts._reguaDemanda || null,
       lojaDestino,
     } : {
       variarTitulo: document.getElementById('dupVariarTitulo').checked,
@@ -19112,35 +19111,6 @@ REGRAS DURAS:
                   dupLogStep(`  💰 Promoção do pai replicada (R$ ${promoCopia.toFixed(2)})`, 'ok');
                 }
               } catch(ePromo) { console.warn('[dup promo auto]', ePromo); dupLogStep('  ⚠ Falha ao replicar promoção: '+ePromo.message, 'err'); }
-
-              // RÉGUA DA DEMANDA: se a duplicação veio de uma demanda com régua de preços,
-              // a cópia cria as MESMAS tarefas de promoção que o pai (imediato + degraus).
-              // É isto que faz a cópia entrar na campanha igual ao pai.
-              console.log('[DUP-TRACE] cópia exportada itemId=', itemId, '| opts._reguaDemanda=', JSON.stringify(opts._reguaDemanda||null), '| lojaIdBanco=', lojaIdBanco);
-              if (opts._reguaDemanda && itemId && itemId !== '?') {
-                try {
-                  const rg = opts._reguaDemanda;
-                  const tk = getApiToken();
-                  const agora = Date.now();
-                  if (rg.imediato != null) {
-                    await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':tk,'Content-Type':'application/json'}, body: JSON.stringify({
-                      tipo:'entrar_promocao',
-                      descricao:'Entrar na promoção (cópia, R$ '+Number(rg.imediato).toFixed(2)+') item '+itemId,
-                      rodar_em:new Date(agora-1000).toISOString(),
-                      params:{ lojaId:lojaIdBanco, itemId:itemId, preco:Number(rg.imediato) }
-                    }) });
-                  }
-                  for (const deg of (rg.degraus||[])) {
-                    await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':tk,'Content-Type':'application/json'}, body: JSON.stringify({
-                      tipo:'mudar_preco',
-                      descricao:'Régua (cópia): R$ '+Number(deg.preco).toFixed(2)+' (+'+deg.dias+'d) item '+itemId,
-                      rodar_em:new Date(agora + Number(deg.dias)*86400000).toISOString(),
-                      params:{ lojaId:lojaIdBanco, itemId:itemId, preco:Number(deg.preco) }
-                    }) });
-                  }
-                  dupLogStep(`  💰 Régua de preços replicada na cópia`, 'ok');
-                } catch(eRg) { console.warn('[dup régua]', eRg); dupLogStep('  ⚠ Falha ao replicar régua: '+eRg.message, 'err'); }
-              }
             }
           } else {
             // Mostra detalhes do erro
@@ -30296,7 +30266,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.73-trace-copias-promo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.74-copias-promo-definitivo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -39608,40 +39578,73 @@ ${JSON.stringify(metricas, null, 2)}`
   // Dispara a duplicação programaticamente após o export ter sucesso.
   // Chamada do acaoExportar quando d.duplicacao.ativo === true.
   async function _dispararDupDemanda(d, produtoExportado) {
-    console.log('[DUP-TRACE] _dispararDupDemanda chamado. d._regua=', JSON.stringify(d && d._regua), '| produtoExportado.id=', produtoExportado && produtoExportado.id, '| lojaId=', produtoExportado && produtoExportado.lojaId);
-    if (!d || !d.duplicacao || !d.duplicacao.ativo) { console.log('[DUP-TRACE] abortou: sem duplicacao.ativo'); return null; }
-    if (!produtoExportado || !produtoExportado.id) { console.log('[DUP-TRACE] abortou: produtoExportado sem id'); return null; }
+    if (!d || !d.duplicacao || !d.duplicacao.ativo) return null;
+    if (!produtoExportado || !produtoExportado.id) return null;
     const lojaDestino = produtoExportado.lojaId 
       ? lojasErp.find(l => String(l.id) === String(produtoExportado.lojaId))
       : null;
     if (!lojaDestino) {
-      console.warn('[demanda dup] loja destino não achada. lojaId buscado=', produtoExportado.lojaId);
+      console.warn('[demanda dup] loja destino não achada. lojaId=', produtoExportado.lojaId);
       return null;
     }
     const opts = d.duplicacao;
     const qtd = Math.min(10, Math.max(1, parseInt(opts.qtd) || 3));
-    
+    const temRegua = !!(d._regua && (d._regua.imediato != null || (d._regua.degraus && d._regua.degraus.length)));
+
     showToast(`🔁 Iniciando duplicação automática (${qtd} cópia${qtd>1?'s':''})...`);
-    console.log('[DUP-TRACE] passando _reguaDemanda pra iniciarDuplicacao:', JSON.stringify(d._regua || null));
-    
-    // Chama iniciarDuplicacao com parâmetros diretos (não depende do DOM do dup config)
+
+    // SEM régua → fluxo simples: exporta as cópias direto (como antes)
+    if (!temRegua) {
+      try {
+        await iniciarDuplicacao({ produtoId: produtoExportado.id, qtd, lojaDestinoId: lojaDestino.id,
+          opts: { variarTitulo: opts.variarTitulo, variarDescricao: opts.variarDescricao, rotacionarFotos: opts.rotacionarFotos, variarPreco: opts.variarPreco } });
+      } catch(e) { console.error('[demanda dup] falhou:', e); showToast('Duplicação falhou: ' + e.message, true); }
+      return;
+    }
+
+    // COM régua → MESMO mecanismo da duplicação de Produtos (que funciona):
+    // 1) cria as cópias como rascunho e coleta os payloads
+    // 2) anexa a régua da demanda a cada cópia
+    // 3) manda pro handler 'duplicar_anuncio' que exporta E aplica a régua com o itemId real
     try {
+      const coletadas = [];
       await iniciarDuplicacao({
-        produtoId: produtoExportado.id,
-        qtd,
-        lojaDestinoId: lojaDestino.id,
+        produtoId: produtoExportado.id, qtd, lojaDestinoId: lojaDestino.id,
         opts: {
-          variarTitulo: opts.variarTitulo,
-          variarDescricao: opts.variarDescricao,
-          rotacionarFotos: opts.rotacionarFotos,
-          variarPreco: opts.variarPreco,
-          // repassa a régua de preços da demanda pras cópias (mesma promo do pai)
-          _reguaDemanda: d._regua || null,
+          variarTitulo: opts.variarTitulo, variarDescricao: opts.variarDescricao,
+          rotacionarFotos: opts.rotacionarFotos, variarPreco: opts.variarPreco,
+          exportar: false, marcarRascunho: true,
+          _coletarParaAgendar: coletadas,
         }
       });
+      if (!coletadas.length) { showToast('Nenhuma cópia criada pra promoção', true); return; }
+
+      // anexa a régua da demanda (mesma do pai) a cada cópia
+      coletadas.forEach(c => {
+        const r = {};
+        if (d._regua.imediato != null) r.imediato = Number(d._regua.imediato);
+        if (d._regua.degraus && d._regua.degraus.length) r.degraus = d._regua.degraus.map(x => ({ dias:x.dias, preco:Number(x.preco) }));
+        if (r.imediato != null || (r.degraus && r.degraus.length)) c.regua = r;
+      });
+
+      // resolve a loja no banco
+      let lojaIdBanco = null;
+      try { lojaIdBanco = await garantirLojaNoBanco(lojaDestino); } catch(_){}
+      if (!lojaIdBanco && lojaDestino.idBanco) lojaIdBanco = lojaDestino.idBanco;
+      if (!lojaIdBanco) { showToast('Não consegui resolver a loja destino das cópias', true); return; }
+
+      // manda pro backend exportar as cópias JÁ com a régua (igual ao fluxo que funciona)
+      const resp = await (await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+        tipo: 'duplicar_anuncio',
+        descricao: 'Exportar ' + coletadas.length + ' cópia(s) com promoção → ' + (lojaDestino.nome||lojaIdBanco),
+        rodar_em: new Date(Date.now() + 2000).toISOString(),
+        params: { lojaId: lojaIdBanco, itens: coletadas }
+      }) })).json();
+      if (resp.ok) showToast('✅ ' + coletadas.length + ' cópia(s) serão exportadas com a promoção (igual ao pai)');
+      else showToast('Erro ao agendar cópias: ' + (resp.erro||''), true);
     } catch(e) {
-      console.error('[demanda dup] falhou:', e);
-      showToast('Duplicação automática falhou: ' + e.message, true);
+      console.error('[demanda dup régua] falhou:', e);
+      showToast('Duplicação com promoção falhou: ' + e.message, true);
     }
   }
   
