@@ -30219,7 +30219,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.62-multiproduto-anuncios';
+  const _DIAG_VERSAO_PAINEL = 'v33k.63-fix-foco-anuncios';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -34465,18 +34465,41 @@ ${JSON.stringify(metricas, null, 2)}`
   window.estCardAddProduto = estCardAddProduto;
   function estCardRemProduto(i) { _estCardProdutos.splice(i,1); if(!_estCardProdutos.length)_estCardProdutos=[{nome:'',custo:0,anuncios:[]}]; estRenderProdutosCard(); }
   window.estCardRemProduto = estCardRemProduto;
-  function estCardSetProduto(i, campo, val) { if(!_estCardProdutos[i])return; _estCardProdutos[i][campo] = campo==='custo'?(parseFloat(val)||0):val; estRenderProdutosCard(); }
+  // NÃO redesenha o card no oninput (perderia o foco). Só guarda o valor e atualiza os preços daquele produto.
+  function estCardSetProduto(i, campo, val) {
+    if(!_estCardProdutos[i])return;
+    _estCardProdutos[i][campo] = campo==='custo'?(parseFloat(val)||0):val;
+    if (campo==='custo') estAtualizarPrecosProduto(i);
+  }
   window.estCardSetProduto = estCardSetProduto;
   function estCardToggleAnuncio(i, itemId) {
     if (!_estCardProdutos[i]) return;
     const arr = _estCardProdutos[i].anuncios || (_estCardProdutos[i].anuncios=[]);
     const ix = arr.indexOf(itemId);
     if (ix>=0) arr.splice(ix,1); else arr.push(itemId);
-    estRenderProdutosCard();
+    // atualiza só o contador de selecionados (sem redesenhar)
+    const cnt = document.getElementById('estProdSelCount_'+i);
+    if (cnt) cnt.textContent = arr.length + ' selecionado(s)';
   }
   window.estCardToggleAnuncio = estCardToggleAnuncio;
-  function estRecalcProdutosCard() { estRenderProdutosCard(); }
+  function estRecalcProdutosCard() { _estCardProdutos.forEach((_,i)=>estAtualizarPrecosProduto(i)); }
   window.estRecalcProdutosCard = estRecalcProdutosCard;
+
+  // calcula e atualiza SÓ a linha de preços de um produto (não mexe nos inputs)
+  function estAtualizarPrecosProduto(i) {
+    const p = _estCardProdutos[i]; if (!p) return;
+    const el = document.getElementById('estProdPrecos_'+i);
+    if (!el) return;
+    const imposto = (parseFloat((document.getElementById('estLojaImposto')||{}).value)||0)/100;
+    const plano = (document.getElementById('estLojaPlano')||{}).value || 'prata';
+    const margens = [['Lanç 01',-0.20],['Lanç 02',-0.10],['Lanç 03',0],['Expansão',0.10],['Lucro',0.20]];
+    if (!(p.custo>0) || typeof estPrecoDetalhado!=='function') { el.innerHTML=''; return; }
+    el.innerHTML = margens.map(([nome,m]) => {
+      const preco = estPrecoDetalhado(p.custo, imposto, m, plano).preco;
+      const cor = m<0?'#dc2626':(m===0?'#6b7280':'#16a34a');
+      return `<span style="font-size:10px;background:#f1f5f9;border-radius:6px;padding:2px 6px;color:${cor}"><b>${nome}:</b> R$${preco.toFixed(2)}</span>`;
+    }).join('');
+  }
 
   // carrega os anúncios reais da loja selecionada (via backend)
   async function estCardCarregarAnuncios() {
@@ -34494,30 +34517,18 @@ ${JSON.stringify(metricas, null, 2)}`
   function estRenderProdutosCard() {
     const cont = document.getElementById('estCardProdutos');
     if (!cont) return;
-    const imposto = (parseFloat((document.getElementById('estLojaImposto')||{}).value)||0)/100;
-    const plano = (document.getElementById('estLojaPlano')||{}).value || 'prata';
-    const margens = [['Lanç 01',-0.20],['Lanç 02',-0.10],['Lanç 03',0],['Expansão',0.10],['Lucro',0.20]];
+    const sel0 = _estCardAnunciosLoja;
     cont.innerHTML = _estCardProdutos.map((p,i) => {
-      // preços das 5 fases (se tem custo e o motor existe)
-      let tabelaPrecos = '';
-      if (p.custo>0 && typeof estPrecoDetalhado==='function') {
-        tabelaPrecos = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + margens.map(([nome,m]) => {
-          const preco = estPrecoDetalhado(p.custo, imposto, m, plano).preco;
-          const cor = m<0?'#dc2626':(m===0?'#6b7280':'#16a34a');
-          return `<span style="font-size:10px;background:#f1f5f9;border-radius:6px;padding:2px 6px;color:${cor}"><b>${nome}:</b> R$${preco.toFixed(2)}</span>`;
-        }).join('') + '</div>';
-      }
-      // lista de anúncios da loja pra marcar
       const sel = p.anuncios || [];
       let listaAnuncios = '';
-      if (_estCardAnunciosLoja.length) {
+      if (sel0.length) {
         listaAnuncios = '<div style="max-height:120px;overflow-y:auto;margin-top:6px;border:1px solid #e5e7eb;border-radius:6px;padding:6px">' +
-          _estCardAnunciosLoja.map(a => `<label style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;cursor:pointer">
+          sel0.map(a => `<label style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;cursor:pointer">
             <input type="checkbox" ${sel.includes(a.itemId)?'checked':''} onchange="estCardToggleAnuncio(${i},'${a.itemId}')">
             <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml((a.titulo||'').slice(0,50))} <span style="color:#9ca3af">${a.marketplace}</span></span>
           </label>`).join('') + '</div>';
       } else {
-        listaAnuncios = '<div style="font-size:10px;color:#9ca3af;margin-top:4px">Selecione a loja pra listar os anúncios.</div>';
+        listaAnuncios = '<div style="font-size:10px;color:#9ca3af;margin-top:4px">Selecione a loja pra listar os anúncios (ou a loja não tem anúncios vinculados no ERP).</div>';
       }
       return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:8px">
         <div style="display:flex;gap:8px;align-items:center">
@@ -34525,11 +34536,13 @@ ${JSON.stringify(metricas, null, 2)}`
           <input type="number" class="form-input" style="flex:1" placeholder="Custo R$" step="0.01" value="${p.custo||''}" oninput="estCardSetProduto(${i},'custo',this.value)">
           ${_estCardProdutos.length>1?`<button type="button" class="toolbar-btn" style="padding:6px 10px" onclick="estCardRemProduto(${i})">🗑</button>`:''}
         </div>
-        ${tabelaPrecos}
-        <div style="font-size:11px;color:#6b7280;margin-top:6px">Anúncios deste produto (recebem a régua): <b>${sel.length} selecionado(s)</b></div>
+        <div id="estProdPrecos_${i}" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>
+        <div style="font-size:11px;color:#6b7280;margin-top:6px">Anúncios deste produto (recebem a régua): <b id="estProdSelCount_${i}">${sel.length} selecionado(s)</b></div>
         ${listaAnuncios}
       </div>`;
     }).join('');
+    // preenche os preços de cada produto (cirúrgico, depois do render)
+    _estCardProdutos.forEach((_,i) => estAtualizarPrecosProduto(i));
   }
   window.estRenderProdutosCard = estRenderProdutosCard;
 
