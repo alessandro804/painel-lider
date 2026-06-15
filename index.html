@@ -30113,7 +30113,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.49-facilitador-modal-fix';
+  const _DIAG_VERSAO_PAINEL = 'v33k.51-motor-estrategia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37689,10 +37689,14 @@ ${JSON.stringify(metricas, null, 2)}`
     renderKanban();
     renderEscritorio();
     renderPainelAutomacao();
-    
-    // IA Gestora roda automaticamente (1x por abertura, com leve atraso)
-    if (!_iaGestoraRodando) {
-      setTimeout(() => { rodarDiagnosticoIA(); }, 800);
+
+    // IA Gestora NÃO roda mais automaticamente (economiza tokens). Só ao clicar
+    // em "🔄 Atualizar". Mostra um aviso pra orientar, sem consumir API.
+    if (!_iaGestoraJaRodou && !_iaGestoraRodando) {
+      const cont = document.getElementById('iaGestoraConteudo');
+      if (cont && !cont.dataset.temAnalise) {
+        cont.innerHTML = '<div style="padding:16px;text-align:center;color:#6b7280;font-size:13px">🤖 Clique em <b>🔄 Atualizar</b> para gerar a análise da operação com IA.</div>';
+      }
     }
     
     // Badge da IA
@@ -40401,6 +40405,7 @@ Agora responda à pergunta do Alessandro com base nesses dados REAIS. Cite NOMES
   // ============ IA GESTORA — Diagnóstico + Sugestões de fluxo ============
   let _iaGestoraSugestoes = []; // sugestões pendentes
   let _iaGestoraRodando = false;
+  let _iaGestoraJaRodou = false; // controla pra IA da operação NÃO rodar sozinha no F5 (só ao clicar Atualizar)
   
   // Monta um resumo dos dados da operação pra IA analisar
   function montarDadosOperacao() {
@@ -40516,9 +40521,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // Roda o diagnóstico da IA Gestora
   async function rodarDiagnosticoIA() {
     if (_iaGestoraRodando) return;
+    _iaGestoraJaRodou = true;
     const conteudo = document.getElementById('iaGestoraConteudo');
     const btn = document.getElementById('iaGestoraBtn');
     if (!conteudo) return;
+    if (conteudo) conteudo.dataset.temAnalise = '1';
     
     const apiKey = getIaKey();
     if (!apiKey) {
@@ -41313,6 +41320,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     </div>
     <div class="fac-tabs">
       <button class="fac-tab active" onclick="facTab('viabilidade',this)">💰 Viabilidade Shopee</button>
+      <button class="fac-tab" onclick="facTab('estrategia',this)">🚀 Montar Estratégia</button>
       <button class="fac-tab" onclick="facTab('vendidos',this)">🏆 Meus + Vendidos</button>
       <button class="fac-tab" onclick="facTab('perguntas',this)">🔥 Perguntas ML</button>
     </div>
@@ -41331,6 +41339,36 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         </div>
       </div>
       <div id="facResultado" style="margin-top:18px"></div>
+    </div>
+
+    <!-- ABA: MONTAR ESTRATÉGIA -->
+    <div class="fac-pane" id="facPaneEstrategia" style="display:none">
+      <p style="font-size:12px;color:#6b7280;margin:8px 0 14px">Preencha os dados e monto a estratégia completa (Lançamento → Expansão → Lucro) com preços, quantidades e prazos por fase.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px">
+        <div>
+          <label class="form-label">Investimento em Ads (R$)</label>
+          <input type="number" id="estInvest" class="form-input" placeholder="3000" step="100" oninput="estCalcular()">
+        </div>
+        <div>
+          <label class="form-label">Custo do produto (R$)</label>
+          <input type="number" id="estCusto" class="form-input" placeholder="13.00" step="0.01" oninput="estCalcular()">
+        </div>
+        <div>
+          <label class="form-label">Imposto do cliente (%)</label>
+          <input type="number" id="estImposto" class="form-input" placeholder="4" step="0.5" value="0" oninput="estCalcular()">
+        </div>
+        <div>
+          <label class="form-label">Plano do cliente</label>
+          <select id="estPlano" class="form-input" onchange="estCalcular()">
+            <option value="prata">Prata (6% sobre vendas)</option>
+            <option value="ouro">Ouro (R$1 fixo por venda)</option>
+          </select>
+        </div>
+      </div>
+      <div id="estResultado"><em style="color:#9ca3af;font-size:13px">Preencha investimento e custo pra montar a estratégia.</em></div>
+      <div id="estAcoes" style="display:none;margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="estGerarPDF()">📄 Gerar PDF pro cliente</button>
+      </div>
     </div>
 
     <!-- ABA 2: MAIS VENDIDOS -->
@@ -41403,12 +41441,124 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   function facTab(qual, btn) {
     document.querySelectorAll('.fac-tab').forEach(t => t.classList.remove('active'));
     if (btn) btn.classList.add('active');
-    ['viabilidade','vendidos','perguntas'].forEach(p => {
+    ['viabilidade','estrategia','vendidos','perguntas'].forEach(p => {
       const el = document.getElementById('facPane' + p.charAt(0).toUpperCase() + p.slice(1));
       if (el) el.style.display = (p === qual) ? 'block' : 'none';
     });
   }
   window.facTab = facTab;
+
+  // ─── MOTOR DE ESTRATÉGIA (replica a planilha PROJEÇÃO LÍDER) ──────
+  // Fases e margens fixas da Líder. Prazos da Expansão por faixa de investimento.
+  const EST_FASES = [
+    { id:'lanc01', nome:'Lançamento 01', margem:-0.20, prazo:'Semana 01', fatiaOrc:0.30 },
+    { id:'lanc02', nome:'Lançamento 02', margem:-0.10, prazo:'Semana 02', fatiaOrc:0.30 },
+    { id:'lanc03', nome:'Lançamento 03', margem: 0.00, prazo:'Semana 03', fatiaOrc:0.40 },
+    { id:'expansao', nome:'Expansão', margem: 0.10, prazo:'(por investimento)', fatiaOrc:null },
+    { id:'lucro', nome:'Lucro', margem: 0.20, prazo:'Mensal (30 dias)', fatiaOrc:null },
+  ];
+  const EST_TAXA_SHOPEE = 0.20, EST_FRETE = 4.00, EST_COMISSAO_PRATA = 0.06, EST_COMISSAO_OURO_FIXO = 1.00;
+
+  function estPrazoExpansao(invest) {
+    const i = Math.abs(invest);
+    if (i >= 4000) return '30 dias';
+    if (i >= 3100) return '2 meses';
+    if (i >= 2600) return '3 meses';
+    if (i >= 2000) return '4 a 5 meses';
+    return '5+ meses';
+  }
+
+  // preço de venda por estratégia. Prata: 6% no denominador. Ouro: R$1 fixo no numerador, sem 6%.
+  function estPreco(custo, imposto, margem, plano) {
+    if (plano === 'ouro') {
+      return (custo + EST_FRETE + EST_COMISSAO_OURO_FIXO) / (1 - EST_TAXA_SHOPEE - imposto - margem);
+    }
+    return (custo + EST_FRETE) / (1 - EST_TAXA_SHOPEE - EST_COMISSAO_PRATA - imposto - margem);
+  }
+
+  let _estUltimo = null; // guarda o último cálculo pro PDF
+  function estCalcular() {
+    const invest = Math.abs(parseFloat(document.getElementById('estInvest').value) || 0);
+    const custo = parseFloat(document.getElementById('estCusto').value) || 0;
+    const imposto = (parseFloat(document.getElementById('estImposto').value) || 0) / 100;
+    const plano = document.getElementById('estPlano').value;
+    const out = document.getElementById('estResultado');
+    const acoes = document.getElementById('estAcoes');
+    if (!invest || !custo) {
+      out.innerHTML = '<em style="color:#9ca3af;font-size:13px">Preencha investimento e custo pra montar a estratégia.</em>';
+      if (acoes) acoes.style.display = 'none';
+      return;
+    }
+
+    // calcula cada fase
+    const fases = EST_FASES.map(f => {
+      const preco = estPreco(custo, imposto, f.margem, plano);
+      const lucroVenda = preco * f.margem;
+      const prazo = (f.id === 'expansao') ? estPrazoExpansao(invest) : f.prazo;
+      return { ...f, preco, lucroVenda, prazo };
+    });
+
+    // quantidades por fase — fórmula EXATA da planilha PROJEÇÃO LÍDER:
+    //   orçamento das fases de lançamento: I15=orc*0.3, I16=orc*0.3, I17=orc*0.4 (em valor negativo de gasto)
+    //   Lanç01 qtd = (orc*0.3) * 0.3 / |lucro_venda_01|
+    //   Lanç02 qtd = (orc*0.3) * 0.25 / |lucro_venda_02|   (usa a fatia do Lanç01)
+    //   Lanç03 qtd = Lanç02 qtd * 3
+    const orc = invest;
+    const I_lanc01 = orc * 0.30;
+    const lanc = fases.filter(f => f.id.startsWith('lanc'));
+    // ADS por fase (gasto do orçamento)
+    lanc[0].ads = orc * 0.30;
+    lanc[1].ads = orc * 0.30;
+    lanc[2].ads = orc * 0.40;
+    // quantidades (fórmula da planilha)
+    lanc[0].qtd = Math.round(I_lanc01 * 0.30 / Math.abs(lanc[0].lucroVenda || 1));
+    lanc[1].qtd = Math.round(I_lanc01 * 0.25 / Math.abs(lanc[1].lucroVenda || 1));
+    lanc[2].qtd = Math.round(lanc[1].qtd * 3);
+    lanc.forEach(f => {
+      f.vendaValor = f.qtd * f.preco;
+      f.acos = f.vendaValor > 0 ? (f.ads / f.vendaValor) : 0;
+    });
+
+    // Expansão: vendas até o limite combinado; ADS = 10% das vendas
+    const exp = fases.find(f => f.id === 'expansao');
+    // Lucro mensal: mira R$50k faturamento
+    const lucroF = fases.find(f => f.id === 'lucro');
+    lucroF.vendaValor = 50000;
+    lucroF.qtd = Math.round(50000 / lucroF.preco);
+    lucroF.ads = lucroF.preco * 0.10 * lucroF.qtd;
+    lucroF.lucroMes = lucroF.lucroVenda * lucroF.qtd - lucroF.ads;
+    lucroF.acos = 0.10;
+
+    _estUltimo = { invest, custo, imposto, plano, fases };
+
+    // renderiza
+    const fmt = v => 'R$ ' + (v||0).toFixed(2);
+    let html = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Estratégia</th><th style="padding:8px">Margem</th><th style="padding:8px">Preço venda</th><th style="padding:8px">Lucro/venda</th><th style="padding:8px">Qtd</th><th style="padding:8px">Prazo</th></tr>';
+    fases.forEach(f => {
+      const cor = f.margem < 0 ? '#dc2626' : (f.margem === 0 ? '#6b7280' : '#16a34a');
+      html += `<tr style="border-bottom:1px solid #e5e7eb">
+        <td style="padding:8px;font-weight:700">${f.nome}</td>
+        <td style="padding:8px;color:${cor}">${(f.margem*100).toFixed(0)}%</td>
+        <td style="padding:8px;font-weight:700">${fmt(f.preco)}</td>
+        <td style="padding:8px;color:${cor}">${fmt(f.lucroVenda)}</td>
+        <td style="padding:8px">${f.qtd||'—'}${f.id==='expansao'?' (livre)':''}</td>
+        <td style="padding:8px">${f.prazo}</td>
+      </tr>`;
+    });
+    html += '</table></div>';
+    html += `<div style="margin-top:12px;padding:12px;background:#eff6ff;border-radius:8px;font-size:12px;color:#1e40af">
+      <b>Resumo:</b> investimento R$ ${invest.toFixed(0)} · custo R$ ${custo.toFixed(2)} · ${plano==='ouro'?'Ouro (R$1/venda)':'Prata (6%)'}${imposto>0?' · imposto '+(imposto*100).toFixed(1)+'%':''}<br>
+      Lucro mensal projetado (fase Lucro): <b>R$ ${(lucroF.lucroMes||0).toFixed(2)}</b></div>`;
+    out.innerHTML = html;
+    if (acoes) acoes.style.display = 'flex';
+  }
+  window.estCalcular = estCalcular;
+
+  function estGerarPDF() {
+    showToast('📄 Geração de PDF chega na próxima etapa!');
+  }
+  window.estGerarPDF = estGerarPDF;
 
   // CONSTANTES da fórmula (validadas com a calculadora oficial)
   const FAC_TAXA_SHOPEE = 0.20;   // 20% Shopee
