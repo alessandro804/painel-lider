@@ -30113,7 +30113,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.52-estrategia-completa-pdf';
+  const _DIAG_VERSAO_PAINEL = 'v33k.53-fluxo-mensal-timeline';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41381,6 +41381,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           <input type="number" id="estLucroAds" class="form-input" style="width:64px;padding:4px 8px" value="10" step="1" min="0" max="20" oninput="estSyncSplit('ads')">
           <span style="font-size:12px">%</span>
         </div>
+        <div style="display:flex;align-items:center;gap:6px;border-left:1px solid #e5e7eb;padding-left:12px">
+          <label style="font-size:12px">Faturamento na Expansão:</label>
+          <input type="number" id="estExpansaoPct" class="form-input" style="width:64px;padding:4px 8px" value="50" step="5" min="10" max="100" oninput="estCalcular()">
+          <span style="font-size:12px">% dos R$50k</span>
+        </div>
       </div>
 
       <!-- Produtos -->
@@ -41612,6 +41617,47 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
     _estUltimo = { cliente, invest, imposto, plano, custoFixoMes, lucroRealPct, embutir, acrescimoUnit, produtosCalc, mediaFase };
 
+    // ── FLUXO MÊS A MÊS (com datas reais a partir de hoje) ──
+    const expansaoPct = (parseFloat(document.getElementById('estExpansaoPct').value)||50) / 100;
+    const hoje = new Date();
+    const mesesExpansao = (function(){
+      const i = Math.abs(invest);
+      if (i >= 4000) return 1; if (i >= 3100) return 2; if (i >= 2600) return 3; if (i >= 2000) return 5; return 5;
+    })();
+    // mês 1: lançamento (3 semanas). resultado vendas = soma lucro margens (negativo). ads separado.
+    const m = mediaFase;
+    const resultadoVendasM1 = (m.lanc01.qtd * m.lanc01.lucroVenda) + (m.lanc02.qtd * m.lanc02.lucroVenda) + (m.lanc03.qtd * m.lanc03.lucroVenda);
+    const fluxo = [];
+    const addMes = (data, fase, fat, lucroBruto, ads, obs) => {
+      const lucroLiq = lucroBruto - (embutir ? 0 : 0); // custo fixo tratado no resumo
+      fluxo.push({ data: new Date(data), fase, fat, lucroBruto, ads, resultado: lucroBruto - ads, obs });
+    };
+    // Mês 1 - Lançamento
+    const fatM1 = (m.lanc01.qtd*m.lanc01.preco)+(m.lanc02.qtd*m.lanc02.preco)+(m.lanc03.qtd*m.lanc03.preco);
+    fluxo.push({ data:new Date(hoje), fase:'Lançamento (3 semanas)', fat:fatM1, lucroBruto:resultadoVendasM1, ads:invest, resultado: resultadoVendasM1 - invest, obs:'Investimento inicial — plantio' });
+    // Meses de Expansão
+    const fatExp = 50000 * expansaoPct;
+    const lucroExpBruto = fatExp * 0.10; // margem 10% bruto na expansão
+    const adsExp = fatExp * 0.10;
+    for (let k=0; k<mesesExpansao; k++) {
+      const d = new Date(hoje); d.setMonth(d.getMonth()+1+k);
+      fluxo.push({ data:d, fase:'Expansão', fat:fatExp, lucroBruto:lucroExpBruto, ads:adsExp, resultado: lucroExpBruto, obs: k===0?'Reinveste o lucro pra crescer':'' });
+    }
+    // Mês final - Lucro recorrente
+    const dLucro = new Date(hoje); dLucro.setMonth(dLucro.getMonth()+1+mesesExpansao);
+    const lucroBrutoLuc = 50000 * 0.20;
+    const adsLuc = 50000 * (0.20 - lucroRealPct);
+    const lucroLiqLuc = 50000 * lucroRealPct - (embutir ? 0 : custoFixoMes);
+    fluxo.push({ data:dLucro, fase:'Lucro recorrente', fat:50000, lucroBruto:lucroBrutoLuc, ads:adsLuc, resultado: lucroLiqLuc, obs:'Colheita — lucro recorrente' });
+    // acumulado (quando recupera investimento)
+    let acum = 0; let mesRecuperacao = null;
+    fluxo.forEach((mes,idx) => { acum += mes.resultado; mes.acumulado = acum; if (mesRecuperacao===null && acum>=0 && idx>0) mesRecuperacao = mes; });
+
+    _estUltimo.fluxo = fluxo;
+    _estUltimo.mesesExpansao = mesesExpansao;
+    _estUltimo.expansaoPct = expansaoPct;
+    _estUltimo.mesRecuperacao = mesRecuperacao;
+
     // ── RENDER ──
     const fmt = v => 'R$ ' + (v||0).toFixed(2);
     let html = '';
@@ -41646,6 +41692,28 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       Lucro real (${(lucroRealPct*100).toFixed(0)}%): R$ ${lf.lucroRealMes.toFixed(2)} · reinveste em Ads: R$ ${lf.adsReinveste.toFixed(2)}<br>
       (-) Custo fixo do plano (${plano==='ouro'?'Ouro':'Prata'}): R$ ${custoFixoMes.toFixed(2)}${embutir?' <b>(embutido no preço)</b>':''}<br>
       <b>Lucro líquido do cliente no mês: R$ ${lf.lucroLiquidoMes.toFixed(2)}</b></div>`;
+
+    // FLUXO MÊS A MÊS (timeline com datas reais)
+    const fmtData = d => d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
+    html += `<div style="margin-top:16px;font-weight:700;font-size:13px;margin-bottom:6px">📅 Fluxo financeiro mês a mês (a partir de hoje)</div>`;
+    html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">';
+    html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:6px">Data</th><th style="padding:6px">Fase</th><th style="padding:6px">Faturamento</th><th style="padding:6px">Ads</th><th style="padding:6px">Resultado</th><th style="padding:6px">Acumulado</th></tr>';
+    (_estUltimo.fluxo||[]).forEach(mes => {
+      const corRes = mes.resultado < 0 ? '#dc2626' : '#16a34a';
+      const corAc = mes.acumulado < 0 ? '#dc2626' : '#16a34a';
+      html += `<tr style="border-bottom:1px solid #e5e7eb">
+        <td style="padding:6px">${fmtData(mes.data)}</td>
+        <td style="padding:6px;font-weight:600">${mes.fase}</td>
+        <td style="padding:6px">R$ ${mes.fat.toFixed(0)}</td>
+        <td style="padding:6px;color:#6b7280">R$ ${mes.ads.toFixed(0)}</td>
+        <td style="padding:6px;color:${corRes};font-weight:700">R$ ${mes.resultado.toFixed(2)}</td>
+        <td style="padding:6px;color:${corAc}">R$ ${mes.acumulado.toFixed(2)}</td>
+      </tr>`;
+    });
+    html += '</table></div>';
+    if (_estUltimo.mesRecuperacao) {
+      html += `<div style="margin-top:8px;font-size:12px;color:#16a34a"><b>💚 Investimento recuperado em ${fmtData(_estUltimo.mesRecuperacao.data)}</b> — a partir daí é lucro recorrente.</div>`;
+    }
 
     out.innerHTML = html;
     if (acoes) acoes.style.display = 'flex';
@@ -41704,7 +41772,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       doc.setFillColor(240,253,244); doc.roundedRect(18,150,W-36,40,3,3,'F');
       doc.setFillColor(...VERDE); doc.rect(18,150,4,40,'F');
       doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(14);
-      doc.text('🎯 O FOCO É O SEU LUCRO', 26, 162);
+      doc.text('O FOCO É O SEU LUCRO', 26, 162);
       doc.setTextColor(...ESCURO); doc.setFont('helvetica','normal'); doc.setFontSize(10);
       const foco = doc.splitTextToSize('Toda a estratégia é desenhada para chegar na fase de Lucro, onde você recupera o investimento e o negócio gera retorno recorrente. Dos 20% de margem, 10% é seu lucro líquido e 10% é reinvestido em tráfego para manter o crescimento constante.', W-52);
       doc.text(foco, 26, 172);
@@ -41744,8 +41812,44 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       doc.text('RESUMO FINANCEIRO — FASE LUCRO (MENSAL)', 26, yF+12);
       doc.setTextColor(...ESCURO); doc.setFont('helvetica','normal'); doc.setFontSize(11);
       doc.text('Faturamento alvo: ' + money(50000), 26, yF+24);
-      doc.text('Lucro líquido para você: ' + money(mf.lucro.lucroLiquidoMes), 26, yF+34);
-      doc.text('Investimento em Ads: ' + money(E.invest) + ' · Plano ' + planoNome + ': ' + money(E.custoFixoMes) + '/mês' + (E.embutir?' (já embutido no preço)':''), 26, yF+44);
+      doc.text('Lucro liquido para voce: ' + money(mf.lucro.lucroLiquidoMes), 26, yF+34);
+      doc.text('Investimento em Ads: ' + money(E.invest) + ' - Plano ' + planoNome + ': ' + money(E.custoFixoMes) + '/mes' + (E.embutir?' (ja embutido no preco)':''), 26, yF+44);
+
+      // ───── PÁGINA: FLUXO MÊS A MÊS + TIMELINE ─────
+      doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
+      doc.setFillColor(...VERDE); doc.rect(0,0,W,24,'F');
+      doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(18);
+      doc.text('LINHA DO TEMPO E FLUXO FINANCEIRO', 18, 16);
+      // ênfase: vendas no mesmo dia
+      doc.setFillColor(240,253,244); doc.roundedRect(18,30,W-36,18,2,2,'F');
+      doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(11);
+      doc.text('VENDAS JA NO PRIMEIRO DIA!', 24, 38);
+      doc.setTextColor(...ESCURO); doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+      doc.text('Em 99% dos casos, no mesmo dia em que voce aprova a campanha e ativa os Ads, a loja ja recebe os primeiros pedidos.', 24, 44);
+      // tabela do fluxo
+      const fmtD = d => d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
+      doc.autoTable({
+        startY: 54,
+        head:[['Data','Fase','Faturamento','Ads','Resultado','Acumulado']],
+        body:(E.fluxo||[]).map(mes=>[fmtD(mes.data), mes.fase, money(mes.fat), money(mes.ads), money(mes.resultado), money(mes.acumulado)]),
+        theme:'striped', headStyles:{fillColor:AZUL}, styles:{fontSize:9,cellPadding:3}, margin:{left:18,right:18},
+        didParseCell: function(d){ if(d.section==='body' && (d.column.index===4||d.column.index===5)){ const v=parseFloat(String(d.cell.raw).replace(/[^\d,-]/g,'').replace(',','.')); if(v<0) d.cell.styles.textColor=[220,38,38]; else d.cell.styles.textColor=[22,163,74]; } },
+      });
+      let yFl = doc.lastAutoTable.finalY + 8;
+      if (E.mesRecuperacao) {
+        doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(11);
+        doc.text('Investimento recuperado em ' + fmtD(E.mesRecuperacao.data) + ' - a partir dai, lucro recorrente.', 18, yFl);
+        yFl += 10;
+      }
+      // aviso de custo fixo
+      if (E.embutir) {
+        doc.setFillColor(240,253,244); doc.roundedRect(18,yFl,W-36,16,2,2,'F');
+        doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(10);
+        doc.text('Custo fixo mensal do plano JA EMBUTIDO no preco de venda — sem cobrancas a parte.', 24, yFl+10);
+      } else {
+        doc.setTextColor(...CINZA); doc.setFont('helvetica','italic'); doc.setFontSize(8);
+        doc.text('* O custo fixo mensal do plano (' + money(E.custoFixoMes) + ') e demais custos fixos nao estao embutidos nos precos acima e sao cobrados a parte.', 18, yFl+6);
+      }
 
       doc.save('Estrategia_' + (E.cliente||'cliente').replace(/\s+/g,'_') + '.pdf');
       showToast('📄 PDF gerado!');
