@@ -4439,6 +4439,21 @@
           </div>
         </div>
 
+        <!-- Estratégias por Loja -->
+        <div class="transactions-card" style="margin-bottom:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <h3 style="margin:0">🚀 Estratégias por Loja</h3>
+              <div style="font-size:12px;color:#6b7280">Em qual fase cada loja está (Lançamento → Expansão → Lucro). <span id="estLojaMetricas" style="font-weight:700;color:#1e293b"></span></div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <input type="text" id="estLojaBusca" class="form-input" placeholder="🔍 Buscar loja..." style="width:auto" oninput="renderEstrategiasLoja()">
+              <button class="primary-btn" onclick="abrirEstrategiaLojaModal()">+ Definir estratégia</button>
+            </div>
+          </div>
+          <div id="estrategiasLojaLista" style="margin-top:12px"><em style="color:#9ca3af;font-size:13px">Carregando...</em></div>
+        </div>
+
         <!-- Top clientes -->
         <div class="top-clients-card">
           <div class="top-clients-header">
@@ -18185,6 +18200,10 @@ REGRAS DURAS:
           <input type="checkbox" id="${prefixo}_reguaAtiva" onchange="ReguaUI.toggle('${prefixo}')" style="width:16px;height:16px"> ${titulo}
         </label>
         <div id="${prefixo}_reguaBox" style="display:none;margin-top:10px">
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 10px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+            <span style="font-size:11px;color:#15803d"><b>🚀 Estratégia automática</b> — preenche Lançamento → Lucro a partir do custo</span>
+            <button type="button" class="toolbar-btn" style="font-size:11px;background:#16a34a;color:white" onclick="ReguaUI.pedirCustoEstrategia('${prefixo}')">Preencher com estratégia</button>
+          </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
             <div style="flex:2;min-width:160px">
               <label class="form-label" style="font-size:11px">Preço inicial (promoção)</label>
@@ -18363,6 +18382,93 @@ REGRAS DURAS:
         degrausAbs.push({ dias: d.dias, preco: atual });
       });
       return { imediato, degraus: degrausAbs };
+    },
+    // Abre um popup limpo perguntando o custo, e ao confirmar preenche a régua.
+    pedirCustoEstrategia(prefixo) {
+      // remove popup anterior se houver
+      const old = document.getElementById('reguaEstrategiaPopup');
+      if (old) old.remove();
+      const plano = (typeof _estUltimo !== 'undefined' && _estUltimo) ? _estUltimo.plano : 'prata';
+      const imposto = (typeof _estUltimo !== 'undefined' && _estUltimo) ? (_estUltimo.imposto*100).toFixed(1) : '0';
+      const ov = document.createElement('div');
+      ov.id = 'reguaEstrategiaPopup';
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:11000;display:flex;align-items:center;justify-content:center';
+      ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+      ov.innerHTML = `<div style="background:#fff;border-radius:16px;padding:22px;max-width:380px;width:92%" onclick="event.stopPropagation()">
+        <h3 style="margin:0 0 6px;font-size:17px">🚀 Preencher com estratégia</h3>
+        <p style="font-size:12px;color:#6b7280;margin:0 0 14px">Informe o custo do produto. Calculo os 5 preços (Lançamento 01/02/03 → Expansão → Lucro) e preencho a régua por tempo.<br><span style="color:#16a34a">Plano: <b>${plano.toUpperCase()}</b>${imposto!=='0.0'&&imposto!=='0'?' · imposto '+imposto+'%':''}</span> <span style="color:#9ca3af">(da última estratégia montada)</span></p>
+        <label class="form-label" style="font-size:12px">Custo do produto (R$)</label>
+        <input type="number" step="0.01" min="0" class="form-input" id="reguaEstCustoInput" placeholder="Ex: 13.00" style="margin-bottom:16px" autofocus>
+        <div style="display:flex;gap:8px">
+          <button class="toolbar-btn" style="flex:1" onclick="document.getElementById('reguaEstrategiaPopup').remove()">Cancelar</button>
+          <button class="btn btn-primary" style="flex:2;background:#16a34a" onclick="ReguaUI._confirmarCustoEstrategia('${prefixo}')">Calcular e preencher</button>
+        </div>
+      </div>`;
+      document.body.appendChild(ov);
+      setTimeout(() => { const inp = document.getElementById('reguaEstCustoInput'); if (inp) { inp.focus(); inp.onkeydown = (e)=>{ if(e.key==='Enter') ReguaUI._confirmarCustoEstrategia(prefixo); }; } }, 50);
+    },
+    _confirmarCustoEstrategia(prefixo) {
+      const inp = document.getElementById('reguaEstCustoInput');
+      const custo = inp ? parseFloat(inp.value) : 0;
+      if (!custo || custo <= 0) { showToast('Informe um custo válido', true); return; }
+      const pop = document.getElementById('reguaEstrategiaPopup');
+      if (pop) pop.remove();
+      ReguaUI.preencherComEstrategia(prefixo, custo);
+    },
+    // Preenche a régua com os 5 preços das estratégias (calculados a partir do custo).
+    // Usa o plano/imposto da última estratégia montada no Facilitador (_estUltimo) ou padrões.
+    // Lanç01 = preço inicial (modo fixo), e os demais viram degraus por tempo.
+    preencherComEstrategia(prefixo, custo) {
+      custo = parseFloat(custo) || 0;
+      if (!custo) { showToast('Informe o custo do produto', true); return; }
+      // parâmetros: usa os da última estratégia, ou padrão (prata, sem imposto)
+      const plano = (typeof _estUltimo !== 'undefined' && _estUltimo) ? _estUltimo.plano : 'prata';
+      const imposto = (typeof _estUltimo !== 'undefined' && _estUltimo) ? _estUltimo.imposto : 0;
+      // calcula os 5 preços (reusa o motor do facilitador, com taxa Shopee variável)
+      if (typeof estPrecoDetalhado !== 'function') { showToast('Motor de estratégia indisponível', true); return; }
+      const margens = { lanc01:-0.20, lanc02:-0.10, lanc03:0.00, expansao:0.10, lucro:0.20 };
+      const preco = m => estPrecoDetalhado(custo, imposto, m, plano).preco;
+      const pLanc01 = preco(margens.lanc01);
+      const pLanc02 = preco(margens.lanc02);
+      const pLanc03 = preco(margens.lanc03);
+      const pExp = preco(margens.expansao);
+      const pLucro = preco(margens.lucro);
+      // prazo da expansão em dias (por faixa de investimento)
+      let diasExp = 60;
+      if (typeof _estUltimo !== 'undefined' && _estUltimo) {
+        const inv = Math.abs(_estUltimo.invest||0);
+        diasExp = inv>=4000?30 : inv>=3100?60 : inv>=2600?90 : 150;
+      }
+      // ativa a régua
+      const ativa = document.getElementById(prefixo+'_reguaAtiva');
+      if (ativa && !ativa.checked) { ativa.checked = true; ReguaUI.toggle(prefixo); }
+      // modo inicial = fixo com o preço do Lançamento 01
+      const modoSel = document.getElementById(prefixo+'_reguaModo');
+      if (modoSel) { modoSel.value = 'fixo'; ReguaUI.onModo(prefixo); }
+      const valEl = document.getElementById(prefixo+'_reguaValor');
+      if (valEl) valEl.value = pLanc01.toFixed(2);
+      // limpa degraus existentes
+      const cont = document.getElementById(prefixo+'_reguaDegraus');
+      if (cont) cont.innerHTML = '';
+      // adiciona os 4 degraus (Lanç02, Lanç03, Expansão, Lucro) por tempo
+      const degraus = [
+        { dias: 7,  preco: pLanc02 },
+        { dias: 14, preco: pLanc03 },
+        { dias: 21, preco: pExp },
+        { dias: 21 + diasExp, preco: pLucro },
+      ];
+      degraus.forEach(d => {
+        ReguaUI.addDegrau(prefixo);
+        const divs = document.querySelectorAll('#'+prefixo+'_reguaDegraus > div');
+        const div = divs[divs.length-1];
+        if (!div) return;
+        div.querySelector('.'+prefixo+'-deg-dias').value = d.dias;
+        const tipoEl = div.querySelector('.'+prefixo+'-deg-tipo');
+        if (tipoEl) tipoEl.value = 'abs';
+        div.querySelector('.'+prefixo+'-deg-preco').value = d.preco.toFixed(2);
+      });
+      ReguaUI.previa(prefixo);
+      showToast('✅ Régua preenchida: '+plano.toUpperCase()+' · Lanç R$'+pLanc01.toFixed(2)+' → Lucro R$'+pLucro.toFixed(2));
     },
   };
   window.ReguaUI = ReguaUI;
@@ -30113,7 +30219,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.54-taxa-variavel-composicao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.57-estrategias-por-loja';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -34165,9 +34271,135 @@ ${JSON.stringify(metricas, null, 2)}`
     renderCommercial();
   }
 
+  // ═══ ESTRATÉGIAS POR LOJA ═══
+  let _estrategiasLoja = [];
+  const EST_LOJA_ORDEM = ['lancamento_01','lancamento_02','lancamento_03','expansao','lucro'];
+  const EST_LOJA_LABELS = { lancamento_01:'Lançamento 01', lancamento_02:'Lançamento 02', lancamento_03:'Lançamento 03', expansao:'Expansão', lucro:'Lucro' };
+  const EST_LOJA_CORES = { lancamento_01:'#3b82f6', lancamento_02:'#6366f1', lancamento_03:'#8b5cf6', expansao:'#ea580c', lucro:'#16a34a' };
+
+  async function carregarEstrategiasLoja() {
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/comercial/estrategias', { headers:{'x-api-token':getApiToken()} })).json();
+      _estrategiasLoja = (r.ok && r.estrategias) ? r.estrategias : [];
+      renderEstrategiasLoja();
+    } catch(e) { console.warn('[estrategias loja]', e); const el=document.getElementById('estrategiasLojaLista'); if(el) el.innerHTML='<span style="color:#dc2626;font-size:12px">Erro ao carregar estratégias</span>'; }
+  }
+  window.carregarEstrategiasLoja = carregarEstrategiasLoja;
+
+  function renderEstrategiasLoja() {
+    const cont = document.getElementById('estrategiasLojaLista');
+    if (!cont) return;
+    const busca = (document.getElementById('estLojaBusca')||{}).value || '';
+    const lista = _estrategiasLoja.filter(e => !busca || (e.loja_nome||'').toLowerCase().includes(busca.toLowerCase()) || (e.cliente_nome||'').toLowerCase().includes(busca.toLowerCase()));
+    const metr = document.getElementById('estLojaMetricas');
+    if (metr) {
+      const cont2 = {}; _estrategiasLoja.forEach(e=>{ cont2[e.estrategia_atual]=(cont2[e.estrategia_atual]||0)+1; });
+      metr.textContent = _estrategiasLoja.length + ' loja(s): ' + EST_LOJA_ORDEM.map(k=>cont2[k]?(cont2[k]+' '+EST_LOJA_LABELS[k]):null).filter(Boolean).join(' · ');
+    }
+    if (!lista.length) { cont.innerHTML = '<em style="color:#9ca3af;font-size:13px">Nenhuma estratégia definida. Clique em "+ Definir estratégia".</em>'; return; }
+    cont.innerHTML = lista.map(e => {
+      const cor = EST_LOJA_CORES[e.estrategia_atual] || '#6b7280';
+      const dias = e.data_inicio_estrategia ? Math.floor((Date.now()-new Date(e.data_inicio_estrategia).getTime())/86400000) : 0;
+      const idx = EST_LOJA_ORDEM.indexOf(e.estrategia_atual);
+      const podeAvancar = idx >= 0 && idx < EST_LOJA_ORDEM.length-1;
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;flex-wrap:wrap">
+        <div style="flex:1;min-width:180px">
+          <div style="font-weight:700;font-size:14px">${escapeHtml(e.loja_nome)} <span style="font-size:11px;color:#9ca3af;font-weight:400">${e.marketplace||''}</span></div>
+          <div style="font-size:11px;color:#6b7280">${e.cliente_nome?('Cliente: '+escapeHtml(e.cliente_nome)+' · '):''}há ${dias} dia(s) nesta fase${e.investimento?(' · invest R$'+Number(e.investimento).toFixed(0)):''}${e.plano?(' · '+e.plano):''}</div>
+        </div>
+        <span style="background:${cor};color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700">${EST_LOJA_LABELS[e.estrategia_atual]||e.estrategia_atual}</span>
+        <div style="display:flex;gap:6px">
+          ${podeAvancar?`<button class="toolbar-btn" style="font-size:11px;background:#16a34a;color:white" onclick="avancarEstrategiaLoja(${e.loja_id})">→ Avançar fase</button>`:'<span style="font-size:11px;color:#16a34a;font-weight:700">✓ Fase final</span>'}
+          <button class="toolbar-btn" style="font-size:11px" onclick="abrirEstrategiaLojaModal(${e.loja_id})">✏️</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  window.renderEstrategiasLoja = renderEstrategiasLoja;
+
+  async function avancarEstrategiaLoja(lojaId) {
+    const e = _estrategiasLoja.find(x=>x.loja_id===lojaId);
+    const idx = e ? EST_LOJA_ORDEM.indexOf(e.estrategia_atual) : -1;
+    const proxLabel = idx>=0 && idx<EST_LOJA_ORDEM.length-1 ? EST_LOJA_LABELS[EST_LOJA_ORDEM[idx+1]] : '';
+    if (!confirm(`Avançar ${e?e.loja_nome:'a loja'} para "${proxLabel}"?\n\nA data de início da nova fase será hoje.`)) return;
+    try {
+      const r = await (await fetch(BACKEND_URL + `/api/comercial/estrategias/${lojaId}/avancar`, { method:'POST', headers:{'x-api-token':getApiToken()} })).json();
+      if (r.ok) { showToast('✅ Avançou para '+(r.label_proxima||'próxima fase')); carregarEstrategiasLoja(); }
+      else showToast('Erro: '+(r.erro||''), true);
+    } catch(e) { showToast('Erro: '+e.message, true); }
+  }
+  window.avancarEstrategiaLoja = avancarEstrategiaLoja;
+
+  function abrirEstrategiaLojaModal(lojaId) {
+    const existente = lojaId ? _estrategiasLoja.find(x=>x.loja_id===lojaId) : null;
+    const old = document.getElementById('estLojaModalOverlay'); if (old) old.remove();
+    // monta opções de loja (usa lojasErp do painel)
+    const lojas = (typeof lojasErp !== 'undefined' ? lojasErp : []).filter(l => l.idBanco);
+    const optsLoja = lojas.map(l => `<option value="${l.idBanco}" ${existente&&String(existente.loja_id)===String(l.idBanco)?'selected':''}>${escapeHtml(l.nome)} (${l.marketplace})</option>`).join('');
+    const optsFase = EST_LOJA_ORDEM.map(k=>`<option value="${k}" ${existente&&existente.estrategia_atual===k?'selected':''}>${EST_LOJA_LABELS[k]}</option>`).join('');
+    const ov = document.createElement('div');
+    ov.id = 'estLojaModalOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:11000;display:flex;align-items:center;justify-content:center';
+    ov.onclick = (ev)=>{ if(ev.target===ov) ov.remove(); };
+    ov.innerHTML = `<div style="background:#fff;border-radius:16px;padding:22px;max-width:440px;width:94%;max-height:90vh;overflow-y:auto" onclick="event.stopPropagation()">
+      <h3 style="margin:0 0 14px;font-size:17px">🚀 ${existente?'Editar':'Definir'} estratégia da loja</h3>
+      <label class="form-label" style="font-size:12px">Loja</label>
+      <select class="form-input" id="estLojaSel" style="margin-bottom:10px" ${existente?'disabled':''}>${optsLoja}</select>
+      <label class="form-label" style="font-size:12px">Nome do cliente (opcional)</label>
+      <input type="text" class="form-input" id="estLojaCliente" style="margin-bottom:10px" value="${existente?escapeHtml(existente.cliente_nome||''):''}" placeholder="Ex: João Silva">
+      <label class="form-label" style="font-size:12px">Estratégia atual</label>
+      <select class="form-input" id="estLojaFase" style="margin-bottom:10px">${optsFase}</select>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div><label class="form-label" style="font-size:12px">Investimento Ads (R$)</label><input type="number" class="form-input" id="estLojaInvest" value="${existente?(existente.investimento||''):''}" placeholder="3000"></div>
+        <div><label class="form-label" style="font-size:12px">Custo produto (R$)</label><input type="number" class="form-input" id="estLojaCusto" value="${existente?(existente.custo_produto||''):''}" placeholder="13.00" step="0.01"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div><label class="form-label" style="font-size:12px">Plano</label><select class="form-input" id="estLojaPlano"><option value="prata" ${existente&&existente.plano==='prata'?'selected':''}>Prata</option><option value="ouro" ${existente&&existente.plano==='ouro'?'selected':''}>Ouro</option></select></div>
+        <div><label class="form-label" style="font-size:12px">Imposto (%)</label><input type="number" class="form-input" id="estLojaImposto" value="${existente?((existente.imposto||0)*100):''}" placeholder="4" step="0.5"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        ${existente?`<button class="toolbar-btn" style="color:#dc2626" onclick="removerEstrategiaLoja(${existente.loja_id})">🗑 Remover</button>`:''}
+        <button class="toolbar-btn" style="flex:1" onclick="document.getElementById('estLojaModalOverlay').remove()">Cancelar</button>
+        <button class="btn btn-primary" style="flex:2;background:#16a34a" onclick="salvarEstrategiaLoja()">Salvar</button>
+      </div>
+    </div>`;
+    document.body.appendChild(ov);
+  }
+  window.abrirEstrategiaLojaModal = abrirEstrategiaLojaModal;
+
+  async function salvarEstrategiaLoja() {
+    const lojaId = (document.getElementById('estLojaSel')||{}).value;
+    if (!lojaId) { showToast('Selecione a loja', true); return; }
+    const body = {
+      loja_id: parseInt(lojaId,10),
+      cliente_nome: (document.getElementById('estLojaCliente')||{}).value || null,
+      estrategia_atual: (document.getElementById('estLojaFase')||{}).value,
+      investimento: parseFloat((document.getElementById('estLojaInvest')||{}).value)||0,
+      custo_produto: parseFloat((document.getElementById('estLojaCusto')||{}).value)||0,
+      plano: (document.getElementById('estLojaPlano')||{}).value,
+      imposto: (parseFloat((document.getElementById('estLojaImposto')||{}).value)||0)/100,
+    };
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/comercial/estrategias', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body:JSON.stringify(body) })).json();
+      if (r.ok) { showToast('✅ Estratégia salva'); document.getElementById('estLojaModalOverlay').remove(); carregarEstrategiasLoja(); }
+      else showToast('Erro: '+(r.erro||''), true);
+    } catch(e) { showToast('Erro: '+e.message, true); }
+  }
+  window.salvarEstrategiaLoja = salvarEstrategiaLoja;
+
+  async function removerEstrategiaLoja(lojaId) {
+    if (!confirm('Remover a estratégia desta loja?')) return;
+    try {
+      await fetch(BACKEND_URL + `/api/comercial/estrategias/${lojaId}`, { method:'DELETE', headers:{'x-api-token':getApiToken()} });
+      showToast('Estratégia removida'); const m=document.getElementById('estLojaModalOverlay'); if(m)m.remove(); carregarEstrategiasLoja();
+    } catch(e) { showToast('Erro: '+e.message, true); }
+  }
+  window.removerEstrategiaLoja = removerEstrategiaLoja;
+
   function renderCommercial() {
     document.getElementById('billingMonthLabel').textContent = `${meses[billingMes]} · ${billingAno}`;
     if (typeof renderCadastroClientes === 'function') renderCadastroClientes();
+    if (typeof carregarEstrategiasLoja === 'function') carregarEstrategiasLoja();
     const period = getBillingPeriod();
     const cur = getBillingsOfPeriod(period);
     
