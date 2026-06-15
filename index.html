@@ -30219,7 +30219,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.61-amarracao-cliente-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.62-multiproduto-anuncios';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -34390,12 +34390,19 @@ ${JSON.stringify(metricas, null, 2)}`
       <select class="form-input" id="estLojaFase" style="margin-bottom:10px">${EST_LOJA_ORDEM.map(k=>`<option value="${k}" ${existente&&existente.estrategia_atual===k?'selected':''}>${EST_LOJA_LABELS[k]}</option>`).join('')}</select>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
         <div><label class="form-label" style="font-size:12px">Investimento Ads (R$)</label><input type="number" class="form-input" id="estLojaInvest" value="${existente?(existente.investimento||''):''}" placeholder="3000"></div>
-        <div><label class="form-label" style="font-size:12px">Custo produto (R$)</label><input type="number" class="form-input" id="estLojaCusto" value="${existente?(existente.custo_produto||''):''}" placeholder="13.00" step="0.01"></div>
+        <div><label class="form-label" style="font-size:12px">Imposto (%)</label><input type="number" class="form-input" id="estLojaImposto" value="${existente?((existente.imposto||0)*100):''}" placeholder="4" step="0.5" oninput="estRecalcProdutosCard()"></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-        <div><label class="form-label" style="font-size:12px">Plano</label><select class="form-input" id="estLojaPlano"><option value="prata" ${existente&&existente.plano==='prata'?'selected':''}>Prata</option><option value="ouro" ${existente&&existente.plano==='ouro'?'selected':''}>Ouro</option></select></div>
-        <div><label class="form-label" style="font-size:12px">Imposto (%)</label><input type="number" class="form-input" id="estLojaImposto" value="${existente?((existente.imposto||0)*100):''}" placeholder="4" step="0.5"></div>
+      <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:10px">
+        <div><label class="form-label" style="font-size:12px">Plano</label><select class="form-input" id="estLojaPlano" onchange="estRecalcProdutosCard()"><option value="prata" ${existente&&existente.plano==='prata'?'selected':''}>Prata (6% + R$399,90/mês)</option><option value="ouro" ${existente&&existente.plano==='ouro'?'selected':''}>Ouro (R$1/venda + R$1.999,90/mês)</option></select></div>
       </div>
+
+      <!-- PRODUTOS (multi) com preços por fase e vínculo de anúncios -->
+      <div style="margin:6px 0 8px;display:flex;align-items:center;justify-content:space-between">
+        <label class="form-label" style="margin:0;font-size:12px">📦 Produtos da estratégia (cada um vira uma régua própria)</label>
+        <button type="button" class="toolbar-btn" style="font-size:11px" onclick="estCardAddProduto()">+ Produto</button>
+      </div>
+      <div id="estCardProdutos" style="margin-bottom:10px"></div>
+
       <div style="background:#f8fafc;border-radius:8px;padding:10px;margin-bottom:10px">
         <div style="font-size:12px;font-weight:700;color:#15803d;margin-bottom:8px">🎯 Metas de quantidade por fase (avança ao bater meta OU prazo)</div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
@@ -34406,7 +34413,7 @@ ${JSON.stringify(metricas, null, 2)}`
       </div>
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px;cursor:pointer;padding:8px;background:#fef3c7;border-radius:8px">
         <input type="checkbox" id="estAutoAplicar" ${existente&&existente.auto_aplicar_preco?'checked':''}>
-        <span>⚡ Ao avançar, <b>aplicar os preços planejados direto nos anúncios ativos da loja</b> automaticamente</span>
+        <span>⚡ Ao avançar, <b>aplicar o preço da fase nos anúncios vinculados de cada produto</b> automaticamente</span>
       </label>
       <div id="estLojaPreview" style="font-size:11px;color:#16a34a;margin-bottom:12px"></div>
       <div style="display:flex;gap:8px;margin-top:6px">
@@ -34416,8 +34423,21 @@ ${JSON.stringify(metricas, null, 2)}`
       </div>
     </div>`;
     document.body.appendChild(ov);
-    // se já tem cliente (edição ou pré-selecionado), filtra as lojas
-    if (clienteAtual) estFiltrarLojasDoCliente(existente ? String(existente.loja_id) : null);
+    // inicializa os produtos do card (do existente ou novo)
+    if (existente && Array.isArray(existente.custos_produtos) && existente.custos_produtos.length) {
+      _estCardProdutos = existente.custos_produtos.map(p => ({ nome:p.nome||'', custo:p.custo||0, anuncios:p.anuncios||[] }));
+    } else if (existente && existente.custo_produto) {
+      _estCardProdutos = [{ nome:'', custo:existente.custo_produto, anuncios:[] }];
+    } else {
+      _estCardProdutos = [{ nome:'', custo:0, anuncios:[] }];
+    }
+    _estCardAnunciosLoja = [];
+    // quando troca a loja, recarrega os anúncios
+    const selLoja = document.getElementById('estLojaSel');
+    if (selLoja) selLoja.addEventListener('change', estCardCarregarAnuncios);
+    estRenderProdutosCard();
+    // se já tem cliente (edição ou pré-selecionado), filtra as lojas e carrega anúncios
+    if (clienteAtual) { estFiltrarLojasDoCliente(existente ? String(existente.loja_id) : null); estCardCarregarAnuncios(); }
   }
   window.abrirEstrategiaLojaModal = abrirEstrategiaLojaModal;
 
@@ -34437,6 +34457,82 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.estFiltrarLojasDoCliente = estFiltrarLojasDoCliente;
 
+  // ─── Multi-produto do card de estratégia ───
+  let _estCardProdutos = [{ nome:'', custo:0, anuncios:[] }];
+  let _estCardAnunciosLoja = []; // anúncios da loja selecionada
+
+  function estCardAddProduto() { _estCardProdutos.push({ nome:'', custo:0, anuncios:[] }); estRenderProdutosCard(); }
+  window.estCardAddProduto = estCardAddProduto;
+  function estCardRemProduto(i) { _estCardProdutos.splice(i,1); if(!_estCardProdutos.length)_estCardProdutos=[{nome:'',custo:0,anuncios:[]}]; estRenderProdutosCard(); }
+  window.estCardRemProduto = estCardRemProduto;
+  function estCardSetProduto(i, campo, val) { if(!_estCardProdutos[i])return; _estCardProdutos[i][campo] = campo==='custo'?(parseFloat(val)||0):val; estRenderProdutosCard(); }
+  window.estCardSetProduto = estCardSetProduto;
+  function estCardToggleAnuncio(i, itemId) {
+    if (!_estCardProdutos[i]) return;
+    const arr = _estCardProdutos[i].anuncios || (_estCardProdutos[i].anuncios=[]);
+    const ix = arr.indexOf(itemId);
+    if (ix>=0) arr.splice(ix,1); else arr.push(itemId);
+    estRenderProdutosCard();
+  }
+  window.estCardToggleAnuncio = estCardToggleAnuncio;
+  function estRecalcProdutosCard() { estRenderProdutosCard(); }
+  window.estRecalcProdutosCard = estRecalcProdutosCard;
+
+  // carrega os anúncios reais da loja selecionada (via backend)
+  async function estCardCarregarAnuncios() {
+    const lojaId = (document.getElementById('estLojaSel')||{}).value;
+    _estCardAnunciosLoja = [];
+    if (!lojaId) { estRenderProdutosCard(); return; }
+    try {
+      const r = await (await fetch(BACKEND_URL + `/api/comercial/loja/${lojaId}/anuncios`, { headers:{'x-api-token':getApiToken()} })).json();
+      _estCardAnunciosLoja = (r.ok && r.anuncios) ? r.anuncios : [];
+    } catch(e) { console.warn('[anuncios loja]', e); }
+    estRenderProdutosCard();
+  }
+  window.estCardCarregarAnuncios = estCardCarregarAnuncios;
+
+  function estRenderProdutosCard() {
+    const cont = document.getElementById('estCardProdutos');
+    if (!cont) return;
+    const imposto = (parseFloat((document.getElementById('estLojaImposto')||{}).value)||0)/100;
+    const plano = (document.getElementById('estLojaPlano')||{}).value || 'prata';
+    const margens = [['Lanç 01',-0.20],['Lanç 02',-0.10],['Lanç 03',0],['Expansão',0.10],['Lucro',0.20]];
+    cont.innerHTML = _estCardProdutos.map((p,i) => {
+      // preços das 5 fases (se tem custo e o motor existe)
+      let tabelaPrecos = '';
+      if (p.custo>0 && typeof estPrecoDetalhado==='function') {
+        tabelaPrecos = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + margens.map(([nome,m]) => {
+          const preco = estPrecoDetalhado(p.custo, imposto, m, plano).preco;
+          const cor = m<0?'#dc2626':(m===0?'#6b7280':'#16a34a');
+          return `<span style="font-size:10px;background:#f1f5f9;border-radius:6px;padding:2px 6px;color:${cor}"><b>${nome}:</b> R$${preco.toFixed(2)}</span>`;
+        }).join('') + '</div>';
+      }
+      // lista de anúncios da loja pra marcar
+      const sel = p.anuncios || [];
+      let listaAnuncios = '';
+      if (_estCardAnunciosLoja.length) {
+        listaAnuncios = '<div style="max-height:120px;overflow-y:auto;margin-top:6px;border:1px solid #e5e7eb;border-radius:6px;padding:6px">' +
+          _estCardAnunciosLoja.map(a => `<label style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;cursor:pointer">
+            <input type="checkbox" ${sel.includes(a.itemId)?'checked':''} onchange="estCardToggleAnuncio(${i},'${a.itemId}')">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml((a.titulo||'').slice(0,50))} <span style="color:#9ca3af">${a.marketplace}</span></span>
+          </label>`).join('') + '</div>';
+      } else {
+        listaAnuncios = '<div style="font-size:10px;color:#9ca3af;margin-top:4px">Selecione a loja pra listar os anúncios.</div>';
+      }
+      return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" class="form-input" style="flex:2" placeholder="Nome do produto ${i+1}" value="${escapeHtml(p.nome||'')}" oninput="estCardSetProduto(${i},'nome',this.value)">
+          <input type="number" class="form-input" style="flex:1" placeholder="Custo R$" step="0.01" value="${p.custo||''}" oninput="estCardSetProduto(${i},'custo',this.value)">
+          ${_estCardProdutos.length>1?`<button type="button" class="toolbar-btn" style="padding:6px 10px" onclick="estCardRemProduto(${i})">🗑</button>`:''}
+        </div>
+        ${tabelaPrecos}
+        <div style="font-size:11px;color:#6b7280;margin-top:6px">Anúncios deste produto (recebem a régua): <b>${sel.length} selecionado(s)</b></div>
+        ${listaAnuncios}
+      </div>`;
+    }).join('');
+  }
+  window.estRenderProdutosCard = estRenderProdutosCard;
+
   async function salvarEstrategiaLoja() {
     const cliente = (document.getElementById('estLojaCliente')||{}).value;
     const lojaId = (document.getElementById('estLojaSel')||{}).value;
@@ -34445,28 +34541,41 @@ ${JSON.stringify(metricas, null, 2)}`
     const custo = parseFloat((document.getElementById('estLojaCusto')||{}).value)||0;
     const imposto = (parseFloat((document.getElementById('estLojaImposto')||{}).value)||0)/100;
     const plano = (document.getElementById('estLojaPlano')||{}).value;
+    // produtos do card (multi) com anúncios vinculados
+    const produtos = _estCardProdutos.filter(p => (p.custo||0) > 0).map(p => ({ nome:p.nome||'', custo:p.custo, anuncios:p.anuncios||[] }));
+    if (!produtos.length) { showToast('Adicione ao menos 1 produto com custo', true); return; }
     // metas de quantidade
     const metas = {};
     const mL1 = parseInt((document.getElementById('estMetaL1')||{}).value); if (mL1) metas.lancamento_01 = mL1;
     const mL2 = parseInt((document.getElementById('estMetaL2')||{}).value); if (mL2) metas.lancamento_02 = mL2;
     const mL3 = parseInt((document.getElementById('estMetaL3')||{}).value); if (mL3) metas.lancamento_03 = mL3;
-    // régua planejada: calcula o preço de cada fase a partir do custo (reusa o motor)
+    // régua planejada por produto: cada produto tem seus preços de fase + anúncios
+    const margens = { lancamento_01:-0.20, lancamento_02:-0.10, lancamento_03:0.00, expansao:0.10, lucro:0.20 };
+    const reguaPorProduto = produtos.map(prod => {
+      const precos = {};
+      if (typeof estPrecoDetalhado === 'function') {
+        Object.keys(margens).forEach(fase => { precos[fase] = Math.round(estPrecoDetalhado(prod.custo, imposto, margens[fase], plano).preco*100)/100; });
+      }
+      return { nome: prod.nome, custo: prod.custo, anuncios: prod.anuncios, precos };
+    });
+    // régua "média" (compatibilidade com o handler atual) — média dos preços por fase
     const regua = {};
-    if (custo > 0 && typeof estPrecoDetalhado === 'function') {
-      const margens = { lancamento_01:-0.20, lancamento_02:-0.10, lancamento_03:0.00, expansao:0.10, lucro:0.20 };
-      Object.keys(margens).forEach(fase => {
-        regua[fase] = Math.round(estPrecoDetalhado(custo, imposto, margens[fase], plano).preco * 100) / 100;
-      });
-    }
+    Object.keys(margens).forEach(fase => {
+      const vals = reguaPorProduto.map(r => r.precos[fase]).filter(v=>v>0);
+      if (vals.length) regua[fase] = Math.round((vals.reduce((a,b)=>a+b,0)/vals.length)*100)/100;
+    });
+    const custoMedio = produtos.reduce((s,p)=>s+p.custo,0)/produtos.length;
     const body = {
       loja_id: parseInt(lojaId,10),
       cliente_nome: cliente,
       estrategia_atual: (document.getElementById('estLojaFase')||{}).value,
       investimento: parseFloat((document.getElementById('estLojaInvest')||{}).value)||0,
-      custo_produto: custo,
+      custo_produto: Math.round(custoMedio*100)/100,
+      custos_produtos: reguaPorProduto,
       plano, imposto,
       metas_quantidade: metas,
       regua_planejada: regua,
+      regua_por_produto: reguaPorProduto,
       auto_aplicar_preco: (document.getElementById('estAutoAplicar')||{}).checked === true,
     };
     try {
