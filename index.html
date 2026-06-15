@@ -8056,6 +8056,30 @@
 </div>
 
 <script>
+  /* ==================== INTERCEPTOR DE FETCH (JWT automático) ==================== */
+  /* Adiciona o Authorization: Bearer <jwt do login> em toda chamada ao backend.
+   * Assim o servidor identifica o papel (ex: demo) e filtra os dados com segurança,
+   * sem precisar editar cada fetch individual. */
+  (function() {
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = function(url, opts) {
+      try {
+        const u = (typeof url === 'string') ? url : (url && url.url) || '';
+        if (u.indexOf('api.painel.lidercommerce.com.br') !== -1 || u.indexOf('/api/') !== -1) {
+          opts = opts || {};
+          opts.headers = opts.headers || {};
+          // não sobrescreve se já tem Authorization
+          const jaTem = (opts.headers['Authorization'] || opts.headers['authorization']);
+          if (!jaTem) {
+            const jwt = localStorage.getItem('lider_token_login') || '';
+            if (jwt) opts.headers['Authorization'] = 'Bearer ' + jwt;
+          }
+        }
+      } catch(e) {}
+      return _origFetch(url, opts);
+    };
+  })();
+
   /* ==================== SINCRONIZAÇÃO SUPABASE ==================== */
   /*
    * Estratégia: cache local (localStorage) para velocidade + sync com Supabase.
@@ -8136,6 +8160,11 @@
     // === CARREGAR TUDO DO SUPABASE ===
     async pullAll() {
       if (!this.enabled || !this.client) return null;
+      // DEMO: não puxa dados reais do Supabase (segurança — demo só vê dados via backend filtrado)
+      try {
+        const uRaw = localStorage.getItem('lider_usuario');
+        if (uRaw) { const u = JSON.parse(uRaw); if (u && u.papel === 'demo') { console.log('[sync] demo: pull bloqueado'); return null; } }
+      } catch(e) {}
       this.syncing = true;
       this.updateStatusBadge('syncing');
       try {
@@ -8356,6 +8385,7 @@
     },
     
     async pushAppData(chave, valor) {
+      try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u && u.papel==='demo') return; } catch(e) {}
       if (!this.enabled || !this.client) return false;
       try {
         const { error } = await this.client.from('app_data')
@@ -8372,6 +8402,8 @@
     // Debounce de push pra não floodar o Supabase
     _pushTimers: {},
     schedulePush(what, fn) {
+      // DEMO: nunca grava no banco real
+      try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u && u.papel==='demo') return; } catch(e) {}
       if (this._pushTimers[what]) clearTimeout(this._pushTimers[what]);
       this._pushTimers[what] = setTimeout(async () => {
         if (!this.enabled) return;
@@ -30225,7 +30257,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.67-colaborador-acesso-total';
+  const _DIAG_VERSAO_PAINEL = 'v33k.69-demo-blindado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
