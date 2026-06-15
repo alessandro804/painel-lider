@@ -30095,7 +30095,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.42-aviso-aprovacao-anuncio-novo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.43-aviso-aprovacao-fix';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -38660,7 +38660,7 @@ ${JSON.stringify(metricas, null, 2)}`
     // Vale pra qualquer tipo (inclusive anuncio_novo). O backend agenda e o card
     // mostra "Agendado p/ ...". Disparo forçado pelo card continua disponível.
     if (novoStatus === 'aprovado' && !d.clienteAvisado) {
-      try { enfileirarAvisoAprovacao(d); } catch(eAv) { console.warn('[aviso aprovação]', eAv); }
+      Promise.resolve(enfileirarAvisoAprovacao(d)).catch(eAv => console.warn('[aviso aprovação]', eAv && eAv.message));
     }
 
     const statusLabels = {
@@ -38676,12 +38676,19 @@ ${JSON.stringify(metricas, null, 2)}`
   // no backend, que respeita a janela de horário útil. Se fora do horário, o backend
   // grava aviso_agendado_para e o card mostra "Agendado p/ X".
   async function enfileirarAvisoAprovacao(d) {
+    if (!d || typeof d !== 'object') { console.warn('[aviso aprovação] demanda inválida'); return; }
     const { clienteNome, telefone } = _resolverClienteDaDemanda(d);
     if (!telefone) {
-      // sem telefone: deixa o card no estado "A enviar" pra ação manual
       showToast('⚠ ' + (clienteNome||'Cliente') + ' sem telefone — avise manualmente pelo card', true);
       return;
     }
+    // normaliza telefone BR: garante DDI 55 e o 9 do celular quando faltar
+    let tel = String(telefone).replace(/\D/g, '');
+    if (tel.length === 10) { // DDD + 8 dígitos → insere o 9 do celular
+      tel = tel.slice(0,2) + '9' + tel.slice(2);
+    }
+    if (tel.length === 11 && !tel.startsWith('55')) tel = '55' + tel; // adiciona DDI
+
     // gera a mensagem com IA (mesma do modal), incluindo o nome do produto
     let mensagem = '';
     try {
@@ -38689,8 +38696,12 @@ ${JSON.stringify(metricas, null, 2)}`
       const systemPrompt = (typeof getPrompt === 'function')
         ? getPrompt('whatsapp_demanda_concluida').replace('{{demanda}}', input) : input;
       mensagem = ((await chamarIA({ system: systemPrompt, prompt: 'Gere a mensagem final pronta para enviar ao cliente, seguindo as diretrizes.', maxTokens: 600 })) || '').trim();
-    } catch(eIA) { console.warn('[aviso IA]', eIA); }
-    if (!mensagem) { showToast('⚠ Não consegui gerar a mensagem — avise manualmente pelo card', true); return; }
+    } catch(eIA) {
+      console.warn('[aviso IA]', eIA);
+      showToast('⚠ Erro ao gerar mensagem com IA — avise manualmente pelo card', true);
+      return;
+    }
+    if (!mensagem) { showToast('⚠ Mensagem vazia — avise manualmente pelo card', true); return; }
 
     // cria a tarefa backend de aviso (o backend respeita o horário e grava agendamento)
     try {
@@ -38701,11 +38712,15 @@ ${JSON.stringify(metricas, null, 2)}`
           tipo: 'enviar_aviso_demanda',
           descricao: 'Aviso de demanda aprovada — ' + (clienteNome||'cliente'),
           rodar_em: new Date(Date.now()-1000).toISOString(),
-          params: { demandaId: String(d.id), numero: telefone, texto: mensagem, perfil: 'financeiro' }
+          params: { demandaId: String(d.id), numero: tel, texto: mensagem, perfil: 'financeiro' }
         })
       })).json();
       if (r && r.ok) showToast('📲 Aviso ao cliente programado (respeitando horário)');
-    } catch(eT) { console.warn('[aviso tarefa]', eT); }
+      else { console.warn('[aviso tarefa] resposta:', r); showToast('⚠ Falha ao programar aviso: ' + ((r&&r.erro)||'erro'), true); }
+    } catch(eT) {
+      console.warn('[aviso tarefa]', eT);
+      showToast('⚠ Erro ao programar aviso — avise manualmente pelo card', true);
+    }
   }
   window.enfileirarAvisoAprovacao = enfileirarAvisoAprovacao;
 
