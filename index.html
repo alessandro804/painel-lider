@@ -30219,7 +30219,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.57-estrategias-por-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.60-ml-contador';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -34302,18 +34302,49 @@ ${JSON.stringify(metricas, null, 2)}`
       const dias = e.data_inicio_estrategia ? Math.floor((Date.now()-new Date(e.data_inicio_estrategia).getTime())/86400000) : 0;
       const idx = EST_LOJA_ORDEM.indexOf(e.estrategia_atual);
       const podeAvancar = idx >= 0 && idx < EST_LOJA_ORDEM.length-1;
+      // prazo da fase pra contador regressivo (Lançamento 7d; Expansão por faixa; Lucro fixo)
+      let prazoFase = null;
+      const f = e.estrategia_atual;
+      if (f==='lancamento_01'||f==='lancamento_02'||f==='lancamento_03') prazoFase = 7;
+      else if (f==='expansao') { const i=Math.abs(e.investimento||0); prazoFase = i>=4000?30 : i>=3100?60 : i>=2600?90 : 150; }
+      let contador = '';
+      if (prazoFase !== null) {
+        const faltam = Math.max(0, prazoFase - dias);
+        const corC = faltam<=1 ? '#dc2626' : (faltam<=3 ? '#ea580c' : '#16a34a');
+        contador = faltam>0
+          ? `<span style="font-size:11px;color:${corC};font-weight:700">⏳ vira em ${faltam} dia(s)</span>`
+          : `<span style="font-size:11px;color:#dc2626;font-weight:700">⏳ vira hoje (automático)</span>`;
+      } else {
+        contador = '<span style="font-size:11px;color:#16a34a;font-weight:700">✓ fase final (não avança)</span>';
+      }
+      // contador de pedidos restantes (preenchido depois, async) — só se há meta na fase
+      const meta = (e.metas_quantidade||{})[e.estrategia_atual];
+      const contadorPedidos = meta ? `<span id="estVendas_${e.loja_id}" style="font-size:11px;color:#6b7280;font-weight:700">📦 carregando vendas...</span>` : '';
       return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;flex-wrap:wrap">
         <div style="flex:1;min-width:180px">
           <div style="font-weight:700;font-size:14px">${escapeHtml(e.loja_nome)} <span style="font-size:11px;color:#9ca3af;font-weight:400">${e.marketplace||''}</span></div>
-          <div style="font-size:11px;color:#6b7280">${e.cliente_nome?('Cliente: '+escapeHtml(e.cliente_nome)+' · '):''}há ${dias} dia(s) nesta fase${e.investimento?(' · invest R$'+Number(e.investimento).toFixed(0)):''}${e.plano?(' · '+e.plano):''}</div>
+          <div style="font-size:11px;color:#6b7280">${e.cliente_nome?('Cliente: '+escapeHtml(e.cliente_nome)+' · '):''}há ${dias} dia(s) · ${contador}${contadorPedidos?' · '+contadorPedidos:''}</div>
         </div>
         <span style="background:${cor};color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700">${EST_LOJA_LABELS[e.estrategia_atual]||e.estrategia_atual}</span>
         <div style="display:flex;gap:6px">
-          ${podeAvancar?`<button class="toolbar-btn" style="font-size:11px;background:#16a34a;color:white" onclick="avancarEstrategiaLoja(${e.loja_id})">→ Avançar fase</button>`:'<span style="font-size:11px;color:#16a34a;font-weight:700">✓ Fase final</span>'}
+          ${podeAvancar?`<button class="toolbar-btn" style="font-size:11px;background:#16a34a;color:white" onclick="avancarEstrategiaLoja(${e.loja_id})">→ Avançar agora</button>`:'<span style="font-size:11px;color:#16a34a;font-weight:700">✓ Fase final</span>'}
           <button class="toolbar-btn" style="font-size:11px" onclick="abrirEstrategiaLojaModal(${e.loja_id})">✏️</button>
         </div>
       </div>`;
     }).join('');
+    // busca as vendas de cada loja com meta (async, atualiza os contadores)
+    lista.filter(e => (e.metas_quantidade||{})[e.estrategia_atual]).forEach(async e => {
+      try {
+        const r = await (await fetch(BACKEND_URL + `/api/comercial/estrategias/${e.loja_id}/vendas-fase`, { headers:{'x-api-token':getApiToken()} })).json();
+        const el = document.getElementById('estVendas_'+e.loja_id);
+        if (el && r.ok && r.meta) {
+          const rest = r.restantes;
+          const cor = rest<=0 ? '#dc2626' : (rest<=3 ? '#ea580c' : '#16a34a');
+          el.style.color = cor;
+          el.textContent = rest<=0 ? `📦 meta batida (${r.vendas}/${r.meta})` : `📦 faltam ${rest} pedido(s) (${r.vendas}/${r.meta})`;
+        } else if (el) { el.textContent = ''; }
+      } catch(_) { const el=document.getElementById('estVendas_'+e.loja_id); if(el) el.textContent=''; }
+    });
   }
   window.renderEstrategiasLoja = renderEstrategiasLoja;
 
@@ -34357,6 +34388,18 @@ ${JSON.stringify(metricas, null, 2)}`
         <div><label class="form-label" style="font-size:12px">Plano</label><select class="form-input" id="estLojaPlano"><option value="prata" ${existente&&existente.plano==='prata'?'selected':''}>Prata</option><option value="ouro" ${existente&&existente.plano==='ouro'?'selected':''}>Ouro</option></select></div>
         <div><label class="form-label" style="font-size:12px">Imposto (%)</label><input type="number" class="form-input" id="estLojaImposto" value="${existente?((existente.imposto||0)*100):''}" placeholder="4" step="0.5"></div>
       </div>
+      <div style="background:#f8fafc;border-radius:8px;padding:10px;margin-bottom:10px">
+        <div style="font-size:12px;font-weight:700;color:#15803d;margin-bottom:8px">🎯 Metas de quantidade por fase (avança ao bater meta OU prazo)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+          <div><label class="form-label" style="font-size:11px">Lançamento 01</label><input type="number" class="form-input" id="estMetaL1" value="${existente&&existente.metas_quantidade?(existente.metas_quantidade.lancamento_01||''):''}" placeholder="30"></div>
+          <div><label class="form-label" style="font-size:11px">Lançamento 02</label><input type="number" class="form-input" id="estMetaL2" value="${existente&&existente.metas_quantidade?(existente.metas_quantidade.lancamento_02||''):''}" placeholder="40"></div>
+          <div><label class="form-label" style="font-size:11px">Lançamento 03</label><input type="number" class="form-input" id="estMetaL3" value="${existente&&existente.metas_quantidade?(existente.metas_quantidade.lancamento_03||''):''}" placeholder="120"></div>
+        </div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:12px;cursor:pointer;padding:8px;background:#fef3c7;border-radius:8px">
+        <input type="checkbox" id="estAutoAplicar" ${existente&&existente.auto_aplicar_preco?'checked':''}>
+        <span>⚡ Ao avançar de fase, <b>aplicar os preços planejados direto nos anúncios</b> da loja automaticamente (usa o custo acima pra calcular a régua de cada fase)</span>
+      </label>
       <div style="display:flex;gap:8px;margin-top:6px">
         ${existente?`<button class="toolbar-btn" style="color:#dc2626" onclick="removerEstrategiaLoja(${existente.loja_id})">🗑 Remover</button>`:''}
         <button class="toolbar-btn" style="flex:1" onclick="document.getElementById('estLojaModalOverlay').remove()">Cancelar</button>
@@ -34370,14 +34413,32 @@ ${JSON.stringify(metricas, null, 2)}`
   async function salvarEstrategiaLoja() {
     const lojaId = (document.getElementById('estLojaSel')||{}).value;
     if (!lojaId) { showToast('Selecione a loja', true); return; }
+    const custo = parseFloat((document.getElementById('estLojaCusto')||{}).value)||0;
+    const imposto = (parseFloat((document.getElementById('estLojaImposto')||{}).value)||0)/100;
+    const plano = (document.getElementById('estLojaPlano')||{}).value;
+    // metas de quantidade
+    const metas = {};
+    const mL1 = parseInt((document.getElementById('estMetaL1')||{}).value); if (mL1) metas.lancamento_01 = mL1;
+    const mL2 = parseInt((document.getElementById('estMetaL2')||{}).value); if (mL2) metas.lancamento_02 = mL2;
+    const mL3 = parseInt((document.getElementById('estMetaL3')||{}).value); if (mL3) metas.lancamento_03 = mL3;
+    // régua planejada: calcula o preço de cada fase a partir do custo (reusa o motor)
+    const regua = {};
+    if (custo > 0 && typeof estPrecoDetalhado === 'function') {
+      const margens = { lancamento_01:-0.20, lancamento_02:-0.10, lancamento_03:0.00, expansao:0.10, lucro:0.20 };
+      Object.keys(margens).forEach(fase => {
+        regua[fase] = Math.round(estPrecoDetalhado(custo, imposto, margens[fase], plano).preco * 100) / 100;
+      });
+    }
     const body = {
       loja_id: parseInt(lojaId,10),
       cliente_nome: (document.getElementById('estLojaCliente')||{}).value || null,
       estrategia_atual: (document.getElementById('estLojaFase')||{}).value,
       investimento: parseFloat((document.getElementById('estLojaInvest')||{}).value)||0,
-      custo_produto: parseFloat((document.getElementById('estLojaCusto')||{}).value)||0,
-      plano: (document.getElementById('estLojaPlano')||{}).value,
-      imposto: (parseFloat((document.getElementById('estLojaImposto')||{}).value)||0)/100,
+      custo_produto: custo,
+      plano, imposto,
+      metas_quantidade: metas,
+      regua_planejada: regua,
+      auto_aplicar_preco: (document.getElementById('estAutoAplicar')||{}).checked === true,
     };
     try {
       const r = await (await fetch(BACKEND_URL + '/api/comercial/estrategias', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body:JSON.stringify(body) })).json();
