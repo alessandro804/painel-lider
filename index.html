@@ -30266,7 +30266,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.74-copias-promo-definitivo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.75-estrategia-transparente';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42418,6 +42418,29 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // custo fixo do plano abatido do lucro real
     mediaFase.lucro.lucroLiquidoMes = mediaFase.lucro.lucroRealMes - custoFixoMes;
 
+    // ── INDICADORES DE TRANSPARÊNCIA por fase (fórmulas exatas da planilha) ──
+    // Lançamento: vendas_valor = qtd*preço; ads_real = qtd*lucro_un - verba_da_semana;
+    //   ACOS = ads_real / vendas_valor; gasto_ads_por_par = preço * ACOS.
+    // verba (perda planejada) por semana: 30% / 30% / 40% do orçamento (negativa).
+    const verbaSem = { lanc01: orc*0.30, lanc02: orc*0.30, lanc03: orc*0.40 };
+    ['lanc01','lanc02','lanc03'].forEach(id => {
+      const f = mediaFase[id];
+      f.verbaSemana = verbaSem[id];                       // investimento "do bolso" da semana (a perda)
+      f.vendasValor = (f.qtd||0) * f.preco;               // faturamento da semana
+      f.adsReal = Math.max(0, (f.qtd||0) * Math.abs(f.lucroVenda) - 0); // gasto real de Ads pra girar (aprox planilha: qtd*|lucro| )
+      // ACOS conforme planilha = ads / vendas_valor (usa o ads investido = verba da semana)
+      f.adsInvest = f.verbaSemana;                         // o que o cliente coloca de Ads na semana
+      f.acos = f.vendasValor>0 ? (f.adsInvest / f.vendasValor) : 0;
+      f.gastoAdsPorPar = f.qtd>0 ? (f.adsInvest / f.qtd) : 0;
+      f.resultadoSemana = -f.verbaSemana;                 // resultado da semana pro cliente (negativo)
+    });
+    // Expansão: vende com +10%; Ads = 10% do faturamento; lucro líquido = 0 (giro).
+    mediaFase.expansao.acos = 0.10;
+    mediaFase.expansao.gastoAdsPorPar = mediaFase.expansao.preco * 0.10;
+    // Lucro: ACOS 10%
+    mediaFase.lucro.acos = 0.10;
+    mediaFase.lucro.gastoAdsPorPar = mediaFase.lucro.preco * 0.10;
+
     // 4) embutir custo fixo no preço (diluído pela qtd mensal projetada)
     let acrescimoUnit = 0;
     if (embutir && mediaFase.lucro.qtd > 0) {
@@ -42508,6 +42531,65 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       }
       html += '</div>';
     });
+
+    // ════════ TRANSPARÊNCIA SEMANA A SEMANA (pro cliente entender o plano) ════════
+    const pct = v => (v*100).toFixed(0) + '%';
+    html += `<div style="margin-top:20px;padding-top:16px;border-top:2px solid #e5e7eb">
+      <div style="font-weight:800;font-size:15px;color:#1e293b;margin-bottom:4px">📣 O plano com total transparência</div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:14px">Cada fase explicada: quanto investir em Ads, quantos pares vendemos e qual o resultado.</div>`;
+
+    // ── LANÇAMENTO (Semana 1/2/3) ──
+    html += `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:14px;margin-bottom:12px">
+      <div style="font-weight:800;font-size:14px;color:#b91c1c;margin-bottom:4px">🚀 Fase 1 — Lançamento (3 semanas)</div>
+      <div style="font-size:12px;color:#7f1d1d;margin-bottom:10px">Aqui a gente <b>planta</b>. Vendemos abaixo do custo pra ganhar relevância e reputação rápido na plataforma. É investimento: o resultado é negativo de propósito, e cada real vira venda, avaliação e posicionamento.</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px;background:#fff;border-radius:8px;overflow:hidden">
+        <tr style="background:#fee2e2;text-align:left"><th style="padding:6px">Semana</th><th style="padding:6px">Investir em Ads</th><th style="padding:6px">Pares vendidos</th><th style="padding:6px">Preço</th><th style="padding:6px">ACOS</th><th style="padding:6px">Ads/par</th><th style="padding:6px">Resultado</th></tr>`;
+    [['lanc01','Semana 1'],['lanc02','Semana 2'],['lanc03','Semana 3']].forEach(([id,nome]) => {
+      const f = mediaFase[id];
+      html += `<tr style="border-bottom:1px solid #f1f5f9">
+        <td style="padding:6px;font-weight:700">${nome} <span style="color:#9ca3af;font-weight:400">(${pct(f.margem)})</span></td>
+        <td style="padding:6px;font-weight:700;color:#b45309">${fmt(f.adsInvest)}</td>
+        <td style="padding:6px;font-weight:700">${f.qtd} pares</td>
+        <td style="padding:6px">${fmt(f.preco)}</td>
+        <td style="padding:6px;color:#6b7280">${pct(f.acos)}</td>
+        <td style="padding:6px;color:#6b7280">${fmt(f.gastoAdsPorPar)}</td>
+        <td style="padding:6px;font-weight:700;color:#dc2626">${fmt(f.resultadoSemana)}</td>
+      </tr>`;
+    });
+    const totalAdsLanc = mediaFase.lanc01.adsInvest + mediaFase.lanc02.adsInvest + mediaFase.lanc03.adsInvest;
+    const totalParesLanc = (mediaFase.lanc01.qtd||0)+(mediaFase.lanc02.qtd||0)+(mediaFase.lanc03.qtd||0);
+    html += `<tr style="background:#fef2f2;font-weight:800"><td style="padding:6px">Total lançamento</td><td style="padding:6px;color:#b45309">${fmt(totalAdsLanc)}</td><td style="padding:6px">${totalParesLanc} pares</td><td style="padding:6px">—</td><td style="padding:6px">—</td><td style="padding:6px">—</td><td style="padding:6px;color:#dc2626">${fmt(-invest)}</td></tr>`;
+    html += `</table></div></div>`;
+
+    // ── EXPANSÃO ──
+    const exp = mediaFase.expansao;
+    html += `<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:14px;margin-bottom:12px">
+      <div style="font-weight:800;font-size:14px;color:#c2410c;margin-bottom:4px">📈 Fase 2 — Expansão (${exp.prazo})</div>
+      <div style="font-size:12px;color:#9a3412;margin-bottom:10px">Agora a gente <b>gira</b>. Vendemos com +10% de margem, mas <b>todo esse lucro vai pros Ads</b> — o foco é aumentar exposição e volume, sem tirar dinheiro ainda. O negócio se sustenta sozinho enquanto cresce.</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px;background:#fff;border-radius:8px;overflow:hidden">
+        <tr style="background:#ffedd5;text-align:left"><th style="padding:6px">Item</th><th style="padding:6px">Valor</th></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">Preço de venda (+10%)</td><td style="padding:6px;font-weight:700">${fmt(exp.preco)}</td></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">Margem por venda</td><td style="padding:6px">${fmt(exp.lucroVenda)} <span style="color:#9ca3af">→ vira Ads</span></td></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">ACOS</td><td style="padding:6px;color:#6b7280">${pct(exp.acos)}</td></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">Ads por par</td><td style="padding:6px;color:#6b7280">${fmt(exp.gastoAdsPorPar)}</td></tr>
+        <tr style="background:#fff7ed;font-weight:800"><td style="padding:6px">Lucro líquido nesta fase</td><td style="padding:6px;color:#c2410c">R$ 0,00 <span style="font-weight:400;color:#9ca3af">(tudo reinvestido em crescimento)</span></td></tr>
+      </table></div></div>`;
+
+    // ── LUCRO ──
+    html += `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px;margin-bottom:8px">
+      <div style="font-weight:800;font-size:14px;color:#15803d;margin-bottom:4px">💰 Fase 3 — Lucro (recorrente)</div>
+      <div style="font-size:12px;color:#166534;margin-bottom:10px">A <b>colheita</b>. Subimos os preços gradativamente até +20% de margem. Metade vira lucro de verdade no seu bolso, metade continua nos Ads pra manter o crescimento. A partir daqui é lucro recorrente todo mês.</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px;background:#fff;border-radius:8px;overflow:hidden">
+        <tr style="background:#dcfce7;text-align:left"><th style="padding:6px">Item</th><th style="padding:6px">Valor (mês)</th></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">Faturamento alvo</td><td style="padding:6px;font-weight:700">${fmt(lf.vendaValor)}</td></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">Pares/mês (aprox)</td><td style="padding:6px">${lf.qtd}</td></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">Reinveste em Ads</td><td style="padding:6px;color:#6b7280">${fmt(lf.adsReinveste)}</td></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">Lucro real (${pct(lucroRealPct)})</td><td style="padding:6px;color:#16a34a;font-weight:700">${fmt(lf.lucroRealMes)}</td></tr>
+        <tr style="border-bottom:1px solid #f1f5f9"><td style="padding:6px">(-) Custo fixo plano ${plano==='ouro'?'Ouro':'Prata'}</td><td style="padding:6px;color:#dc2626">${fmt(custoFixoMes)}${embutir?' <span style="color:#16a34a">(embutido)</span>':''}</td></tr>
+        <tr style="background:#f0fdf4;font-weight:800"><td style="padding:6px">Lucro líquido no seu bolso</td><td style="padding:6px;color:#15803d">${fmt(lf.lucroLiquidoMes)}</td></tr>
+      </table></div></div>`;
+
+    html += `</div>`;
 
     // projeção (média)
     html += `<div style="margin-top:16px;font-weight:700;font-size:13px;margin-bottom:6px">📊 Projeção (média dos produtos)</div>`;
@@ -42650,6 +42732,50 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           });
         }
       });
+
+      // ───── PÁGINA: TRANSPARÊNCIA SEMANA A SEMANA ─────
+      {
+        const mf2 = E.mediaFase;
+        const pctT = v => (v*100).toFixed(0)+'%';
+        doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
+        doc.setFillColor(...VERDE); doc.rect(0,0,W,24,'F');
+        doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(18);
+        doc.text('O PLANO COM TOTAL TRANSPARENCIA', 18, 16);
+
+        // Lançamento — texto + tabela por semana
+        doc.setTextColor(...AZUL); doc.setFont('helvetica','bold'); doc.setFontSize(13);
+        doc.text('Fase 1 - Lancamento (3 semanas): plantar reputacao', 18, 36);
+        doc.setTextColor(...CINZA); doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+        const txtL = doc.splitTextToSize('Vendemos abaixo do custo para ganhar relevancia e avaliacoes rapido. E investimento: o resultado e negativo de proposito, e cada real vira venda, reputacao e posicionamento.', W-36);
+        doc.text(txtL, 18, 43);
+        doc.autoTable({
+          startY: 54,
+          head: [['Semana','Investir em Ads','Pares','Preco','ACOS','Ads/par','Resultado']],
+          body: [
+            ['Semana 1 ('+pctT(mf2.lanc01.margem)+')', money(mf2.lanc01.adsInvest), String(mf2.lanc01.qtd), money(mf2.lanc01.preco), pctT(mf2.lanc01.acos), money(mf2.lanc01.gastoAdsPorPar), money(mf2.lanc01.resultadoSemana)],
+            ['Semana 2 ('+pctT(mf2.lanc02.margem)+')', money(mf2.lanc02.adsInvest), String(mf2.lanc02.qtd), money(mf2.lanc02.preco), pctT(mf2.lanc02.acos), money(mf2.lanc02.gastoAdsPorPar), money(mf2.lanc02.resultadoSemana)],
+            ['Semana 3 ('+pctT(mf2.lanc03.margem)+')', money(mf2.lanc03.adsInvest), String(mf2.lanc03.qtd), money(mf2.lanc03.preco), pctT(mf2.lanc03.acos), money(mf2.lanc03.gastoAdsPorPar), money(mf2.lanc03.resultadoSemana)],
+          ],
+          theme:'striped', headStyles:{fillColor:[185,28,28]}, styles:{fontSize:9,cellPadding:2.5}, margin:{left:18,right:18},
+        });
+
+        // Expansão
+        let yE = doc.lastAutoTable.finalY + 8;
+        doc.setTextColor(234,88,12); doc.setFont('helvetica','bold'); doc.setFontSize(13);
+        doc.text('Fase 2 - Expansao ('+(mf2.expansao.prazo)+'): girar e crescer', 18, yE);
+        doc.setTextColor(...CINZA); doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+        const txtE = doc.splitTextToSize('Vendemos com +10% de margem, mas todo esse lucro vai para os Ads. O foco e aumentar exposicao e volume, sem retirar lucro ainda. O negocio se sustenta sozinho enquanto cresce. Lucro liquido nesta fase: R$ 0,00 (tudo reinvestido).', W-36);
+        doc.text(txtE, 18, yE+7);
+
+        // Lucro
+        let yLuc = yE + 26;
+        doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(13);
+        doc.text('Fase 3 - Lucro (recorrente): colher', 18, yLuc);
+        doc.setTextColor(...CINZA); doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+        const lfp = mf2.lucro;
+        const txtLu = doc.splitTextToSize('Subimos os precos gradativamente ate +20% de margem. Metade vira lucro real no seu bolso, metade segue nos Ads para manter o crescimento. Faturamento alvo '+money(lfp.vendaValor)+'/mes, lucro liquido de '+money(lfp.lucroLiquidoMes)+'/mes a partir daqui.', W-36);
+        doc.text(txtLu, 18, yLuc+7);
+      }
 
       // ───── PÁGINA: PROJEÇÃO + PLANO ─────
       doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
