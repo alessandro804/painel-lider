@@ -30266,7 +30266,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.87-comparativo-personalizado';
+  const _DIAG_VERSAO_PAINEL = 'v33k.88-comparativo-completo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -43147,6 +43147,26 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const melhorPlano = ouro.lucroAno >= prata.lucroAno ? 'OURO' : 'PRATA';
       const difLucroAno = Math.abs(ouro.lucroAno - prata.lucroAno);
 
+      // lucro/ano de UM produto específico, num plano, no cenário R$50k/mês
+      function lucroProdutoPlano(pc, planoId) {
+        const fixoMes = planoId==='ouro' ? EST_FIXO_OURO : EST_FIXO_PRATA;
+        const precoBase = estPreco(pc.custo, imposto, 0.20, planoId);
+        const qtdRef = precoBase>0 ? Math.round(fatLucroMes/precoBase) : 1;
+        const acr = qtdRef>0 ? fixoMes/qtdRef : 0;
+        const precoVenda = estPreco(pc.custo + acr, imposto, 0.20, planoId);
+        const vendasMes = precoVenda>0 ? Math.round(fatLucroMes/precoVenda) : 0;
+        const comissaoMes = planoId==='ouro' ? (vendasMes*EST_COMISSAO_OURO_FIXO) : (fatLucroMes*EST_COMISSAO_PRATA);
+        const lucroMes = (fatLucroMes*lucroRealPct) - comissaoMes - fixoMes;
+        return { precoVenda, vendasMes, lucroMes, lucroAno: lucroMes*12 };
+      }
+      // por produto: { nome, custo, prata:{...}, ouro:{...}, melhor }
+      const porProduto = E.produtosCalc.map(pc => {
+        const pPrata = lucroProdutoPlano(pc, 'prata');
+        const pOuro = lucroProdutoPlano(pc, 'ouro');
+        return { nome: pc.nome||'Produto', custo: pc.custo, prata:pPrata, ouro:pOuro,
+          melhor: pOuro.lucroAno >= pPrata.lucroAno ? 'OURO' : 'PRATA' };
+      });
+
       // ───── CAPA ─────
       doc.setFillColor(248,250,249); doc.rect(0,0,W,H,'F');
       doc.setFillColor(...ROXO); doc.rect(0,0,12,H,'F');
@@ -43230,6 +43250,90 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const dica = doc.splitTextToSize('Por que muda conforme o produto: a Líder cobra 6% no Prata ou R$1,00 por venda no Ouro. Com ticket alto (poucas vendas pra fazer R$50 mil), o R$1 por venda do Ouro sai baratíssimo. Com ticket baixo (muitas vendas), o Ouro acumula muitos R$1 e o Prata pode compensar mais. Por isso o seu produto define o melhor plano.', W-36);
       doc.text(dica, 18, yQ+2);
 
+      // ───── PÁGINA: LUCRO POR PRODUTO + MÉDIA ─────
+      doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
+      doc.setFillColor(...ROXO); doc.rect(0,0,W,24,'F');
+      doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(18);
+      doc.text('LUCRO POR PRODUTO (CENÁRIO R$ 50.000/MÊS)', 18, 16);
+      doc.setTextColor(...ESCURO); doc.setFont(FONTE,'normal'); doc.setFontSize(9.5);
+      doc.text('Lucro anual de cada produto em cada plano, e qual plano rende mais por produto.', 18, 32);
+
+      const corpoProd = porProduto.map(pp => [
+        pp.nome + ' (custo ' + money(pp.custo) + ')',
+        money(pp.prata.lucroAno),
+        money(pp.ouro.lucroAno),
+        'Plano ' + pp.melhor,
+      ]);
+      // linha de média
+      const mediaPrataAno = porProduto.reduce((s,p)=>s+p.prata.lucroAno,0)/porProduto.length;
+      const mediaOuroAno = porProduto.reduce((s,p)=>s+p.ouro.lucroAno,0)/porProduto.length;
+      const melhorMedia = mediaOuroAno >= mediaPrataAno ? 'OURO' : 'PRATA';
+      corpoProd.push(['MÉDIA (planejamento anual)', money(mediaPrataAno), money(mediaOuroAno), 'Plano '+melhorMedia]);
+
+      doc.autoTable({
+        startY: 38,
+        head: [['Produto','Lucro/ano PRATA','Lucro/ano OURO','Melhor plano']],
+        body: corpoProd,
+        theme:'striped', headStyles:{fillColor:ROXO,font:FONTE,fontStyle:'bold'},
+        styles:{font:FONTE,fontSize:10,cellPadding:3.5}, margin:{left:18,right:18},
+        columnStyles:{1:{halign:'right'},2:{halign:'right'},3:{halign:'center',fontStyle:'bold'}},
+        didParseCell: function(d){
+          if(d.section!=='body') return;
+          const ehMedia = d.row.index === corpoProd.length-1;
+          if(ehMedia){ d.cell.styles.fillColor=[245,243,255]; d.cell.styles.fontStyle='bold'; }
+          // colore o melhor plano
+          if(d.column.index===3){
+            const txt = String(d.cell.raw);
+            d.cell.styles.textColor = txt.indexOf('OURO')>=0 ? DOURADO : [107,114,128];
+          }
+        },
+      });
+      let yPP = doc.lastAutoTable.finalY + 8;
+      doc.setTextColor(...ESCURO); doc.setFont(FONTE,'normal'); doc.setFontSize(9.5);
+      const txtPP = doc.splitTextToSize('Produtos de ticket mais alto rendem mais no Plano Ouro (a comissão de R$1 por venda é mínima). Produtos de ticket baixo, com muitas vendas, podem render mais no Plano Prata. A média acima orienta o melhor plano para o conjunto do seu negócio.', W-36);
+      doc.text(txtPP, 18, yPP+2);
+
+      // ───── PÁGINA: PLANEJAMENTO MÊS A MÊS DO PLANO RECOMENDADO ─────
+      const planoRec = melhorPlano; // o que rende mais na média do cenário
+      const recObj = planoRec==='OURO' ? ouro : prata;
+      doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
+      doc.setFillColor(...(planoRec==='OURO'?DOURADO:[107,114,128])); doc.rect(0,0,W,24,'F');
+      doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(18);
+      doc.text('PLANEJAMENTO MÊS A MÊS — PLANO ' + planoRec + ' (RECOMENDADO)', 18, 16);
+      doc.setTextColor(...ESCURO); doc.setFont(FONTE,'normal'); doc.setFontSize(9.5);
+      doc.text('Projeção de 12 meses no plano que melhor se encaixa no seu negócio, faturando R$ 50.000/mês na fase de lucro.', 18, 32);
+
+      // monta os 12 meses usando o fluxo já calculado (E.fluxo), mas recalculando o lucro
+      // do mês de Lucro conforme o plano recomendado (comissão real por venda x 6%)
+      const fmtDc = d => d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
+      let acumRec = 0;
+      const linhasRec = (E.fluxo||[]).map(mes => {
+        let resultado = mes.resultado;
+        // nos meses de Lucro, usa o lucro líquido do plano recomendado
+        if (mes.fase === 'Lucro') resultado = recObj.lucroMes;
+        acumRec += resultado;
+        return [fmtDc(mes.data), mes.fase, money(mes.fat), (resultado>=0?'+':'')+money(resultado), money(acumRec)];
+      });
+      doc.autoTable({
+        startY: 38,
+        head: [['Data','Fase','Faturamento','Resultado do mês','Acumulado']],
+        body: linhasRec,
+        theme:'striped', headStyles:{fillColor:(planoRec==='OURO'?DOURADO:[107,114,128]),font:FONTE,fontStyle:'bold'},
+        styles:{font:FONTE,fontSize:9,cellPadding:2.5}, margin:{left:18,right:18},
+        columnStyles:{2:{halign:'right'},3:{halign:'right'},4:{halign:'right'}},
+        didParseCell: function(d){
+          if(d.section!=='body') return;
+          if(d.column.index===3||d.column.index===4){
+            const v=parseFloat(String(d.cell.raw).replace(/[^\d,-]/g,'').replace(',','.'));
+            d.cell.styles.textColor = v<0?[220,38,38]:[22,163,74];
+          }
+        },
+      });
+      let yR = doc.lastAutoTable.finalY + 8;
+      doc.setFillColor(...(planoRec==='OURO'?[254,249,231]:[243,244,246])); doc.roundedRect(18,yR,W-36,16,2,2,'F');
+      doc.setTextColor(...(planoRec==='OURO'?DOURADO:[55,65,81])); doc.setFont(FONTE,'bold'); doc.setFontSize(10.5);
+      doc.text('Recomendamos o Plano ' + planoRec + ' para o seu negócio: rende ' + money(difLucroAno) + ' a mais no ano que a outra opção.', 24, yR+10);
+
       // ───── PÁGINA: PROPOSTAS ESPECIAIS (fechamento na hora) ─────
       doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
       doc.setFillColor(...DOURADO); doc.rect(0,0,W,24,'F');
@@ -43248,7 +43352,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const lucroPix = lucroBase + economiaPix;
 
       // Card 1 — 12x sem juros
-      doc.setFillColor(245,243,255); doc.roundedRect(18,46,(W-44)/2,120,4,4,'F');
+      doc.setFillColor(245,243,255); doc.roundedRect(18,46,(W-44)/2,132,4,4,'F');
       doc.setFillColor(...ROXO); doc.roundedRect(18,46,(W-44)/2,18,4,4,'F'); doc.rect(18,58,(W-44)/2,6,'F');
       doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(14);
       doc.text('PARCELADO 12x SEM JUROS', 26, 58);
@@ -43258,17 +43362,20 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       doc.text('SEM comissão por venda (R$0 por pedido)', 26, 100);
       doc.setTextColor(...ESCURO); doc.setFontSize(12);
       doc.text('Total: R$ 23.998,80 no ano', 26, 112);
-      // faixa de economia
-      doc.setFillColor(240,253,244); doc.roundedRect(26,118,(W-44)/2-16,16,2,2,'F');
-      doc.setTextColor(22,163,74); doc.setFont(FONTE,'bold'); doc.setFontSize(10.5);
-      doc.text('Você lucra ' + money(economia12x) + ' a mais no ano', 31, 128);
-      doc.setFont(FONTE,'normal'); doc.setFontSize(9); doc.setTextColor(...CINZA);
-      const t1 = doc.splitTextToSize('Sem desconto de comissão nas vendas. Seu lucro projetado sobe para ' + money(lucro12x) + ' no ano (faturando R$50 mil/mês).', (W-44)/2 - 16);
-      doc.text(t1, 26, 142);
+      // faixa de economia — lucro passa de X para Y, sendo Z a mais
+      doc.setFillColor(240,253,244); doc.roundedRect(26,116,(W-44)/2-16,30,2,2,'F');
+      doc.setTextColor(22,163,74); doc.setFont(FONTE,'bold'); doc.setFontSize(10);
+      doc.text('Seu lucro passa de ' + money(lucroBase), 31, 124);
+      doc.text('para ' + money(lucro12x) + ' no ano,', 31, 131);
+      doc.setFontSize(11);
+      doc.text('sendo ' + money(economia12x) + ' a mais!', 31, 140);
+      doc.setFont(FONTE,'normal'); doc.setFontSize(8.5); doc.setTextColor(...CINZA);
+      const t1 = doc.splitTextToSize('Sem desconto de comissão nas vendas (faturando R$50 mil/mês).', (W-44)/2 - 16);
+      doc.text(t1, 26, 154);
 
       // Card 2 — Pix à vista
       const x2 = 18 + (W-44)/2 + 8;
-      doc.setFillColor(240,253,244); doc.roundedRect(x2,46,(W-44)/2,120,4,4,'F');
+      doc.setFillColor(240,253,244); doc.roundedRect(x2,46,(W-44)/2,132,4,4,'F');
       doc.setFillColor(...VERDE); doc.roundedRect(x2,46,(W-44)/2,18,4,4,'F'); doc.rect(x2,58,(W-44)/2,6,'F');
       doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(13);
       doc.text('PIX À VISTA — MELHOR OFERTA', x2+8, 58);
@@ -43278,13 +43385,16 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       doc.text('R$ 4.000 de desconto = 2 meses grátis!', x2+8, 102);
       doc.setTextColor(...ESCURO); doc.setFontSize(12);
       doc.text('SEM comissão por venda', x2+8, 112);
-      // faixa de economia
-      doc.setFillColor(220,252,231); doc.roundedRect(x2+8,118,(W-44)/2-16,16,2,2,'F');
-      doc.setTextColor(22,163,74); doc.setFont(FONTE,'bold'); doc.setFontSize(10.5);
-      doc.text('Você lucra ' + money(economiaPix) + ' a mais no ano', x2+13, 128);
-      doc.setFont(FONTE,'normal'); doc.setFontSize(9); doc.setTextColor(...CINZA);
-      const t2 = doc.splitTextToSize('Economia de R$4.000 (2 meses grátis) + sem comissão. Seu lucro projetado sobe para ' + money(lucroPix) + ' no ano (faturando R$50 mil/mês).', (W-44)/2 - 16);
-      doc.text(t2, x2+8, 142);
+      // faixa de economia — lucro passa de X para Y, sendo Z a mais
+      doc.setFillColor(220,252,231); doc.roundedRect(x2+8,116,(W-44)/2-16,30,2,2,'F');
+      doc.setTextColor(22,163,74); doc.setFont(FONTE,'bold'); doc.setFontSize(10);
+      doc.text('Seu lucro passa de ' + money(lucroBase), x2+13, 124);
+      doc.text('para ' + money(lucroPix) + ' no ano,', x2+13, 131);
+      doc.setFontSize(11);
+      doc.text('sendo ' + money(economiaPix) + ' a mais!', x2+13, 140);
+      doc.setFont(FONTE,'normal'); doc.setFontSize(8.5); doc.setTextColor(...CINZA);
+      const t2 = doc.splitTextToSize('R$4.000 de desconto (2 meses grátis) + sem comissão (faturando R$50 mil/mês).', (W-44)/2 - 16);
+      doc.text(t2, x2+8, 154);
 
       doc.setTextColor(...CINZA); doc.setFont(FONTE,'normal'); doc.setFontSize(8.5);
       doc.text('* Condições válidas exclusivamente no momento da apresentação, para fechamento imediato. Valores de lucro consideram faturamento de R$50.000/mês.', 18, 176);
