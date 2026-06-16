@@ -30266,7 +30266,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.86-pdf-titulo-nome-custo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.87-comparativo-personalizado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -43104,6 +43104,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const fatLucroMes = 50000; // faturamento de referência da fase Lucro
 
       // calcula, pra um plano, os preços por fase COM comissão embutida (diluída pela qtd do mês de lucro)
+      const lucroRealPct = E.lucroRealPct || 0.10;
       function calcPlano(planoId) {
         const fixoMes = planoId==='ouro' ? EST_FIXO_OURO : EST_FIXO_PRATA;
         // qtd do mês de lucro (pra diluir o fixo): usa preço médio sem embutir como referência
@@ -43119,27 +43120,32 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           const precos = E.produtosCalc.map(pc => estPreco(pc.custo + acrescimoUnit, imposto, margem, planoId));
           fasesPreco[f.id] = { nome:f.nome, margem, preco: precos.reduce((a,b)=>a+b,0)/precos.length };
         });
-        // lucro/ano e total pago/ano: usa o fluxo de 12 meses já montado em E.fluxo
-        // total pago = soma das mensalidades (12x fixoMes) + comissão por venda (Ouro: R$1/venda)
-        const meses = (E.fluxo||[]).length || 12;
-        let totalComissaoVenda = 0;
-        if (planoId==='ouro') {
-          // R$1 por venda em todos os meses (estimativa pela qtd de cada mês)
-          (E.fluxo||[]).forEach(mes => {
-            const q = mes.qtd || (mes.fat && fasesPreco.lucro.preco ? Math.round(mes.fat/fasesPreco.lucro.preco) : 0);
-            totalComissaoVenda += (q||0) * EST_COMISSAO_OURO_FIXO;
-          });
-        }
-        const totalMensalidades = fixoMes * meses;
-        const totalPagoAno = totalMensalidades + totalComissaoVenda;
-        // lucro/ano: para Prata 6%, lucro real = lucroRealPct; pra Ouro idem (a comissão muda o preço, não a margem alvo)
-        const lucroRealPct = E.lucroRealPct || 0.10;
-        const lucroAno = (E.fluxo||[]).filter(x=>x.fase==='Lucro').reduce((s,x)=> s + (fatLucroMes*lucroRealPct), 0);
-        return { planoId, fixoMes, qtdMesLucro, acrescimoUnit, fasesPreco, totalPagoAno, totalMensalidades, totalComissaoVenda, lucroAno, meses };
+
+        // ── CENÁRIO R$50.000/mês — lucro REAL personalizado pelo produto ──
+        // nº de vendas/mês = faturamento ÷ preço de venda (fase Lucro)
+        const precoVendaLucro = fasesPreco.lucro.preco;
+        const vendasMes = precoVendaLucro>0 ? Math.round(fatLucroMes / precoVendaLucro) : 0;
+        // custo do plano por mês:
+        //  Prata = 6% do faturamento + mensalidade
+        //  Ouro  = R$1 por venda + mensalidade
+        const comissaoMes = planoId==='ouro' ? (vendasMes * EST_COMISSAO_OURO_FIXO) : (fatLucroMes * EST_COMISSAO_PRATA);
+        const margemBrutaMes = fatLucroMes * lucroRealPct;          // 10% do faturamento
+        const lucroMes = margemBrutaMes - comissaoMes - fixoMes;    // lucro líquido no bolso/mês
+        const lucroAno = lucroMes * 12;
+        const totalPagoAno = (comissaoMes * 12) + (fixoMes * 12);
+        const totalMensalidades = fixoMes * 12;
+        const totalComissaoVenda = comissaoMes * 12;
+
+        return { planoId, fixoMes, qtdMesLucro, acrescimoUnit, fasesPreco,
+          precoVendaLucro, vendasMes, comissaoMes, margemBrutaMes, lucroMes, lucroAno,
+          totalPagoAno, totalMensalidades, totalComissaoVenda };
       }
 
       const prata = calcPlano('prata');
       const ouro = calcPlano('ouro');
+      // qual plano é mais vantajoso no cenário do produto
+      const melhorPlano = ouro.lucroAno >= prata.lucroAno ? 'OURO' : 'PRATA';
+      const difLucroAno = Math.abs(ouro.lucroAno - prata.lucroAno);
 
       // ───── CAPA ─────
       doc.setFillColor(248,250,249); doc.rect(0,0,W,H,'F');
@@ -43186,34 +43192,43 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
       doc.setFillColor(...ROXO); doc.rect(0,0,W,24,'F');
       doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(18);
-      doc.text('QUANTO VOCÊ PAGA x QUANTO LUCRA (1 ANO)', 18, 16);
+      doc.text('QUANTO VOCÊ PAGA x QUANTO LUCRA (CENÁRIO R$ 50.000/MÊS)', 18, 16);
+      doc.setTextColor(...ESCURO); doc.setFont(FONTE,'normal'); doc.setFontSize(9.5);
+      doc.text('Simulação com base no seu produto (' + (E.produtosCalc[0].nome||'produto') + ', preço de venda ' + money(prata.precoVendaLucro) + ') faturando R$ 50.000/mês.', 18, 32);
 
       doc.autoTable({
-        startY: 36,
+        startY: 38,
         head: [['','PLANO PRATA','PLANO OURO']],
         body: [
-          ['Mensalidade', money(prata.fixoMes)+'/mês', money(ouro.fixoMes)+'/mês'],
-          ['Comissão por venda', '6% (no preço)', 'R$ 1,00/venda'],
-          ['Total de mensalidades (12 meses)', money(prata.totalMensalidades), money(ouro.totalMensalidades)],
-          ['Total de comissão por venda (ano)', 'embutida no preço', money(ouro.totalComissaoVenda)],
+          ['Faturamento mensal', money(fatLucroMes), money(fatLucroMes)],
+          ['Vendas no mês (aprox)', String(prata.vendasMes), String(ouro.vendasMes)],
+          ['Margem do negócio (10%)', money(prata.margemBrutaMes)+'/mês', money(ouro.margemBrutaMes)+'/mês'],
+          ['Comissão da Líder', '6% = '+money(prata.comissaoMes)+'/mês', 'R$1/venda = '+money(ouro.comissaoMes)+'/mês'],
+          ['Mensalidade do plano', money(prata.fixoMes)+'/mês', money(ouro.fixoMes)+'/mês'],
+          ['SEU LUCRO LÍQUIDO POR MÊS', money(prata.lucroMes), money(ouro.lucroMes)],
           ['TOTAL QUE VOCÊ PAGA NO ANO', money(prata.totalPagoAno), money(ouro.totalPagoAno)],
-          ['SEU LUCRO PROJETADO NO ANO', money(prata.lucroAno), money(ouro.lucroAno)],
+          ['SEU LUCRO LÍQUIDO NO ANO', money(prata.lucroAno), money(ouro.lucroAno)],
         ],
         theme:'grid', headStyles:{fillColor:ROXO,font:FONTE,fontStyle:'bold',halign:'center'},
-        styles:{font:FONTE,fontSize:11,cellPadding:4},
-        columnStyles:{0:{fontStyle:'bold',cellWidth:90},1:{halign:'center'},2:{halign:'center'}},
+        styles:{font:FONTE,fontSize:10,cellPadding:3.2},
+        columnStyles:{0:{fontStyle:'bold',cellWidth:80},1:{halign:'center'},2:{halign:'center'}},
         didParseCell: function(d){
           if(d.section!=='body') return;
           const linha = d.row.index;
-          if(linha===4){ d.cell.styles.fillColor=[254,242,242]; d.cell.styles.textColor=[185,28,28]; d.cell.styles.fontStyle='bold'; }
-          if(linha===5){ d.cell.styles.fillColor=[240,253,244]; d.cell.styles.textColor=[22,163,74]; d.cell.styles.fontStyle='bold'; }
-          if(d.column.index===2 && linha<4){ d.cell.styles.textColor=DOURADO; }
+          if(linha===5){ d.cell.styles.fillColor=[245,243,255]; d.cell.styles.textColor=ROXO; d.cell.styles.fontStyle='bold'; }
+          if(linha===6){ d.cell.styles.fillColor=[254,242,242]; d.cell.styles.textColor=[185,28,28]; d.cell.styles.fontStyle='bold'; }
+          if(linha===7){ d.cell.styles.fillColor=[240,253,244]; d.cell.styles.textColor=[22,163,74]; d.cell.styles.fontStyle='bold'; }
         },
       });
-      let yQ = doc.lastAutoTable.finalY + 8;
-      doc.setTextColor(...ESCURO); doc.setFont(FONTE,'normal'); doc.setFontSize(10);
-      const dica = doc.splitTextToSize('Como escolher: o Plano Prata costuma sair mais barato no começo (mensalidade menor). O Plano Ouro tende a ficar bem mais vantajoso quando o faturamento passa de R$ 26.000/mês, porque a comissão é fixa em R$ 1,00 por venda em vez de 6%. Quanto mais você vende, mais o Ouro compensa.', W-36);
-      doc.text(dica, 18, yQ+4);
+      let yQ = doc.lastAutoTable.finalY + 6;
+      // destaque do plano vencedor neste cenário
+      doc.setFillColor(...(melhorPlano==='OURO'?[202,138,4]:[107,114,128])); doc.roundedRect(18,yQ,W-36,16,3,3,'F');
+      doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(11);
+      doc.text('No seu caso, o PLANO ' + melhorPlano + ' deixa ' + money(difLucroAno) + ' a mais de lucro no ano.', 24, yQ+10);
+      yQ += 22;
+      doc.setTextColor(...ESCURO); doc.setFont(FONTE,'normal'); doc.setFontSize(9.5);
+      const dica = doc.splitTextToSize('Por que muda conforme o produto: a Líder cobra 6% no Prata ou R$1,00 por venda no Ouro. Com ticket alto (poucas vendas pra fazer R$50 mil), o R$1 por venda do Ouro sai baratíssimo. Com ticket baixo (muitas vendas), o Ouro acumula muitos R$1 e o Prata pode compensar mais. Por isso o seu produto define o melhor plano.', W-36);
+      doc.text(dica, 18, yQ+2);
 
       // ───── PÁGINA: PROPOSTAS ESPECIAIS (fechamento na hora) ─────
       doc.addPage(); doc.setFillColor(255,255,255); doc.rect(0,0,W,H,'F');
@@ -43223,39 +43238,56 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       doc.setTextColor(...ESCURO); doc.setFont(FONTE,'normal'); doc.setFontSize(11);
       doc.text('Propostas exclusivas do Plano Ouro pra você fechar agora, sem comissão por venda:', 18, 36);
 
+      // economia das ofertas (vs Ouro pagando mensalidade + comissão por venda no ano)
+      const ouroNormalAno = ouro.totalMensalidades + ouro.totalComissaoVenda; // o que pagaria no Ouro padrão
+      const economia12x = ouroNormalAno - 23998.80;       // 12x elimina a comissão por venda
+      const economiaPix = ouroNormalAno - 19999;           // Pix: desconto + sem comissão
+      // lucro a mais no ano = a economia vira lucro (mesmo faturamento de 50k/mês)
+      const lucroBase = ouro.lucroAno; // lucro anual no Ouro padrão (já desconta comissão+mensalidade)
+      const lucro12x = lucroBase + economia12x;
+      const lucroPix = lucroBase + economiaPix;
+
       // Card 1 — 12x sem juros
-      doc.setFillColor(245,243,255); doc.roundedRect(18,46,(W-44)/2,110,4,4,'F');
+      doc.setFillColor(245,243,255); doc.roundedRect(18,46,(W-44)/2,120,4,4,'F');
       doc.setFillColor(...ROXO); doc.roundedRect(18,46,(W-44)/2,18,4,4,'F'); doc.rect(18,58,(W-44)/2,6,'F');
       doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(14);
       doc.text('PARCELADO 12x SEM JUROS', 26, 58);
-      doc.setTextColor(...ESCURO); doc.setFont(FONTE,'bold'); doc.setFontSize(30);
-      doc.text('12x R$ 1.999,90', 26, 90);
+      doc.setTextColor(...ESCURO); doc.setFont(FONTE,'bold'); doc.setFontSize(28);
+      doc.text('12x R$ 1.999,90', 26, 88);
       doc.setFont(FONTE,'normal'); doc.setFontSize(11); doc.setTextColor(...CINZA);
-      doc.text('SEM comissão por venda (R$0 por pedido)', 26, 102);
+      doc.text('SEM comissão por venda (R$0 por pedido)', 26, 100);
       doc.setTextColor(...ESCURO); doc.setFontSize(12);
-      doc.text('Total: R$ 23.998,80 no ano', 26, 116);
-      doc.setFont(FONTE,'normal'); doc.setFontSize(9.5); doc.setTextColor(...CINZA);
-      const t1 = doc.splitTextToSize('Você fica com 100% das suas vendas sem desconto de comissão. Ideal pra quem vai vender muito e quer previsibilidade total do custo.', (W-44)/2 - 16);
-      doc.text(t1, 26, 130);
+      doc.text('Total: R$ 23.998,80 no ano', 26, 112);
+      // faixa de economia
+      doc.setFillColor(240,253,244); doc.roundedRect(26,118,(W-44)/2-16,16,2,2,'F');
+      doc.setTextColor(22,163,74); doc.setFont(FONTE,'bold'); doc.setFontSize(10.5);
+      doc.text('Você lucra ' + money(economia12x) + ' a mais no ano', 31, 128);
+      doc.setFont(FONTE,'normal'); doc.setFontSize(9); doc.setTextColor(...CINZA);
+      const t1 = doc.splitTextToSize('Sem desconto de comissão nas vendas. Seu lucro projetado sobe para ' + money(lucro12x) + ' no ano (faturando R$50 mil/mês).', (W-44)/2 - 16);
+      doc.text(t1, 26, 142);
 
       // Card 2 — Pix à vista
       const x2 = 18 + (W-44)/2 + 8;
-      doc.setFillColor(240,253,244); doc.roundedRect(x2,46,(W-44)/2,110,4,4,'F');
+      doc.setFillColor(240,253,244); doc.roundedRect(x2,46,(W-44)/2,120,4,4,'F');
       doc.setFillColor(...VERDE); doc.roundedRect(x2,46,(W-44)/2,18,4,4,'F'); doc.rect(x2,58,(W-44)/2,6,'F');
-      doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(14);
+      doc.setTextColor(255,255,255); doc.setFont(FONTE,'bold'); doc.setFontSize(13);
       doc.text('PIX À VISTA — MELHOR OFERTA', x2+8, 58);
-      doc.setTextColor(...VERDE); doc.setFont(FONTE,'bold'); doc.setFontSize(34);
-      doc.text('R$ 19.999', x2+8, 92);
+      doc.setTextColor(...VERDE); doc.setFont(FONTE,'bold'); doc.setFontSize(32);
+      doc.text('R$ 19.999', x2+8, 90);
       doc.setFont(FONTE,'normal'); doc.setFontSize(11); doc.setTextColor(...CINZA);
-      doc.text('R$ 4.000 de desconto = 2 meses grátis!', x2+8, 104);
+      doc.text('R$ 4.000 de desconto = 2 meses grátis!', x2+8, 102);
       doc.setTextColor(...ESCURO); doc.setFontSize(12);
-      doc.text('SEM comissão por venda', x2+8, 118);
-      doc.setFont(FONTE,'normal'); doc.setFontSize(9.5); doc.setTextColor(...CINZA);
-      const t2 = doc.splitTextToSize('Pagando à vista no Pix você economiza R$ 4.000 (equivale a 2 meses do nosso serviço de graça). A melhor relação custo-benefício pra começar com tudo.', (W-44)/2 - 16);
-      doc.text(t2, x2+8, 132);
+      doc.text('SEM comissão por venda', x2+8, 112);
+      // faixa de economia
+      doc.setFillColor(220,252,231); doc.roundedRect(x2+8,118,(W-44)/2-16,16,2,2,'F');
+      doc.setTextColor(22,163,74); doc.setFont(FONTE,'bold'); doc.setFontSize(10.5);
+      doc.text('Você lucra ' + money(economiaPix) + ' a mais no ano', x2+13, 128);
+      doc.setFont(FONTE,'normal'); doc.setFontSize(9); doc.setTextColor(...CINZA);
+      const t2 = doc.splitTextToSize('Economia de R$4.000 (2 meses grátis) + sem comissão. Seu lucro projetado sobe para ' + money(lucroPix) + ' no ano (faturando R$50 mil/mês).', (W-44)/2 - 16);
+      doc.text(t2, x2+8, 142);
 
       doc.setTextColor(...CINZA); doc.setFont(FONTE,'normal'); doc.setFontSize(8.5);
-      doc.text('* Condições válidas exclusivamente no momento da apresentação, para fechamento imediato. Sujeitas a disponibilidade.', 18, 168);
+      doc.text('* Condições válidas exclusivamente no momento da apresentação, para fechamento imediato. Valores de lucro consideram faturamento de R$50.000/mês.', 18, 176);
 
       doc.save('Comparativo_Planos_' + (E.cliente||'cliente').replace(/\s+/g,'_') + '.pdf');
       showToast('📄 PDF comparativo gerado!');
