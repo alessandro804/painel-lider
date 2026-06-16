@@ -30266,7 +30266,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.77-estrategia-4semanas-custom';
+  const _DIAG_VERSAO_PAINEL = 'v33k.79-pdf-explica-margem';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42304,10 +42304,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   ];
   // Config PADRÃO das 4 semanas de lançamento (% do orçamento e margem) — editável na tela
   const EST_SEMANAS_PADRAO = [
-    { id:'lanc01', label:'Semana 1', investPct:30, margemPct:-20 },
-    { id:'lanc02', label:'Semana 2', investPct:30, margemPct:-10 },
-    { id:'lanc03', label:'Semana 3', investPct:20, margemPct:0 },
-    { id:'lanc04', label:'Semana 4', investPct:20, margemPct:0 },
+    { id:'lanc01', label:'Semana 1', investPct:30, margemPct:-20, adsPct:70 },
+    { id:'lanc02', label:'Semana 2', investPct:30, margemPct:-10, adsPct:65 },
+    { id:'lanc03', label:'Semana 3', investPct:20, margemPct:0, adsPct:100 },
+    { id:'lanc04', label:'Semana 4', investPct:20, margemPct:0, adsPct:100 },
   ];
   // estado editável (clonado do padrão)
   let _estSemanas = JSON.parse(JSON.stringify(EST_SEMANAS_PADRAO));
@@ -42359,14 +42359,17 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const somaInvest = _estSemanas.reduce((s,x)=>s+(parseFloat(x.investPct)||0),0);
     const corSoma = Math.abs(somaInvest-100) < 0.01 ? '#16a34a' : '#dc2626';
     cont.innerHTML = _estSemanas.map((s,i) => `
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:5px;font-size:12px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:5px;font-size:12px;flex-wrap:wrap">
         <span style="width:72px;font-weight:600">${s.label}</span>
         <label style="color:#6b7280">Invest.</label>
-        <input type="number" class="form-input" style="width:64px;padding:3px 6px" value="${s.investPct}" step="5" min="0" max="100" oninput="estSetSemana(${i},'investPct',this.value)">
+        <input type="number" class="form-input" style="width:58px;padding:3px 6px" value="${s.investPct}" step="5" min="0" max="100" oninput="estSetSemana(${i},'investPct',this.value)">
         <span style="color:#6b7280">%</span>
-        <label style="color:#6b7280;margin-left:8px">Margem</label>
-        <input type="number" class="form-input" style="width:64px;padding:3px 6px" value="${s.margemPct}" step="5" oninput="estSetSemana(${i},'margemPct',this.value)">
+        <label style="color:#6b7280;margin-left:6px">Margem</label>
+        <input type="number" class="form-input" style="width:58px;padding:3px 6px" value="${s.margemPct}" step="5" oninput="estSetSemana(${i},'margemPct',this.value)">
         <span style="color:#6b7280">%</span>
+        <label style="color:#6b7280;margin-left:6px" title="Quanto do investimento vai pra Ads; o resto cobre a margem negativa">Ads</label>
+        <input type="number" class="form-input" style="width:58px;padding:3px 6px" value="${s.adsPct != null ? s.adsPct : 100}" step="5" min="0" max="100" oninput="estSetSemana(${i},'adsPct',this.value)">
+        <span style="color:#6b7280">% <span style="color:#9ca3af">(margem ${100-(s.adsPct != null ? s.adsPct : 100)}%)</span></span>
       </div>`).join('')
       + `<div style="font-size:11px;margin-top:4px;color:${corSoma};font-weight:700">Soma investimento: ${somaInvest.toFixed(0)}%${Math.abs(somaInvest-100)<0.01?' ✓':' (deve ser 100%)'}</div>`;
   }
@@ -42505,22 +42508,19 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     idsLanc.forEach(id => {
       const sem = _estSemanas.find(s => s.id === id);
       const f = mediaFase[id];
-      const investSemana = orc * (sem.investPct/100);   // quanto entra de investimento nesta semana
+      const investSemana = orc * (sem.investPct/100);   // investimento total da semana
+      const adsPct = (sem.adsPct != null ? sem.adsPct : 100) / 100; // % do investimento que vai pra Ads
       f.investSemana = investSemana;
-      f.adsInvest = investSemana;                        // o cliente coloca isto de Ads/investimento
-      // quantidade de pares: o investimento da semana dividido pela "perda" por par.
-      // se margem negativa, cada venda custa |lucroVenda| (cobertura); se margem >=0, estima pelo giro.
+      f.adsInvest = investSemana * adsPct;               // parte que vai pra Ads
+      f.coberturaMargem = investSemana * (1 - adsPct);   // parte que cobre a margem negativa
+      f.adsPct = sem.adsPct != null ? sem.adsPct : 100;
+      // quantidade de pares: a cobertura de margem dividida pela perda por par (quando há margem negativa);
+      // se não há cobertura (margem >=0), estima o giro pelo Ads investido.
       const perdaPorPar = Math.abs(f.lucroVenda) || 1;
-      if (f.margem < 0) {
-        // parte do investimento cobre a margem negativa; o giro é proporcional
-        f.qtd = Math.round(investSemana / perdaPorPar);
-        f.coberturaMargem = f.qtd * Math.abs(f.lucroVenda); // R$ usado pra cobrir margem
-        f.adsReal = Math.max(0, investSemana - f.coberturaMargem); // resto é Ads
+      if (f.margem < 0 && f.coberturaMargem > 0) {
+        f.qtd = Math.round(f.coberturaMargem / perdaPorPar);
       } else {
-        // margem zero/positiva: todo o investimento vira Ads; giro estimado pelo preço
-        f.qtd = Math.round(investSemana / (f.preco * 0.10 || 1)); // ~10% ACOS de referência
-        f.coberturaMargem = 0;
-        f.adsReal = investSemana;
+        f.qtd = Math.round(f.adsInvest / (f.preco * 0.10 || 1)); // ~10% ACOS de referência
       }
       f.vendasValor = f.qtd * f.preco;
       f.acos = f.vendasValor > 0 ? (f.adsInvest / f.vendasValor) : 0;
@@ -42672,23 +42672,26 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <div style="font-weight:800;font-size:14px;color:#b91c1c;margin-bottom:4px">🚀 Fase 1 — Lançamento (${_estSemanas.length} semanas)</div>
       <div style="font-size:12px;color:#7f1d1d;margin-bottom:10px">Aqui a gente <b>planta</b>. Vendemos abaixo do custo pra ganhar relevância e reputação rápido na plataforma. É investimento: o resultado é negativo de propósito, e cada real vira venda, avaliação e posicionamento. Dividimos em ${_estSemanas.length} semanas pra ficar mais leve.</div>
       <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px;background:#fff;border-radius:8px;overflow:hidden">
-        <tr style="background:#fee2e2;text-align:left"><th style="padding:6px">Semana</th><th style="padding:6px">Investir em Ads</th><th style="padding:6px">Pares vendidos</th><th style="padding:6px">Preço</th><th style="padding:6px">ACOS</th><th style="padding:6px">Ads/par</th><th style="padding:6px">Resultado</th></tr>`;
-    let totalAdsLanc = 0, totalParesLanc = 0;
+        <tr style="background:#fee2e2;text-align:left"><th style="padding:6px">Semana</th><th style="padding:6px">Ads</th><th style="padding:6px">Cobertura margem</th><th style="padding:6px">Total semana</th><th style="padding:6px">Pares</th><th style="padding:6px">Preço</th><th style="padding:6px">ACOS</th><th style="padding:6px">Resultado</th></tr>`;
+    let totalAdsLanc = 0, totalMargemLanc = 0, totalParesLanc = 0;
     _estSemanas.forEach(s => {
       const f = mediaFase[s.id];
       if (!f) return;
-      totalAdsLanc += f.adsInvest||0; totalParesLanc += f.qtd||0;
+      totalAdsLanc += f.adsInvest||0; totalMargemLanc += f.coberturaMargem||0; totalParesLanc += f.qtd||0;
+      const adsPctTxt = f.adsPct != null ? f.adsPct : 100;
+      const margemPctTxt = 100 - adsPctTxt;
       html += `<tr style="border-bottom:1px solid #f1f5f9">
         <td style="padding:6px;font-weight:700">${s.label} <span style="color:#9ca3af;font-weight:400">(${pct(f.margem)})</span></td>
-        <td style="padding:6px;font-weight:700;color:#b45309">${fmt(f.adsInvest)}</td>
+        <td style="padding:6px;font-weight:700;color:#b45309">${fmt(f.adsInvest)} <span style="color:#9ca3af;font-weight:400">(${adsPctTxt}%)</span></td>
+        <td style="padding:6px;color:#7c3aed">${fmt(f.coberturaMargem)} <span style="color:#9ca3af">(${margemPctTxt}%)</span></td>
+        <td style="padding:6px;font-weight:700">${fmt(f.investSemana)}</td>
         <td style="padding:6px;font-weight:700">${f.qtd} pares</td>
         <td style="padding:6px">${fmt(f.preco)}</td>
         <td style="padding:6px;color:#6b7280">${pct(f.acos)}</td>
-        <td style="padding:6px;color:#6b7280">${fmt(f.gastoAdsPorPar)}</td>
         <td style="padding:6px;font-weight:700;color:#dc2626">${fmt(f.resultadoSemana)}</td>
       </tr>`;
     });
-    html += `<tr style="background:#fef2f2;font-weight:800"><td style="padding:6px">Total lançamento</td><td style="padding:6px;color:#b45309">${fmt(totalAdsLanc)}</td><td style="padding:6px">${totalParesLanc} pares</td><td style="padding:6px">—</td><td style="padding:6px">—</td><td style="padding:6px">—</td><td style="padding:6px;color:#dc2626">${fmt(-invest)}</td></tr>`;
+    html += `<tr style="background:#fef2f2;font-weight:800"><td style="padding:6px">Total lançamento</td><td style="padding:6px;color:#b45309">${fmt(totalAdsLanc)}</td><td style="padding:6px;color:#7c3aed">${fmt(totalMargemLanc)}</td><td style="padding:6px">${fmt(totalAdsLanc+totalMargemLanc)}</td><td style="padding:6px">${totalParesLanc} pares</td><td style="padding:6px">—</td><td style="padding:6px">—</td><td style="padding:6px;color:#dc2626">${fmt(-invest)}</td></tr>`;
     html += `</table></div></div>`;
 
     // ── EXPANSÃO ──
@@ -42892,16 +42895,35 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         doc.text(txtL, 18, 43);
         doc.autoTable({
           startY: 54,
-          head: [['Semana','Investir em Ads','Pares','Preco','ACOS','Ads/par','Resultado']],
+          head: [['Semana','Ads','Cobertura margem','Margem/par','Total','Pares','Preco','Resultado']],
           body: semanasPDF.map(s => {
-            const f = mf2[s.id]; if (!f) return [s.label,'-','-','-','-','-','-'];
-            return [s.label+' ('+pctT(f.margem)+')', money(f.adsInvest), String(f.qtd), money(f.preco), pctT(f.acos), money(f.gastoAdsPorPar), money(f.resultadoSemana)];
+            const f = mf2[s.id]; if (!f) return [s.label,'-','-','-','-','-','-','-'];
+            const adsP = f.adsPct != null ? f.adsPct : 100;
+            const margemPar = f.margem < 0 ? money(f.lucroVenda) : '-';
+            return [s.label+' ('+pctT(f.margem)+')', money(f.adsInvest)+' ('+adsP+'%)', money(f.coberturaMargem)+' ('+(100-adsP)+'%)', margemPar, money(f.investSemana), String(f.qtd), money(f.preco), money(f.resultadoSemana)];
           }),
-          theme:'striped', headStyles:{fillColor:[185,28,28]}, styles:{fontSize:9,cellPadding:2.5}, margin:{left:18,right:18},
+          theme:'striped', headStyles:{fillColor:[185,28,28]}, styles:{fontSize:8,cellPadding:2}, margin:{left:18,right:18},
         });
 
+        // Frases explicativas das semanas com margem negativa (de onde sai a cobertura de margem)
+        let yExpl = doc.lastAutoTable.finalY + 5;
+        const semNeg = semanasPDF.filter(s => { const f = mf2[s.id]; return f && f.margem < 0 && f.coberturaMargem > 0; });
+        if (semNeg.length) {
+          doc.setTextColor(...CINZA); doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+          semNeg.forEach(s => {
+            const f = mf2[s.id];
+            const prejuizoPar = Math.abs(f.lucroVenda);
+            const frase = 'Como funciona a margem da ' + s.label + ': sao ' + money(f.coberturaMargem) + ' que cobrem a venda de ' + f.qtd + ' pares, cada um a ' + money(prejuizoPar) + ' abaixo do custo (margem ' + pctT(f.margem) + '). ' + f.qtd + ' x ' + money(prejuizoPar) + ' = ' + money(f.coberturaMargem) + '.';
+            const linhas = doc.splitTextToSize(frase, W-40);
+            doc.setFillColor(250,245,255); doc.roundedRect(18, yExpl, W-36, linhas.length*4.2 + 4, 1.5, 1.5, 'F');
+            doc.setTextColor(124,58,237);
+            doc.text(linhas, 21, yExpl+5);
+            yExpl += linhas.length*4.2 + 7;
+          });
+        }
+
         // Expansão
-        let yE = doc.lastAutoTable.finalY + 8;
+        let yE = yExpl + 4;
         doc.setTextColor(234,88,12); doc.setFont('helvetica','bold'); doc.setFontSize(13);
         doc.text('Fase 2 - Expansao ('+(mf2.expansao.prazo)+'): girar e crescer', 18, yE);
         doc.setTextColor(...CINZA); doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
