@@ -30266,7 +30266,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.76-fix-estrategia-calculo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.77-estrategia-4semanas-custom';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42145,10 +42145,25 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         </div>
         <div>
           <label class="form-label">Plano</label>
-          <select id="estPlano" class="form-input" onchange="estCalcular()">
+          <select id="estPlano" class="form-input" onchange="estTogglePlanoCustom();estCalcular()">
             <option value="prata">Prata (6% + R$399,90/mês)</option>
             <option value="ouro">Ouro (R$1/venda + R$1.999,90/mês)</option>
+            <option value="custom">Personalizado (eu defino)</option>
           </select>
+        </div>
+      </div>
+
+      <!-- Campos do plano Personalizado (só aparecem quando 'custom') -->
+      <div id="estPlanoCustomBox" style="display:none;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px">
+        <span style="font-size:12px;color:#6b21a8;font-weight:700">⚙️ Condição personalizada:</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          <label style="font-size:12px">Mensalidade R$</label>
+          <input type="number" id="estCustomMensalidade" class="form-input" style="width:90px;padding:4px 8px" value="0" step="10" min="0" oninput="estCalcular()">
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <label style="font-size:12px">Comissão Líder</label>
+          <input type="number" id="estCustomComissao" class="form-input" style="width:64px;padding:4px 8px" value="10" step="0.5" min="0" oninput="estCalcular()">
+          <span style="font-size:12px">% sobre venda</span>
         </div>
       </div>
 
@@ -42170,6 +42185,13 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           <input type="number" id="estExpansaoPct" class="form-input" style="width:64px;padding:4px 8px" value="50" step="5" min="10" max="100" oninput="estCalcular()">
           <span style="font-size:12px">% dos R$50k</span>
         </div>
+      </div>
+
+      <!-- Configuração das semanas de Lançamento (editável) -->
+      <div style="margin-bottom:12px;padding:10px 12px;background:#fef9c3;border:1px solid #fde68a;border-radius:8px">
+        <div style="font-size:12px;color:#92400e;font-weight:700;margin-bottom:8px">🚀 Lançamento — 4 semanas (investimento e margem por semana, editáveis)</div>
+        <div id="estSemanasConfig"></div>
+        <div style="font-size:11px;color:#a16207;margin-top:6px">A soma dos % de investimento deve fechar 100% do orçamento.</div>
       </div>
 
       <!-- Produtos -->
@@ -42254,6 +42276,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     facPopularLojas();
     facCalcular();
     if (typeof estRenderProdutos === 'function') estRenderProdutos();
+    if (typeof estRenderSemanas === 'function') estRenderSemanas();
+    if (typeof estTogglePlanoCustom === 'function') estTogglePlanoCustom();
   }
   function fecharFacilitador() { document.getElementById('facilitadorOverlay').classList.remove('active'); }
   window.abrirFacilitador = abrirFacilitador;
@@ -42274,9 +42298,19 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     { id:'lanc01', nome:'Lançamento 01', margem:-0.20, prazo:'Semana 01' },
     { id:'lanc02', nome:'Lançamento 02', margem:-0.10, prazo:'Semana 02' },
     { id:'lanc03', nome:'Lançamento 03', margem: 0.00, prazo:'Semana 03' },
+    { id:'lanc04', nome:'Lançamento 04', margem: 0.00, prazo:'Semana 04' },
     { id:'expansao', nome:'Expansão', margem: 0.10, prazo:'(por investimento)' },
     { id:'lucro', nome:'Lucro', margem: 0.20, prazo:'Mensal (30 dias)' },
   ];
+  // Config PADRÃO das 4 semanas de lançamento (% do orçamento e margem) — editável na tela
+  const EST_SEMANAS_PADRAO = [
+    { id:'lanc01', label:'Semana 1', investPct:30, margemPct:-20 },
+    { id:'lanc02', label:'Semana 2', investPct:30, margemPct:-10 },
+    { id:'lanc03', label:'Semana 3', investPct:20, margemPct:0 },
+    { id:'lanc04', label:'Semana 4', investPct:20, margemPct:0 },
+  ];
+  // estado editável (clonado do padrão)
+  let _estSemanas = JSON.parse(JSON.stringify(EST_SEMANAS_PADRAO));
   const EST_TAXA_SHOPEE = 0.20, EST_FRETE = 4.00, EST_COMISSAO_PRATA = 0.06, EST_COMISSAO_OURO_FIXO = 1.00;
   const EST_FIXO_PRATA = 399.90, EST_FIXO_OURO = 1999.90;
   // Tabela de comissão Shopee por faixa de preço (a taxa acompanha o valor de venda)
@@ -42310,6 +42344,40 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   window.estAddProduto = estAddProduto; window.estRemProduto = estRemProduto; window.estSetProduto = estSetProduto;
 
+  // mostra/esconde os campos do plano personalizado
+  function estTogglePlanoCustom() {
+    const plano = document.getElementById('estPlano').value;
+    const box = document.getElementById('estPlanoCustomBox');
+    if (box) box.style.display = (plano === 'custom') ? 'flex' : 'none';
+  }
+  window.estTogglePlanoCustom = estTogglePlanoCustom;
+
+  // render dos campos editáveis das 4 semanas (investimento % e margem %)
+  function estRenderSemanas() {
+    const cont = document.getElementById('estSemanasConfig');
+    if (!cont) return;
+    const somaInvest = _estSemanas.reduce((s,x)=>s+(parseFloat(x.investPct)||0),0);
+    const corSoma = Math.abs(somaInvest-100) < 0.01 ? '#16a34a' : '#dc2626';
+    cont.innerHTML = _estSemanas.map((s,i) => `
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:5px;font-size:12px">
+        <span style="width:72px;font-weight:600">${s.label}</span>
+        <label style="color:#6b7280">Invest.</label>
+        <input type="number" class="form-input" style="width:64px;padding:3px 6px" value="${s.investPct}" step="5" min="0" max="100" oninput="estSetSemana(${i},'investPct',this.value)">
+        <span style="color:#6b7280">%</span>
+        <label style="color:#6b7280;margin-left:8px">Margem</label>
+        <input type="number" class="form-input" style="width:64px;padding:3px 6px" value="${s.margemPct}" step="5" oninput="estSetSemana(${i},'margemPct',this.value)">
+        <span style="color:#6b7280">%</span>
+      </div>`).join('')
+      + `<div style="font-size:11px;margin-top:4px;color:${corSoma};font-weight:700">Soma investimento: ${somaInvest.toFixed(0)}%${Math.abs(somaInvest-100)<0.01?' ✓':' (deve ser 100%)'}</div>`;
+  }
+  function estSetSemana(i, campo, val) {
+    if (!_estSemanas[i]) return;
+    _estSemanas[i][campo] = parseFloat(val) || 0;
+    estRenderSemanas();
+    estCalcular();
+  }
+  window.estSetSemana = estSetSemana; window.estRenderSemanas = estRenderSemanas;
+
   // mantém o split somando 20%
   function estSyncSplit(origem) {
     const real = document.getElementById('estLucroReal');
@@ -42329,25 +42397,31 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     return '5+ meses';
   }
   // preço por estratégia, com TAXA SHOPEE VARIÁVEL (itera até a faixa estabilizar).
-  // Retorna o preço E a composição detalhada (pra transparência).
-  function estPrecoDetalhado(custo, imposto, margem, plano) {
+  // plano: 'prata' | 'ouro' | 'custom'. Se custom, usa comissaoCustom (fração, ex 0.10) e tipoComissao.
+  function estPrecoDetalhado(custo, imposto, margem, plano, opts) {
+    opts = opts || {};
+    // resolve a comissão da Líder conforme o plano
+    // prata = 6% sobre venda; ouro = R$1 fixo/venda; custom = comissaoCustom (% sobre venda) ou fixo
+    const comPct = plano === 'custom' ? (opts.comissaoPct != null ? opts.comissaoPct : 0)
+                 : plano === 'ouro' ? 0
+                 : EST_COMISSAO_PRATA;
+    const comFixo = plano === 'ouro' ? EST_COMISSAO_OURO_FIXO
+                  : plano === 'custom' ? (opts.comissaoFixo || 0)
+                  : 0;
     let preco = Math.max(custo * 2, 20);
     let fx = estFaixaShopee(preco);
     for (let i = 0; i < 12; i++) {
       fx = estFaixaShopee(preco);
-      let numerador = custo + fx.fixo;
-      let denom = 1 - fx.pct - imposto - margem;
-      if (plano === 'ouro') numerador += EST_COMISSAO_OURO_FIXO;
-      else denom -= EST_COMISSAO_PRATA;
+      let numerador = custo + fx.fixo + comFixo;
+      let denom = 1 - fx.pct - imposto - margem - comPct;
       const novo = numerador / denom;
       if (Math.abs(novo - preco) < 0.001) { preco = novo; break; }
       preco = novo;
     }
     fx = estFaixaShopee(preco);
-    // composição em R$
     const taxaShopeeRS = preco * fx.pct;
     const freteRS = fx.fixo;
-    const comissaoLiderRS = plano === 'ouro' ? EST_COMISSAO_OURO_FIXO : preco * EST_COMISSAO_PRATA;
+    const comissaoLiderRS = comFixo + preco * comPct;
     const impostoRS = preco * imposto;
     const margemRS = preco * margem;
     return {
@@ -42355,7 +42429,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       custoRS: custo, lucroVenda: margemRS,
     };
   }
-  function estPreco(custo, imposto, margem, plano) { return estPrecoDetalhado(custo, imposto, margem, plano).preco; }
+  function estPreco(custo, imposto, margem, plano, opts) { return estPrecoDetalhado(custo, imposto, margem, plano, opts).preco; }
 
   let _estUltimo = null;
   function estCalcular() {
@@ -42384,14 +42458,28 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       return;
     }
 
-    const custoFixoMes = (plano === 'ouro') ? EST_FIXO_OURO : EST_FIXO_PRATA;
+    // condição comercial: plano padrão (prata/ouro) ou personalizado (mensalidade + comissão)
+    let custoFixoMes, comissaoPct = 0, comissaoFixo = 0;
+    if (plano === 'custom') {
+      const elM = document.getElementById('estCustomMensalidade');
+      const elC = document.getElementById('estCustomComissao');
+      custoFixoMes = elM ? (parseFloat(elM.value) || 0) : 0;
+      comissaoPct = elC ? ((parseFloat(elC.value) || 0) / 100) : 0;
+    } else {
+      custoFixoMes = (plano === 'ouro') ? EST_FIXO_OURO : EST_FIXO_PRATA;
+    }
+    const planoOpts = { comissaoPct, comissaoFixo };
 
-    // 1) preço médio por fase (média dos produtos) — pra projeção
-    // primeiro calcula preços de cada produto em cada fase
+    // aplica as margens configuráveis das semanas no EST_FASES (lanc01..04)
+    const fasesCalc = EST_FASES.map(f => {
+      const sem = _estSemanas.find(s => s.id === f.id);
+      return sem ? { ...f, margem: (sem.margemPct||0)/100 } : { ...f };
+    });
+
+    // 1) preço por fase de cada produto
     const produtosCalc = produtos.map(prod => {
-      let custoBase = prod.custo;
-      const fases = EST_FASES.map(f => {
-        const det = estPrecoDetalhado(custoBase, imposto, f.margem, plano);
+      const fases = fasesCalc.map(f => {
+        const det = estPrecoDetalhado(prod.custo, imposto, f.margem, plano, planoOpts);
         return { id:f.id, nome:f.nome, margem:f.margem, preco: det.preco, lucroVenda: det.margemRS, comp: det };
       });
       return { nome: prod.nome || 'Produto', custo: prod.custo, fases };
@@ -42399,7 +42487,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
     // 2) projeção usa a MÉDIA dos preços/lucros entre produtos
     const mediaFase = {};
-    EST_FASES.forEach(f => {
+    fasesCalc.forEach(f => {
       const precos = produtosCalc.map(p => p.fases.find(x=>x.id===f.id).preco);
       const lucros = produtosCalc.map(p => p.fases.find(x=>x.id===f.id).lucroVenda);
       mediaFase[f.id] = {
@@ -42410,60 +42498,65 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       };
     });
 
-    // 3) quantidades (fórmula da planilha) usando a média
+    // 3) LANÇAMENTO por semana (configurável): cada semana investe investPct% do orçamento.
+    // Desse investimento da semana, parte cobre a margem negativa das vendas e o resto é Ads.
     const orc = invest;
-    const I_lanc01 = orc * 0.30;
-    mediaFase.lanc01.ads = orc*0.30;
-    mediaFase.lanc02.ads = orc*0.30;
-    mediaFase.lanc03.ads = orc*0.40;
-    mediaFase.lanc01.qtd = Math.round(I_lanc01 * 0.30 / Math.abs(mediaFase.lanc01.lucroVenda||1));
-    mediaFase.lanc02.qtd = Math.round(I_lanc01 * 0.25 / Math.abs(mediaFase.lanc02.lucroVenda||1));
-    mediaFase.lanc03.qtd = Math.round(mediaFase.lanc02.qtd * 3);
+    const idsLanc = _estSemanas.map(s => s.id); // lanc01..lanc04
+    idsLanc.forEach(id => {
+      const sem = _estSemanas.find(s => s.id === id);
+      const f = mediaFase[id];
+      const investSemana = orc * (sem.investPct/100);   // quanto entra de investimento nesta semana
+      f.investSemana = investSemana;
+      f.adsInvest = investSemana;                        // o cliente coloca isto de Ads/investimento
+      // quantidade de pares: o investimento da semana dividido pela "perda" por par.
+      // se margem negativa, cada venda custa |lucroVenda| (cobertura); se margem >=0, estima pelo giro.
+      const perdaPorPar = Math.abs(f.lucroVenda) || 1;
+      if (f.margem < 0) {
+        // parte do investimento cobre a margem negativa; o giro é proporcional
+        f.qtd = Math.round(investSemana / perdaPorPar);
+        f.coberturaMargem = f.qtd * Math.abs(f.lucroVenda); // R$ usado pra cobrir margem
+        f.adsReal = Math.max(0, investSemana - f.coberturaMargem); // resto é Ads
+      } else {
+        // margem zero/positiva: todo o investimento vira Ads; giro estimado pelo preço
+        f.qtd = Math.round(investSemana / (f.preco * 0.10 || 1)); // ~10% ACOS de referência
+        f.coberturaMargem = 0;
+        f.adsReal = investSemana;
+      }
+      f.vendasValor = f.qtd * f.preco;
+      f.acos = f.vendasValor > 0 ? (f.adsInvest / f.vendasValor) : 0;
+      f.gastoAdsPorPar = f.qtd > 0 ? (f.adsInvest / f.qtd) : 0;
+      f.resultadoSemana = -investSemana; // o que sai do bolso do cliente naquela semana
+    });
+
     // Lucro mensal: mira 50k faturamento; split lucro real x ads
     mediaFase.lucro.vendaValor = 50000;
     mediaFase.lucro.qtd = Math.round(50000 / mediaFase.lucro.preco);
-    mediaFase.lucro.adsReinveste = 50000 * (0.20 - lucroRealPct); // parte da margem que volta pra ads
+    mediaFase.lucro.adsReinveste = 50000 * (0.20 - lucroRealPct);
     mediaFase.lucro.lucroRealMes = 50000 * lucroRealPct;
-    // custo fixo do plano abatido do lucro real
     mediaFase.lucro.lucroLiquidoMes = mediaFase.lucro.lucroRealMes - custoFixoMes;
-
-    // ── INDICADORES DE TRANSPARÊNCIA por fase (fórmulas exatas da planilha) ──
-    // Lançamento: vendas_valor = qtd*preço; ads_real = qtd*lucro_un - verba_da_semana;
-    //   ACOS = ads_real / vendas_valor; gasto_ads_por_par = preço * ACOS.
-    // verba (perda planejada) por semana: 30% / 30% / 40% do orçamento (negativa).
-    const verbaSem = { lanc01: orc*0.30, lanc02: orc*0.30, lanc03: orc*0.40 };
-    ['lanc01','lanc02','lanc03'].forEach(id => {
-      const f = mediaFase[id];
-      f.verbaSemana = verbaSem[id];                       // investimento "do bolso" da semana (a perda)
-      f.vendasValor = (f.qtd||0) * f.preco;               // faturamento da semana
-      f.adsReal = Math.max(0, (f.qtd||0) * Math.abs(f.lucroVenda) - 0); // gasto real de Ads pra girar (aprox planilha: qtd*|lucro| )
-      // ACOS conforme planilha = ads / vendas_valor (usa o ads investido = verba da semana)
-      f.adsInvest = f.verbaSemana;                         // o que o cliente coloca de Ads na semana
-      f.acos = f.vendasValor>0 ? (f.adsInvest / f.vendasValor) : 0;
-      f.gastoAdsPorPar = f.qtd>0 ? (f.adsInvest / f.qtd) : 0;
-      f.resultadoSemana = -f.verbaSemana;                 // resultado da semana pro cliente (negativo)
-    });
     // Expansão: vende com +10%; Ads = 10% do faturamento; lucro líquido = 0 (giro).
     mediaFase.expansao.acos = 0.10;
     mediaFase.expansao.gastoAdsPorPar = mediaFase.expansao.preco * 0.10;
-    // Lucro: ACOS 10%
     mediaFase.lucro.acos = 0.10;
     mediaFase.lucro.gastoAdsPorPar = mediaFase.lucro.preco * 0.10;
 
-    // 4) embutir custo fixo no preço (diluído pela qtd mensal projetada)
+    // 4) embutir custo fixo no preço — FIEL à quantidade de vendas do mês.
+    // Em cada mês a diluição muda: vende mais → menos custo fixo por par.
+    // Aqui calculamos o acréscimo de REFERÊNCIA pela qtd da fase Lucro (mês cheio),
+    // e guardamos a função pra diluir corretamente em cada mês do fluxo.
     let acrescimoUnit = 0;
+    const diluicaoPorQtd = (qtdMes) => (custoFixoMes > 0 && qtdMes > 0) ? (custoFixoMes / qtdMes) : 0;
     if (embutir && mediaFase.lucro.qtd > 0) {
-      acrescimoUnit = custoFixoMes / mediaFase.lucro.qtd;
-      // recalcula os preços de cada produto somando o acréscimo no custo
+      acrescimoUnit = diluicaoPorQtd(mediaFase.lucro.qtd);
       produtosCalc.forEach(pc => {
         pc.fases.forEach(f => {
-          const novoPreco = estPreco(pc.custo + acrescimoUnit, imposto, f.margem, plano);
+          const novoPreco = estPreco(pc.custo + acrescimoUnit, imposto, f.margem, plano, planoOpts);
           f.preco = novoPreco; f.lucroVenda = novoPreco * f.margem;
         });
       });
     }
 
-    _estUltimo = { cliente, invest, imposto, plano, custoFixoMes, lucroRealPct, embutir, acrescimoUnit, produtosCalc, mediaFase };
+    _estUltimo = { cliente, invest, imposto, plano, planoOpts, custoFixoMes, comissaoPct, lucroRealPct, embutir, acrescimoUnit, produtosCalc, mediaFase, semanas: JSON.parse(JSON.stringify(_estSemanas)) };
 
     // ── FLUXO MÊS A MÊS (com datas reais a partir de hoje) ──
     const expansaoPct = (parseFloat(document.getElementById('estExpansaoPct').value)||50) / 100;
@@ -42472,38 +42565,65 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const i = Math.abs(invest);
       if (i >= 4000) return 1; if (i >= 3100) return 2; if (i >= 2600) return 3; if (i >= 2000) return 5; return 5;
     })();
-    // mês 1: lançamento (3 semanas). resultado vendas = soma lucro margens (negativo). ads separado.
     const m = mediaFase;
-    const resultadoVendasM1 = (m.lanc01.qtd * m.lanc01.lucroVenda) + (m.lanc02.qtd * m.lanc02.lucroVenda) + (m.lanc03.qtd * m.lanc03.lucroVenda);
     const fluxo = [];
-    const addMes = (data, fase, fat, lucroBruto, ads, obs) => {
-      const lucroLiq = lucroBruto - (embutir ? 0 : 0); // custo fixo tratado no resumo
-      fluxo.push({ data: new Date(data), fase, fat, lucroBruto, ads, resultado: lucroBruto - ads, obs });
-    };
-    // Mês 1 - Lançamento. Conforme a planilha: a verba do orçamento cobre a margem
-    // negativa, e o ADS = (qtd*lucroVenda) - verba. Lucro real da fase = a verba investida (negativa).
-    const fatM1 = (m.lanc01.qtd*m.lanc01.preco)+(m.lanc02.qtd*m.lanc02.preco)+(m.lanc03.qtd*m.lanc03.preco);
-    // verba alocada por fase (planilha: 30%/30%/40% do orçamento) — é o investimento que sai do bolso
-    const verbaLanc = invest; // todo o orçamento é consumido no lançamento
-    // resultado do lançamento pro cliente = -(investimento) (ele investe e ainda não lucra)
-    fluxo.push({ data:new Date(hoje), fase:'Lançamento (3 semanas)', fat:fatM1, lucroBruto:resultadoVendasM1, ads:invest, resultado: -verbaLanc, obs:'Investimento inicial — plantio' });
-    // Meses de Expansão — LUCRO = 0 (margem 10% é toda reinvestida em Ads 10%)
+
+    // Mês 1 — LANÇAMENTO (4 semanas). Faturamento = soma das semanas; investimento = orçamento total.
+    // Se NÃO embutir, a mensalidade é paga à parte e entra como custo negativo do mês.
+    const fatM1 = idsLanc.reduce((s,id) => s + (m[id].qtd * m[id].preco), 0);
+    const mensalidadeMes = embutir ? 0 : custoFixoMes;
+    fluxo.push({
+      data:new Date(hoje), fase:'Lançamento (4 semanas)', fat:fatM1, lucroBruto: 0, ads:invest,
+      mensalidade: mensalidadeMes,
+      resultado: -invest - mensalidadeMes,   // investe o orçamento + paga mensalidade (se à parte)
+      obs:'Investimento inicial — plantio' + (mensalidadeMes? ' (+ mensalidade à parte)':'')
+    });
+
+    // Meses de EXPANSÃO — lucro líquido 0 (margem 10% toda em Ads). Mensalidade à parte se não embutir.
     const fatExp = 50000 * expansaoPct;
-    const lucroExpBruto = fatExp * 0.10; // margem bruta 10%
-    const adsExp = fatExp * 0.10;        // ads consome os 10%
+    const qtdExp = m.expansao.preco > 0 ? Math.round(fatExp / m.expansao.preco) : 0;
     for (let k=0; k<mesesExpansao; k++) {
       const d = new Date(hoje); d.setMonth(d.getMonth()+1+k);
-      fluxo.push({ data:d, fase:'Expansão', fat:fatExp, lucroBruto:lucroExpBruto, ads:adsExp, resultado: 0, obs: k===0?'Todo o lucro volta pra crescer (lucro líquido = R$0)':'' });
+      const mens = embutir ? 0 : custoFixoMes;
+      // diluição fiel: se embutir, o custo fixo já está no preço; se não, paga à parte
+      fluxo.push({ data:d, fase:'Expansão', fat:fatExp, lucroBruto: fatExp*0.10, ads:fatExp*0.10,
+        mensalidade: mens, qtd: qtdExp,
+        resultado: 0 - mens, // giro: lucro 0, menos mensalidade se à parte
+        obs: k===0?'Giro — todo lucro volta pra crescer'+(mens?' (− mensalidade)':''):'' });
     }
-    // Mês final - Lucro recorrente
-    const dLucro = new Date(hoje); dLucro.setMonth(dLucro.getMonth()+1+mesesExpansao);
-    const lucroBrutoLuc = 50000 * 0.20;
+
+    // Meses de LUCRO — expande UM A UM até o acumulado recuperar todo o investimento.
+    const lucroRealMes = 50000 * lucroRealPct;
     const adsLuc = 50000 * (0.20 - lucroRealPct);
-    const lucroLiqLuc = 50000 * lucroRealPct - (embutir ? 0 : custoFixoMes);
-    fluxo.push({ data:dLucro, fase:'Lucro recorrente', fat:50000, lucroBruto:lucroBrutoLuc, ads:adsLuc, resultado: lucroLiqLuc, obs:'Colheita — lucro recorrente' });
-    // acumulado (quando recupera investimento)
+    let mesLucroIdx = 0;
+    const MAX_MESES_LUCRO = 36; // trava de segurança
+    // calcula o acumulado até aqui
+    const acumAteExp = fluxo.reduce((s,x)=>s+x.resultado, 0);
+    let acumProjecao = acumAteExp;
+    while (acumProjecao < 0 && mesLucroIdx < MAX_MESES_LUCRO) {
+      const d = new Date(hoje); d.setMonth(d.getMonth()+1+mesesExpansao+mesLucroIdx);
+      const mens = embutir ? 0 : custoFixoMes;
+      const lucroLiqMes = lucroRealMes - mens;
+      acumProjecao += lucroLiqMes;
+      fluxo.push({ data:d, fase:'Lucro', fat:50000, lucroBruto:50000*0.20, ads:adsLuc,
+        mensalidade: mens, qtd: m.lucro.qtd,
+        resultado: lucroLiqMes,
+        obs: mesLucroIdx===0?'Colheita começa — lucro entra no caixa':'' });
+      mesLucroIdx++;
+    }
+    // garante ao menos 1 mês de lucro mostrado (se já recuperou na expansão)
+    if (mesLucroIdx === 0) {
+      const d = new Date(hoje); d.setMonth(d.getMonth()+1+mesesExpansao);
+      const mens = embutir ? 0 : custoFixoMes;
+      fluxo.push({ data:d, fase:'Lucro', fat:50000, lucroBruto:50000*0.20, ads:adsLuc, mensalidade:mens, qtd:m.lucro.qtd, resultado: lucroRealMes - mens, obs:'Colheita — lucro recorrente' });
+    }
+
+    // acumulado + marca o mês exato da virada (recuperação do investimento)
     let acum = 0; let mesRecuperacao = null;
-    fluxo.forEach((mes,idx) => { acum += mes.resultado; mes.acumulado = acum; if (mesRecuperacao===null && acum>=0 && idx>0) mesRecuperacao = mes; });
+    fluxo.forEach((mes,idx) => {
+      acum += mes.resultado; mes.acumulado = acum;
+      if (mesRecuperacao===null && acum>=0 && idx>0) { mesRecuperacao = mes; mes.virada = true; }
+    });
 
     _estUltimo.fluxo = fluxo;
     _estUltimo.mesesExpansao = mesesExpansao;
@@ -42547,16 +42667,19 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <div style="font-weight:800;font-size:15px;color:#1e293b;margin-bottom:4px">📣 O plano com total transparência</div>
       <div style="font-size:12px;color:#6b7280;margin-bottom:14px">Cada fase explicada: quanto investir em Ads, quantos pares vendemos e qual o resultado.</div>`;
 
-    // ── LANÇAMENTO (Semana 1/2/3) ──
+    // ── LANÇAMENTO (4 semanas configuráveis) ──
     html += `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:14px;margin-bottom:12px">
-      <div style="font-weight:800;font-size:14px;color:#b91c1c;margin-bottom:4px">🚀 Fase 1 — Lançamento (3 semanas)</div>
-      <div style="font-size:12px;color:#7f1d1d;margin-bottom:10px">Aqui a gente <b>planta</b>. Vendemos abaixo do custo pra ganhar relevância e reputação rápido na plataforma. É investimento: o resultado é negativo de propósito, e cada real vira venda, avaliação e posicionamento.</div>
+      <div style="font-weight:800;font-size:14px;color:#b91c1c;margin-bottom:4px">🚀 Fase 1 — Lançamento (${_estSemanas.length} semanas)</div>
+      <div style="font-size:12px;color:#7f1d1d;margin-bottom:10px">Aqui a gente <b>planta</b>. Vendemos abaixo do custo pra ganhar relevância e reputação rápido na plataforma. É investimento: o resultado é negativo de propósito, e cada real vira venda, avaliação e posicionamento. Dividimos em ${_estSemanas.length} semanas pra ficar mais leve.</div>
       <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px;background:#fff;border-radius:8px;overflow:hidden">
         <tr style="background:#fee2e2;text-align:left"><th style="padding:6px">Semana</th><th style="padding:6px">Investir em Ads</th><th style="padding:6px">Pares vendidos</th><th style="padding:6px">Preço</th><th style="padding:6px">ACOS</th><th style="padding:6px">Ads/par</th><th style="padding:6px">Resultado</th></tr>`;
-    [['lanc01','Semana 1'],['lanc02','Semana 2'],['lanc03','Semana 3']].forEach(([id,nome]) => {
-      const f = mediaFase[id];
+    let totalAdsLanc = 0, totalParesLanc = 0;
+    _estSemanas.forEach(s => {
+      const f = mediaFase[s.id];
+      if (!f) return;
+      totalAdsLanc += f.adsInvest||0; totalParesLanc += f.qtd||0;
       html += `<tr style="border-bottom:1px solid #f1f5f9">
-        <td style="padding:6px;font-weight:700">${nome} <span style="color:#9ca3af;font-weight:400">(${pct(f.margem)})</span></td>
+        <td style="padding:6px;font-weight:700">${s.label} <span style="color:#9ca3af;font-weight:400">(${pct(f.margem)})</span></td>
         <td style="padding:6px;font-weight:700;color:#b45309">${fmt(f.adsInvest)}</td>
         <td style="padding:6px;font-weight:700">${f.qtd} pares</td>
         <td style="padding:6px">${fmt(f.preco)}</td>
@@ -42565,8 +42688,6 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         <td style="padding:6px;font-weight:700;color:#dc2626">${fmt(f.resultadoSemana)}</td>
       </tr>`;
     });
-    const totalAdsLanc = mediaFase.lanc01.adsInvest + mediaFase.lanc02.adsInvest + mediaFase.lanc03.adsInvest;
-    const totalParesLanc = (mediaFase.lanc01.qtd||0)+(mediaFase.lanc02.qtd||0)+(mediaFase.lanc03.qtd||0);
     html += `<tr style="background:#fef2f2;font-weight:800"><td style="padding:6px">Total lançamento</td><td style="padding:6px;color:#b45309">${fmt(totalAdsLanc)}</td><td style="padding:6px">${totalParesLanc} pares</td><td style="padding:6px">—</td><td style="padding:6px">—</td><td style="padding:6px">—</td><td style="padding:6px;color:#dc2626">${fmt(-invest)}</td></tr>`;
     html += `</table></div></div>`;
 
@@ -42605,7 +42726,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     html += `<div style="margin-top:16px;font-weight:700;font-size:13px;margin-bottom:6px">📊 Projeção (média dos produtos)</div>`;
     html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
     html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:6px">Fase</th><th style="padding:6px">Preço méd</th><th style="padding:6px">Qtd</th><th style="padding:6px">Prazo</th></tr>';
-    ['lanc01','lanc02','lanc03','expansao','lucro'].forEach(id => {
+    ['lanc01','lanc02','lanc03','lanc04','expansao','lucro'].forEach(id => {
       const m = mediaFase[id];
       const qtd = id==='expansao' ? '(tempo)' : (m.qtd||'—');
       html += `<tr style="border-bottom:1px solid #e5e7eb"><td style="padding:6px;font-weight:600">${m.nome}</td><td style="padding:6px">${fmt(m.preco)}</td><td style="padding:6px">${qtd}</td><td style="padding:6px">${m.prazo}</td></tr>`;
@@ -42623,23 +42744,33 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // FLUXO MÊS A MÊS (timeline com datas reais)
     const fmtData = d => d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
     html += `<div style="margin-top:16px;font-weight:700;font-size:13px;margin-bottom:6px">📅 Fluxo financeiro mês a mês (a partir de hoje)</div>`;
+    const temMensalidade = (_estUltimo.fluxo||[]).some(x => (x.mensalidade||0) > 0);
     html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">';
-    html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:6px">Data</th><th style="padding:6px">Fase</th><th style="padding:6px">Faturamento</th><th style="padding:6px">Ads</th><th style="padding:6px">Resultado</th><th style="padding:6px">Acumulado</th></tr>';
+    html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:6px">Data</th><th style="padding:6px">Fase</th><th style="padding:6px">Faturamento</th><th style="padding:6px">Ads</th>'
+      + (temMensalidade?'<th style="padding:6px">Mensalidade</th>':'')
+      + '<th style="padding:6px">Resultado</th><th style="padding:6px">Acumulado</th></tr>';
     (_estUltimo.fluxo||[]).forEach(mes => {
       const corRes = mes.resultado < 0 ? '#dc2626' : '#16a34a';
       const corAc = mes.acumulado < 0 ? '#dc2626' : '#16a34a';
-      html += `<tr style="border-bottom:1px solid #e5e7eb">
+      const bg = mes.virada ? 'background:#dcfce7;' : '';
+      html += `<tr style="border-bottom:1px solid #e5e7eb;${bg}">
         <td style="padding:6px">${fmtData(mes.data)}</td>
-        <td style="padding:6px;font-weight:600">${mes.fase}</td>
+        <td style="padding:6px;font-weight:600">${mes.fase}${mes.virada?' 💚':''}</td>
         <td style="padding:6px">R$ ${mes.fat.toFixed(0)}</td>
         <td style="padding:6px;color:#6b7280">R$ ${mes.ads.toFixed(0)}</td>
+        ${temMensalidade?`<td style="padding:6px;color:#dc2626">${(mes.mensalidade||0)>0?'- R$ '+mes.mensalidade.toFixed(0):'—'}</td>`:''}
         <td style="padding:6px;color:${corRes};font-weight:700">R$ ${mes.resultado.toFixed(2)}</td>
-        <td style="padding:6px;color:${corAc}">R$ ${mes.acumulado.toFixed(2)}</td>
+        <td style="padding:6px;color:${corAc};font-weight:${mes.virada?'800':'400'}">R$ ${mes.acumulado.toFixed(2)}</td>
       </tr>`;
     });
     html += '</table></div>';
+    if (temMensalidade) {
+      html += `<div style="margin-top:6px;font-size:11px;color:#92400e">ℹ️ A mensalidade do plano é paga à parte (não foi embutida no preço). Por isso aparece como custo mensal — e o lucro precisa cobri-la antes da virada.</div>`;
+    }
     if (_estUltimo.mesRecuperacao) {
-      html += `<div style="margin-top:8px;font-size:12px;color:#16a34a"><b>💚 Investimento recuperado em ${fmtData(_estUltimo.mesRecuperacao.data)}</b> — a partir daí é lucro recorrente.</div>`;
+      html += `<div style="margin-top:8px;padding:10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:12px;color:#15803d"><b>💚 Investimento totalmente recuperado em ${fmtData(_estUltimo.mesRecuperacao.data)}.</b> A partir desse mês, todo o saldo passa a ser lucro de verdade no seu bolso — você já pagou todo o investimento de lançamento${temMensalidade?' e as mensalidades':''}.</div>`;
+    } else {
+      html += `<div style="margin-top:8px;font-size:12px;color:#b45309">⚠️ Com esses números, o investimento ainda não foi recuperado no período projetado. Ajuste o faturamento da expansão ou o lucro real pra ver a virada.</div>`;
     }
 
     out.innerHTML = html;
@@ -42753,19 +42884,19 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         doc.text('O PLANO COM TOTAL TRANSPARENCIA', 18, 16);
 
         // Lançamento — texto + tabela por semana
+        const semanasPDF = (E.semanas && E.semanas.length) ? E.semanas : [{id:'lanc01',label:'Semana 1'},{id:'lanc02',label:'Semana 2'},{id:'lanc03',label:'Semana 3'},{id:'lanc04',label:'Semana 4'}];
         doc.setTextColor(...AZUL); doc.setFont('helvetica','bold'); doc.setFontSize(13);
-        doc.text('Fase 1 - Lancamento (3 semanas): plantar reputacao', 18, 36);
+        doc.text('Fase 1 - Lancamento ('+semanasPDF.length+' semanas): plantar reputacao', 18, 36);
         doc.setTextColor(...CINZA); doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
-        const txtL = doc.splitTextToSize('Vendemos abaixo do custo para ganhar relevancia e avaliacoes rapido. E investimento: o resultado e negativo de proposito, e cada real vira venda, reputacao e posicionamento.', W-36);
+        const txtL = doc.splitTextToSize('Vendemos abaixo do custo para ganhar relevancia e avaliacoes rapido. E investimento: o resultado e negativo de proposito, e cada real vira venda, reputacao e posicionamento. Dividido em '+semanasPDF.length+' semanas para ficar mais leve.', W-36);
         doc.text(txtL, 18, 43);
         doc.autoTable({
           startY: 54,
           head: [['Semana','Investir em Ads','Pares','Preco','ACOS','Ads/par','Resultado']],
-          body: [
-            ['Semana 1 ('+pctT(mf2.lanc01.margem)+')', money(mf2.lanc01.adsInvest), String(mf2.lanc01.qtd), money(mf2.lanc01.preco), pctT(mf2.lanc01.acos), money(mf2.lanc01.gastoAdsPorPar), money(mf2.lanc01.resultadoSemana)],
-            ['Semana 2 ('+pctT(mf2.lanc02.margem)+')', money(mf2.lanc02.adsInvest), String(mf2.lanc02.qtd), money(mf2.lanc02.preco), pctT(mf2.lanc02.acos), money(mf2.lanc02.gastoAdsPorPar), money(mf2.lanc02.resultadoSemana)],
-            ['Semana 3 ('+pctT(mf2.lanc03.margem)+')', money(mf2.lanc03.adsInvest), String(mf2.lanc03.qtd), money(mf2.lanc03.preco), pctT(mf2.lanc03.acos), money(mf2.lanc03.gastoAdsPorPar), money(mf2.lanc03.resultadoSemana)],
-          ],
+          body: semanasPDF.map(s => {
+            const f = mf2[s.id]; if (!f) return [s.label,'-','-','-','-','-','-'];
+            return [s.label+' ('+pctT(f.margem)+')', money(f.adsInvest), String(f.qtd), money(f.preco), pctT(f.acos), money(f.gastoAdsPorPar), money(f.resultadoSemana)];
+          }),
           theme:'striped', headStyles:{fillColor:[185,28,28]}, styles:{fontSize:9,cellPadding:2.5}, margin:{left:18,right:18},
         });
 
@@ -42796,7 +42927,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       doc.autoTable({
         startY: 36,
         head:[['Fase','Preço médio','Quantidade','Prazo']],
-        body:['lanc01','lanc02','lanc03','expansao','lucro'].map(id=>{
+        body:['lanc01','lanc02','lanc03','lanc04','expansao','lucro'].map(id=>{
           const m=mf[id]; return [m.nome, money(m.preco), id==='expansao'?'Por tempo':(m.qtd||'—'), m.prazo];
         }),
         theme:'striped', headStyles:{fillColor:AZUL}, styles:{fontSize:11,cellPadding:4}, margin:{left:18,right:18},
