@@ -30266,7 +30266,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.80-pdf-comissao-lider';
+  const _DIAG_VERSAO_PAINEL = 'v33k.81-pdf-visual-12meses';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42579,43 +42579,44 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       obs:'Investimento inicial — plantio' + (mensalidadeMes? ' (+ mensalidade à parte)':'')
     });
 
-    // Meses de EXPANSÃO — lucro líquido 0 (margem 10% toda em Ads). Mensalidade à parte se não embutir.
-    const fatExp = 50000 * expansaoPct;
-    const qtdExp = m.expansao.preco > 0 ? Math.round(fatExp / m.expansao.preco) : 0;
+    // Meses de EXPANSÃO — faturamento GRADATIVO mês a mês. A escala é contada de trás
+    // pra frente: o último mês de expansão fatura mais (1,1×) e vai diminuindo pra trás.
+    // Escala base (do 1º ao último): [0,3 ; 0,4 ; 0,5 ; 0,6 ; 0,9 ; 1,1]. Pega os N últimos.
+    const ESCALA_EXP = [0.3, 0.4, 0.5, 0.6, 0.9, 1.1];
+    const fatExpBase = 50000 * expansaoPct; // valor "mensal" de referência da expansão
+    // monta os multiplicadores dos N meses, sempre terminando em 1,1 (pega a cauda da escala)
+    const mults = [];
+    for (let k=0; k<mesesExpansao; k++) {
+      // do último mês (1,1) andando pra trás
+      const idxDoFim = mesesExpansao - 1 - k; // 0 = último
+      const escIdx = ESCALA_EXP.length - 1 - idxDoFim;
+      mults[k] = escIdx >= 0 ? ESCALA_EXP[escIdx] : ESCALA_EXP[0]; // se passar de 6 meses, repete 0,3 no início
+    }
     for (let k=0; k<mesesExpansao; k++) {
       const d = new Date(hoje); d.setMonth(d.getMonth()+1+k);
       const mens = embutir ? 0 : custoFixoMes;
-      // diluição fiel: se embutir, o custo fixo já está no preço; se não, paga à parte
-      fluxo.push({ data:d, fase:'Expansão', fat:fatExp, lucroBruto: fatExp*0.10, ads:fatExp*0.10,
-        mensalidade: mens, qtd: qtdExp,
+      const fatMes = fatExpBase * mults[k];
+      const qtdMes = m.expansao.preco > 0 ? Math.round(fatMes / m.expansao.preco) : 0;
+      fluxo.push({ data:d, fase:'Expansão', fat:fatMes, lucroBruto: fatMes*0.10, ads:fatMes*0.10,
+        mensalidade: mens, qtd: qtdMes, mult: mults[k],
         resultado: 0 - mens, // giro: lucro 0, menos mensalidade se à parte
-        obs: k===0?'Giro — todo lucro volta pra crescer'+(mens?' (− mensalidade)':''):'' });
+        obs: (k===0?'Giro — todo lucro volta pra crescer'+(mens?' (− mensalidade)':''):'')+' · '+Math.round(mults[k]*100)+'% do ritmo' });
     }
 
-    // Meses de LUCRO — expande UM A UM até o acumulado recuperar todo o investimento.
+    // Meses de LUCRO — R$50k fixo/mês, preenchendo até completar 12 MESES no total
+    // (1 mês de lançamento + meses de expansão + meses de lucro = 12). Mínimo 1 mês de lucro.
     const lucroRealMes = 50000 * lucroRealPct;
     const adsLuc = 50000 * (0.20 - lucroRealPct);
-    let mesLucroIdx = 0;
-    const MAX_MESES_LUCRO = 36; // trava de segurança
-    // calcula o acumulado até aqui
-    const acumAteExp = fluxo.reduce((s,x)=>s+x.resultado, 0);
-    let acumProjecao = acumAteExp;
-    while (acumProjecao < 0 && mesLucroIdx < MAX_MESES_LUCRO) {
-      const d = new Date(hoje); d.setMonth(d.getMonth()+1+mesesExpansao+mesLucroIdx);
+    const TOTAL_MESES = 12;
+    let mesesLucro = Math.max(1, TOTAL_MESES - 1 - mesesExpansao); // 1 = mês do lançamento
+    for (let k=0; k<mesesLucro; k++) {
+      const d = new Date(hoje); d.setMonth(d.getMonth()+1+mesesExpansao+k);
       const mens = embutir ? 0 : custoFixoMes;
       const lucroLiqMes = lucroRealMes - mens;
-      acumProjecao += lucroLiqMes;
       fluxo.push({ data:d, fase:'Lucro', fat:50000, lucroBruto:50000*0.20, ads:adsLuc,
         mensalidade: mens, qtd: m.lucro.qtd,
         resultado: lucroLiqMes,
-        obs: mesLucroIdx===0?'Colheita começa — lucro entra no caixa':'' });
-      mesLucroIdx++;
-    }
-    // garante ao menos 1 mês de lucro mostrado (se já recuperou na expansão)
-    if (mesLucroIdx === 0) {
-      const d = new Date(hoje); d.setMonth(d.getMonth()+1+mesesExpansao);
-      const mens = embutir ? 0 : custoFixoMes;
-      fluxo.push({ data:d, fase:'Lucro', fat:50000, lucroBruto:50000*0.20, ads:adsLuc, mensalidade:mens, qtd:m.lucro.qtd, resultado: lucroRealMes - mens, obs:'Colheita — lucro recorrente' });
+        obs: k===0?'Colheita começa — lucro entra no caixa':'' });
     }
 
     // acumulado + marca o mês exato da virada (recuperação do investimento)
@@ -42624,11 +42625,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       acum += mes.resultado; mes.acumulado = acum;
       if (mesRecuperacao===null && acum>=0 && idx>0) { mesRecuperacao = mes; mes.virada = true; }
     });
+    // total de lucro projetado no ano (soma dos resultados positivos da fase lucro)
+    const lucroAnual = fluxo.filter(x=>x.fase==='Lucro').reduce((s,x)=>s+x.resultado,0);
 
     _estUltimo.fluxo = fluxo;
     _estUltimo.mesesExpansao = mesesExpansao;
     _estUltimo.expansaoPct = expansaoPct;
     _estUltimo.mesRecuperacao = mesRecuperacao;
+    _estUltimo.lucroAnual = lucroAnual;
 
     // ── RENDER ──
     const fmt = v => 'R$ ' + (v||0).toFixed(2);
@@ -42859,6 +42863,22 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           }),
           theme:'striped', headStyles:{fillColor:VERDE}, styles:{fontSize:9,cellPadding:3},
           margin:{left:18,right:18},
+          didParseCell: function(d){
+            if (d.section!=='body') return;
+            const f = pc.fases[d.row.index];
+            // coluna 2 = Preço de Venda → destaque maior (tag colorida)
+            if (d.column.index===2) {
+              d.cell.styles.fontStyle='bold'; d.cell.styles.fontSize=12;
+              d.cell.styles.fillColor=[37,99,235]; d.cell.styles.textColor=[255,255,255]; d.cell.styles.halign='center';
+            }
+            // coluna 5 = Lucro por Venda → vermelho/amarelo/verde
+            if (d.column.index===5 && f) {
+              d.cell.styles.fontStyle='bold';
+              if (f.margem < 0) d.cell.styles.textColor=[220,38,38];        // prejuízo
+              else if (f.margem === 0) d.cell.styles.textColor=[202,138,4]; // empate (amarelo/dourado)
+              else d.cell.styles.textColor=[22,163,74];                     // positivo
+            }
+          },
         });
         // composição detalhada da fase lucro
         const fl = pc.fases.find(x=>x.id==='lucro');
@@ -42990,23 +43010,48 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         head:[['Data','Fase','Faturamento','Ads','Resultado','Acumulado']],
         body:(E.fluxo||[]).map(mes=>[fmtD(mes.data), mes.fase, money(mes.fat), money(mes.ads), money(mes.resultado), money(mes.acumulado)]),
         theme:'striped', headStyles:{fillColor:AZUL}, styles:{fontSize:9,cellPadding:3}, margin:{left:18,right:18},
-        didParseCell: function(d){ if(d.section==='body' && (d.column.index===4||d.column.index===5)){ const v=parseFloat(String(d.cell.raw).replace(/[^\d,-]/g,'').replace(',','.')); if(v<0) d.cell.styles.textColor=[220,38,38]; else d.cell.styles.textColor=[22,163,74]; } },
+        didParseCell: function(d){
+          if(d.section!=='body') return;
+          const mes = (E.fluxo||[])[d.row.index];
+          // linha da virada: fundo verde forte, texto branco
+          if (mes && mes.virada) {
+            d.cell.styles.fillColor=[22,163,74]; d.cell.styles.textColor=[255,255,255]; d.cell.styles.fontStyle='bold';
+            return;
+          }
+          if (d.column.index===4||d.column.index===5){ const v=parseFloat(String(d.cell.raw).replace(/[^\d,-]/g,'').replace(',','.')); if(v<0) d.cell.styles.textColor=[220,38,38]; else d.cell.styles.textColor=[22,163,74]; }
+        },
       });
       let yFl = doc.lastAutoTable.finalY + 8;
       if (E.mesRecuperacao) {
-        doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(11);
-        doc.text('Investimento recuperado em ' + fmtD(E.mesRecuperacao.data) + ' - a partir dai, lucro recorrente.', 18, yFl);
-        yFl += 10;
+        // DESTAQUE GRANDE do mês da virada
+        doc.setFillColor(22,163,74); doc.roundedRect(18,yFl,W-36,20,3,3,'F');
+        doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(13);
+        doc.text('🎯 SEU NEGOCIO SE PAGA EM ' + fmtD(E.mesRecuperacao.data).toUpperCase(), 24, yFl+9);
+        doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+        doc.text('A partir desta data voce recuperou todo o investimento inicial — daqui pra frente e lucro.', 24, yFl+16);
+        yFl += 26;
+      }
+      // LUCRO ANUAL PROJETADO
+      if (E.lucroAnual != null) {
+        doc.setFillColor(240,253,244); doc.roundedRect(18,yFl,W-36,16,2,2,'F');
+        doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(12);
+        doc.text('Lucro projetado no 1o ano: ' + money(E.lucroAnual), 24, yFl+10);
+        yFl += 22;
       }
       // aviso de custo fixo
       if (E.embutir) {
-        doc.setFillColor(240,253,244); doc.roundedRect(18,yFl,W-36,16,2,2,'F');
-        doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(10);
-        doc.text('Custo fixo mensal do plano JA EMBUTIDO no preco de venda — sem cobrancas a parte.', 24, yFl+10);
+        doc.setTextColor(...VERDE); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+        doc.text('Custo fixo mensal do plano JA EMBUTIDO no preco de venda — sem cobrancas a parte.', 18, yFl);
+        yFl += 8;
       } else {
         doc.setTextColor(...CINZA); doc.setFont('helvetica','italic'); doc.setFontSize(8);
-        doc.text('* O custo fixo mensal do plano (' + money(E.custoFixoMes) + ') e demais custos fixos nao estao embutidos nos precos acima e sao cobrados a parte.', 18, yFl+6);
+        doc.text('* O custo fixo mensal do plano (' + money(E.custoFixoMes) + ') e demais custos fixos nao estao embutidos nos precos acima e sao cobrados a parte.', 18, yFl);
+        yFl += 6;
       }
+      // RESSALVA — planejamento anual sujeito a variações
+      doc.setTextColor(...CINZA); doc.setFont('helvetica','italic'); doc.setFontSize(7.5);
+      const ressalva = doc.splitTextToSize('* Este e um planejamento ANUAL de faturamento e pode haver variacoes conforme a conduta do lojista: envio correto e no prazo dos pedidos (sem atrasos), manutencao de estoque suficiente para atender a demanda, e as caracteristicas do proprio produto (procura, concorrencia, sazonalidade). Os numeros representam uma projecao baseada na execucao 100% correta da estrategia.', W-36);
+      doc.text(ressalva, 18, yFl+4);
 
       doc.save('Estrategia_' + (E.cliente||'cliente').replace(/\s+/g,'_') + '.pdf');
       showToast('📄 PDF gerado!');
