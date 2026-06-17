@@ -11770,6 +11770,53 @@ Retorne JSON: {"ID": "valor", ...}`;
     const userId = status && status.userIdMarketplace ? status.userIdMarketplace : null;
     const bgCard = conectada ? '#f0fdf4' : '#fff';
     const borderCard = conectada ? '#16a34a' : '#e5e7eb';
+
+    // ---- Bloco Shopee Ads (2º OAuth): só pra lojas Shopee ----
+    // Mostra status de conexão "1/2" (só ERP) ou "2/2" (ERP + Ads) e o botão
+    // de conectar/reconectar o app de Ads. NÃO se aplica a outros marketplaces.
+    let adsBlocoHtml = '';
+    let adsBotaoHtml = '';
+    if (loja.marketplace === 'shopee') {
+      const adsConectado = !!(status && status.adsConectado);
+      const etapas = conectada ? (adsConectado ? '2/2' : '1/2') : '0/2';
+      const etapasBg = !conectada ? '#f3f4f6' : (adsConectado ? '#dcfce7' : '#fef3c7');
+      const etapasTxt = !conectada ? '#6b7280' : (adsConectado ? '#166534' : '#92400e');
+
+      // Texto de expiração do token de Ads (igual lógica do ERP)
+      let adsExpiraTxt;
+      if (!adsConectado) {
+        adsExpiraTxt = conectada
+          ? '⚪ Ads ainda não conectado'
+          : '⚪ Conecte o ERP primeiro';
+      } else {
+        const adsExp = status.adsExpiraEm ? new Date(status.adsExpiraEm) : null;
+        const minRest = adsExp ? Math.floor((adsExp - new Date()) / 60000) : 0;
+        if (adsExp && minRest < 0) {
+          adsExpiraTxt = '⚠️ Token Ads expirado — reconecte';
+        } else if (adsExp) {
+          adsExpiraTxt = `🕒 Ads expira em ${Math.floor(minRest/60)}h ${minRest%60}min (renova auto)`;
+        } else {
+          adsExpiraTxt = '🕒 Ads conectado';
+        }
+      }
+
+      adsBlocoHtml = `
+        <div style="margin-bottom:10px;padding:8px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-size:10px;font-weight:700;color:#9a3412">📣 Conexões</span>
+            <span style="background:${etapasBg};color:${etapasTxt};padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800">${etapas}</span>
+          </div>
+          <div style="font-size:10px;color:#6b7280;line-height:1.5">
+            <div>${conectada ? '✅' : '⚪'} ERP (produtos/pedidos)</div>
+            <div>${adsConectado ? '✅' : '⚪'} Ads (campanhas) · <span style="color:#9a3412">${adsExpiraTxt}</span></div>
+          </div>
+        </div>`;
+
+      // Botão só faz sentido se o ERP já estiver conectado (Ads complementa a loja)
+      if (conectada) {
+        adsBotaoHtml = `<button class="toolbar-btn" style="flex:1;font-size:11px;padding:6px;background:#fff7ed;border-color:#fed7aa;color:#9a3412" onclick="acaoLojaConectarAds('${loja.id}')">${adsConectado ? '🔁 Reconectar Ads' : '📣 Conectar Ads'}</button>`;
+      }
+    }
     
     return `<div style="background:${bgCard};border:1.5px solid ${borderCard};border-radius:14px;padding:14px">
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
@@ -11789,9 +11836,11 @@ Retorne JSON: {"ID": "valor", ...}`;
         </select>
         <div style="font-size:9px;color:#9ca3af;margin-top:3px">Usado pra avisar o cliente no WhatsApp quando a demanda conclui.</div>
       </div>
+      ${adsBlocoHtml}
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         ${conectada ? `<button class="toolbar-btn" style="flex:1;font-size:11px;padding:6px" onclick="acaoLojaSincronizar('${loja.id}')">🔄 Sincronizar</button>` : ''}
         <button class="toolbar-btn" style="flex:1;font-size:11px;padding:6px" onclick="acaoLojaConectar('${loja.id}')">${conectada ? '🔁 Reconectar' : '🔗 Conectar'}</button>
+        ${adsBotaoHtml}
         ${conectada ? `<button class="delete-btn" style="font-size:11px;padding:6px 10px" onclick="acaoLojaDesconectar('${loja.id}')">Desconectar</button>` : ''}
         <button class="delete-btn" style="font-size:11px;padding:6px 10px;background:#f3f4f6;color:#6b7280" onclick="acaoLojaExcluir('${loja.id}')" title="Excluir loja">🗑</button>
       </div>
@@ -11918,6 +11967,32 @@ Retorne JSON: {"ID": "valor", ...}`;
     // do marketplace e mostraria "desvincular" da conta errada).
     await abrirVinculoMarketplace({ id: loja.marketplace, nome: info.nome }, loja);
   }
+
+  // Conecta o app de Ads da Shopee (2º OAuth). A loja precisa já ter o ERP
+  // conectado. Abre o link /api/vincular/shopee-ads/iniciar que redireciona
+  // pro auth do app Ads e grava o token nas colunas ads_* da mesma loja.
+  async function acaoLojaConectarAds(lojaLocalId) {
+    const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
+    if (!loja) return;
+    if (loja.marketplace !== 'shopee') {
+      showToast('Ads só está disponível para lojas Shopee.', true);
+      return;
+    }
+    const lojaIdBanco = await garantirLojaNoBanco(loja);
+    if (!lojaIdBanco) {
+      showToast('⚠️ Loja não está no banco. Conecte o ERP primeiro.', true);
+      return;
+    }
+    // Checa se o ERP está conectado (Ads complementa a loja)
+    const s = _lojasStatusBackend.find(x => String(x.lojaId) === String(lojaIdBanco));
+    if (!s || !s.conectada) {
+      showToast('Conecte o ERP da loja primeiro (etapa 1/2), depois o Ads.', true);
+      return;
+    }
+    const link = BACKEND_URL + '/api/vincular/shopee-ads/iniciar?lojaId=' + lojaIdBanco;
+    abrirModalConexao({ id: 'shopee-ads', nome: 'Shopee Ads (' + loja.nome + ')' }, link);
+  }
+  window.acaoLojaConectarAds = acaoLojaConectarAds;
   
   async function acaoLojaSincronizar(lojaLocalId) {
     const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
@@ -30266,7 +30341,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.89-estrategia-mercadolivre';
+  const _DIAG_VERSAO_PAINEL = 'v33k.91-shopee-ads-status';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42334,10 +42409,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   ];
   function estFaixaShopee(preco) { return EST_FAIXAS_SHOPEE.find(f => preco <= f.max); }
 
-  // Mercado Livre: abaixo de R$79 → 14% + R$6,75 frete ; a partir de R$79 → 20% + R$20 frete
+  // Mercado Livre: comissão sempre 14% · frete R$6,75 (< R$79) ou R$20 (>= R$79)
   const EST_FAIXAS_ML = [
     { max: 78.99, pct: 0.14, fixo: 6.75 },
-    { max: Infinity, pct: 0.20, fixo: 20 },
+    { max: Infinity, pct: 0.14, fixo: 20 },
   ];
   function estFaixaML(preco) { return EST_FAIXAS_ML.find(f => preco <= f.max); }
 
