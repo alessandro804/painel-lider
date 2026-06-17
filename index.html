@@ -5370,6 +5370,7 @@
       <select id="adsLojaFiltro" onchange="renderAdsSubaba()" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;min-width:200px">
         <option value="">Todas as lojas Shopee</option>
       </select>
+      <button id="adsBtnSyncLoja" class="toolbar-btn" onclick="adsSincronizarLojaSelecionada()" style="display:none">🔄 Sincronizar esta loja</button>
     </div>
 
     <div id="adsConteudo" style="min-height:200px">
@@ -12181,6 +12182,10 @@ Retorne JSON: {"ID": "valor", ...}`;
   async function renderAdsSubaba() {
     const cont = document.getElementById('adsConteudo');
     if (!cont) return;
+    // botão "sincronizar esta loja" visível só quando há loja selecionada
+    const loja = document.getElementById('adsLojaFiltro')?.value || '';
+    const btnSync = document.getElementById('adsBtnSyncLoja');
+    if (btnSync) btnSync.style.display = loja ? '' : 'none';
     cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">Carregando…</div>';
     try {
       if (_adsSubaba === 'anuncios') return await renderAdsAnuncios(cont);
@@ -12192,6 +12197,13 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.renderAdsSubaba = renderAdsSubaba;
 
+  async function adsSincronizarLojaSelecionada() {
+    const loja = document.getElementById('adsLojaFiltro')?.value || '';
+    if (!loja) { showToast('Escolha uma loja primeiro.', true); return; }
+    await adsSincronizarLoja(loja);
+  }
+  window.adsSincronizarLojaSelecionada = adsSincronizarLojaSelecionada;
+
   // cor do ACOS: verde bom, amarelo médio, vermelho ruim (referência das telas)
   function corAcos(acos) {
     if (acos === null || acos === undefined) return '#9ca3af';
@@ -12200,13 +12212,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     return '#dc2626';
   }
 
-  // ---- Sub-aba ANÚNCIOS ----
+  // ---- Sub-aba ANÚNCIOS (cards com foto, estilo das imagens) ----
   async function renderAdsAnuncios(cont) {
     const { dias, loja } = adsParams();
     const headers = { 'x-api-token': getApiToken() };
 
-    // Sem loja escolhida: precisa iterar lojas. Pra simplicidade e pra respeitar
-    // o backend (endpoint é por loja), pedimos pra escolher uma loja aqui.
     if (!loja) {
       cont.innerHTML = '<div style="padding:24px;text-align:center;color:#6b7280;background:#f9fafb;border-radius:10px">' +
         'Escolha uma loja no filtro acima para ver os anúncios.<br>' +
@@ -12225,31 +12235,70 @@ Retorne JSON: {"ID": "valor", ...}`;
       return;
     }
 
-    let html = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
-      '<thead><tr style="text-align:left;color:#6b7280;border-bottom:2px solid #f3f4f6">' +
-      '<th style="padding:8px">Anúncio</th><th style="padding:8px">Status</th>' +
-      '<th style="padding:8px;text-align:right">Receita (paga)</th>' +
-      '<th style="padding:8px;text-align:right">Vendas</th>' +
-      '<th style="padding:8px;text-align:right">Gasto Ads</th>' +
-      '<th style="padding:8px;text-align:right">ACOS</th></tr></thead><tbody>';
+    // aviso se ninguém tem gasto (ETL não rodou pra essa loja)
+    const algumGasto = r.anuncios.some(a => a.gastoAds > 0);
+    let aviso = '';
+    if (!algumGasto) {
+      aviso = '<div style="padding:12px 14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;margin-bottom:12px;font-size:13px;color:#9a3412">' +
+        '⚠️ Nenhum gasto de Ads encontrado nesse período. Se os anúncios estão ativos na Shopee, clique em <strong>🔄 Sincronizar esta loja</strong> (no topo) pra puxar os dados de Ads.</div>';
+    }
 
+    let html = aviso + '<div style="display:flex;flex-direction:column;gap:10px">';
     r.anuncios.forEach(a => {
-      let alerta = '';
-      if (a.gastouSemVender) alerta = '<span style="font-size:10px;background:#fef2f2;color:#b91c1c;padding:2px 6px;border-radius:5px;margin-left:6px">gastou s/ vender</span>';
-      else if (a.vendeuSemAnunciar) alerta = '<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;padding:2px 6px;border-radius:5px;margin-left:6px">vendeu s/ anunciar</span>';
-      html += '<tr style="border-bottom:1px solid #f3f4f6">' +
-        '<td style="padding:8px;max-width:280px"><div style="font-weight:600;color:#1e2a47">' + escapeHtml(a.nome || ('Item ' + a.itemId)) + '</div>' +
-        '<div style="font-size:10px;color:#9ca3af">' + a.itemId + alerta + '</div></td>' +
-        '<td style="padding:8px"><span style="font-size:11px;color:#6b7280">' + (a.status || '—') + '</span></td>' +
-        '<td style="padding:8px;text-align:right">' + fmtBRL(a.receitaPaga) + '</td>' +
-        '<td style="padding:8px;text-align:right">' + (a.unidades || 0) + '</td>' +
-        '<td style="padding:8px;text-align:right">' + fmtBRL(a.gastoAds) + '</td>' +
-        '<td style="padding:8px;text-align:right;font-weight:800;color:' + corAcos(a.acos) + '">' + (a.acos === null ? '—' : a.acos + '%') + '</td>' +
-        '</tr>';
+      html += cardAnuncio(a);
     });
-    html += '</tbody></table></div>';
-    html += '<div style="font-size:10px;color:#9ca3af;margin-top:10px">ACOS = gasto em Ads ÷ receita paga × 100. Receita considera só pedidos pagos (cancelados/devolvidos não entram). "—" = sem receita paga no período.</div>';
+    html += '</div>';
+    html += '<div style="font-size:10px;color:#9ca3af;margin-top:12px">ACOS = gasto em Ads ÷ receita paga × 100. Receita considera só pedidos pagos. "—" = sem receita paga no período.</div>';
     cont.innerHTML = html;
+  }
+
+  function badgeStatus(status) {
+    if (!status) return '';
+    const mapa = {
+      ongoing: ['#dcfce7', '#166534', 'ATIVO'],
+      paused: ['#fef3c7', '#92400e', 'PAUSADO'],
+      scheduled: ['#dbeafe', '#1e40af', 'AGENDADO'],
+      ended: ['#f3f4f6', '#6b7280', 'ENCERRADO'],
+      closed: ['#f3f4f6', '#6b7280', 'FECHADO'],
+      deleted: ['#fee2e2', '#991b1b', 'EXCLUÍDO'],
+    };
+    const [bg, fg, txt] = mapa[status] || ['#f3f4f6', '#6b7280', status.toUpperCase()];
+    return '<span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:10px;font-weight:800">' + txt + '</span>';
+  }
+
+  function cardAnuncio(a) {
+    const acosCor = corAcos(a.acos);
+    const acosTxt = a.acos === null ? '—' : a.acos + '%';
+    // thumbnail (foto do produto) ou placeholder
+    const thumb = a.foto
+      ? '<img src="' + a.foto + '" style="width:64px;height:64px;object-fit:cover;border-radius:10px;flex-shrink:0" onerror="this.style.display=\'none\'">'
+      : '<div style="width:64px;height:64px;border-radius:10px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:24px;color:#cbd5e1">📦</div>';
+
+    let alerta = '';
+    if (a.gastouSemVender) alerta = '<span style="font-size:10px;background:#fef2f2;color:#b91c1c;padding:2px 7px;border-radius:5px;margin-left:6px">gastou s/ vender</span>';
+    else if (a.vendeuSemAnunciar) alerta = '<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;padding:2px 7px;border-radius:5px;margin-left:6px">vendeu s/ anunciar</span>';
+
+    return '<div style="display:flex;gap:14px;align-items:center;padding:14px;background:white;border:1px solid #e5e7eb;border-radius:14px">' +
+      thumb +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+          '<div style="font-weight:700;color:#1e2a47;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(a.nome || ('Item ' + a.itemId)) + '</div>' +
+          badgeStatus(a.status) +
+        '</div>' +
+        '<div style="font-size:11px;color:#9ca3af;margin-bottom:8px">' + a.itemId + alerta + '</div>' +
+        '<div style="display:flex;gap:18px;flex-wrap:wrap">' +
+          metricaInline('Receita', fmtBRL(a.receitaPaga)) +
+          metricaInline('Vendas', String(a.unidades || 0)) +
+          metricaInline('Gasto Ads', fmtBRL(a.gastoAds)) +
+          metricaInline('ACOS', acosTxt, acosCor) +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function metricaInline(label, valor, cor) {
+    return '<div><div style="font-size:10px;color:#9ca3af;font-weight:600">' + label + '</div>' +
+      '<div style="font-size:15px;font-weight:800;color:' + (cor || '#1e2a47') + '">' + valor + '</div></div>';
   }
 
   // ---- Sub-aba RESUMO POR LOJA ----
@@ -30696,7 +30745,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.93-ads-aba-operacoes';
+  const _DIAG_VERSAO_PAINEL = 'v33k.94-ads-cards-fotos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
