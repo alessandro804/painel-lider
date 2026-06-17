@@ -5021,6 +5021,18 @@
   </div>
 </div>
 
+<!-- ===== MODAL MÉTRICAS ADS (Shopee) — Leva 1 ===== -->
+<div class="modal-overlay" id="adsMetricasOverlay" onclick="if(event.target===this)fecharAdsMetricas()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:560px">
+    <button class="modal-close" onclick="fecharAdsMetricas()" aria-label="Fechar">✕</button>
+    <div class="modal-title">📊 Métricas Ads — <span id="adsMetricasNomeLoja">—</span></div>
+    <div class="modal-subtitle">Saldo e desempenho dos anúncios da Shopee. Período padrão: últimos 7 dias.</div>
+    <div id="adsMetricasConteudo" style="margin-top:8px">
+      <div style="text-align:center;color:#9ca3af;padding:24px">Carregando…</div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== MODAL REAGENDAR DEMANDA ===== -->
 <div class="modal-overlay" id="reagendarOverlay" onclick="if(event.target===this)fecharReagendar()">
   <div class="modal" onclick="event.stopPropagation()" style="max-width:400px">
@@ -11815,6 +11827,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       // Botão só faz sentido se o ERP já estiver conectado (Ads complementa a loja)
       if (conectada) {
         adsBotaoHtml = `<button class="toolbar-btn" style="flex:1;font-size:11px;padding:6px;background:#fff7ed;border-color:#fed7aa;color:#9a3412" onclick="acaoLojaConectarAds('${loja.id}')">${adsConectado ? '🔁 Reconectar Ads' : '📣 Conectar Ads'}</button>`;
+        // Métricas só quando Ads conectado (2/2)
+        if (adsConectado) {
+          adsBotaoHtml += `<button class="toolbar-btn" style="flex:1;font-size:11px;padding:6px" onclick="acaoLojaMetricasAds('${loja.id}')">📊 Métricas Ads</button>`;
+        }
       }
     }
     
@@ -11993,6 +12009,100 @@ Retorne JSON: {"ID": "valor", ...}`;
     abrirModalConexao({ id: 'shopee-ads', nome: 'Shopee Ads (' + loja.nome + ')' }, link);
   }
   window.acaoLojaConectarAds = acaoLojaConectarAds;
+
+  // ===== Métricas Ads (Leva 1: saldo + performance agregada) =====
+  function fecharAdsMetricas() {
+    const ov = document.getElementById('adsMetricasOverlay');
+    if (ov) ov.classList.remove('active');
+  }
+  window.fecharAdsMetricas = fecharAdsMetricas;
+
+  function fmtBRL(v) {
+    if (v === null || v === undefined || isNaN(v)) return '—';
+    return 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  async function acaoLojaMetricasAds(lojaLocalId) {
+    const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
+    if (!loja) return;
+    const lojaIdBanco = await garantirLojaNoBanco(loja);
+    if (!lojaIdBanco) { showToast('⚠️ Loja não está no banco.', true); return; }
+
+    document.getElementById('adsMetricasNomeLoja').textContent = loja.nome;
+    document.getElementById('adsMetricasConteudo').innerHTML =
+      '<div style="text-align:center;color:#9ca3af;padding:24px">Carregando…</div>';
+    document.getElementById('adsMetricasOverlay').classList.add('active');
+
+    const headers = { 'x-api-token': getApiToken() };
+    const base = BACKEND_URL + '/api/ads/loja/' + lojaIdBanco;
+
+    try {
+      const [saldoResp, perfResp] = await Promise.all([
+        fetch(base + '/saldo', { headers }).then(r => r.json()).catch(e => ({ ok: false, erro: e.message })),
+        fetch(base + '/performance', { headers }).then(r => r.json()).catch(e => ({ ok: false, erro: e.message })),
+      ]);
+
+      // Se o Ads não está conectado, o backend devolve semAds:true
+      if (saldoResp && saldoResp.semAds) {
+        document.getElementById('adsMetricasConteudo').innerHTML =
+          '<div style="text-align:center;color:#9a3412;padding:24px;background:#fff7ed;border-radius:8px">' +
+          'Ads não está conectado nesta loja.<br>Conecte em <strong>Conectar Ads</strong> (etapa 2/2) primeiro.</div>';
+        return;
+      }
+
+      let html = '';
+
+      // --- Saldo ---
+      if (saldoResp && saldoResp.ok) {
+        const saldoBaixo = typeof saldoResp.saldo === 'number' && saldoResp.saldo < 50;
+        html += '<div style="padding:14px;border-radius:10px;margin-bottom:12px;background:' +
+          (saldoBaixo ? '#fef2f2' : '#f0fdf4') + ';border:1px solid ' +
+          (saldoBaixo ? '#fecaca' : '#bbf7d0') + '">' +
+          '<div style="font-size:11px;color:#6b7280;font-weight:700">SALDO DE ADS</div>' +
+          '<div style="font-size:26px;font-weight:900;color:' + (saldoBaixo ? '#b91c1c' : '#15803d') + '">' +
+          fmtBRL(saldoResp.saldo) + '</div>' +
+          (saldoBaixo ? '<div style="font-size:11px;color:#b91c1c">⚠️ Saldo baixo</div>' : '') +
+          '</div>';
+      } else {
+        html += '<div style="padding:10px;border-radius:8px;margin-bottom:12px;background:#fef2f2;color:#b91c1c;font-size:12px">' +
+          'Não foi possível ler o saldo: ' + ((saldoResp && saldoResp.erro) || 'erro') + '</div>';
+      }
+
+      // --- Performance (últimos 7 dias) ---
+      if (perfResp && perfResp.ok) {
+        const t = perfResp.totais || {};
+        const p = perfResp.periodo || {};
+        html += '<div style="font-size:11px;color:#6b7280;font-weight:700;margin-bottom:6px">' +
+          'DESEMPENHO · ' + (p.start || '') + ' a ' + (p.end || '') + '</div>';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+          cardMetrica('Gasto', fmtBRL(t.expense)) +
+          cardMetrica('GMV (direto)', fmtBRL(t.directGmv)) +
+          cardMetrica('ROAS direto', (t.directRoas != null ? t.directRoas.toFixed(2) : '—')) +
+          cardMetrica('ROAS amplo', (t.broadRoas != null ? t.broadRoas.toFixed(2) : '—')) +
+          cardMetrica('Cliques', (t.clicks || 0).toLocaleString('pt-BR')) +
+          cardMetrica('Pedidos (diretos)', (t.directOrder || 0).toLocaleString('pt-BR')) +
+          '</div>';
+        html += '<div style="font-size:10px;color:#9ca3af;margin-top:10px;line-height:1.5">' +
+          'ROAS <strong>direto</strong> = vendas do próprio produto anunciado ÷ gasto. ' +
+          'ROAS <strong>amplo</strong> = vendas de qualquer item da loja após o clique ÷ gasto (é o que a Shopee mostra por padrão).</div>';
+      } else {
+        html += '<div style="padding:10px;border-radius:8px;background:#fef2f2;color:#b91c1c;font-size:12px">' +
+          'Não foi possível ler o desempenho: ' + ((perfResp && perfResp.erro) || 'erro') + '</div>';
+      }
+
+      document.getElementById('adsMetricasConteudo').innerHTML = html;
+    } catch (e) {
+      document.getElementById('adsMetricasConteudo').innerHTML =
+        '<div style="padding:12px;color:#b91c1c">Erro: ' + e.message + '</div>';
+    }
+  }
+  window.acaoLojaMetricasAds = acaoLojaMetricasAds;
+
+  function cardMetrica(label, valor) {
+    return '<div style="padding:10px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px">' +
+      '<div style="font-size:10px;color:#6b7280;font-weight:700">' + label + '</div>' +
+      '<div style="font-size:17px;font-weight:800;color:#1e2a47">' + valor + '</div></div>';
+  }
   
   async function acaoLojaSincronizar(lojaLocalId) {
     const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
@@ -30341,7 +30451,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.91-shopee-ads-status';
+  const _DIAG_VERSAO_PAINEL = 'v33k.92-ads-metricas-leva1';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
