@@ -5371,6 +5371,7 @@
         <option value="">Todas as lojas Shopee</option>
       </select>
       <button id="adsBtnSyncLoja" class="toolbar-btn" onclick="adsSincronizarLojaSelecionada()" style="display:none">🔄 Sincronizar esta loja</button>
+      <button id="adsBtnDiag" class="toolbar-btn" onclick="adsDiagnosticar()" style="display:none">🔬 Diagnosticar</button>
     </div>
 
     <div id="adsConteudo" style="min-height:200px">
@@ -12186,6 +12187,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
     const btnSync = document.getElementById('adsBtnSyncLoja');
     if (btnSync) btnSync.style.display = loja ? '' : 'none';
+    const btnDiag = document.getElementById('adsBtnDiag');
+    if (btnDiag) btnDiag.style.display = loja ? '' : 'none';
     cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">Carregando…</div>';
     try {
       if (_adsSubaba === 'anuncios') return await renderAdsAnuncios(cont);
@@ -12203,6 +12206,43 @@ Retorne JSON: {"ID": "valor", ...}`;
     await adsSincronizarLoja(loja);
   }
   window.adsSincronizarLojaSelecionada = adsSincronizarLojaSelecionada;
+
+  async function adsDiagnosticar() {
+    const loja = document.getElementById('adsLojaFiltro')?.value || '';
+    if (!loja) { showToast('Escolha uma loja primeiro.', true); return; }
+    const dias = document.getElementById('adsPeriodo')?.value || '7';
+    const cont = document.getElementById('adsConteudo');
+    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🔬 Diagnosticando (rodando as 3 etapas do ETL)…</div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + loja + '/diagnostico?dias=' + dias, {
+        headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+
+      // resumo legível no topo + JSON cru embaixo
+      let resumo = '<div style="padding:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:12px;font-size:13px;line-height:1.7">';
+      resumo += '<div style="font-weight:800;margin-bottom:6px">🔬 Diagnóstico — período ' + (r.periodo ? r.periodo.startDate + ' a ' + r.periodo.endDate : '?') + '</div>';
+      if (r.etapas) {
+        const e1 = r.etapas.listar || {};
+        resumo += '<div>1) Listar campanhas: ' + (e1.ok ? '✅ ' + e1.total + ' campanhas — tipos: ' + JSON.stringify(e1.porTipo) : '❌ ' + e1.erro) + '</div>';
+        const e2 = r.etapas.settings || {};
+        if (r.etapas.settings) resumo += '<div>2) Settings: ' + (e2.ok ? '✅ ' + e2.total + ' detalhadas' : '❌ ' + e2.erro) + '</div>';
+        const e3 = r.etapas.performance || {};
+        if (r.etapas.performance) resumo += '<div>3) Performance: ' + (e3.ok ? (e3.totalLinhas > 0 ? '✅ ' + e3.totalLinhas + ' linhas' : '⚠️ veio VAZIO (0 linhas, sem erro)') : '❌ ' + e3.erro) + '</div>';
+        const e3b = r.etapas.performanceJanelaAlt;
+        if (e3b) resumo += '<div>3b) Performance (janela alt ' + e3b.periodo.startDate + ' a ' + e3b.periodo.endDate + '): ' + (e3b.ok ? (e3b.totalLinhas > 0 ? '✅ ' + e3b.totalLinhas + ' linhas — o problema é a JANELA DE DATAS' : '⚠️ também vazio') : '❌ ' + e3b.erro) + '</div>';
+      }
+      resumo += '</div>';
+
+      const json = '<pre style="background:#1e2a47;color:#a5f3fc;padding:14px;border-radius:10px;overflow-x:auto;font-size:11px;max-height:400px">' +
+        escapeHtml(JSON.stringify(r, null, 2)) + '</pre>';
+
+      cont.innerHTML = resumo + json +
+        '<div style="font-size:11px;color:#6b7280;margin-top:8px">Copia esse resultado e manda pro suporte/dev pra corrigir. Depois clica em "Anúncios" pra voltar.</div>';
+    } catch (e) {
+      cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro no diagnóstico: ' + e.message + '</div>';
+    }
+  }
+  window.adsDiagnosticar = adsDiagnosticar;
 
   // cor do ACOS: verde bom, amarelo médio, vermelho ruim (referência das telas)
   function corAcos(acos) {
@@ -30745,7 +30785,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.94-ads-cards-fotos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.95-ads-diagnostico';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
