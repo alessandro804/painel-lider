@@ -12390,6 +12390,19 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (a.gastouSemVender) alerta = '<span style="font-size:10px;background:#fef2f2;color:#b91c1c;padding:2px 7px;border-radius:5px;margin-left:6px">gastou s/ vender</span>';
     else if (a.vendeuSemAnunciar) alerta = '<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;padding:2px 7px;border-radius:5px;margin-left:6px">vendeu s/ anunciar</span>';
 
+    // botão de ação: só se houver campaign_id e status conhecido
+    let botaoAcao = '';
+    const camp = (a.campaignIds && a.campaignIds.length) ? a.campaignIds[0] : null;
+    if (camp && (a.status === 'ongoing' || a.status === 'paused')) {
+      const loja = document.getElementById('adsLojaFiltro')?.value || '';
+      const nomeEsc = (a.nome || ('Item ' + a.itemId)).replace(/'/g, "\\'").replace(/"/g, '');
+      if (a.status === 'ongoing') {
+        botaoAcao = '<button onclick="adsAcaoCampanha(' + loja + ',' + camp + ',\'pause\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #fcd34d;background:#fffbeb;color:#92400e;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">⏸ Pausar</button>';
+      } else {
+        botaoAcao = '<button onclick="adsAcaoCampanha(' + loja + ',' + camp + ',\'resume\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #86efac;background:#f0fdf4;color:#166534;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">▶ Ativar</button>';
+      }
+    }
+
     return '<div style="display:flex;gap:14px;align-items:center;padding:14px;background:white;border:1px solid #e5e7eb;border-radius:14px">' +
       thumb +
       '<div style="flex:1;min-width:0">' +
@@ -12405,8 +12418,36 @@ Retorne JSON: {"ID": "valor", ...}`;
           metricaInline('ACOS', acosTxt, acosCor) +
         '</div>' +
       '</div>' +
+      (botaoAcao ? '<div style="flex-shrink:0">' + botaoAcao + '</div>' : '') +
     '</div>';
   }
+
+  // AÇÃO FINANCEIRA: pausa/ativa campanha. Confirmação obrigatória.
+  async function adsAcaoCampanha(lojaId, campaignId, acao, nome) {
+    const verbo = acao === 'pause' ? 'PAUSAR' : 'ATIVAR';
+    const msg = verbo + ' a campanha de Ads deste anúncio?\n\n"' + nome + '"\n\n' +
+      (acao === 'pause'
+        ? 'A campanha para de rodar e de gastar imediatamente.'
+        : 'A campanha volta a rodar e a gastar imediatamente.') +
+      '\n\nIsso altera a conta real do cliente na Shopee.';
+    if (!confirm(msg)) return;
+
+    showToast('⏳ ' + (acao === 'pause' ? 'Pausando' : 'Ativando') + ' campanha...');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + lojaId + '/campanha/' + campaignId + '/acao', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acao, confirmar: true }),
+      }).then(x => x.json());
+      if (!r.ok) { showToast('⚠ ' + (r.erro || 'falha na ação'), true); return; }
+      showToast('✓ Campanha ' + (acao === 'pause' ? 'pausada' : 'ativada') + ' com sucesso');
+      // atualiza o status no cache local e redesenha (sem refazer a chamada)
+      const item = _adsAnunciosCache.find(a => (a.campaignIds || []).map(String).includes(String(campaignId)));
+      if (item) item.status = r.novoStatus;
+      adsDesenharAnuncios();
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
+  }
+  window.adsAcaoCampanha = adsAcaoCampanha;
 
   function metricaInline(label, valor, cor) {
     return '<div><div style="font-size:10px;color:#9ca3af;font-weight:600">' + label + '</div>' +
@@ -30912,7 +30953,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.97-ads-telas-fiel';
+  const _DIAG_VERSAO_PAINEL = 'v33k.98-ads-pausar-ativar';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
