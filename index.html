@@ -30266,7 +30266,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.88-comparativo-completo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.89-estrategia-mercadolivre';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42129,6 +42129,16 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     <div class="fac-pane" id="facPaneEstrategia" style="display:none">
       <p style="font-size:12px;color:#6b7280;margin:8px 0 14px">Preencha os dados e monto a estratégia completa (Lançamento → Expansão → Lucro) com preços por produto, projeção e prazos.</p>
 
+      <!-- Marketplace (muda taxas e arranque do lançamento) -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px">
+        <label class="form-label" style="margin:0;font-weight:700">🛒 Marketplace:</label>
+        <select id="estMarketplace" class="form-input" style="max-width:220px" onchange="estSetMarketplace(this.value)">
+          <option value="shopee" selected>🛍️ Shopee</option>
+          <option value="ml">🟡 Mercado Livre</option>
+        </select>
+        <span style="font-size:11px;color:#9ca3af">As taxas e o arranque do lançamento mudam conforme o marketplace.</span>
+      </div>
+
       <!-- Dados do cliente e plano -->
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:12px">
         <div>
@@ -42324,6 +42334,30 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   ];
   function estFaixaShopee(preco) { return EST_FAIXAS_SHOPEE.find(f => preco <= f.max); }
 
+  // Mercado Livre: abaixo de R$79 → 14% + R$6,75 frete ; a partir de R$79 → 20% + R$20 frete
+  const EST_FAIXAS_ML = [
+    { max: 78.99, pct: 0.14, fixo: 6.75 },
+    { max: Infinity, pct: 0.20, fixo: 20 },
+  ];
+  function estFaixaML(preco) { return EST_FAIXAS_ML.find(f => preco <= f.max); }
+
+  // marketplace selecionado pra estratégia ('shopee' padrão | 'ml')
+  let _estMarketplace = 'shopee';
+  // margens de lançamento por marketplace (ML tem arranque -30%)
+  const EST_SEMANAS_SHOPEE = [
+    { id:'lanc01', label:'Semana 1', investPct:30, margemPct:-20, adsPct:70 },
+    { id:'lanc02', label:'Semana 2', investPct:30, margemPct:-10, adsPct:65 },
+    { id:'lanc03', label:'Semana 3', investPct:20, margemPct:0, adsPct:100 },
+    { id:'lanc04', label:'Semana 4', investPct:20, margemPct:0, adsPct:100 },
+  ];
+  const EST_SEMANAS_ML = [
+    { id:'lanc01', label:'Semana 1', investPct:30, margemPct:-30, adsPct:70 },
+    { id:'lanc02', label:'Semana 2', investPct:30, margemPct:-20, adsPct:65 },
+    { id:'lanc03', label:'Semana 3', investPct:20, margemPct:-10, adsPct:100 },
+    { id:'lanc04', label:'Semana 4', investPct:20, margemPct:0, adsPct:100 },
+  ];
+  function estFaixa(preco) { return _estMarketplace==='ml' ? estFaixaML(preco) : estFaixaShopee(preco); }
+
   let _estProdutos = [{ nome:'', custo:0 }]; // lista de produtos {nome, custo}
 
   function estRenderProdutos() {
@@ -42382,6 +42416,17 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   window.estSetSemana = estSetSemana; window.estRenderSemanas = estRenderSemanas;
 
+  // troca o marketplace da estratégia (shopee/ml): ajusta faixas de taxa e margens de lançamento
+  function estSetMarketplace(mkt) {
+    _estMarketplace = (mkt === 'ml') ? 'ml' : 'shopee';
+    // reseta as semanas pro padrão do marketplace (margens diferentes)
+    const base = _estMarketplace === 'ml' ? EST_SEMANAS_ML : EST_SEMANAS_SHOPEE;
+    _estSemanas = JSON.parse(JSON.stringify(base));
+    estRenderSemanas();
+    estCalcular();
+  }
+  window.estSetMarketplace = estSetMarketplace;
+
   // mantém o split somando 20%
   function estSyncSplit(origem) {
     const real = document.getElementById('estLucroReal');
@@ -42413,16 +42458,16 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
                   : plano === 'custom' ? (opts.comissaoFixo || 0)
                   : 0;
     let preco = Math.max(custo * 2, 20);
-    let fx = estFaixaShopee(preco);
+    let fx = estFaixa(preco);
     for (let i = 0; i < 12; i++) {
-      fx = estFaixaShopee(preco);
+      fx = estFaixa(preco);
       let numerador = custo + fx.fixo + comFixo;
       let denom = 1 - fx.pct - imposto - margem - comPct;
       const novo = numerador / denom;
       if (Math.abs(novo - preco) < 0.001) { preco = novo; break; }
       preco = novo;
     }
-    fx = estFaixaShopee(preco);
+    fx = estFaixa(preco);
     const taxaShopeeRS = preco * fx.pct;
     const freteRS = fx.fixo;
     const comissaoLiderRS = comFixo + preco * comPct;
@@ -42557,7 +42602,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       });
     }
 
-    _estUltimo = { cliente, invest, imposto, plano, planoOpts, custoFixoMes, comissaoPct, lucroRealPct, embutir, acrescimoUnit, produtosCalc, mediaFase, semanas: JSON.parse(JSON.stringify(_estSemanas)) };
+    _estUltimo = { cliente, invest, imposto, plano, planoOpts, custoFixoMes, comissaoPct, lucroRealPct, embutir, acrescimoUnit, produtosCalc, mediaFase, marketplace: _estMarketplace, semanas: JSON.parse(JSON.stringify(_estSemanas)) };
 
     // ── FLUXO MÊS A MÊS (com datas reais a partir de hoje) ──
     const expansaoPct = (parseFloat(document.getElementById('estExpansaoPct').value)||50) / 100;
@@ -42638,12 +42683,13 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // ── RENDER ──
     const fmt = v => 'R$ ' + (v||0).toFixed(2);
     let html = '';
+    const mktNome = _estMarketplace === 'ml' ? 'Mercado Livre' : 'Shopee';
 
     // tabela de preços por produto
     produtosCalc.forEach(pc => {
       html += `<div style="margin-bottom:14px"><div style="font-weight:700;font-size:13px;margin-bottom:6px">📦 ${pc.nome} <span style="color:#9ca3af;font-weight:400">(custo R$ ${pc.custo.toFixed(2)}${acrescimoUnit?' +R$'+acrescimoUnit.toFixed(2)+' fixo':''})</span></div>`;
       html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
-      html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:6px">Fase</th><th style="padding:6px">Margem</th><th style="padding:6px">Preço venda</th><th style="padding:6px">Taxa Shopee</th><th style="padding:6px">Lucro/venda</th></tr>';
+      html += '<tr style="background:#f1f5f9;text-align:left"><th style="padding:6px">Fase</th><th style="padding:6px">Margem</th><th style="padding:6px">Preço venda</th><th style="padding:6px">Taxa ${mktNome}</th><th style="padding:6px">Lucro/venda</th></tr>';
       pc.fases.forEach(f => {
         const cor = f.margem<0?'#dc2626':(f.margem===0?'#6b7280':'#16a34a');
         const tx = f.comp ? `${(f.comp.taxaShopeePct*100).toFixed(0)}% + R$${f.comp.freteRS}` : '—';
@@ -42657,8 +42703,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         html += `<div style="margin-top:8px;padding:10px;background:#f8fafc;border-radius:8px;font-size:11px;color:#475569">
           <b style="color:#1e293b">🔍 Como chegamos no preço de R$ ${fl.preco.toFixed(2)} (fase Lucro):</b><br>
           • Custo do produto: R$ ${c.custoRS.toFixed(2)} <span style="color:#94a3b8">(o que você paga pelo produto)</span><br>
-          • Frete fixo Shopee: R$ ${c.freteRS.toFixed(2)} <span style="color:#94a3b8">(taxa de envio por venda)</span><br>
-          • Comissão Shopee (${(c.taxaShopeePct*100).toFixed(0)}%): R$ ${c.taxaShopeeRS.toFixed(2)} <span style="color:#94a3b8">(% da plataforma sobre a venda)</span><br>
+          • Frete fixo ${mktNome}: R$ ${c.freteRS.toFixed(2)} <span style="color:#94a3b8">(taxa de envio por venda)</span><br>
+          • Comissão ${mktNome} (${(c.taxaShopeePct*100).toFixed(0)}%): R$ ${c.taxaShopeeRS.toFixed(2)} <span style="color:#94a3b8">(% da plataforma sobre a venda)</span><br>
           • Comissão Líder (${plano==='ouro'?'R$1 fixo':'6%'}): R$ ${c.comissaoLiderRS.toFixed(2)} <span style="color:#94a3b8">(nossa gestão)</span><br>
           ${imposto>0?`• Imposto (${(imposto*100).toFixed(1)}%): R$ ${c.impostoRS.toFixed(2)} <span style="color:#94a3b8">(tributos do seu negócio)</span><br>`:''}
           • <b style="color:#16a34a">Sua margem (${(fl.margem*100).toFixed(0)}%): R$ ${c.margemRS.toFixed(2)}</b> <span style="color:#94a3b8">(seu lucro nesta fase)</span></div>`;
@@ -42815,6 +42861,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const VERDE=[56,168,58], ESCURO=[26,26,26], CINZA=[107,114,128], AZUL=[37,99,235], DOURADO=[202,138,4];
       const money = v => 'R$ ' + (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
       const planoNome = E.plano==='ouro' ? 'OURO' : 'PRATA';
+      const mktNome = E.marketplace === 'ml' ? 'Mercado Livre' : 'Shopee';
       const logo = (typeof LOGO_LIDER !== 'undefined') ? LOGO_LIDER : null;
 
       // ───── CAPA ─────
@@ -42827,6 +42874,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       doc.setTextColor(...ESCURO); doc.setFontSize(28); doc.text((E.cliente||'Cliente').toUpperCase(), 30, 132);
       doc.setFillColor(...(E.plano==='ouro'?DOURADO:CINZA)); doc.roundedRect(30,142,60,12,2,2,'F');
       doc.setTextColor(255,255,255); doc.setFontSize(13); doc.text('PLANO '+planoNome, 36, 150);
+      // tag do marketplace
+      doc.setFillColor(...(E.marketplace==='ml'?[255,193,7]:[238,77,45])); doc.roundedRect(94,142,68,12,2,2,'F');
+      doc.setTextColor(255,255,255); doc.setFontSize(12); doc.text(mktNome.toUpperCase(), 99, 150);
       doc.setTextColor(...CINZA); doc.setFontSize(11); doc.text('Lider Commerce · Gestão de Marketplaces', 30, 195);
 
       // ───── PÁGINA: A JORNADA ─────
@@ -42874,7 +42924,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           : 'Comissão Líder (6%)';
         doc.autoTable({
           startY: 34,
-          head: [['Fase','Margem','Preço de Venda','Taxa Shopee',''+comLiderHead,'Lucro por Venda']],
+          head: [['Fase','Margem','Preço de Venda','Taxa '+mktNome,''+comLiderHead,'Lucro por Venda']],
           body: pc.fases.map(f => {
             const c = f.comp;
             const shopeeTxt = c ? ((c.taxaShopeePct*100).toFixed(0)+'% = '+money(c.taxaShopeeRS)+' + frete '+money(c.freteRS)) : '-';
@@ -42911,8 +42961,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           doc.setFont(FONTE,'normal'); doc.setFontSize(9.5); doc.setTextColor(...CINZA);
           const comps = [
             ['Custo do produto', money(c.custoRS), 'o que você paga pelo produto'],
-            ['Frete fixo Shopee', money(c.freteRS), 'taxa de envio por venda'],
-            ['Comissão Shopee ('+(c.taxaShopeePct*100).toFixed(0)+'%)', money(c.taxaShopeeRS), 'percentual da plataforma'],
+            ['Frete fixo '+mktNome, money(c.freteRS), 'taxa de envio por venda'],
+            ['Comissão '+mktNome+' ('+(c.taxaShopeePct*100).toFixed(0)+'%)', money(c.taxaShopeeRS), 'percentual da plataforma'],
             ['Comissao Lider ('+(E.plano==='ouro'?'R$1 fixo':'6%')+')', money(c.comissaoLiderRS), 'nossa gestão'],
           ];
           if (E.imposto>0) comps.push(['Imposto ('+(E.imposto*100).toFixed(1)+'%)', money(c.impostoRS), 'tributos do seu negocio']);
@@ -43088,6 +43138,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   function estGerarPDFComparativo() {
     try { estCalcular(); } catch(e) {}
     if (!_estUltimo) { showToast('Monte a estratégia primeiro', true); return; }
+    // o comparativo de planos é sempre sobre a Shopee (preserva o marketplace atual e restaura no fim)
+    const _mktAnterior = _estMarketplace;
+    _estMarketplace = 'shopee';
     try {
       const E = _estUltimo;
       const { jsPDF } = window.jspdf;
@@ -43404,6 +43457,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } catch(e) {
       console.error('[PDF comparativo]', e);
       showToast('Erro ao gerar comparativo: ' + e.message, true);
+    } finally {
+      // restaura o marketplace que o usuário tinha selecionado
+      _estMarketplace = _mktAnterior;
+      try { estCalcular(); } catch(_){}
     }
   }
   window.estGerarPDFComparativo = estGerarPDFComparativo;
