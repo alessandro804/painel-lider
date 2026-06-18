@@ -12497,59 +12497,99 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.adsExecutarMotor = adsExecutarMotor;
 
-  // Rodar TODAS as lojas em modo revisão: mostra tudo, marca o que aplicar.
+  // Rodar TODAS as lojas (assíncrono): dispara coleta e acompanha progresso.
+  let _adsRevisaoTimer = null;
   async function adsRevisarTodas() {
     const cont = document.getElementById('adsConteudo');
-    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🚀 Rodando o motor em todas as lojas (como o cron faz)… isso pode levar um minuto.</div>';
+    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🚀 Iniciando coleta em todas as lojas…</div>';
     try {
       const r = await fetch(BACKEND_URL + '/api/ads/motor-recomendacoes-todas', {
-        headers: { 'x-api-token': getApiToken() }
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: '{}',
       }).then(x => x.json());
       if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
-
-      if (!r.resultado || !r.totalAcoes) {
-        cont.innerHTML = '<div style="padding:24px;text-align:center;color:#6b7280;background:#f9fafb;border-radius:10px">Nenhuma ação recomendada em nenhuma loja agora. ✅</div>';
-        return;
-      }
-
-      let html = '<div style="margin-bottom:14px;padding:12px 14px;background:#eef2ff;border-radius:10px;font-size:13px;color:#3730a3">' +
-        '🚀 <strong>Revisão geral (ensaio do cron)</strong> — ' + r.lojas + ' loja(s), <strong>' + r.totalAcoes + '</strong> ação(ões) recomendada(s).<br>' +
-        '<span style="font-size:11px">Marque o que aplicar. O que você deixar marcado será executado e o cliente recebe WhatsApp (se marcado abaixo).</span></div>';
-
-      html += '<div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap;position:sticky;top:0;background:white;padding:8px 0;z-index:5">' +
-        '<button onclick="adsAplicarSelecao()" style="padding:11px 20px;border:none;background:#ee4d2d;color:white;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer">⚡ Aplicar selecionados</button>' +
-        '<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="adsSelWhats" checked> Enviar WhatsApp aos clientes</label>' +
-        '<button onclick="adsMarcarTodas(true)" class="toolbar-btn" style="font-size:12px">Marcar todas</button>' +
-        '<button onclick="adsMarcarTodas(false)" class="toolbar-btn" style="font-size:12px">Desmarcar todas</button>' +
-        '<span id="adsSelContador" style="font-size:12px;color:#6b7280"></span></div>';
-
-      r.resultado.forEach(loja => {
-        if (!loja.recomendacoes || !loja.recomendacoes.length) return;
-        html += '<div style="margin-bottom:18px">' +
-          '<div style="font-weight:800;color:#1e2a47;font-size:14px;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #f3f4f6">' +
-            escapeHtml(loja.nome) + ' <span style="font-size:11px;color:#9ca3af;font-weight:600">· ACOS obj ' + (loja.acosObjetivo || 10) + '% · ' + loja.recomendacoes.length + ' ação(ões)</span></div>';
-        loja.recomendacoes.forEach(rec => {
-          const tipo = rec.acao.tipo;
-          const cor = tipo === 'pausar' ? '#dc2626' : tipo === 'ativar' ? '#16a34a' : '#3730a3';
-          const icon = tipo === 'pausar' ? '⏸' : tipo === 'ativar' ? '▶' : '⚙';
-          html += '<label style="display:flex;gap:10px;align-items:center;padding:9px 12px;background:white;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:6px;cursor:pointer">' +
-            '<input type="checkbox" class="adsSelItem" data-loja="' + loja.lojaId + '" data-item="' + rec.itemId + '" checked onchange="adsAtualizarContador()">' +
-            '<span style="font-size:18px">' + icon + '</span>' +
-            '<span style="flex:1;min-width:0"><span style="font-weight:700;color:#1e2a47;font-size:13px">' + rec.itemId + '</span> ' +
-              '<span style="font-size:10px;color:#9ca3af">regra ' + rec.regra + '</span>' +
-              '<div style="font-size:11px;color:#6b7280">ACOS ont ' + (rec.acosOntem == null ? '—' : rec.acosOntem + '%') + ' · 7d ' + (rec.acos7d == null ? '—' : rec.acos7d + '%') + ' · gasto ont ' + fmtBRL(rec.gastoOntem) + ' · vd ' + rec.vendasOntem + '/' + rec.vendas7d + '</div></span>' +
-            '<span style="font-weight:800;font-size:13px;color:' + cor + '">' + rec.descricao + '</span>' +
-          '</label>';
-        });
-        html += '</div>';
-      });
-      cont.innerHTML = html;
-      adsAtualizarContador();
+      adsAcompanharRevisao();
     } catch (e) {
       cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
     }
   }
   window.adsRevisarTodas = adsRevisarTodas;
+
+  async function adsAcompanharRevisao() {
+    const cont = document.getElementById('adsConteudo');
+    if (_adsRevisaoTimer) clearTimeout(_adsRevisaoTimer);
+    async function tick() {
+      try {
+        const r = await fetch(BACKEND_URL + '/api/ads/motor-revisao-progresso', {
+          headers: { 'x-api-token': getApiToken() }
+        }).then(x => x.json());
+        if (!r.ok || !r.exec) { cont.innerHTML = '<div style="padding:16px;color:#6b7280">Sem revisão em andamento.</div>'; return; }
+        const e = r.exec;
+        const rodando = e.status === 'rodando';
+        const pct = e.total ? Math.round((e.concluidas / e.total) * 100) : 0;
+
+        if (rodando) {
+          cont.innerHTML = '<div style="padding:30px 16px">' +
+            '<div style="font-weight:700;color:#1e2a47;margin-bottom:8px">🚀 Analisando lojas… ' + e.concluidas + ' / ' + e.total + '</div>' +
+            '<div style="height:10px;background:#f3f4f6;border-radius:6px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:#3730a3;transition:width .3s"></div></div>' +
+            '<div style="font-size:12px;color:#9ca3af;margin-top:8px">Rodando o motor em cada loja (como o cron faz). Aguarde…</div></div>';
+          _adsRevisaoTimer = setTimeout(tick, 2000);
+        } else {
+          adsRenderRevisao(e.resultados || []);
+        }
+      } catch (err) {
+        cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro ao acompanhar: ' + err.message + '</div>';
+      }
+    }
+    tick();
+  }
+  window.adsAcompanharRevisao = adsAcompanharRevisao;
+
+  function adsRenderRevisao(resultado) {
+    const cont = document.getElementById('adsConteudo');
+    const comAcao = (resultado || []).filter(l => l.recomendacoes && l.recomendacoes.length);
+    const totalAcoes = comAcao.reduce((s, l) => s + l.recomendacoes.length, 0);
+
+    if (!totalAcoes) {
+      cont.innerHTML = '<div style="padding:24px;text-align:center;color:#6b7280;background:#f9fafb;border-radius:10px">Nenhuma ação recomendada em nenhuma loja agora. ✅</div>';
+      return;
+    }
+
+    let html = '<div style="margin-bottom:14px;padding:12px 14px;background:#eef2ff;border-radius:10px;font-size:13px;color:#3730a3">' +
+      '🚀 <strong>Revisão geral (ensaio do cron)</strong> — ' + comAcao.length + ' loja(s) com ação, <strong>' + totalAcoes + '</strong> ação(ões).<br>' +
+      '<span style="font-size:11px">Marque o que aplicar. O que ficar marcado é executado e o cliente recebe WhatsApp (se marcado).</span></div>';
+
+    html += '<div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap;position:sticky;top:0;background:white;padding:8px 0;z-index:5">' +
+      '<button onclick="adsAplicarSelecao()" style="padding:11px 20px;border:none;background:#ee4d2d;color:white;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer">⚡ Aplicar selecionados</button>' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="adsSelWhats" checked> Enviar WhatsApp aos clientes</label>' +
+      '<button onclick="adsMarcarTodas(true)" class="toolbar-btn" style="font-size:12px">Marcar todas</button>' +
+      '<button onclick="adsMarcarTodas(false)" class="toolbar-btn" style="font-size:12px">Desmarcar todas</button>' +
+      '<span id="adsSelContador" style="font-size:12px;color:#6b7280"></span></div>';
+
+    comAcao.forEach(loja => {
+      html += '<div style="margin-bottom:18px">' +
+        '<div style="font-weight:800;color:#1e2a47;font-size:14px;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #f3f4f6">' +
+          escapeHtml(loja.nome) + ' <span style="font-size:11px;color:#9ca3af;font-weight:600">· ACOS obj ' + (loja.acosObjetivo || 10) + '% · ' + loja.recomendacoes.length + ' ação(ões)</span></div>';
+      loja.recomendacoes.forEach(rec => {
+        const tipo = rec.acao.tipo;
+        const cor = tipo === 'pausar' ? '#dc2626' : tipo === 'ativar' ? '#16a34a' : '#3730a3';
+        const icon = tipo === 'pausar' ? '⏸' : tipo === 'ativar' ? '▶' : '⚙';
+        html += '<label style="display:flex;gap:10px;align-items:center;padding:9px 12px;background:white;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:6px;cursor:pointer">' +
+          '<input type="checkbox" class="adsSelItem" data-loja="' + loja.lojaId + '" data-item="' + rec.itemId + '" checked onchange="adsAtualizarContador()">' +
+          '<span style="font-size:18px">' + icon + '</span>' +
+          '<span style="flex:1;min-width:0"><span style="font-weight:700;color:#1e2a47;font-size:13px">' + rec.itemId + '</span> ' +
+            '<span style="font-size:10px;color:#9ca3af">regra ' + rec.regra + '</span>' +
+            '<div style="font-size:11px;color:#6b7280">ACOS ont ' + (rec.acosOntem == null ? '—' : rec.acosOntem + '%') + ' · 7d ' + (rec.acos7d == null ? '—' : rec.acos7d + '%') + ' · gasto ont ' + fmtBRL(rec.gastoOntem) + ' · vd ' + rec.vendasOntem + '/' + rec.vendas7d + '</div></span>' +
+          '<span style="font-weight:800;font-size:13px;color:' + cor + '">' + rec.descricao + '</span>' +
+        '</label>';
+      });
+      html += '</div>';
+    });
+    cont.innerHTML = html;
+    adsAtualizarContador();
+  }
+  window.adsRenderRevisao = adsRenderRevisao;
 
   function adsMarcarTodas(v) {
     document.querySelectorAll('.adsSelItem').forEach(c => { c.checked = v; });
@@ -31687,7 +31727,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.112-ads-rodar-todas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.113-rodar-todas-async';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
