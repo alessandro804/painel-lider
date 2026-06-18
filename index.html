@@ -5758,6 +5758,11 @@
       ⚠ Pode demorar alguns minutos (IA + exportação por cópia). Não feche a aba durante o processo.
     </div>
     
+    <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;margin-bottom:14px;cursor:pointer;font-size:13px;color:#3730a3">
+      <input type="checkbox" id="dupAtivarAds" checked onchange="window._ativarAdsPosExport = this.checked">
+      <span>📣 <strong>Ativar nos Ads automaticamente</strong> — cria campanha (Shopee) para o produto e as cópias, com ROAS conforme o ACOS objetivo da loja.</span>
+    </label>
+
     <div style="display:flex;gap:8px">
       <button type="button" onclick="fecharDupConfig()" style="flex:1;padding:10px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:8px;font-weight:700;cursor:pointer">Cancelar</button>
       <button type="button" onclick="iniciarDuplicacaoMultiLoja()" style="flex:2;padding:10px;background:#7c3aed;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer">📋 Iniciar duplicação</button>
@@ -10658,6 +10663,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     const resultados = [];
     let okCount = 0, erroCount = 0;
+    // Ads pós-export: coleta item_ids Shopee criados, ativa em lote no fim.
+    // Flag vem do checkbox "Ativar nos Ads" (default marcado); fallback true.
+    const _ativarAdsPosExport = (typeof window._ativarAdsPosExport === 'boolean') ? window._ativarAdsPosExport : true;
+    const adsParaAtivar = {}; // { lojaIdBanco: { nome, itemIds: [] } }
     
     for (const loja of lojasDestino) {
       const sufixoLog = lojasDestino.length > 1 ? `[${loja.nome} - ${loja.marketplace}] ` : '';
@@ -10740,6 +10749,13 @@ Retorne JSON: {"ID": "valor", ...}`;
 
         // Régua de preços (exportação imediata): anúncio já existe, cria as tarefas direto
         const _itemIdReal = data.itemId || (data.dados && (data.dados.itemId || data.dados.item_id));
+
+        // Ativar nos Ads (Shopee): coleta os item_ids criados pra ativar em lote ao final
+        if (_ativarAdsPosExport && _itemIdReal && /shopee/i.test(loja.marketplace || '')) {
+          if (!adsParaAtivar[lojaIdBanco]) adsParaAtivar[lojaIdBanco] = { nome: loja.nome, itemIds: [] };
+          adsParaAtivar[lojaIdBanco].itemIds.push(_itemIdReal);
+        }
+
         if (d._regua && _itemIdReal) {
           try {
             const tk = getApiToken();
@@ -10797,8 +10813,26 @@ Retorne JSON: {"ID": "valor", ...}`;
       throw new Error(resultados.join('\n'));
     }
     
+    // ---- Ativar nos Ads (Shopee) em lote, após exportar tudo ----
+    let _msgAds = '';
+    if (_ativarAdsPosExport) {
+      const lojasAds = Object.keys(adsParaAtivar).filter(lid => adsParaAtivar[lid].itemIds.length);
+      for (const lid of lojasAds) {
+        const grupo = adsParaAtivar[lid];
+        try {
+          const rAds = await fetch(BACKEND_URL + '/api/ads/ativar-pos-export', {
+            method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lojaId: parseInt(lid, 10), itemIds: grupo.itemIds, confirmar: true }),
+          }).then(x => x.json());
+          if (rAds.ok) _msgAds += ' · 📣 Ads ' + grupo.nome + ': ' + rAds.criadas + '/' + rAds.total + ' campanha(s)';
+          else if (rAds.semSaldo) _msgAds += ' · ⚠ Ads ' + grupo.nome + ': sem saldo (recarregar)';
+          else _msgAds += ' · ⚠ Ads ' + grupo.nome + ': ' + (rAds.erro || 'falha');
+        } catch (eAds) { _msgAds += ' · ⚠ Ads ' + grupo.nome + ': ' + eAds.message; }
+      }
+    }
+
     const resumo = okCount + ' exportado(s)' + (erroCount > 0 ? ', ' + erroCount + ' falha(s)' : '');
-    return { _msg: resumo + ' · ' + resultados.join(' | ') + _msgDup };
+    return { _msg: resumo + ' · ' + resultados.join(' | ') + _msgDup + _msgAds };
   }
   
   // === Fluxo dentro da demanda ===
@@ -12426,8 +12460,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           (nPausar ? '⏸ ' + nPausar + ' pausar  ' : '') +
           (nAtivar ? '▶ ' + nAtivar + ' ativar  ' : '') +
           (nAjustar ? '⚙ ' + nAjustar + ' ajustar' : '') +
-        '</span></div>' +
-        '<div id="adsAutoBox" style="margin-bottom:14px"></div>';
+        '</span></div>';
 
       // cor da ação
       const corAcao = (tipo) => tipo === 'pausar' ? '#dc2626' : tipo === 'ativar' ? '#16a34a' : '#3730a3';
@@ -12449,7 +12482,6 @@ Retorne JSON: {"ID": "valor", ...}`;
       html += '</div>';
       html += '<div style="font-size:11px;color:#9ca3af;margin-top:12px">Estas são sugestões do motor segundo as regras A–H. Quando você validar que estão corretas, habilitamos a execução (manual ou automática).</div>';
       cont.innerHTML = html;
-      adsCarregarStatusAuto();
     } catch (e) {
       cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
     }
@@ -12703,7 +12735,8 @@ Retorne JSON: {"ID": "valor", ...}`;
       const r = await fetch(BACKEND_URL + '/api/ads/cron-lojas', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
       if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
       const inativas = r.lojas.filter(l => l.cronInativo).length;
-      let html = '<div style="margin-bottom:14px;padding:12px 14px;background:#eef2ff;border-radius:10px;font-size:13px;color:#3730a3">' +
+      let html = '<div id="adsAutoBox" style="margin-bottom:14px"></div>' +
+        '<div style="margin-bottom:14px;padding:12px 14px;background:#eef2ff;border-radius:10px;font-size:13px;color:#3730a3">' +
         '🏪 <strong>Lojas no automático (cron seg/qua/sex)</strong><br>' +
         '<span style="font-size:11px">Desative uma loja para o cron NÃO mexer nos Ads dela. Você ainda pode rodar manualmente nela quando quiser. ' + inativas + ' loja(s) desativada(s).</span></div>';
       r.lojas.sort((a, b) => (a.nome || '').localeCompare(b.nome || ''));
@@ -12717,6 +12750,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         '</div>';
       });
       cont.innerHTML = html;
+      adsCarregarStatusAuto(); // popula o liga-geral do motor + aviso de recarga no topo
     } catch (e) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>'; }
   }
   window.adsAbrirCronLojas = adsAbrirCronLojas;
@@ -14655,6 +14689,11 @@ Retorne JSON: {"ID": "valor", ...}`;
         </label>
 
         <div style="margin-top:12px;padding:10px;background:#eff6ff;border-radius:8px" id="mdSeletorBox"></div>
+
+        <label style="display:flex;align-items:center;gap:8px;margin-top:12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;cursor:pointer;font-size:13px;color:#3730a3">
+          <input type="checkbox" id="massaDupAtivarAds" checked onchange="window._ativarAdsPosExport = this.checked">
+          <span>📣 <strong>Ativar nos Ads automaticamente</strong> (Shopee) para os produtos e cópias</span>
+        </label>
       </div>
       
       <div style="padding:14px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;gap:10px">
@@ -19310,6 +19349,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) { showToast('Produto não encontrado', true); return; }
     
+    window._ativarAdsPosExport = true; // default marcado (checkbox reflete e pode desmarcar)
     _dupProdutoId = produtoId;
     _dupProdutoIds = null; // individual: limpa qualquer lista de massa anterior
     _dupCancelar = false;
@@ -31954,7 +31994,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.115-logs-cron-lojas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.117-automatico-unificado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
