@@ -5373,6 +5373,7 @@
       <button id="adsBtnSyncLoja" class="toolbar-btn" onclick="adsSincronizarLojaSelecionada()" style="display:none">🔄 Sincronizar esta loja</button>
       <button id="adsBtnDiag" class="toolbar-btn" onclick="adsDiagnosticar()" style="display:none">🔬 Diagnosticar</button>
       <button id="adsBtnMotorDados" class="toolbar-btn" onclick="adsVerDadosMotor()" style="display:none">🧪 Dados do motor</button>
+      <button id="adsBtnMotorRec" class="toolbar-btn" onclick="adsVerRecomendacoes()" style="display:none">🤖 Recomendações</button>
     </div>
 
     <!-- Filtros da aba ANÚNCIOS (client-side) -->
@@ -12271,6 +12272,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (btnDiag) btnDiag.style.display = loja ? '' : 'none';
     const btnMotor = document.getElementById('adsBtnMotorDados');
     if (btnMotor) btnMotor.style.display = loja ? '' : 'none';
+    const btnRec = document.getElementById('adsBtnMotorRec');
+    if (btnRec) btnRec.style.display = loja ? '' : 'none';
     // barra de filtros só aparece na aba Anúncios
     const filtros = document.getElementById('adsFiltrosAnuncios');
     if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && loja) ? 'flex' : 'none';
@@ -12385,6 +12388,55 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   window.adsVerDadosMotor = adsVerDadosMotor;
+
+  // Mostra as RECOMENDAÇÕES do motor (regras A-H), sem executar.
+  async function adsVerRecomendacoes() {
+    const loja = document.getElementById('adsLojaFiltro')?.value || '';
+    if (!loja) { showToast('Escolha uma loja primeiro.', true); return; }
+    const cont = document.getElementById('adsConteudo');
+    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🤖 Rodando o motor (regras A–H)…</div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + loja + '/motor-recomendacoes', {
+        headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+      if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
+
+      let html = '<div style="margin-bottom:14px;padding:12px 14px;background:#eef2ff;border-radius:10px;font-size:13px;color:#3730a3">' +
+        '🤖 <strong>Recomendações do motor</strong> — ACOS objetivo: <strong>' + r.acosObjetivo.toFixed(2).replace('.', ',') + '%</strong>. ' +
+        'Avaliados: ' + r.totalAvaliados + ' · Com ação sugerida: <strong>' + r.totalComAcao + '</strong>. ' +
+        '<br><span style="font-size:11px">Modo revisão: nada é executado. Confira as ações antes de ligarmos o automático.</span></div>';
+
+      if (!r.recomendacoes || !r.recomendacoes.length) {
+        html += '<div style="padding:24px;text-align:center;color:#6b7280;background:#f9fafb;border-radius:10px">Nenhum anúncio precisa de ação agora. Tudo dentro dos parâmetros. ✅</div>';
+        cont.innerHTML = html;
+        return;
+      }
+
+      // cor da ação
+      const corAcao = (tipo) => tipo === 'pausar' ? '#dc2626' : tipo === 'ativar' ? '#16a34a' : '#3730a3';
+      const iconAcao = (tipo) => tipo === 'pausar' ? '⏸' : tipo === 'ativar' ? '▶' : '⚙';
+
+      html += '<div style="display:flex;flex-direction:column;gap:8px">';
+      r.recomendacoes.forEach(rec => {
+        html += '<div style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:white;border:1px solid #e5e7eb;border-radius:12px">' +
+          '<div style="font-size:20px;flex-shrink:0">' + iconAcao(rec.acao.tipo) + '</div>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-weight:700;color:#1e2a47;font-size:13px">' + rec.itemId + ' <span style="font-size:10px;color:#9ca3af;font-weight:600">regra ' + rec.regra + '</span></div>' +
+            '<div style="font-size:11px;color:#6b7280;margin-top:2px">ACOS ont ' + (rec.acosOntem == null ? '—' : rec.acosOntem + '%') + ' · 7d ' + (rec.acos7d == null ? '—' : rec.acos7d + '%') +
+              ' · gasto ont ' + fmtBRL(rec.gastoOntem) + ' · vd ont ' + rec.vendasOntem + '/7d ' + rec.vendas7d +
+              (rec.atingiuLimite ? ' · <span style="color:#dc2626">bateu limite</span>' : '') + '</div>' +
+          '</div>' +
+          '<div style="text-align:right;flex-shrink:0;font-weight:800;font-size:13px;color:' + corAcao(rec.acao.tipo) + '">' + rec.descricao + '</div>' +
+        '</div>';
+      });
+      html += '</div>';
+      html += '<div style="font-size:11px;color:#9ca3af;margin-top:12px">Estas são sugestões do motor segundo as regras A–H. Quando você validar que estão corretas, habilitamos a execução (manual ou automática).</div>';
+      cont.innerHTML = html;
+    } catch (e) {
+      cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
+    }
+  }
+  window.adsVerRecomendacoes = adsVerRecomendacoes;
 
   // cor do ACOS: verde bom, amarelo médio, vermelho ruim (referência das telas)
   function corAcos(acos) {
@@ -31263,7 +31315,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.105-ads-motor-dados';
+  const _DIAG_VERSAO_PAINEL = 'v33k.106-ads-motor-regras';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
