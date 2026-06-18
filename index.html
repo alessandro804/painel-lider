@@ -5440,6 +5440,23 @@
       <button id="adsAjusteAplicar" onclick="adsAjusteAplicar()" style="width:100%;padding:12px;border:none;background:#ee4d2d;color:white;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer">Aplicar na Shopee</button>
     </div>
   </div>
+
+  <!-- Modal de ACOS objetivo por loja -->
+  <div id="adsObjetivoModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center">
+    <div style="background:white;border-radius:16px;padding:22px;width:90%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="font-size:16px;font-weight:800;color:#1e2a47">🎯 ACOS objetivo</div>
+        <button onclick="adsFecharObjetivo()" style="border:none;background:none;font-size:22px;color:#9ca3af;cursor:pointer;line-height:1">×</button>
+      </div>
+      <div id="adsObjetivoLoja" style="font-size:12px;color:#6b7280;margin-bottom:16px"></div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px">O motor de otimização usa este valor como meta de ACOS para esta loja.</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input id="adsObjetivoValor" type="number" step="0.01" min="0.01" max="100" style="flex:1;padding:11px;border:1px solid #d1d5db;border-radius:8px;font-size:16px;text-align:center;box-sizing:border-box">
+        <span style="font-size:18px;font-weight:700;color:#6b7280">%</span>
+      </div>
+      <button onclick="adsSalvarObjetivo()" style="width:100%;padding:12px;border:none;background:#3730a3;color:white;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer">Salvar objetivo</button>
+    </div>
+  </div>
 </div>
 
 <!-- ===== PRODUTOS (ERP) ===== -->
@@ -12646,6 +12663,38 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.adsAjusteAplicar = adsAjusteAplicar;
 
+  // ===== Modal de ACOS objetivo por loja =====
+  let _adsObjetivo = { lojaId: null, nome: null };
+
+  function adsAbrirObjetivo(lojaId, nome, atual) {
+    _adsObjetivo = { lojaId, nome };
+    document.getElementById('adsObjetivoLoja').textContent = nome;
+    document.getElementById('adsObjetivoValor').value = (atual != null ? atual : 10).toFixed(2);
+    document.getElementById('adsObjetivoModal').style.display = 'flex';
+  }
+  window.adsAbrirObjetivo = adsAbrirObjetivo;
+
+  function adsFecharObjetivo() { document.getElementById('adsObjetivoModal').style.display = 'none'; }
+  window.adsFecharObjetivo = adsFecharObjetivo;
+
+  async function adsSalvarObjetivo() {
+    const { lojaId } = _adsObjetivo;
+    const valor = parseFloat(document.getElementById('adsObjetivoValor').value);
+    if (isNaN(valor) || valor <= 0 || valor > 100) { showToast('Informe um ACOS entre 0 e 100.', true); return; }
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + lojaId + '/config', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acosObjetivo: valor }),
+      }).then(x => x.json());
+      if (!r.ok) { showToast('⚠ ' + (r.erro || 'falha'), true); return; }
+      showToast('✓ ACOS objetivo salvo: ' + valor.toFixed(2).replace('.', ',') + '%');
+      adsFecharObjetivo();
+      renderAdsSubaba(); // recarrega os cards
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
+  }
+  window.adsSalvarObjetivo = adsSalvarObjetivo;
+
   function metricaInline(label, valor, cor) {
     return '<div><div style="font-size:10px;color:#9ca3af;font-weight:600">' + label + '</div>' +
       '<div style="font-size:15px;font-weight:800;color:' + (cor || '#1e2a47') + '">' + valor + '</div></div>';
@@ -12702,19 +12751,25 @@ Retorne JSON: {"ID": "valor", ...}`;
         html += '<div style="padding:16px;border:1px solid #fecaca;border-radius:14px;background:#fef2f2"><div style="font-weight:700">' + escapeHtml(l.nome) + '</div><div style="font-size:11px;color:#b91c1c">' + l.erro + '</div></div>';
         return;
       }
-      html += '<div style="padding:16px;border:1px solid #e5e7eb;border-radius:14px;background:white;display:flex;gap:14px;align-items:center">' +
-        avatarLoja(l.nome, 52) +
-        '<div style="flex:1;min-width:0">' +
-          '<div style="font-weight:800;color:#1e2a47;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(l.nome) + '</div>' +
-          '<div style="font-size:11px;color:#9ca3af;margin:3px 0 8px">Shopee · ' + tempoRelativo(l.ultimaSync) + '</div>' +
-          '<div style="display:flex;gap:14px">' +
-            '<div><div style="font-size:10px;color:#9ca3af">Gasto Ads</div><div style="font-size:13px;font-weight:700;color:#1e2a47">' + fmtBRL(l.gastoAds) + '</div></div>' +
-            '<div><div style="font-size:10px;color:#9ca3af">Receita</div><div style="font-size:13px;font-weight:700;color:#1e2a47">' + fmtBRL(l.receitaPaga) + '</div></div>' +
+      html += '<div style="padding:16px;border:1px solid #e5e7eb;border-radius:14px;background:white">' +
+        '<div style="display:flex;gap:14px;align-items:center">' +
+          avatarLoja(l.nome, 52) +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-weight:800;color:#1e2a47;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(l.nome) + '</div>' +
+            '<div style="font-size:11px;color:#9ca3af;margin:3px 0 8px">Shopee · ' + tempoRelativo(l.ultimaSync) + '</div>' +
+            '<div style="display:flex;gap:14px">' +
+              '<div><div style="font-size:10px;color:#9ca3af">Gasto Ads</div><div style="font-size:13px;font-weight:700;color:#1e2a47">' + fmtBRL(l.gastoAds) + '</div></div>' +
+              '<div><div style="font-size:10px;color:#9ca3af">Receita</div><div style="font-size:13px;font-weight:700;color:#1e2a47">' + fmtBRL(l.receitaPaga) + '</div></div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="text-align:center;flex-shrink:0">' +
+            '<div style="font-size:28px;font-weight:900;line-height:1;color:' + corAcos(l.acos) + '">' + (l.acos === null ? '—' : l.acos + '%') + '</div>' +
+            '<div style="font-size:10px;color:#9ca3af;margin-top:2px">ACOS real</div>' +
           '</div>' +
         '</div>' +
-        '<div style="text-align:center;flex-shrink:0">' +
-          '<div style="font-size:28px;font-weight:900;line-height:1;color:' + corAcos(l.acos) + '">' + (l.acos === null ? '—' : l.acos + '%') + '</div>' +
-          '<div style="font-size:10px;color:#9ca3af;margin-top:2px">ACOS</div>' +
+        '<div onclick="adsAbrirObjetivo(' + l.lojaId + ',\'' + escapeHtml(l.nome).replace(/'/g, "") + '\',' + (l.acosObjetivo || 10) + ')" style="margin-top:12px;padding-top:12px;border-top:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center;cursor:pointer">' +
+          '<span style="font-size:12px;color:#6b7280">🎯 ACOS objetivo</span>' +
+          '<span style="font-size:14px;font-weight:800;color:#3730a3">' + (l.acosObjetivo != null ? l.acosObjetivo.toFixed(2).replace('.', ',') + '%' : '10,00%') + ' <span style="font-size:11px;color:#9ca3af">✏️</span></span>' +
         '</div>' +
       '</div>';
     });
@@ -31150,7 +31205,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.103-ads-ajuste-multi';
+  const _DIAG_VERSAO_PAINEL = 'v33k.104-ads-acos-objetivo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
