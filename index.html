@@ -5372,6 +5372,7 @@
       </select>
       <button id="adsBtnSyncLoja" class="toolbar-btn" onclick="adsSincronizarLojaSelecionada()" style="display:none">🔄 Sincronizar esta loja</button>
       <button id="adsBtnDiag" class="toolbar-btn" onclick="adsDiagnosticar()" style="display:none">🔬 Diagnosticar</button>
+      <button id="adsBtnMotorDados" class="toolbar-btn" onclick="adsVerDadosMotor()" style="display:none">🧪 Dados do motor</button>
     </div>
 
     <!-- Filtros da aba ANÚNCIOS (client-side) -->
@@ -12268,6 +12269,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (btnSync) btnSync.style.display = loja ? '' : 'none';
     const btnDiag = document.getElementById('adsBtnDiag');
     if (btnDiag) btnDiag.style.display = loja ? '' : 'none';
+    const btnMotor = document.getElementById('adsBtnMotorDados');
+    if (btnMotor) btnMotor.style.display = loja ? '' : 'none';
     // barra de filtros só aparece na aba Anúncios
     const filtros = document.getElementById('adsFiltrosAnuncios');
     if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && loja) ? 'flex' : 'none';
@@ -12327,6 +12330,61 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   window.adsDiagnosticar = adsDiagnosticar;
+
+  // Mostra o pacote de dados que o MOTOR usaria (conferência, sem agir).
+  async function adsVerDadosMotor() {
+    const loja = document.getElementById('adsLojaFiltro')?.value || '';
+    if (!loja) { showToast('Escolha uma loja primeiro.', true); return; }
+    const cont = document.getElementById('adsConteudo');
+    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🧪 Montando dados do motor (consultando orçamentos ao vivo)…</div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + loja + '/motor-dados', {
+        headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+      if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
+      if (!r.itens || !r.itens.length) { cont.innerHTML = '<div style="padding:24px;text-align:center;color:#6b7280">Sem dados. Sincronize a loja primeiro.</div>'; return; }
+
+      // ordena por gasto 7d desc
+      const itens = r.itens.slice().sort((a, b) => (b.gasto7d || 0) - (a.gasto7d || 0));
+
+      let html = '<div style="margin-bottom:12px;padding:10px 14px;background:#eef2ff;border-radius:10px;font-size:13px;color:#3730a3">' +
+        '🧪 <strong>Conferência dos dados do motor</strong> — ACOS objetivo da loja: <strong>' + r.acosObjetivo.toFixed(2).replace('.', ',') + '%</strong>. ' +
+        'Confira se os números batem com a Shopee antes de ligar as regras.</div>';
+
+      html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">' +
+        '<thead><tr style="text-align:right;color:#6b7280;border-bottom:2px solid #f3f4f6">' +
+        '<th style="padding:7px;text-align:left">Anúncio</th><th style="padding:7px">Status</th>' +
+        '<th style="padding:7px">ACOS ont</th><th style="padding:7px">ACOS 7d</th>' +
+        '<th style="padding:7px">Gasto ont</th><th style="padding:7px">Gasto 7d</th>' +
+        '<th style="padding:7px">Vd ont</th><th style="padding:7px">Vd 7d</th>' +
+        '<th style="padding:7px">Orçam.</th><th style="padding:7px">Bateu?</th></tr></thead><tbody>';
+
+      itens.forEach(it => {
+        const aOnt = it.acosOntem == null ? '—' : it.acosOntem.toFixed(2).replace('.', ',') + '%';
+        const a7d = it.acos7d == null ? '—' : it.acos7d.toFixed(2).replace('.', ',') + '%';
+        const bateu = it.atingiuLimite == null ? '—' : (it.atingiuLimite ? '<span style="color:#dc2626;font-weight:700">SIM</span>' : 'não');
+        const orc = it.budget == null ? '—' : fmtBRL(it.budget);
+        html += '<tr style="border-bottom:1px solid #f3f4f6;text-align:right">' +
+          '<td style="padding:7px;text-align:left;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + it.itemId + '</td>' +
+          '<td style="padding:7px;text-align:center">' + badgeStatus(it.status) + '</td>' +
+          '<td style="padding:7px;color:' + corAcos(it.acosOntem) + ';font-weight:700">' + aOnt + '</td>' +
+          '<td style="padding:7px;color:' + corAcos(it.acos7d) + ';font-weight:700">' + a7d + '</td>' +
+          '<td style="padding:7px">' + fmtBRL(it.gastoOntem) + '</td>' +
+          '<td style="padding:7px">' + fmtBRL(it.gasto7d) + '</td>' +
+          '<td style="padding:7px">' + it.vendasOntem + '</td>' +
+          '<td style="padding:7px">' + it.vendas7d + '</td>' +
+          '<td style="padding:7px">' + orc + '</td>' +
+          '<td style="padding:7px;text-align:center">' + bateu + '</td>' +
+          '</tr>';
+      });
+      html += '</tbody></table></div>';
+      html += '<div style="font-size:11px;color:#9ca3af;margin-top:10px">"Bateu?" = gasto de ontem ≥ 95% do orçamento diário (ex-"Não Variável"). Orçamento e "bateu" só aparecem para campanhas ativas (consulta ao vivo).</div>';
+      cont.innerHTML = html;
+    } catch (e) {
+      cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
+    }
+  }
+  window.adsVerDadosMotor = adsVerDadosMotor;
 
   // cor do ACOS: verde bom, amarelo médio, vermelho ruim (referência das telas)
   function corAcos(acos) {
@@ -31205,7 +31263,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.104-ads-acos-objetivo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.105-ads-motor-dados';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
