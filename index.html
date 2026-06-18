@@ -5374,6 +5374,7 @@
       <button id="adsBtnDiag" class="toolbar-btn" onclick="adsDiagnosticar()" style="display:none">🔬 Diagnosticar</button>
       <button id="adsBtnMotorDados" class="toolbar-btn" onclick="adsVerDadosMotor()" style="display:none">🧪 Dados do motor</button>
       <button id="adsBtnMotorRec" class="toolbar-btn" onclick="adsVerRecomendacoes()" style="display:none">🤖 Recomendações</button>
+      <button id="adsBtnTodas" class="toolbar-btn" onclick="adsRevisarTodas()">🚀 Rodar todas (revisão)</button>
     </div>
 
     <!-- Filtros da aba ANÚNCIOS (client-side) -->
@@ -12495,6 +12496,111 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   window.adsExecutarMotor = adsExecutarMotor;
+
+  // Rodar TODAS as lojas em modo revisão: mostra tudo, marca o que aplicar.
+  async function adsRevisarTodas() {
+    const cont = document.getElementById('adsConteudo');
+    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🚀 Rodando o motor em todas as lojas (como o cron faz)… isso pode levar um minuto.</div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/motor-recomendacoes-todas', {
+        headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+      if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
+
+      if (!r.resultado || !r.totalAcoes) {
+        cont.innerHTML = '<div style="padding:24px;text-align:center;color:#6b7280;background:#f9fafb;border-radius:10px">Nenhuma ação recomendada em nenhuma loja agora. ✅</div>';
+        return;
+      }
+
+      let html = '<div style="margin-bottom:14px;padding:12px 14px;background:#eef2ff;border-radius:10px;font-size:13px;color:#3730a3">' +
+        '🚀 <strong>Revisão geral (ensaio do cron)</strong> — ' + r.lojas + ' loja(s), <strong>' + r.totalAcoes + '</strong> ação(ões) recomendada(s).<br>' +
+        '<span style="font-size:11px">Marque o que aplicar. O que você deixar marcado será executado e o cliente recebe WhatsApp (se marcado abaixo).</span></div>';
+
+      html += '<div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap;position:sticky;top:0;background:white;padding:8px 0;z-index:5">' +
+        '<button onclick="adsAplicarSelecao()" style="padding:11px 20px;border:none;background:#ee4d2d;color:white;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer">⚡ Aplicar selecionados</button>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="adsSelWhats" checked> Enviar WhatsApp aos clientes</label>' +
+        '<button onclick="adsMarcarTodas(true)" class="toolbar-btn" style="font-size:12px">Marcar todas</button>' +
+        '<button onclick="adsMarcarTodas(false)" class="toolbar-btn" style="font-size:12px">Desmarcar todas</button>' +
+        '<span id="adsSelContador" style="font-size:12px;color:#6b7280"></span></div>';
+
+      r.resultado.forEach(loja => {
+        if (!loja.recomendacoes || !loja.recomendacoes.length) return;
+        html += '<div style="margin-bottom:18px">' +
+          '<div style="font-weight:800;color:#1e2a47;font-size:14px;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #f3f4f6">' +
+            escapeHtml(loja.nome) + ' <span style="font-size:11px;color:#9ca3af;font-weight:600">· ACOS obj ' + (loja.acosObjetivo || 10) + '% · ' + loja.recomendacoes.length + ' ação(ões)</span></div>';
+        loja.recomendacoes.forEach(rec => {
+          const tipo = rec.acao.tipo;
+          const cor = tipo === 'pausar' ? '#dc2626' : tipo === 'ativar' ? '#16a34a' : '#3730a3';
+          const icon = tipo === 'pausar' ? '⏸' : tipo === 'ativar' ? '▶' : '⚙';
+          html += '<label style="display:flex;gap:10px;align-items:center;padding:9px 12px;background:white;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:6px;cursor:pointer">' +
+            '<input type="checkbox" class="adsSelItem" data-loja="' + loja.lojaId + '" data-item="' + rec.itemId + '" checked onchange="adsAtualizarContador()">' +
+            '<span style="font-size:18px">' + icon + '</span>' +
+            '<span style="flex:1;min-width:0"><span style="font-weight:700;color:#1e2a47;font-size:13px">' + rec.itemId + '</span> ' +
+              '<span style="font-size:10px;color:#9ca3af">regra ' + rec.regra + '</span>' +
+              '<div style="font-size:11px;color:#6b7280">ACOS ont ' + (rec.acosOntem == null ? '—' : rec.acosOntem + '%') + ' · 7d ' + (rec.acos7d == null ? '—' : rec.acos7d + '%') + ' · gasto ont ' + fmtBRL(rec.gastoOntem) + ' · vd ' + rec.vendasOntem + '/' + rec.vendas7d + '</div></span>' +
+            '<span style="font-weight:800;font-size:13px;color:' + cor + '">' + rec.descricao + '</span>' +
+          '</label>';
+        });
+        html += '</div>';
+      });
+      cont.innerHTML = html;
+      adsAtualizarContador();
+    } catch (e) {
+      cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
+    }
+  }
+  window.adsRevisarTodas = adsRevisarTodas;
+
+  function adsMarcarTodas(v) {
+    document.querySelectorAll('.adsSelItem').forEach(c => { c.checked = v; });
+    adsAtualizarContador();
+  }
+  window.adsMarcarTodas = adsMarcarTodas;
+
+  function adsAtualizarContador() {
+    const marcados = document.querySelectorAll('.adsSelItem:checked').length;
+    const total = document.querySelectorAll('.adsSelItem').length;
+    const el = document.getElementById('adsSelContador');
+    if (el) el.textContent = marcados + ' de ' + total + ' marcados';
+  }
+  window.adsAtualizarContador = adsAtualizarContador;
+
+  async function adsAplicarSelecao() {
+    const marcados = Array.from(document.querySelectorAll('.adsSelItem:checked'));
+    if (!marcados.length) { showToast('Marque ao menos um anúncio.', true); return; }
+    const selecao = marcados.map(c => ({ lojaId: parseInt(c.dataset.loja, 10), itemId: c.dataset.item }));
+    const enviarWhatsapp = document.getElementById('adsSelWhats')?.checked !== false;
+
+    if (!confirm('Aplicar ' + selecao.length + ' ação(ões) selecionada(s) nas contas reais?' + (enviarWhatsapp ? '\n\nOs clientes das lojas afetadas receberão WhatsApp.' : '\n\nSem envio de WhatsApp.'))) return;
+
+    const cont = document.getElementById('adsConteudo');
+    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">⚡ Aplicando ' + selecao.length + ' ações nas lojas (uma a uma, aguarde)…<br><span style="font-size:12px">Não feche esta tela.</span></div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/motor-executar-selecao', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmar: true, selecao, enviarWhatsapp }),
+      }).then(x => x.json());
+      if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
+
+      let html = '<div style="margin-bottom:14px;padding:12px 14px;background:#f0fdf4;border-radius:10px;font-size:14px;font-weight:700;color:#166534">✓ Execução concluída em ' + r.lojas + ' loja(s).</div>';
+      r.resultado.forEach(loja => {
+        html += '<div style="margin-bottom:14px"><div style="font-weight:800;color:#1e2a47;font-size:13px;margin-bottom:6px">Loja ' + loja.lojaId +
+          ' — ' + (loja.sucesso || 0) + '/' + (loja.executadas || 0) + ' ok' + (loja.whatsEnfileirado ? ' · 📱 WhatsApp enviado' : '') + (loja.erro ? ' · ⚠ ' + loja.erro : '') + '</div>';
+        (loja.detalhe || []).forEach(d => {
+          html += '<div style="display:flex;gap:8px;align-items:center;padding:7px 10px;background:white;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:4px;font-size:12px">' +
+            '<span>' + (d.ok ? '✅' : '❌') + '</span><span style="flex:1">' + d.itemId + ' — ' + (d.descricao || '') + '</span>' +
+            (d.ok ? '' : '<span style="color:#b91c1c;font-size:11px">' + (d.erro || 'falhou') + '</span>') + '</div>';
+        });
+        html += '</div>';
+      });
+      cont.innerHTML = html;
+      showToast('✓ Seleção aplicada');
+    } catch (e) {
+      cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
+    }
+  }
+  window.adsAplicarSelecao = adsAplicarSelecao;
 
   // Acompanha o progresso da execução em segundo plano (polling).
   let _adsProgressoTimer = null;
@@ -31581,7 +31687,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.111-ads-criar-campanha';
+  const _DIAG_VERSAO_PAINEL = 'v33k.112-ads-rodar-todas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
