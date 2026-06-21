@@ -5721,7 +5721,12 @@
   <div class="dup-modal">
     <h3>📋 Duplicar anúncio</h3>
     <div style="font-size:12px;color:#6b7280;margin-bottom:14px" id="dupProdutoNome">—</div>
-    
+
+    <!-- Seletor(es) de ANÚNCIO DE REFERÊNCIA — populado por abrirDuplicarAnuncio (1)
+         ou abrirDuplicarEmMassa (1 por produto). A cópia usa só as variações/cores
+         do anúncio escolhido, evitando cores duplicadas (Rosa/Rose). -->
+    <div id="dupAnuncioRefBox" style="margin-bottom:12px"></div>
+
     <div style="margin-bottom:12px">
       <label style="font-size:11px;font-weight:700;color:#374151">Quantidade de cópias</label>
       <input type="number" id="dupQuantidade" class="form-input" value="3" min="1" max="50" style="font-size:14px">
@@ -11637,33 +11642,6 @@ Retorne JSON: {"ID": "valor", ...}`;
     localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
     LiderSync.schedulePush('settings', () => LiderSync.pushAppData('lojas', lojasErp));
   }
-
-  // ============================================================
-  // BLINDAGEM: merge de lojas vindas da nuvem com as locais.
-  // A nuvem é a fonte da LISTA (estrutura, tokens, idBanco), mas
-  // o clienteVinculado é PRESERVADO do local quando a nuvem vier
-  // sem ele. Isso impede que um boot com app_data['lojas'] antiga/
-  // vazia apague os vínculos cliente↔loja (bug que já ocorreu).
-  // Casamento por idBanco (preferencial) e por id (fallback).
-  // ============================================================
-  function mergeLojasPreservandoVinculo(lojasNuvem, lojasLocais) {
-    if (!Array.isArray(lojasNuvem)) return lojasLocais || [];
-    const locais = Array.isArray(lojasLocais) ? lojasLocais : [];
-    const acharLocal = (ln) => locais.find(ll =>
-      (ln.idBanco != null && String(ll.idBanco) === String(ln.idBanco)) ||
-      (ln.id != null && String(ll.id) === String(ln.id))
-    );
-    return lojasNuvem.map(ln => {
-      const local = acharLocal(ln);
-      const out = { ...ln };
-      // se a nuvem NÃO trouxe clienteVinculado mas o local tinha, preserva o local
-      if ((out.clienteVinculado == null || out.clienteVinculado === '') &&
-          local && local.clienteVinculado) {
-        out.clienteVinculado = local.clienteVinculado;
-      }
-      return out;
-    });
-  }
   
   // ============================================================
   // MULTI-LOJA: garante que a loja existe no banco (tabela lojas)
@@ -12022,11 +12000,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
         <div>
           <div style="font-weight:800;color:#1e2a47;font-size:14px">🏪 ${escapeHtml(loja.nome)}</div>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:3px">
-            <span style="font-size:10px;font-weight:700;color:#3730a3;background:#eef2ff;border:1px solid #c7d2fe;padding:1px 6px;border-radius:5px" title="ID interno da loja (use nos comandos do servidor)">ID ${loja.idBanco != null ? loja.idBanco : (loja.id != null ? loja.id : '—')}${loja.idBanco == null ? ' (local)' : ''}</span>
-            <span style="font-size:10px;font-weight:600;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:5px;text-transform:capitalize">${escapeHtml(loja.marketplace || '—')}</span>
-            ${userId ? `<span style="font-size:10px;color:#9ca3af" title="ID da conta no marketplace">${userId}</span>` : ''}
-          </div>
+          ${userId ? `<div style="font-size:10px;color:#6b7280;margin-top:2px">${userId}</div>` : ''}
         </div>
         <span style="background:${statusBg};color:${statusTxt};padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700">${statusLabel}</span>
       </div>
@@ -12296,40 +12270,18 @@ Retorne JSON: {"ID": "valor", ...}`;
   let _adsSubaba = 'anuncios';
 
   function renderAds() {
-    // popula o seletor de lojas: Shopee + Mercado Livre (agrupadas)
+    // popula o seletor de lojas Shopee (uma vez por abertura)
     const sel = document.getElementById('adsLojaFiltro');
     if (sel) {
       const atual = sel.value;
       const shopees = lojasErp.filter(l => l.marketplace === 'shopee');
-      const mls = lojasErp.filter(l => l.marketplace === 'mercadolivre');
-      let html = '<option value="">Todas as lojas Shopee (visão geral de Ads)</option>';
-      if (shopees.length) {
-        html += '<optgroup label="🛒 Shopee">' +
-          shopees.map(l => `<option value="${l.idBanco || ''}" data-mk="shopee">${escapeHtml(l.nome)}</option>`).join('') +
-          '</optgroup>';
-      }
-      if (mls.length) {
-        html += '<optgroup label="💛 Mercado Livre">' +
-          mls.map(l => `<option value="${l.idBanco || ''}" data-mk="mercadolivre">${escapeHtml(l.nome)} — só vendas</option>`).join('') +
-          '</optgroup>';
-      }
-      sel.innerHTML = html;
+      sel.innerHTML = '<option value="">Todas as lojas Shopee</option>' +
+        shopees.map(l => `<option value="${l.idBanco || ''}">${escapeHtml(l.nome)}</option>`).join('');
       sel.value = atual;
     }
     adsTrocarSubaba(_adsSubaba);
   }
   window.renderAds = renderAds;
-
-  // Detecta o marketplace da loja selecionada no dropdown de Ads.
-  // Retorna 'shopee' | 'mercadolivre' | '' (todas/nenhuma).
-  function adsMarketplaceSelecionado() {
-    const sel = document.getElementById('adsLojaFiltro');
-    if (!sel || !sel.value) return '';
-    const lojaId = sel.value;
-    const loja = lojasErp.find(l => String(l.idBanco) === String(lojaId));
-    return loja ? (loja.marketplace || '') : '';
-  }
-  window.adsMarketplaceSelecionado = adsMarketplaceSelecionado;
 
   function adsTrocarSubaba(qual) {
     _adsSubaba = qual;
@@ -12356,33 +12308,19 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!cont) return;
     // botão "sincronizar esta loja" visível só quando há loja selecionada
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
-    const ehMl = adsMarketplaceSelecionado() === 'mercadolivre';
     const btnSync = document.getElementById('adsBtnSyncLoja');
-    if (btnSync) btnSync.style.display = loja ? '' : 'none'; // sync funciona p/ vendas ML também
-    // botões específicos de Ads não fazem sentido p/ Mercado Livre
+    if (btnSync) btnSync.style.display = loja ? '' : 'none';
     const btnDiag = document.getElementById('adsBtnDiag');
-    if (btnDiag) btnDiag.style.display = (loja && !ehMl) ? '' : 'none';
+    if (btnDiag) btnDiag.style.display = loja ? '' : 'none';
     const btnMotor = document.getElementById('adsBtnMotorDados');
-    if (btnMotor) btnMotor.style.display = (loja && !ehMl) ? '' : 'none';
+    if (btnMotor) btnMotor.style.display = loja ? '' : 'none';
     const btnRec = document.getElementById('adsBtnMotorRec');
-    if (btnRec) btnRec.style.display = (loja && !ehMl) ? '' : 'none';
-    // barra de filtros só aparece na aba Anúncios (e não p/ ML)
+    if (btnRec) btnRec.style.display = loja ? '' : 'none';
+    // barra de filtros só aparece na aba Anúncios
     const filtros = document.getElementById('adsFiltrosAnuncios');
-    if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && loja && !ehMl) ? 'flex' : 'none';
+    if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && loja) ? 'flex' : 'none';
     cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">Carregando…</div>';
     try {
-      // Mercado Livre ainda não tem Ads integrado — só vendas.
-      // Nas abas que dependem de Ads, mostra aviso em vez de erro.
-      const mkSel = adsMarketplaceSelecionado();
-      if (mkSel === 'mercadolivre' && (_adsSubaba === 'anuncios' || _adsSubaba === 'resumo')) {
-        cont.innerHTML = '<div style="padding:24px;text-align:center;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;line-height:1.6">' +
-          '<div style="font-size:15px;font-weight:700;margin-bottom:6px">💛 Loja do Mercado Livre</div>' +
-          'A integração de <strong>Ads do Mercado Livre</strong> ainda não está disponível.<br>' +
-          'Por enquanto, esta loja mostra apenas as <strong>vendas</strong>.<br>' +
-          '<button class="toolbar-btn" style="margin-top:12px" onclick="adsTrocarSubaba(\'vendas\')">📦 Ver vendas desta loja</button>' +
-          '</div>';
-        return;
-      }
       if (_adsSubaba === 'anuncios') return await renderAdsAnuncios(cont);
       if (_adsSubaba === 'resumo') return await renderAdsResumo(cont);
       if (_adsSubaba === 'vendas') return await renderAdsVendas(cont);
@@ -12395,29 +12333,9 @@ Retorne JSON: {"ID": "valor", ...}`;
   async function adsSincronizarLojaSelecionada() {
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
     if (!loja) { showToast('Escolha uma loja primeiro.', true); return; }
-    // Mercado Livre: sincroniza VENDAS (não tem Ads). Shopee: ETL de Ads.
-    if (adsMarketplaceSelecionado() === 'mercadolivre') {
-      await adsSincronizarVendasLoja(loja);
-      return;
-    }
     await adsSincronizarLoja(loja);
   }
   window.adsSincronizarLojaSelecionada = adsSincronizarLojaSelecionada;
-
-  // Sincroniza as VENDAS de uma loja (usado pelo ML; também serve Shopee).
-  async function adsSincronizarVendasLoja(lojaIdBanco) {
-    const dias = document.getElementById('adsPeriodo')?.value || '7';
-    showToast('🔄 Sincronizando vendas da loja...');
-    try {
-      const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/sincronizar-vendas?dias=' + dias, {
-        method: 'POST', headers: { 'x-api-token': getApiToken() }
-      }).then(x => x.json());
-      if (!r.ok) { showToast('⚠ ' + (r.erro || 'falha na sincronização'), true); return; }
-      showToast('✓ ' + (r.gravados != null ? r.gravados : (r.resultado && r.resultado.gravados) || 0) + ' vendas sincronizadas');
-      renderAdsSubaba();
-    } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
-  }
-  window.adsSincronizarVendasLoja = adsSincronizarVendasLoja;
 
   async function adsDiagnosticar() {
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
@@ -13067,24 +12985,6 @@ Retorne JSON: {"ID": "valor", ...}`;
             : '<button onclick="adsBanimentoToggle(true)" style="padding:8px 14px;border:none;background:#dc2626;color:white;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">Ligar</button>') +
         '</span></div>';
     } catch (e) { /* silencioso */ }
-
-    // status da REAVALIAÇÃO de banimentos (Fase 2 — ciclo de 7 dias)
-    try {
-      const rr = await fetch(BACKEND_URL + '/api/ads/banimentos/reavaliar/status', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
-      const ligadoR = rr.agendado;
-      const infoR = [];
-      if (rr.pendentesReavaliacao) infoR.push(rr.pendentesReavaliacao + ' p/ reavaliar hoje');
-      if (rr.reativados) infoR.push(rr.reativados + ' reativado(s)');
-      if (rr.encerrados) infoR.push(rr.encerrados + ' encerrado(s)');
-      box.innerHTML += '<div style="margin-top:8px;padding:12px 14px;background:' + (ligadoR ? '#fffbeb' : '#f9fafb') + ';border:1px solid ' + (ligadoR ? '#fde68a' : '#e5e7eb') + ';border-radius:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
-        '<span style="font-size:13px;color:' + (ligadoR ? '#92400e' : '#6b7280') + '">🔁 Reavaliação de banimentos (7 dias) — ' + (ligadoR ? '<strong>LIGADO</strong>, 1x/dia 7h30' : 'desligado') + (infoR.length ? ' · ' + infoR.join(' · ') : '') + '</span>' +
-        '<span style="display:flex;gap:6px">' +
-          '<button onclick="adsTestarReavaliacao()" class="toolbar-btn" style="font-size:12px">🧪 Testar</button>' +
-          (ligadoR
-            ? '<button onclick="adsReavaliacaoToggle(false)" class="toolbar-btn" style="font-size:12px">Desligar</button>'
-            : '<button onclick="adsReavaliacaoToggle(true)" style="padding:8px 14px;border:none;background:#d97706;color:white;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">Ligar</button>') +
-        '</span></div>';
-    } catch (e) { /* silencioso */ }
   }
   window.adsCarregarStatusAuto = adsCarregarStatusAuto;
 
@@ -13125,55 +13025,6 @@ Retorne JSON: {"ID": "valor", ...}`;
     } catch (e) { showToast('⚠ ' + e.message, true); }
   }
   window.adsBanimentoToggle = adsBanimentoToggle;
-
-  async function adsTestarReavaliacao() {
-    const cont = document.getElementById('adsConteudo');
-    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🔁 Reavaliando banimentos vencidos (dry-run, não envia WhatsApp nem cria demandas)…<br><span style="font-size:12px">Pode levar um minuto.</span></div>';
-    try {
-      const r = await fetch(BACKEND_URL + '/api/ads/banimentos/reavaliar/testar', {
-        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dryRun: true }),
-      }).then(x => x.json());
-      if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
-      const res = r.resultado || {};
-      const det = (res.detalhe || []).filter(d => !d.erro);
-      let html = '<div style="padding:12px 14px;background:#fffbeb;border-radius:10px;font-size:13px;color:#92400e;margin-bottom:12px">' +
-        '🔁 <strong>Teste de reavaliação</strong> (dry-run) — ' + (res.reavaliados || 0) + ' banimento(s) reavaliado(s): ' +
-        '<strong>' + (res.reativados || 0) + '</strong> voltaram ao ar, <strong>' + (res.naoReativados || 0) + '</strong> continuam banidos.</div>';
-      if (!det.length) html += '<div style="padding:20px;text-align:center;color:#6b7280">Nenhum banimento vencido (7 dias) para reavaliar hoje. ✅</div>';
-      else det.forEach(d => {
-        const voltou = d.resultado === 'reativado';
-        const cor = voltou ? '#16a34a' : '#b91c1c';
-        const bg = voltou ? '#f0fdf4' : '#fef2f2';
-        html += '<div style="margin-bottom:10px;padding:12px;background:white;border:1px solid #e5e7eb;border-radius:10px">' +
-          '<div style="font-weight:700;color:' + cor + ';font-size:13px;margin-bottom:4px">' +
-            (voltou ? '✅ Voltou ao ar' : '🚫 Continua banido') + ' · loja ' + d.loja + ' · item ' + d.item + '</div>';
-        if (!voltou) {
-          html += '<div style="font-size:11px;color:#6b7280;margin-bottom:6px">' +
-            (d.produtoInterno ? '🔗 Produto interno: id ' + d.produtoInterno : '⚠ Produto interno não localizado (preencher manual)') +
-            ' · criaria 2 demandas (contato plataforma + recriar anúncio)</div>';
-        }
-        if (d.mensagem) html += '<div style="font-size:12px;color:#1e2a47;white-space:pre-wrap;line-height:1.5;background:' + bg + ';border-radius:8px;padding:10px">' + escapeHtml(d.mensagem) + '</div>';
-        html += '</div>';
-      });
-      cont.innerHTML = html;
-    } catch (e) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>'; }
-  }
-  window.adsTestarReavaliacao = adsTestarReavaliacao;
-
-  async function adsReavaliacaoToggle(ligar) {
-    const acao = ligar ? 'agendar' : 'desativar';
-    if (ligar && !confirm('Ligar a reavaliação de banimentos (ciclo de 7 dias)?\n\nTodo dia às 7h30, o sistema verifica os banimentos que completaram 7 dias:\n• Se o anúncio voltou ao ar → avisa o cliente que deu certo.\n• Se continua banido → avisa o cliente E cria 2 demandas (contato com a plataforma + recriar o anúncio com os mesmos dados).')) return;
-    if (!ligar && !confirm('Desligar a reavaliação de banimentos?')) return;
-    try {
-      const r = await fetch(BACKEND_URL + '/api/ads/banimentos/reavaliar/' + acao, {
-        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: '{}',
-      }).then(x => x.json());
-      if (r.ok) { showToast(ligar ? '🔁 Reavaliação de banimentos ligada' : 'Reavaliação desligada'); adsAbrirCronLojas(); }
-      else showToast('⚠ ' + (r.erro || 'falha'), true);
-    } catch (e) { showToast('⚠ ' + e.message, true); }
-  }
-  window.adsReavaliacaoToggle = adsReavaliacaoToggle;
 
   async function adsAtivarAuto() {
     if (!confirm('Ligar o motor automático?\n\nEle vai rodar sozinho TODA segunda, quarta e sexta às 8h30, executar as ações nas lojas e enviar WhatsApp aos clientes.\n\nSó ative depois de validar que as recomendações estão corretas.')) return;
@@ -14340,6 +14191,195 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (Array.isArray(p.cores) && p.cores.length > 0) return p.cores;
     return [{ id: 'cor_padrao', nome: 'Padrão', fotos: [...(p.fotos || [])] }];
   }
+
+  // ============================================================
+  // DUPLICAÇÃO — usar APENAS o anúncio ORIGINAL como referência.
+  // Um produto pode ter vários anúncios vinculados (ex: um escreveu
+  // "Rosa", outro "Rose"), o que faz a duplicação sair com cores
+  // repetidas. Aqui filtramos as variações pra manter SÓ as do anúncio
+  // mais antigo (o que criou o produto), pelo menor criadoEm entre os
+  // vínculos. NÃO altera o produto pai — só recorta o que vai ser copiado.
+  // Retorna { variacoes, cores } filtrados. Se não houver vínculos com
+  // data (produto manual, etc.), retorna tudo (não quebra nada).
+  // ============================================================
+  function filtrarReferenciaAnuncioOriginal(p) {
+    const variacoes = Array.isArray(p.variacoes) ? p.variacoes : [];
+    // coleta todos os vínculos com criadoEm pra achar o anúncio mais antigo
+    let anuncioOrig = null, dataOrig = null;
+    variacoes.forEach(v => {
+      (v.vinculos || []).forEach(vi => {
+        if (!vi.anuncioId || !vi.criadoEm) return;
+        const t = new Date(vi.criadoEm).getTime();
+        if (!isNaN(t) && (dataOrig === null || t < dataOrig)) { dataOrig = t; anuncioOrig = String(vi.anuncioId); }
+      });
+    });
+    // sem anúncio original identificável → mantém tudo (não filtra)
+    if (!anuncioOrig) return { variacoes, cores: obterCoresDoProduto(p), filtrou: false, anuncioOrig: null };
+
+    // mantém só variações que têm vínculo com o anúncio original
+    const variacoesFiltradas = variacoes.filter(v =>
+      (v.vinculos || []).some(vi => String(vi.anuncioId) === anuncioOrig)
+    );
+    // se o filtro zerou (algo estranho), volta pra tudo por segurança
+    if (!variacoesFiltradas.length) return { variacoes, cores: obterCoresDoProduto(p), filtrou: false, anuncioOrig };
+
+    // recorta as cores pra só as que aparecem nas variações filtradas
+    const coresUsadas = new Set();
+    variacoesFiltradas.forEach(v => {
+      if (v.corId) coresUsadas.add(String(v.corId));
+      if (v.cor) coresUsadas.add(String(v.cor).toLowerCase().trim());
+    });
+    const todasCores = obterCoresDoProduto(p);
+    let coresFiltradas = todasCores.filter(c =>
+      coresUsadas.has(String(c.id)) || coresUsadas.has(String(c.nome).toLowerCase().trim())
+    );
+    // se não casou nenhuma cor (modelo antigo sem corId), mantém as cores como estão
+    if (!coresFiltradas.length) coresFiltradas = todasCores;
+
+    return { variacoes: variacoesFiltradas, cores: coresFiltradas, filtrou: true, anuncioOrig };
+  }
+  window.filtrarReferenciaAnuncioOriginal = filtrarReferenciaAnuncioOriginal;
+
+  // ============================================================
+  // Lista os ANÚNCIOS distintos vinculados a um produto, agrupando os
+  // vínculos por anuncioId. Pra cada anúncio, devolve as variações que
+  // pertencem a ele (cor + tamanho + sku + nº de fotos). Usado nos
+  // seletores de "anúncio de referência" da duplicação (individual e massa).
+  // ============================================================
+  function listarAnunciosDoProduto(p) {
+    const variacoes = Array.isArray(p.variacoes) ? p.variacoes : [];
+    const cores = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
+    const fotosDaCor = (v) => {
+      const c = cores.find(c => String(c.id) === String(v.corId) || String(c.nome).toLowerCase().trim() === String(v.cor || '').toLowerCase().trim());
+      return (c && Array.isArray(c.fotos)) ? c.fotos.filter(Boolean).length : 0;
+    };
+    const mapa = new Map(); // anuncioId -> { anuncioId, titulo, marketplace, lojaNome, criadoEm, variacoes:Set }
+    variacoes.forEach(v => {
+      (v.vinculos || []).forEach(vi => {
+        if (!vi.anuncioId) return;
+        const aid = String(vi.anuncioId);
+        if (!mapa.has(aid)) {
+          const lojaId = vi.lojaIdBanco || vi.lojaId;
+          const loja = lojasErp.find(l => String(l.idBanco) === String(lojaId) || String(l.id) === String(lojaId));
+          mapa.set(aid, {
+            anuncioId: aid,
+            titulo: vi.titulo || p.nome || '',
+            marketplace: vi.marketplace || '',
+            lojaNome: loja ? loja.nome : (lojaId ? ('loja ' + lojaId) : ''),
+            criadoEm: vi.criadoEm || null,
+            _vset: new Map(), // chave var.id -> dados da variação (evita repetir)
+          });
+        }
+        const reg = mapa.get(aid);
+        if (vi.criadoEm && (!reg.criadoEm || new Date(vi.criadoEm) < new Date(reg.criadoEm))) reg.criadoEm = vi.criadoEm;
+        if (!reg._vset.has(v.id)) {
+          reg._vset.set(v.id, {
+            id: v.id, cor: v.cor || '', tamanho: v.tamanho || '', sku: v.sku || '', fotos: fotosDaCor(v),
+          });
+        }
+      });
+    });
+    // converte e ordena: mais antigo primeiro
+    const lista = Array.from(mapa.values()).map(a => ({
+      anuncioId: a.anuncioId, titulo: a.titulo, marketplace: a.marketplace,
+      lojaNome: a.lojaNome, criadoEm: a.criadoEm,
+      variacoes: Array.from(a._vset.values()),
+    }));
+    lista.sort((x, y) => {
+      const tx = x.criadoEm ? new Date(x.criadoEm).getTime() : Infinity;
+      const ty = y.criadoEm ? new Date(y.criadoEm).getTime() : Infinity;
+      return tx - ty;
+    });
+    return lista;
+  }
+  window.listarAnunciosDoProduto = listarAnunciosDoProduto;
+
+  // Filtra variações+cores de um produto mantendo só as do anuncioId ESCOLHIDO.
+  // (versão "manual" do filtrarReferenciaAnuncioOriginal — recebe o anuncioId.)
+  function filtrarPorAnuncioEscolhido(p, anuncioId) {
+    if (!anuncioId) return null; // sem escolha → caller decide
+    const variacoes = Array.isArray(p.variacoes) ? p.variacoes : [];
+    const alvo = String(anuncioId);
+    const variacoesFiltradas = variacoes.filter(v =>
+      (v.vinculos || []).some(vi => String(vi.anuncioId) === alvo)
+    );
+    if (!variacoesFiltradas.length) return null; // não casou → caller mantém tudo
+    const coresUsadas = new Set();
+    variacoesFiltradas.forEach(v => {
+      if (v.corId) coresUsadas.add(String(v.corId));
+      if (v.cor) coresUsadas.add(String(v.cor).toLowerCase().trim());
+    });
+    const todasCores = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
+    let coresFiltradas = todasCores.filter(c =>
+      coresUsadas.has(String(c.id)) || coresUsadas.has(String(c.nome).toLowerCase().trim())
+    );
+    if (!coresFiltradas.length) coresFiltradas = todasCores;
+    return { variacoes: variacoesFiltradas, cores: coresFiltradas };
+  }
+  window.filtrarPorAnuncioEscolhido = filtrarPorAnuncioEscolhido;
+
+  // Guarda a escolha de anúncio de referência por produtoId (individual e massa).
+  let _dupAnuncioRefEscolhido = {}; // { produtoId: anuncioId }
+  window._dupAnuncioRefEscolhido = _dupAnuncioRefEscolhido;
+
+  // Monta o HTML de UM seletor de anúncio de referência (select + variações).
+  // Usado tanto na individual (1) quanto na massa (1 por produto).
+  function montarSeletorAnuncioRef(p, opts) {
+    opts = opts || {};
+    const anuncios = listarAnunciosDoProduto(p);
+    const pid = String(p.id);
+    // sem anúncios vinculados → nada a escolher (cópia usa o produto como está)
+    if (!anuncios.length) {
+      return `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;font-size:12px;color:#6b7280">
+        ${opts.comprimido ? '<strong>' + escapeHtml(p.nome) + '</strong> — ' : ''}Sem anúncios vinculados — a cópia usará as variações do produto como estão.</div>`;
+    }
+    // default: o mais antigo (1º da lista, já ordenada). respeita escolha anterior.
+    const escolhido = _dupAnuncioRefEscolhido[pid] || anuncios[0].anuncioId;
+    _dupAnuncioRefEscolhido[pid] = escolhido;
+    const mkLabel = (mk) => mk === 'shopee' ? '🛒 Shopee' : (mk && /mercado/i.test(mk) ? '💛 ML' : (mk || ''));
+    const options = anuncios.map((a, i) => {
+      const sel = String(a.anuncioId) === String(escolhido) ? 'selected' : '';
+      const tag = i === 0 ? ' (mais antigo)' : '';
+      const lbl = mkLabel(a.marketplace) + ' · ' + (a.lojaNome || '') + ' · #' + a.anuncioId + tag;
+      return `<option value="${escapeHtml(a.anuncioId)}" ${sel}>${escapeHtml(lbl)}</option>`;
+    }).join('');
+    const tituloProd = opts.comprimido ? `<div style="font-weight:700;font-size:12px;color:#1e2a47;margin-bottom:4px">${escapeHtml(p.nome)}</div>` : '';
+    return `<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;padding:10px;margin-bottom:8px" data-dup-ref-pid="${pid}">
+      ${tituloProd}
+      <label style="font-size:11px;font-weight:700;color:#3730a3;display:block;margin-bottom:4px">📌 Anúncio de referência (a cópia usa só as variações dele)</label>
+      <select class="form-input dup-anuncio-ref-select" data-pid="${pid}" onchange="dupOnEscolherAnuncio('${pid}', this.value)" style="font-size:13px;width:100%">${options}</select>
+      <div class="dup-anuncio-ref-vars" data-pid="${pid}" style="margin-top:8px"></div>
+    </div>`;
+  }
+  window.montarSeletorAnuncioRef = montarSeletorAnuncioRef;
+
+  // Renderiza a lista de variações do anúncio escolhido (cor + tam + sku + nº fotos).
+  function dupRenderVariacoesDoAnuncio(pid) {
+    const p = produtosErp.find(x => String(x.id) === String(pid));
+    const box = document.querySelector(`.dup-anuncio-ref-vars[data-pid="${pid}"]`);
+    if (!p || !box) return;
+    const anuncioId = _dupAnuncioRefEscolhido[pid];
+    const anuncios = listarAnunciosDoProduto(p);
+    const a = anuncios.find(x => String(x.anuncioId) === String(anuncioId));
+    if (!a || !a.variacoes.length) { box.innerHTML = '<div style="font-size:11px;color:#9ca3af">Sem variações neste anúncio.</div>'; return; }
+    const linhas = a.variacoes.map(v => {
+      const partes = [];
+      if (v.cor) partes.push('<strong>' + escapeHtml(v.cor) + '</strong>');
+      if (v.tamanho) partes.push('Tam ' + escapeHtml(v.tamanho));
+      if (v.sku) partes.push('<span style="color:#6b7280">SKU ' + escapeHtml(v.sku) + '</span>');
+      partes.push('<span style="color:#9ca3af">' + (v.fotos || 0) + ' foto(s)</span>');
+      return '<div style="font-size:11px;padding:3px 0;border-bottom:1px solid #eef2ff">' + partes.join(' · ') + '</div>';
+    }).join('');
+    box.innerHTML = `<div style="font-size:10px;color:#6b7280;margin-bottom:2px">${a.variacoes.length} variação(ões) neste anúncio:</div>${linhas}`;
+  }
+  window.dupRenderVariacoesDoAnuncio = dupRenderVariacoesDoAnuncio;
+
+  // onChange do select: guarda a escolha e atualiza a lista de variações.
+  function dupOnEscolherAnuncio(pid, anuncioId) {
+    _dupAnuncioRefEscolhido[pid] = anuncioId;
+    dupRenderVariacoesDoAnuncio(pid);
+  }
+  window.dupOnEscolherAnuncio = dupOnEscolherAnuncio;
   
   // Retorna as fotos de uma variação baseado em v.corId. Fallback: fotos[] do produto.
   function fotosDaVariacao(v, produto) {
@@ -19599,6 +19639,15 @@ Retorne JSON: {"ID": "valor", ...}`;
     const avisoMassa = document.getElementById('dupMassaReguaAviso');
     if (avisoMassa) avisoMassa.remove();
 
+    // Seletor de anúncio de referência (individual: 1 produto)
+    const refBox = document.getElementById('dupAnuncioRefBox');
+    if (refBox) {
+      _dupAnuncioRefEscolhido = {}; window._dupAnuncioRefEscolhido = _dupAnuncioRefEscolhido; // reseta escolhas
+      refBox.innerHTML = montarSeletorAnuncioRef(p, { comprimido: false });
+      // renderiza as variações do anúncio default (mais antigo)
+      setTimeout(() => dupRenderVariacoesDoAnuncio(String(p.id)), 0);
+    }
+
     document.getElementById('dupConfigOverlay').classList.add('active');
   }
 
@@ -19639,6 +19688,24 @@ Retorne JSON: {"ID": "valor", ...}`;
 
     // Monta a régua (mesma do individual)
     if (typeof dupMontarRegua === 'function') dupMontarRegua();
+
+    // Seletores de anúncio de referência — UM POR PRODUTO no massa
+    const refBoxM = document.getElementById('dupAnuncioRefBox');
+    if (refBoxM) {
+      _dupAnuncioRefEscolhido = {}; window._dupAnuncioRefEscolhido = _dupAnuncioRefEscolhido; // reseta
+      const temVinculos = lista.some(pr => listarAnunciosDoProduto(pr).length > 0);
+      if (temVinculos) {
+        refBoxM.innerHTML =
+          '<div style="font-size:11px;font-weight:700;color:#3730a3;margin-bottom:6px">📌 Anúncio de referência por produto</div>' +
+          '<div style="max-height:260px;overflow-y:auto;padding-right:4px">' +
+          lista.map(pr => montarSeletorAnuncioRef(pr, { comprimido: true })).join('') +
+          '</div>';
+        // renderiza as variações do anúncio default de cada produto
+        setTimeout(() => lista.forEach(pr => dupRenderVariacoesDoAnuncio(String(pr.id))), 0);
+      } else {
+        refBoxM.innerHTML = '';
+      }
+    }
 
     // No massa, a régua fica FIXA no modo "manter preço atual (promo do pai)" —
     // o único confiável nos dois marketplaces sem agendar. Ativa, seleciona e trava.
@@ -20787,6 +20854,28 @@ REGRAS DURAS:
         novo.origem = 'duplicado';
         novo.duplicadoDeId = p.id; // VINCULO ao pai: aparece agrupado no card
         novo.duplicadoDeIdBanco = p.idBanco || null;
+
+        // REFERÊNCIA = ANÚNCIO ESCOLHIDO pelo usuário (seletor do modal). Se o
+        // produto pai acumulou vínculos de vários anúncios (ex: "Rosa" de um,
+        // "Rose" de outro), a cópia sai só com as variações/cores do anúncio
+        // escolhido. Fallback: anúncio mais antigo. Não altera o pai.
+        try {
+          const escolhido = (window._dupAnuncioRefEscolhido || {})[String(p.id)] || null;
+          let ref = null;
+          if (escolhido && typeof filtrarPorAnuncioEscolhido === 'function') {
+            ref = filtrarPorAnuncioEscolhido(p, escolhido);
+          }
+          if (!ref && typeof filtrarReferenciaAnuncioOriginal === 'function') {
+            const auto = filtrarReferenciaAnuncioOriginal(p);
+            if (auto.filtrou) ref = { variacoes: auto.variacoes, cores: auto.cores };
+          }
+          if (ref) {
+            novo.variacoes = JSON.parse(JSON.stringify(ref.variacoes));
+            novo.cores = JSON.parse(JSON.stringify(ref.cores));
+            dupLogStep(`  ✓ Referência: anúncio ${escolhido || '(mais antigo)'} — ${ref.variacoes.length} variação(ões), ${ref.cores.length} cor(es) (descartadas as de outros anúncios)`, 'ok');
+          }
+        } catch (eRef) { dupLogStep('  ⚠ filtro de referência falhou (mantendo tudo): ' + eRef.message, 'err'); }
+
         // Limpa vínculos pra forçar nova exportação
         (novo.variacoes || []).forEach(v => { 
           v.vinculos = []; 
@@ -20835,7 +20924,9 @@ REGRAS DURAS:
             // capa da variação. Sem rotacionar cores também, as cópias ficavam idênticas
             // visualmente e a Shopee detectava duplicidade.
             novo.fotos = rotacionarFotos(p.fotos || [], k);
-            const coresOrig = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
+            // usa as cores JÁ FILTRADAS do `novo` (anúncio original), não do pai
+            const coresOrig = (Array.isArray(novo.cores) && novo.cores.length) ? novo.cores
+                            : ((typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []));
             novo.cores = coresOrig.map(c => ({
               id: c.id,
               nome: c.nome,
@@ -20846,7 +20937,9 @@ REGRAS DURAS:
           } else {
             // ML: fotos vão por COR (modelo novo produto.cores[].fotos[])
             // Rotaciona dentro de cada cor pra ficar diferente em cada cópia
-            const coresOrig = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
+            // usa as cores JÁ FILTRADAS do `novo` (anúncio original), não do pai
+            const coresOrig = (Array.isArray(novo.cores) && novo.cores.length) ? novo.cores
+                            : ((typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []));
             const novasCores = coresOrig.map(c => ({
               id: c.id,
               nome: c.nome,
@@ -32200,7 +32293,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.121-banimento-fase2';
+  const _DIAG_VERSAO_PAINEL = 'v33k.118-deteccao-banimento';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -43449,9 +43542,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         localStorage.setItem('lider_cats_v1', JSON.stringify(categorias));
       }
       // Lojas vêm da app_data. (Produtos vêm do backend, não daqui.)
-      // BLINDADO: merge preserva clienteVinculado local se a nuvem vier sem.
       if (Array.isArray(cloudData.appData.lojas)) {
-        lojasErp = mergeLojasPreservandoVinculo(cloudData.appData.lojas, lojasErp);
+        lojasErp = cloudData.appData.lojas;
         localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
       }
       if (cloudData.appData.settings) {
@@ -43483,9 +43575,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         configIntegracoes = { ...configIntegracoes, ...cloudData.appData.integracoes };
         localStorage.setItem('lider_integracoes_v1', JSON.stringify(configIntegracoes));
       }
-      // BLINDADO: merge preserva clienteVinculado local se a nuvem vier sem.
       if (Array.isArray(cloudData.appData.lojas)) {
-        lojasErp = mergeLojasPreservandoVinculo(cloudData.appData.lojas, lojasErp);
+        lojasErp = cloudData.appData.lojas;
         localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
       }
       if (Array.isArray(cloudData.appData.produtos)) {
