@@ -12966,8 +12966,60 @@ Retorne JSON: {"ID": "valor", ...}`;
           '</span></div>';
       } catch (e) { /* silencioso */ }
     } catch (e) { /* silencioso */ }
+
+    // status da detecção de banimentos
+    try {
+      const rb = await fetch(BACKEND_URL + '/api/ads/banimentos/status', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      const ligadoB = rb.agendado;
+      box.innerHTML += '<div style="margin-top:8px;padding:12px 14px;background:' + (ligadoB ? '#fef2f2' : '#f9fafb') + ';border:1px solid ' + (ligadoB ? '#fecaca' : '#e5e7eb') + ';border-radius:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+        '<span style="font-size:13px;color:' + (ligadoB ? '#991b1b' : '#6b7280') + '">🚫 Detecção de banimentos (Shopee/ML) — ' + (ligadoB ? '<strong>LIGADO</strong>, 1x/dia 7h' : 'desligado') + (rb.banidosAtivos ? ' · ' + rb.banidosAtivos + ' banido(s) ativo(s)' : '') + '</span>' +
+        '<span style="display:flex;gap:6px">' +
+          '<button onclick="adsTestarBanimentos()" class="toolbar-btn" style="font-size:12px">🧪 Testar</button>' +
+          (ligadoB
+            ? '<button onclick="adsBanimentoToggle(false)" class="toolbar-btn" style="font-size:12px">Desligar</button>'
+            : '<button onclick="adsBanimentoToggle(true)" style="padding:8px 14px;border:none;background:#dc2626;color:white;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">Ligar</button>') +
+        '</span></div>';
+    } catch (e) { /* silencioso */ }
   }
   window.adsCarregarStatusAuto = adsCarregarStatusAuto;
+
+  async function adsTestarBanimentos() {
+    const cont = document.getElementById('adsConteudo');
+    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🚫 Varrendo lojas em busca de anúncios banidos (dry-run, não envia WhatsApp)…<br><span style="font-size:12px">Pode levar um minuto.</span></div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/banimentos/testar', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: true }),
+      }).then(x => x.json());
+      if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
+      const det = (r.resultado?.detalhe || []).filter(d => !d.erro);
+      let html = '<div style="padding:12px 14px;background:#fef2f2;border-radius:10px;font-size:13px;color:#991b1b;margin-bottom:12px">' +
+        '🚫 <strong>Teste de banimentos</strong> (dry-run) — ' + det.length + ' anúncio(s) banido(s) novo(s) seria(m) avisado(s).</div>';
+      if (!det.length) html += '<div style="padding:20px;text-align:center;color:#6b7280">Nenhum banimento novo detectado. ✅</div>';
+      else det.forEach(d => {
+        html += '<div style="margin-bottom:10px;padding:12px;background:white;border:1px solid #e5e7eb;border-radius:10px">' +
+          '<div style="font-weight:700;color:#1e2a47;font-size:13px;margin-bottom:4px">' + (d.mk === 'shopee' ? 'Shopee' : 'ML') + ' · loja ' + d.loja + ' · item ' + d.itemId + (d.nome ? ' · ' + escapeHtml(d.nome) : '') + '</div>' +
+          (d.motivo ? '<div style="font-size:11px;color:#b91c1c;margin-bottom:6px">Motivo: ' + escapeHtml(d.motivo) + '</div>' : '<div style="font-size:11px;color:#9ca3af;margin-bottom:6px">Sem motivo informado pela plataforma</div>') +
+          (d.mensagem ? '<div style="font-size:12px;color:#1e2a47;white-space:pre-wrap;line-height:1.5;background:#fef2f2;border-radius:8px;padding:10px">' + escapeHtml(d.mensagem) + '</div>' : '') + '</div>';
+      });
+      cont.innerHTML = html;
+    } catch (e) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>'; }
+  }
+  window.adsTestarBanimentos = adsTestarBanimentos;
+
+  async function adsBanimentoToggle(ligar) {
+    const acao = ligar ? 'agendar' : 'desativar';
+    if (ligar && !confirm('Ligar a detecção de banimentos?\n\nTodo dia às 7h, o sistema verifica anúncios banidos na Shopee e Mercado Livre e avisa o cliente automaticamente no WhatsApp.')) return;
+    if (!ligar && !confirm('Desligar a detecção de banimentos?')) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/banimentos/' + acao, {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: '{}',
+      }).then(x => x.json());
+      if (r.ok) { showToast(ligar ? '🚫 Detecção de banimentos ligada' : 'Detecção desligada'); adsAbrirCronLojas(); }
+      else showToast('⚠ ' + (r.erro || 'falha'), true);
+    } catch (e) { showToast('⚠ ' + e.message, true); }
+  }
+  window.adsBanimentoToggle = adsBanimentoToggle;
 
   async function adsAtivarAuto() {
     if (!confirm('Ligar o motor automático?\n\nEle vai rodar sozinho TODA segunda, quarta e sexta às 8h30, executar as ações nas lojas e enviar WhatsApp aos clientes.\n\nSó ative depois de validar que as recomendações estão corretas.')) return;
@@ -31994,7 +32046,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.117-automatico-unificado';
+  const _DIAG_VERSAO_PAINEL = 'v33k.118-deteccao-banimento';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
