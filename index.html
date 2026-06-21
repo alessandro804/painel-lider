@@ -5129,6 +5129,7 @@
     </div>
     <div class="form-group">
       <label class="form-label">Tipo de demanda</label>
+      <input type="text" class="form-input" id="demandaTipoBusca" placeholder="🔎 Buscar categoria..." oninput="filtrarTiposDemanda()" style="margin-bottom:6px;font-size:13px" autocomplete="off">
       <div style="display:flex;gap:8px;align-items:center">
         <select class="form-select" id="demandaTipo" onchange="sugerirFluxoPorTipo(); checkTipoOutro()" style="flex:1">
           <!-- preenchido via JS conforme o setor -->
@@ -30290,27 +30291,76 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const config = TIPOS_POR_SETOR[setor];
     if (!config) return;
     
-    // Tipos fixos do setor + customizados
-    let opcoes = config.tipos.map(t => `<option value="${t.v}">${t.l}</option>`).join('');
+    // Monta a lista mestra de opções (value/label) deste setor.
+    const opcoesArr = config.tipos.map(t => ({ value: t.v, label: t.l }));
     
+    // Customizados locais do setor (⭐)
     const custom = tiposCustomizados[setor] || [];
-    if (custom.length > 0) {
-      opcoes += custom.map(c => `<option value="custom:${escapeHtml(c)}">⭐ ${escapeHtml(c)}</option>`).join('');
+    custom.forEach(c => opcoesArr.push({ value: 'custom:' + c, label: '⭐ ' + c }));
+    
+    // Categorias criadas pela IA (🤖) — só no setor marketplaces (origem WhatsApp).
+    // Lê fresco do localStorage pra não depender de timing do boot.
+    if (setor === 'marketplaces') {
+      let catsIA = [];
+      try { catsIA = JSON.parse(localStorage.getItem('lider_categorias_ia_v1') || '[]'); } catch (_) {}
+      if (Array.isArray(catsIA)) {
+        catsIA.forEach(c => {
+          if (c && c.chave && !opcoesArr.some(o => o.value === c.chave)) {
+            opcoesArr.push({ value: c.chave, label: '🤖 ' + (c.rotulo || c.chave) });
+          }
+        });
+      }
     }
     
     // Sempre adiciona "outro"
-    opcoes += '<option value="outro">➕ Outro (digitar e salvar)</option>';
+    opcoesArr.push({ value: 'outro', label: '➕ Outro (digitar e salvar)' });
     
-    selTipo.innerHTML = opcoes;
+    // Guarda a lista mestra pra o filtro de busca poder re-renderizar
+    window._tiposDemandaOpcoes = opcoesArr;
     
-    // Se veio um tipo pré-selecionado, tenta selecionar
-    if (tipoSelecionado) {
-      const existe = [...selTipo.options].some(o => o.value === tipoSelecionado);
-      if (existe) selTipo.value = tipoSelecionado;
-    }
+    // limpa o campo de busca ao trocar de setor
+    const busca = document.getElementById('demandaTipoBusca');
+    if (busca) busca.value = '';
+    
+    _renderTiposDemanda(opcoesArr, tipoSelecionado);
     
     checkTipoOutro();
     sugerirFluxoPorTipo();
+  }
+  
+  // Renderiza as <option> do seletor de tipo a partir da lista (já filtrada ou não)
+  function _renderTiposDemanda(opcoesArr, tipoSelecionado) {
+    const selTipo = document.getElementById('demandaTipo');
+    if (!selTipo) return;
+    const valorAtual = tipoSelecionado || selTipo.value;
+    selTipo.innerHTML = opcoesArr
+      .map(o => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`)
+      .join('');
+    // tenta preservar/selecionar o valor
+    if (valorAtual && [...selTipo.options].some(o => o.value === valorAtual)) {
+      selTipo.value = valorAtual;
+    }
+  }
+  
+  // Filtra as categorias do seletor conforme o texto digitado na busca.
+  // Busca em TODAS as categorias (fixas + customizadas + criadas pela IA).
+  function filtrarTiposDemanda() {
+    const termo = (document.getElementById('demandaTipoBusca')?.value || '')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .trim();
+    const todas = window._tiposDemandaOpcoes || [];
+    if (!termo) { _renderTiposDemanda(todas); return; }
+    const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    let filtradas = todas.filter(o =>
+      o.value === 'outro' || norm(o.label).includes(termo) || norm(o.value).includes(termo)
+    );
+    // garante que "outro" sempre exista como saída
+    if (!filtradas.some(o => o.value === 'outro')) {
+      filtradas.push({ value: 'outro', label: '➕ Outro (digitar e salvar)' });
+    }
+    _renderTiposDemanda(filtradas);
+    checkTipoOutro();
   }
   
   // Descobre a qual setor um tipo pertence
@@ -43617,6 +43667,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       if (cloudData.appData.tipos_custom) {
         tiposCustomizados = cloudData.appData.tipos_custom;
         localStorage.setItem('lider_tipos_custom_v1', JSON.stringify(tiposCustomizados));
+      }
+      // Categorias criadas automaticamente pela IA (origem WhatsApp) — chave separada
+      if (Array.isArray(cloudData.appData.categorias_ia)) {
+        localStorage.setItem('lider_categorias_ia_v1', JSON.stringify(cloudData.appData.categorias_ia));
       }
       // Configuração do WhatsApp
       if (cloudData.appData.wa_config) {
