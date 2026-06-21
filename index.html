@@ -6479,6 +6479,7 @@
       <button class="op-new-btn" onclick="abrirPromocoesML()" style="background:#fff159;color:#2d3277;margin-right:8px">📦 Promoções Mercado Livre</button>
       <button class="op-new-btn" onclick="abrirFlashSaleShopee()" style="background:#dc2626;margin-right:8px">⚡ Flash Sale Shopee</button>
       <button class="op-new-btn" onclick="configSyncDescontosPromo()" style="background:#0891b2;margin-right:8px" title="Atualiza os descontos das promoções no sistema (lendo as campanhas ativas)">🔄 Atualizar descontos</button>
+      <button class="op-new-btn" onclick="abrirPedidosAtrasados()" style="background:#b91c1c;margin-right:8px" title="Acompanhe os pedidos com envio atrasado (Shopee + ML) e dispare o aviso aos clientes">⏰ Pedidos atrasados</button>
       <button class="op-new-btn" onclick="abrirNovaPromocao()">+ Nova Promoção</button>
     </div>
     
@@ -6486,6 +6487,8 @@
     <div id="promoShopeePanel" style="display:none"></div>
     <div id="promoMLPanel" style="display:none"></div>
     <div id="flashSalePanel" style="display:none"></div>
+    <!-- Painel de Pedidos Atrasados — escondido até abrir -->
+    <div id="pedidosAtrasadosPanel" style="display:none"></div>
     
     <div class="prod-resumo" id="promoResumo"></div>
     <div id="promoLista"></div>
@@ -28977,6 +28980,206 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
   }
   window.configSyncDescontosPromo = configSyncDescontosPromo;
+
+  // Liga/roda o aviso diário de pedidos atrasados (Shopee + ML).
+  async function configAvisoPedidosAtrasados() {
+    try {
+      const st = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/status', {
+        headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json()).catch(() => ({}));
+      const ligado = st && st.agendado;
+      const ultima = st && st.tarefa && st.tarefa.ultima_exec_em
+        ? new Date(st.tarefa.ultima_exec_em).toLocaleString('pt-BR') : 'ainda não rodou';
+
+      const msg = ligado
+        ? `⏰ O aviso diário de pedidos atrasados está LIGADO (roda 8h30, última: ${ultima}).\n\nO que deseja?\n\n• OK = Ver prévia AGORA (quem seria avisado, sem enviar)\n• Cancelar = não fazer nada`
+        : `⏰ O aviso diário de pedidos atrasados está DESLIGADO.\n\nTodo dia às 8h30 ele verifica pedidos (Shopee + ML) com prazo de envio vencido e avisa cada cliente, listando ID do pedido, produto, quando vendeu e o prazo que venceu.\n\n• OK = LIGAR a automação diária\n• Cancelar = não fazer nada`;
+
+      if (!confirm(msg)) return;
+
+      if (!ligado) {
+        const r = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/ativar-diario', {
+          method: 'POST', headers: { 'x-api-token': getApiToken() }
+        }).then(x => x.json());
+        if (!r.ok) { showToast('⚠ ' + (r.erro || 'falha ao ativar'), true); return; }
+        showToast('✓ Aviso diário de pedidos atrasados LIGADO (roda 8h30)');
+        return;
+      }
+
+      // já estava ligado → mostra a prévia (dry-run, não envia)
+      showToast('🔎 Buscando pedidos atrasados (prévia)…');
+      const prev = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/rodar-agora?dryRun=1', {
+        method: 'POST', headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+      const r = prev && prev.resultado;
+      if (!prev.ok || !r) { showToast('⚠ ' + (prev.erro || 'falha na prévia'), true); return; }
+      if (!r.clientes) { alert('✅ Nenhum pedido atrasado no momento.\n\nLojas verificadas com atraso: ' + (r.lojasComAtraso || 0)); return; }
+      const resumo = (r.mensagens || []).map(m => '• ' + m.cliente).join('\n');
+      const semVinc = (r.semVinculo && r.semVinculo.length)
+        ? '\n\n⚠ ' + r.semVinculo.length + ' loja(s) com atraso sem cliente vinculado (não serão avisadas).' : '';
+      if (confirm(`Prévia: ${r.clientes} cliente(s) seriam avisados, ${r.totalPedidos} pedido(s) atrasado(s).\n\n${resumo}${semVinc}\n\n• OK = ENVIAR agora\n• Cancelar = só prévia`)) {
+        const rr = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/rodar-agora', {
+          method: 'POST', headers: { 'x-api-token': getApiToken() }
+        }).then(x => x.json());
+        if (rr.ok) showToast('📨 Avisos de atraso enfileirados — saem pelo WhatsApp em alguns minutos.');
+        else showToast('⚠ ' + (rr.erro || 'falha ao enviar'), true);
+      }
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
+  }
+  window.configAvisoPedidosAtrasados = configAvisoPedidosAtrasados;
+
+  // ===== Tela de Pedidos Atrasados (acompanhamento + disparo manual) =====
+  function _atrasoQuandoVendeu(epochSeg) {
+    if (!epochSeg) return 'data desconhecida';
+    const dias = Math.floor((Date.now() / 1000 - epochSeg) / 86400);
+    if (dias <= 0) return 'hoje';
+    if (dias === 1) return 'ontem';
+    if (dias === 2) return 'anteontem';
+    if (dias <= 7) return 'há ' + dias + ' dias';
+    if (dias <= 14) return 'há cerca de 1 semana';
+    return 'há mais de 2 semanas';
+  }
+  function _atrasoDiasVencido(shipBy) {
+    if (!shipBy) return 0;
+    return Math.max(0, Math.floor((Date.now() / 1000 - shipBy) / 86400));
+  }
+  function _atrasoDataCurta(epochSeg) {
+    if (!epochSeg) return '—';
+    const d = new Date(epochSeg * 1000);
+    return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
+  }
+
+  async function abrirPedidosAtrasados() {
+    const painel = document.getElementById('pedidosAtrasadosPanel');
+    if (!painel) return;
+    // esconde os outros painéis live da tela de promoções
+    ['promoShopeePanel', 'promoMLPanel', 'flashSalePanel'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    painel.style.display = 'block';
+    painel.innerHTML = `<div style="padding:30px;text-align:center;color:#6b7280">⏳ Buscando pedidos atrasados nas lojas (Shopee + ML)… isso pode levar alguns segundos.</div>`;
+
+    // status da automação diária (pra mostrar no cabeçalho)
+    let ligado = false;
+    try {
+      const st = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/status', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      ligado = st && st.agendado;
+    } catch (_) {}
+
+    let data;
+    try {
+      data = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/listar', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+    } catch (e) {
+      painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro ao carregar: ${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    if (!data || !data.ok) {
+      painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml((data && data.erro) || 'falha')}</div>`;
+      return;
+    }
+    window._pedidosAtrasadosCache = data;
+    renderPedidosAtrasados();
+  }
+  window.abrirPedidosAtrasados = abrirPedidosAtrasados;
+
+  function renderPedidosAtrasados() {
+    const painel = document.getElementById('pedidosAtrasadosPanel');
+    const data = window._pedidosAtrasadosCache;
+    if (!painel || !data) return;
+    const grupos = data.grupos || [];
+
+    let ligadoBadge = `<button onclick="configAvisoPedidosAtrasados().then(()=>abrirPedidosAtrasados())" style="background:#1f2937;color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">⚙️ Automação diária (8h30)</button>`;
+
+    const cabecalho = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#b91c1c,#7f1d1d);color:#fff;border-radius:12px 12px 0 0">
+        <div>
+          <div style="font-size:16px;font-weight:700">⏰ Pedidos com envio atrasado</div>
+          <div style="font-size:12px;opacity:0.9;margin-top:2px">${data.totalPedidos || 0} pedido(s) em ${grupos.length} loja(s) · prazo de envio já vencido</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button onclick="abrirPedidosAtrasados()" style="background:rgba(255,255,255,0.18);color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px">🔄 Atualizar</button>
+          ${ligadoBadge}
+          <button onclick="document.getElementById('pedidosAtrasadosPanel').style.display='none'" style="background:rgba(255,255,255,0.18);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+        </div>
+      </div>`;
+
+    if (grupos.length === 0) {
+      painel.innerHTML = cabecalho + `<div style="padding:40px;text-align:center;color:#15803d;background:#f0fdf4;border-radius:0 0 12px 12px;border:1px solid #bbf7d0">✅ Nenhum pedido atrasado no momento. Todas as lojas em dia!</div>`;
+      return;
+    }
+
+    const corpo = grupos.map((g, gi) => {
+      const mkBadge = g.marketplace === 'shopee'
+        ? '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600">🟠 Shopee</span>'
+        : '<span style="background:#fef9c3;color:#713f12;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600">📦 Mercado Livre</span>';
+      const clienteTxt = g.cliente
+        ? `👤 ${escapeHtml(g.cliente)}${g.temContato ? '' : ' <span style="color:#b91c1c">(sem telefone cadastrado)</span>'}`
+        : '<span style="color:#b91c1c">⚠ loja sem cliente vinculado</span>';
+
+      const btnAvisar = g.temContato
+        ? `<button onclick="avisarLojaAtrasados('${g.lojaId}', this)" style="background:#16a34a;color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">📨 Avisar cliente (${g.pedidos.length})</button>`
+        : `<button disabled title="Vincule um cliente com telefone a esta loja" style="background:#e5e7eb;color:#9ca3af;border:none;padding:8px 14px;border-radius:8px;font-size:13px;white-space:nowrap;cursor:not-allowed">📨 Sem contato</button>`;
+
+      const linhasPedidos = g.pedidos.map(p => {
+        const diasVenc = _atrasoDiasVencido(p.shipBy);
+        const prod0 = (p.produtos && p.produtos[0]) || { nome: '(produto)', foto: '' };
+        const foto = prod0.foto
+          ? `<img src="${escapeHtml(prod0.foto)}" style="width:46px;height:46px;border-radius:8px;object-fit:cover;border:1px solid #e5e7eb" onerror="this.style.display='none'">`
+          : `<div style="width:46px;height:46px;border-radius:8px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;font-size:18px">📦</div>`;
+        const extra = (p.produtos && p.produtos.length > 1) ? ` <span style="color:#6b7280;font-size:11px">+${p.produtos.length - 1} item(ns)</span>` : '';
+        return `
+          <div style="display:flex;gap:10px;align-items:center;padding:8px 10px;border-bottom:1px solid #f3f4f6">
+            ${foto}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(prod0.nome || '(produto)')}${extra}</div>
+              <div style="font-size:11px;color:#6b7280;margin-top:2px">Pedido <code style="font-size:11px">${escapeHtml(p.id)}</code> · vendido ${_atrasoQuandoVendeu(p.createTime)} · qtd ${p.qtd || 1}</div>
+            </div>
+            <div style="text-align:right;white-space:nowrap">
+              <div style="font-size:12px;font-weight:700;color:#b91c1c">venceu ${_atrasoDataCurta(p.shipBy)}</div>
+              <div style="font-size:10px;color:#9ca3af">${diasVenc > 0 ? diasVenc + 'd atrasado' : 'vence hoje'}</div>
+            </div>
+          </div>`;
+      }).join('');
+
+      return `
+        <div style="border:1px solid #e5e7eb;border-top:none;background:#fff">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:12px 14px;background:#fafafa;border-bottom:1px solid #f3f4f6">
+            <div>
+              <div style="font-size:14px;font-weight:700;color:#111827">🏪 ${escapeHtml(g.lojaNome)} ${mkBadge}</div>
+              <div style="font-size:12px;color:#6b7280;margin-top:2px">${clienteTxt} · ${g.pedidos.length} pedido(s) atrasado(s)</div>
+            </div>
+            ${btnAvisar}
+          </div>
+          <div>${linhasPedidos}</div>
+        </div>`;
+    }).join('');
+
+    painel.innerHTML = cabecalho + corpo + `<div style="height:12px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px"></div>`;
+  }
+  window.renderPedidosAtrasados = renderPedidosAtrasados;
+
+  async function avisarLojaAtrasados(lojaId, btn) {
+    if (!confirm('Disparar o aviso de pedidos atrasados para o cliente desta loja agora?')) return;
+    const txtOrig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Enviando…'; }
+    try {
+      const r = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/avisar-loja', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lojaId })
+      }).then(x => x.json());
+      if (r.ok) {
+        showToast('📨 Aviso enfileirado — sai pelo WhatsApp em alguns minutos.');
+        if (btn) { btn.textContent = '✓ Avisado'; btn.style.background = '#15803d'; }
+      } else {
+        showToast('⚠ ' + (r.erro || r.adiado === 'domingo' ? 'Não envia aos domingos' : 'falha ao enviar'), true);
+        if (btn) { btn.disabled = false; btn.textContent = txtOrig; }
+      }
+    } catch (e) {
+      showToast('⚠ Erro: ' + e.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = txtOrig; }
+    }
+  }
+  window.avisarLojaAtrasados = avisarLojaAtrasados;
 
   function renderPromocoes() {    // CHUNK 3.5-FIX: popula stats no topo
     renderPromocoesStats();
