@@ -6481,6 +6481,7 @@
       <button class="op-new-btn" onclick="configSyncDescontosPromo()" style="background:#0891b2;margin-right:8px" title="Atualiza os descontos das promoções no sistema (lendo as campanhas ativas)">🔄 Atualizar descontos</button>
       <button class="op-new-btn" onclick="abrirPedidosAtrasados()" style="background:#b91c1c;margin-right:8px" title="Acompanhe os pedidos com envio atrasado (Shopee + ML) e dispare o aviso aos clientes">⏰ Pedidos atrasados</button>
       <button class="op-new-btn" onclick="abrirAuditoriaAnuncios()" style="background:#7c3aed;margin-right:8px" title="A IA revisa título × descrição × variações dos anúncios e sugere correções">🔍 Auditar anúncios (IA)</button>
+      <button class="op-new-btn" onclick="abrirDisputas()" style="background:#ea580c;margin-right:8px" title="Monitore devoluções/reembolsos da Shopee, a IA recomenda contestar ou aceitar">⚖️ Disputas / Devoluções</button>
       <button class="op-new-btn" onclick="abrirNovaPromocao()">+ Nova Promoção</button>
     </div>
     
@@ -6492,6 +6493,8 @@
     <div id="pedidosAtrasadosPanel" style="display:none"></div>
     <!-- Painel de Auditoria de Anúncios (IA) — escondido até abrir -->
     <div id="auditoriaPanel" style="display:none"></div>
+    <!-- Painel de Disputas / Devoluções — escondido até abrir -->
+    <div id="disputasPanel" style="display:none"></div>
     
     <div class="prod-resumo" id="promoResumo"></div>
     <div id="promoLista"></div>
@@ -29559,6 +29562,227 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
   }
   window.ignorarAuditoria = ignorarAuditoria;
+
+  // ===== Disputas / Devoluções (Shopee) =====
+  async function abrirDisputas() {
+    const painel = document.getElementById('disputasPanel');
+    if (!painel) return;
+    ['promoShopeePanel', 'promoMLPanel', 'flashSalePanel', 'pedidosAtrasadosPanel', 'auditoriaPanel'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    painel.style.display = 'block';
+    painel.innerHTML = `<div style="padding:24px;text-align:center;color:#6b7280">⏳ Carregando casos…</div>`;
+    await carregarCasosDisputas();
+  }
+  window.abrirDisputas = abrirDisputas;
+
+  async function carregarCasosDisputas() {
+    const painel = document.getElementById('disputasPanel');
+    if (!painel) return;
+    let data;
+    try {
+      data = await fetch(BACKEND_URL + '/api/tarefas/disputas/casos?status=pendente', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+    } catch (e) { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml(e.message)}</div>`; return; }
+    window._disputasCache = data;
+    renderDisputas();
+  }
+  window.carregarCasosDisputas = carregarCasosDisputas;
+
+  function iniciarDisputas() { abrirEscopoDisputas(); }
+  window.iniciarDisputas = iniciarDisputas;
+
+  function abrirEscopoDisputas() {
+    const ex = document.getElementById('dispEscopoModal'); if (ex) ex.remove();
+    const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp.filter(l => l.marketplace === 'shopee') : [];
+    const opcoes = lojas.map(l => {
+      const idb = l.idBanco || l.id;
+      return `<button onclick="iniciarDisputasEscopo('${l.id}')" style="display:block;width:100%;text-align:left;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;cursor:pointer;margin-bottom:6px;font-size:13px">🟠 ${escapeHtml(l.nome || ('loja ' + idb))}</button>`;
+    }).join('');
+    const modal = document.createElement('div');
+    modal.id = 'dispEscopoModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100004;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:#fff;border-radius:16px;width:min(460px,95vw);max-height:85vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:14px 18px;background:linear-gradient(135deg,#ea580c,#9a3412);color:#fff;display:flex;justify-content:space-between;align-items:center">
+        <h3 style="margin:0;font-size:15px">⚖️ Verificar devoluções de quais lojas?</h3>
+        <button onclick="document.getElementById('dispEscopoModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:16px 18px;overflow:auto">
+        <button onclick="iniciarDisputasEscopo(null)" style="display:block;width:100%;text-align:left;padding:12px;border:2px solid #ea580c;border-radius:8px;background:#fff7ed;color:#9a3412;cursor:pointer;margin-bottom:12px;font-size:14px;font-weight:700">🌐 Todas as lojas Shopee</button>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:8px;font-weight:600">OU UMA LOJA:</div>
+        ${opcoes || '<div style="font-size:12px;color:#9ca3af">Nenhuma loja Shopee conectada.</div>'}
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+  window.abrirEscopoDisputas = abrirEscopoDisputas;
+
+  async function iniciarDisputasEscopo(lojaId) {
+    const modal = document.getElementById('dispEscopoModal'); if (modal) modal.remove();
+    const painel = document.getElementById('disputasPanel');
+    if (!painel) return;
+    if (!confirm('A IA vai verificar as devoluções/reembolsos e recomendar ações. Casos óbvios de baixo valor podem ser aceitos automaticamente. Iniciar?')) return;
+    _renderDisputasProgresso({ lojas_prontas: 0, total_lojas: 0, loja_atual: null, total_casos: 0, auto_resolvidos: 0 });
+    let execId;
+    try {
+      const ini = await fetch(BACKEND_URL + '/api/tarefas/disputas/iniciar', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(lojaId ? { lojaId } : {})
+      }).then(x => x.json());
+      if (!ini.ok || !ini.execId) { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml((ini && ini.erro) || 'falha')}</div>`; return; }
+      execId = ini.execId;
+    } catch (e) { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml(e.message)}</div>`; return; }
+
+    if (window._dispPollTimer) clearInterval(window._dispPollTimer);
+    let tentativas = 0;
+    window._dispPollTimer = setInterval(async () => {
+      tentativas++;
+      if (tentativas > 600) { clearInterval(window._dispPollTimer); painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Demorou demais. Veja a fila mais tarde.</div>`; return; }
+      let p;
+      try { p = await fetch(BACKEND_URL + '/api/tarefas/disputas/progresso/' + execId, { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()); } catch (_) { return; }
+      if (!p || !p.ok || !p.exec) return;
+      const ex = p.exec;
+      if (ex.status === 'rodando') { _renderDisputasProgresso(ex); return; }
+      clearInterval(window._dispPollTimer);
+      if (ex.status === 'erro') { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml(ex.erro || 'falha')}</div>`; return; }
+      await carregarCasosDisputas();
+      showToast(`✅ Verificação concluída: ${ex.total_casos || 0} caso(s), ${ex.auto_resolvidos || 0} resolvido(s) automaticamente.`);
+    }, 2000);
+  }
+  window.iniciarDisputasEscopo = iniciarDisputasEscopo;
+
+  function _renderDisputasProgresso(ex) {
+    const painel = document.getElementById('disputasPanel');
+    if (!painel) return;
+    const total = ex.total_lojas || 0, prontas = ex.lojas_prontas || 0;
+    const pct = total > 0 ? Math.round((prontas / total) * 100) : 0;
+    const atual = ex.loja_atual ? `Verificando: <strong>${escapeHtml(ex.loja_atual)}</strong>` : 'Preparando…';
+    painel.innerHTML = `
+      <div style="padding:22px;border:1px solid #e5e7eb;border-radius:12px;background:#fff">
+        <div style="font-size:15px;font-weight:700;color:#111827;margin-bottom:4px">⚖️ Analisando devoluções…</div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:12px">${atual} ${total > 0 ? `· ${prontas}/${total} loja(s)` : ''} · ${ex.total_casos || 0} caso(s), ${ex.auto_resolvidos || 0} auto</div>
+        <div style="height:14px;background:#f3f4f6;border-radius:999px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#ea580c,#fb923c);transition:width .4s ease;border-radius:999px"></div>
+        </div>
+        <div style="text-align:right;font-size:11px;color:#9ca3af;margin-top:6px">${pct}%</div>
+      </div>`;
+  }
+
+  const _DISP_REC = {
+    contestar: { c: '#b91c1c', bg: '#fef2f2', l: '⚔️ Contestar' },
+    aceitar: { c: '#15803d', bg: '#f0fdf4', l: '✓ Aceitar' },
+    reembolso_parcial: { c: '#b45309', bg: '#fffbeb', l: '½ Reembolso parcial' },
+    revisar: { c: '#1d4ed8', bg: '#eff6ff', l: '👁️ Revisar' },
+  };
+
+  function renderDisputas() {
+    const painel = document.getElementById('disputasPanel');
+    const data = window._disputasCache;
+    if (!painel || !data) return;
+    const casos = data.casos || [];
+
+    const cab = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#ea580c,#9a3412);color:#fff;border-radius:12px 12px 0 0">
+        <div>
+          <div style="font-size:16px;font-weight:700">⚖️ Disputas / Devoluções</div>
+          <div style="font-size:12px;opacity:0.9;margin-top:2px">${casos.length} caso(s) na fila de revisão</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button onclick="iniciarDisputas()" style="background:rgba(255,255,255,0.18);color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">▶️ Verificar agora</button>
+          <button onclick="carregarCasosDisputas()" style="background:rgba(255,255,255,0.18);color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px">🔄 Atualizar</button>
+          <button onclick="document.getElementById('disputasPanel').style.display='none'" style="background:rgba(255,255,255,0.18);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+        </div>
+      </div>`;
+
+    if (casos.length === 0) {
+      painel.innerHTML = cab + `<div style="padding:36px;text-align:center;color:#6b7280;background:#fafafa;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
+        Nenhum caso pendente.<br><br>
+        <button onclick="iniciarDisputas()" style="background:#ea580c;color:#fff;border:none;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:600">▶️ Verificar devoluções agora</button>
+      </div>`;
+      return;
+    }
+
+    const corpo = casos.map(c => {
+      const rec = _DISP_REC[c.recomendacao] || _DISP_REC.revisar;
+      const foto = c.produto_foto
+        ? `<img src="${escapeHtml(c.produto_foto)}" style="width:52px;height:52px;border-radius:8px;object-fit:cover;border:1px solid #e5e7eb" onerror="this.style.display='none'">`
+        : `<div style="width:52px;height:52px;border-radius:8px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`;
+      const msgSug = c.mensagem_sugerida ? `
+        <details style="margin-top:8px">
+          <summary style="cursor:pointer;font-size:12px;color:#ea580c">ver mensagem de contestação sugerida</summary>
+          <div style="font-size:12px;white-space:pre-wrap;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:8px;margin-top:6px">${escapeHtml(c.mensagem_sugerida)}</div>
+        </details>` : '';
+      // botões conforme a recomendação (contestar destacado quando for o caso)
+      const btnContestar = `<button onclick="acaoDisputa(${c.id},'contestar',this)" style="background:#b91c1c;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">⚔️ Contestar</button>`;
+      const btnAceitar = `<button onclick="acaoDisputa(${c.id},'aceitar',this)" style="background:#16a34a;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">✓ Aceitar</button>`;
+      const btnParcial = `<button onclick="acaoDisputaParcial(${c.id},this)" style="background:#d97706;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">½ Parcial</button>`;
+      const btnIgnorar = `<button onclick="ignorarDisputa(${c.id},this)" style="background:#f3f4f6;color:#6b7280;border:1px solid #d1d5db;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">Ignorar</button>`;
+
+      return `
+        <div id="disp-caso-${c.id}" style="border:1px solid #e5e7eb;border-top:none;background:#fff;padding:14px 16px">
+          <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+            ${foto}
+            <div style="flex:1;min-width:240px">
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <span style="background:${rec.bg};color:${rec.c};padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">${rec.l}</span>
+                <span style="font-size:11px;color:#6b7280">confiança: ${escapeHtml(c.confianca || '-')}</span>
+                <span style="font-size:11px;color:#9a3412;background:#fff7ed;padding:2px 6px;border-radius:5px">🏪 ${escapeHtml(c.loja_nome || '')}</span>
+              </div>
+              <div style="font-size:14px;font-weight:700;color:#111827;margin-top:5px">${escapeHtml(c.produto_nome || '(produto)')}</div>
+              <div style="font-size:12px;color:#374151;margin-top:3px">Pedido <code>${escapeHtml(c.order_id || '')}</code> · ${escapeHtml(c.moeda || '')} ${Number(c.valor || 0).toFixed(2)} · status: ${escapeHtml(c.status_externo || '')}</div>
+              <div style="font-size:12px;color:#6b7280;margin-top:3px"><strong>Motivo:</strong> ${escapeHtml(c.motivo || '-')}</div>
+              <div style="font-size:12px;color:#374151;margin-top:6px;background:#f9fafb;border-left:3px solid ${rec.c};padding:6px 10px;border-radius:4px"><strong>IA:</strong> ${escapeHtml(c.justificativa || '-')}</div>
+              ${msgSug}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;min-width:150px">
+              ${btnContestar}${btnAceitar}${btnParcial}${btnIgnorar}
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    painel.innerHTML = cab + corpo + `<div style="height:12px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px"></div>`;
+  }
+  window.renderDisputas = renderDisputas;
+
+  async function acaoDisputa(id, acao, btn, extra) {
+    const rotulo = { contestar: 'CONTESTAR (abrir disputa)', aceitar: 'ACEITAR o reembolso/devolução', reembolso_parcial: 'oferecer REEMBOLSO PARCIAL' }[acao] || acao;
+    if (!confirm('Confirmar: ' + rotulo + '? Esta ação é enviada à Shopee.')) return;
+    const card = document.getElementById('disp-caso-' + id);
+    if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
+    try {
+      const body = Object.assign({ acao }, extra || {});
+      const r = await fetch(BACKEND_URL + '/api/tarefas/disputas/casos/' + id + '/acao', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      }).then(x => x.json());
+      if (r.ok) {
+        showToast('✓ Ação enviada à Shopee');
+        if (card) { card.style.transition = 'opacity .3s'; card.style.opacity = '0.4'; card.querySelectorAll('button').forEach(b => b.disabled = true); }
+      } else {
+        showToast('⚠ ' + ((r.resultado && r.resultado.erro) || r.erro || 'falha'), true);
+        if (btn) { btn.disabled = false; btn.textContent = '↺'; }
+      }
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); if (btn) { btn.disabled = false; } }
+  }
+  window.acaoDisputa = acaoDisputa;
+
+  function acaoDisputaParcial(id, btn) {
+    const valor = prompt('Valor do reembolso parcial a oferecer (R$):');
+    if (valor == null) return;
+    const v = parseFloat(String(valor).replace(',', '.'));
+    if (!(v > 0)) { showToast('Valor inválido', true); return; }
+    acaoDisputa(id, 'reembolso_parcial', btn, { valor: v });
+  }
+  window.acaoDisputaParcial = acaoDisputaParcial;
+
+  async function ignorarDisputa(id, btn) {
+    const card = document.getElementById('disp-caso-' + id);
+    try {
+      const r = await fetch(BACKEND_URL + '/api/tarefas/disputas/casos/' + id + '/ignorar', { method: 'POST', headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      if (r.ok && card) { card.style.transition = 'opacity .3s'; card.style.opacity = '0.3'; card.querySelectorAll('button').forEach(b => b.disabled = true); }
+      else if (!r.ok) showToast('⚠ ' + (r.erro || 'falha'), true);
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
+  }
+  window.ignorarDisputa = ignorarDisputa;
 
   function renderPromocoes() {    // CHUNK 3.5-FIX: popula stats no topo
     renderPromocoesStats();
