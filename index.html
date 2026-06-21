@@ -6480,6 +6480,7 @@
       <button class="op-new-btn" onclick="abrirFlashSaleShopee()" style="background:#dc2626;margin-right:8px">⚡ Flash Sale Shopee</button>
       <button class="op-new-btn" onclick="configSyncDescontosPromo()" style="background:#0891b2;margin-right:8px" title="Atualiza os descontos das promoções no sistema (lendo as campanhas ativas)">🔄 Atualizar descontos</button>
       <button class="op-new-btn" onclick="abrirPedidosAtrasados()" style="background:#b91c1c;margin-right:8px" title="Acompanhe os pedidos com envio atrasado (Shopee + ML) e dispare o aviso aos clientes">⏰ Pedidos atrasados</button>
+      <button class="op-new-btn" onclick="abrirAuditoriaAnuncios()" style="background:#7c3aed;margin-right:8px" title="A IA revisa título × descrição × variações dos anúncios e sugere correções">🔍 Auditar anúncios (IA)</button>
       <button class="op-new-btn" onclick="abrirNovaPromocao()">+ Nova Promoção</button>
     </div>
     
@@ -6489,6 +6490,8 @@
     <div id="flashSalePanel" style="display:none"></div>
     <!-- Painel de Pedidos Atrasados — escondido até abrir -->
     <div id="pedidosAtrasadosPanel" style="display:none"></div>
+    <!-- Painel de Auditoria de Anúncios (IA) — escondido até abrir -->
+    <div id="auditoriaPanel" style="display:none"></div>
     
     <div class="prod-resumo" id="promoResumo"></div>
     <div id="promoLista"></div>
@@ -29168,6 +29171,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const btnAvisar = g.temContato
         ? `<button onclick="avisarLojaAtrasados('${g.lojaId}', this)" style="background:#16a34a;color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">📨 Avisar cliente (${g.pedidos.length})</button>`
         : `<button disabled title="Vincule um cliente com telefone a esta loja" style="background:#e5e7eb;color:#9ca3af;border:none;padding:8px 14px;border-radius:8px;font-size:13px;white-space:nowrap;cursor:not-allowed">📨 Sem contato</button>`;
+      const btnVerMsg = `<button onclick="verMensagemAtraso('${g.lojaId}')" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap" title="Ver a mensagem que será enviada">👁️ Ver mensagem</button>`;
 
       const linhasPedidos = g.pedidos.map(p => {
         const diasVenc = _atrasoDiasVencido(p.shipBy);
@@ -29197,7 +29201,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               <div style="font-size:14px;font-weight:700;color:#111827">🏪 ${escapeHtml(g.lojaNome)} ${mkBadge}</div>
               <div style="font-size:12px;color:#6b7280;margin-top:2px">${clienteTxt} · ${g.pedidos.length} pedido(s) atrasado(s)</div>
             </div>
-            ${btnAvisar}
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${btnVerMsg}${btnAvisar}</div>
           </div>
           <div>${linhasPedidos}</div>
         </div>`;
@@ -29229,6 +29233,245 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     }
   }
   window.avisarLojaAtrasados = avisarLojaAtrasados;
+
+  // Monta a prévia EXATA da mensagem que o backend dispara (mesmo formato).
+  function _montarMsgAtraso(g) {
+    const nomeCliente = g.cliente || 'cliente';
+    const mkLabel = g.marketplace === 'shopee' ? 'Shopee' : 'Mercado Livre';
+    let corpo = `Olá, ${nomeCliente}! ⚠️ *Atenção: pedidos com envio em atraso*\n\n`;
+    corpo += `Identificamos pedidos cujo *prazo de envio já venceu*. Isso gera pontos de penalidade e afeta a *reputação da loja* — o que pode derrubar o alcance dos anúncios e as vendas. Recomendamos despachar o quanto antes:\n`;
+    corpo += `\n🏪 *${g.lojaNome}* (${mkLabel})\n`;
+    g.pedidos.forEach(p => {
+      const prods = p.produtos || [];
+      const nome0 = (prods[0] && prods[0].nome) || '(produto)';
+      const extra = prods.length > 1 ? ` +${prods.length - 1} item(ns)` : '';
+      corpo += `• Pedido *${p.id}* — ${nome0}${extra}\n   Vendido ${_atrasoQuandoVendeu(p.createTime)} · prazo de envio venceu em ${_atrasoDataCurta(p.shipBy)}\n`;
+    });
+    corpo += `\nQuanto antes despachar, menor o impacto na reputação. Qualquer dúvida, é só chamar. 🙏`;
+    return corpo;
+  }
+
+  function verMensagemAtraso(lojaId) {
+    const data = window._pedidosAtrasadosCache;
+    const g = data && (data.grupos || []).find(x => String(x.lojaId) === String(lojaId));
+    if (!g) return;
+    const texto = _montarMsgAtraso(g);
+    const obs = g.temContato
+      ? `<div style="font-size:11px;color:#6b7280;margin-top:8px">📱 Será enviada para: <strong>${escapeHtml(g.cliente || '')}</strong>. Se este cliente tiver mais de uma loja com atraso, o disparo agrupa todas numa mensagem só.</div>`
+      : `<div style="font-size:11px;color:#b91c1c;margin-top:8px">⚠ Esta loja não tem cliente/telefone vinculado — a mensagem não será enviada até vincular.</div>`;
+    const existente = document.getElementById('msgAtrasoModal');
+    if (existente) existente.remove();
+    const modal = document.createElement('div');
+    modal.id = 'msgAtrasoModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100003;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:#fff;border-radius:16px;width:min(520px,95vw);max-height:88vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:14px 18px;background:#1f2937;color:#fff;display:flex;justify-content:space-between;align-items:center">
+        <h3 style="margin:0;font-size:15px">👁️ Prévia da mensagem</h3>
+        <button onclick="document.getElementById('msgAtrasoModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:16px 18px;overflow:auto">
+        <div style="background:#dcf8c6;border-radius:10px;padding:12px 14px;font-size:13px;white-space:pre-wrap;line-height:1.5;color:#111827;border:1px solid #c5e8b0">${escapeHtml(texto)}</div>
+        ${obs}
+      </div>
+      <div style="padding:12px 18px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="navigator.clipboard && navigator.clipboard.writeText(${JSON.stringify(texto).replace(/"/g,'&quot;')}).then(()=>showToast('Copiado!'))" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">📋 Copiar</button>
+        ${g.temContato ? `<button onclick="document.getElementById('msgAtrasoModal').remove();avisarLojaAtrasados('${g.lojaId}')" style="background:#16a34a;color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">📨 Enviar agora</button>` : ''}
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+  window.verMensagemAtraso = verMensagemAtraso;
+
+  // ===== Auditoria de Anúncios (IA) — fila de revisão =====
+  async function abrirAuditoriaAnuncios() {
+    const painel = document.getElementById('auditoriaPanel');
+    if (!painel) return;
+    ['promoShopeePanel', 'promoMLPanel', 'flashSalePanel', 'pedidosAtrasadosPanel'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    painel.style.display = 'block';
+
+    // mostra primeiro a fila já existente (se houver), com botão de nova varredura
+    painel.innerHTML = `<div style="padding:24px;text-align:center;color:#6b7280">⏳ Carregando fila de revisão…</div>`;
+    await carregarFilaAuditoria();
+  }
+  window.abrirAuditoriaAnuncios = abrirAuditoriaAnuncios;
+
+  async function carregarFilaAuditoria() {
+    const painel = document.getElementById('auditoriaPanel');
+    if (!painel) return;
+    let data;
+    try {
+      data = await fetch(BACKEND_URL + '/api/tarefas/auditoria/itens?status=pendente', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+    } catch (e) {
+      painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    window._auditoriaCache = data;
+    renderAuditoria();
+  }
+  window.carregarFilaAuditoria = carregarFilaAuditoria;
+
+  async function iniciarAuditoria() {
+    const painel = document.getElementById('auditoriaPanel');
+    if (!painel) return;
+    if (!confirm('A IA vai revisar TODOS os anúncios cadastrados (título × descrição × variações). Isso pode levar alguns minutos. Iniciar agora?')) return;
+    _renderAuditoriaProgresso({ produtos_lidos: 0, total_produtos: 0, produto_atual: null, achados: 0 });
+    let execId;
+    try {
+      const ini = await fetch(BACKEND_URL + '/api/tarefas/auditoria/iniciar', { method: 'POST', headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      if (!ini.ok || !ini.execId) { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro ao iniciar: ${escapeHtml((ini && ini.erro) || 'falha')}</div>`; return; }
+      execId = ini.execId;
+    } catch (e) { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml(e.message)}</div>`; return; }
+
+    if (window._auditPollTimer) clearInterval(window._auditPollTimer);
+    let tentativas = 0;
+    window._auditPollTimer = setInterval(async () => {
+      tentativas++;
+      if (tentativas > 600) { clearInterval(window._auditPollTimer); painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">A auditoria demorou demais. Veja a fila mais tarde.</div>`; return; }
+      let p;
+      try { p = await fetch(BACKEND_URL + '/api/tarefas/auditoria/progresso/' + execId, { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()); } catch (_) { return; }
+      if (!p || !p.ok || !p.exec) return;
+      const ex = p.exec;
+      if (ex.status === 'rodando') { _renderAuditoriaProgresso(ex); return; }
+      clearInterval(window._auditPollTimer);
+      if (ex.status === 'erro') { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro na auditoria: ${escapeHtml(ex.erro || 'falha')}</div>`; return; }
+      await carregarFilaAuditoria();
+      showToast('✅ Auditoria concluída: ' + (ex.achados || 0) + ' anúncio(s) com sugestão de correção.');
+    }, 2000);
+  }
+  window.iniciarAuditoria = iniciarAuditoria;
+
+  function _renderAuditoriaProgresso(ex) {
+    const painel = document.getElementById('auditoriaPanel');
+    if (!painel) return;
+    const total = ex.total_produtos || 0;
+    const lidos = ex.produtos_lidos || 0;
+    const pct = total > 0 ? Math.round((lidos / total) * 100) : 0;
+    const atual = ex.produto_atual ? `Analisando: <strong>${escapeHtml(ex.produto_atual.slice(0, 50))}</strong>` : 'Carregando produtos…';
+    painel.innerHTML = `
+      <div style="padding:22px;border:1px solid #e5e7eb;border-radius:12px;background:#fff">
+        <div style="font-size:15px;font-weight:700;color:#111827;margin-bottom:4px">🔍 IA auditando os anúncios…</div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:12px">${atual} ${total > 0 ? `· ${lidos}/${total}` : ''} · ${ex.achados || 0} com problema até agora</div>
+        <div style="height:14px;background:#f3f4f6;border-radius:999px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#7c3aed,#a855f7);transition:width .4s ease;border-radius:999px"></div>
+        </div>
+        <div style="text-align:right;font-size:11px;color:#9ca3af;margin-top:6px">${pct}%</div>
+      </div>`;
+  }
+
+  const _AUD_SEV = { alta: { c: '#b91c1c', bg: '#fef2f2', l: '🔴 Alta' }, media: { c: '#b45309', bg: '#fffbeb', l: '🟡 Média' }, baixa: { c: '#1d4ed8', bg: '#eff6ff', l: '🔵 Baixa' } };
+
+  function renderAuditoria() {
+    const painel = document.getElementById('auditoriaPanel');
+    const data = window._auditoriaCache;
+    if (!painel || !data) return;
+    const itens = (data.itens || []);
+
+    const cabecalho = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;border-radius:12px 12px 0 0">
+        <div>
+          <div style="font-size:16px;font-weight:700">🔍 Auditoria de anúncios (IA)</div>
+          <div style="font-size:12px;opacity:0.9;margin-top:2px">${itens.length} anúncio(s) na fila de revisão</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button onclick="iniciarAuditoria()" style="background:rgba(255,255,255,0.18);color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">▶️ Nova varredura</button>
+          <button onclick="carregarFilaAuditoria()" style="background:rgba(255,255,255,0.18);color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px">🔄 Atualizar</button>
+          <button onclick="document.getElementById('auditoriaPanel').style.display='none'" style="background:rgba(255,255,255,0.18);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+        </div>
+      </div>`;
+
+    if (itens.length === 0) {
+      painel.innerHTML = cabecalho + `<div style="padding:36px;text-align:center;color:#6b7280;background:#fafafa;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
+        Nenhum item pendente na fila.<br><br>
+        <button onclick="iniciarAuditoria()" style="background:#7c3aed;color:#fff;border:none;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:600">▶️ Rodar auditoria agora</button>
+      </div>`;
+      return;
+    }
+
+    const corpo = itens.map(it => {
+      const sev = _AUD_SEV[it.severidade] || _AUD_SEV.media;
+      const probs = (it.problemas || []).map(pr => `<li style="margin-bottom:3px"><strong>${escapeHtml(pr.tipo || '')}</strong>: ${escapeHtml(pr.descricao || '')}</li>`).join('');
+      const tituloBloco = it.titulo_sugerido ? `
+        <div style="margin-top:10px">
+          <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:3px">TÍTULO</div>
+          <div style="font-size:12px;color:#991b1b;text-decoration:line-through;margin-bottom:2px">${escapeHtml(it.titulo_atual || '')}</div>
+          <div style="font-size:13px;color:#065f46;font-weight:600">→ ${escapeHtml(it.titulo_sugerido)}</div>
+        </div>` : '';
+      const descBloco = it.descricao_sugerida ? `
+        <div style="margin-top:10px">
+          <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:3px">DESCRIÇÃO (sugestão)</div>
+          <details>
+            <summary style="cursor:pointer;font-size:12px;color:#7c3aed">ver descrição corrigida</summary>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+              <div style="flex:1;min-width:220px">
+                <div style="font-size:10px;color:#991b1b;font-weight:700;margin-bottom:2px">ANTES</div>
+                <div style="font-size:11px;white-space:pre-wrap;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px;max-height:180px;overflow:auto">${escapeHtml(it.descricao_atual || '')}</div>
+              </div>
+              <div style="flex:1;min-width:220px">
+                <div style="font-size:10px;color:#065f46;font-weight:700;margin-bottom:2px">DEPOIS</div>
+                <div style="font-size:11px;white-space:pre-wrap;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px;max-height:180px;overflow:auto">${escapeHtml(it.descricao_sugerida)}</div>
+              </div>
+            </div>
+          </details>
+        </div>` : '';
+
+      return `
+        <div id="aud-item-${it.id}" style="border:1px solid #e5e7eb;border-top:none;background:#fff;padding:14px 16px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+            <div style="flex:1;min-width:240px">
+              <span style="background:${sev.bg};color:${sev.c};padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">${sev.l}</span>
+              <span style="font-size:14px;font-weight:700;color:#111827;margin-left:6px">${escapeHtml(it.produto_nome || '(produto)')}</span>
+              <ul style="margin:8px 0 0;padding-left:18px;font-size:12px;color:#374151">${probs}</ul>
+              ${tituloBloco}
+              ${descBloco}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;min-width:160px">
+              <button onclick="aplicarAuditoria(${it.id}, false, this)" style="background:#16a34a;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">✓ Aplicar (ERP)</button>
+              <button onclick="aplicarAuditoria(${it.id}, true, this)" style="background:#0891b2;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px" title="Aplica no ERP e atualiza os anúncios nas lojas">✓ Aplicar + propagar</button>
+              <button onclick="ignorarAuditoria(${it.id}, this)" style="background:#f3f4f6;color:#6b7280;border:1px solid #d1d5db;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">Ignorar</button>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    painel.innerHTML = cabecalho + corpo + `<div style="height:12px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px"></div>`;
+  }
+  window.renderAuditoria = renderAuditoria;
+
+  async function aplicarAuditoria(id, propagar, btn) {
+    const msg = propagar
+      ? 'Aplicar a correção no ERP E atualizar os anúncios nas lojas vinculadas?'
+      : 'Aplicar a correção no produto do ERP? (não altera o anúncio na loja até você exportar/atualizar)';
+    if (!confirm(msg)) return;
+    const card = document.getElementById('aud-item-' + id);
+    if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
+    try {
+      const url = BACKEND_URL + '/api/tarefas/auditoria/itens/' + id + '/aplicar' + (propagar ? '?propagar=1' : '');
+      const r = await fetch(url, { method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json());
+      if (!r.ok) { showToast('⚠ ' + (r.erro || 'falha'), true); if (btn) { btn.disabled = false; btn.textContent = '✓ Aplicar'; } return; }
+      let extra = '';
+      if (propagar && Array.isArray(r.propagacao)) {
+        const ok = r.propagacao.filter(x => x.ok).length;
+        extra = ` · ${ok}/${r.propagacao.length} anúncio(s) atualizados`;
+      }
+      showToast('✓ Correção aplicada' + extra);
+      if (card) { card.style.transition = 'opacity .3s'; card.style.opacity = '0.4'; card.querySelectorAll('button').forEach(b => b.disabled = true); }
+      // recarrega produtos pra refletir no painel
+      if (typeof carregarTodosProdutos === 'function') carregarTodosProdutos().catch(() => {});
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); if (btn) { btn.disabled = false; btn.textContent = '✓ Aplicar'; } }
+  }
+  window.aplicarAuditoria = aplicarAuditoria;
+
+  async function ignorarAuditoria(id, btn) {
+    const card = document.getElementById('aud-item-' + id);
+    try {
+      const r = await fetch(BACKEND_URL + '/api/tarefas/auditoria/itens/' + id + '/ignorar', { method: 'POST', headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      if (r.ok && card) { card.style.transition = 'opacity .3s'; card.style.opacity = '0.3'; card.querySelectorAll('button').forEach(b => b.disabled = true); }
+      else if (!r.ok) showToast('⚠ ' + (r.erro || 'falha'), true);
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
+  }
+  window.ignorarAuditoria = ignorarAuditoria;
 
   function renderPromocoes() {    // CHUNK 3.5-FIX: popula stats no topo
     renderPromocoesStats();
