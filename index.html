@@ -29798,10 +29798,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               <div style="font-size:12px;color:#6b7280;margin-top:3px"><strong>Motivo:</strong> ${escapeHtml(c.motivo || '-')}</div>
               <div style="font-size:12px;color:#374151;margin-top:6px;background:#f9fafb;border-left:3px solid ${rec.c};padding:6px 10px;border-radius:4px"><strong>IA:</strong> ${escapeHtml(c.justificativa || '-')}</div>
               ${_dispProgresso(c)}
-              <div style="margin-top:8px">
+              <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
                 <button onclick="verProvasDisputa(${c.id},this)" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">📷 Ver provas + análise da IA</button>
+                ${c.marketplace === 'shopee' ? `<button onclick="rastrearDisputa(${c.id},this)" style="background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">🚚 Rastrear pedido + devolução</button>` : ''}
               </div>
               <div id="disp-prova-${c.id}"></div>
+              <div id="disp-rastreio-${c.id}"></div>
               ${msgSug}
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;min-width:150px">
@@ -29880,6 +29882,49 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (btn) btn.disabled = false;
   }
   window.verProvasDisputa = verProvasDisputa;
+
+  async function rastrearDisputa(id, btn) {
+    const box = document.getElementById('disp-rastreio-' + id);
+    if (!box) return;
+    if (box.dataset.aberto === '1') { box.innerHTML = ''; box.dataset.aberto = '0'; return; }
+    box.innerHTML = `<div style="font-size:12px;color:#6b7280;padding:8px">⏳ Rastreando a entrega ao comprador e a devolução…</div>`;
+    box.dataset.aberto = '1';
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/tarefas/disputas/casos/' + id + '/rastrear', {
+        method: 'POST', headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+      if (!r.ok) { box.innerHTML = `<div style="font-size:12px;color:#991b1b;padding:8px">⚠ ${escapeHtml(r.erro || 'falha')}</div>`; if (btn) btn.disabled = false; return; }
+
+      // cor do veredito
+      const corV = r.cabeDisputa ? '#b91c1c' : (r.veredito === 'produto_retornou' ? '#15803d' : (r.veredito === 'devolucao_em_transito' ? '#b45309' : '#1d4ed8'));
+      const bgV = r.cabeDisputa ? '#fef2f2' : (r.veredito === 'produto_retornou' ? '#f0fdf4' : (r.veredito === 'devolucao_em_transito' ? '#fffbeb' : '#eff6ff'));
+      const iconV = r.cabeDisputa ? '⚔️' : (r.veredito === 'produto_retornou' ? '✅' : (r.veredito === 'devolucao_em_transito' ? '🚚' : 'ℹ️'));
+
+      // linha entrega
+      const e = r.entrega || {};
+      const dtEntrega = e.dataEntrega ? new Date(e.dataEntrega * 1000).toLocaleDateString('pt-BR') : '';
+      const linhaEntrega = `<div style="font-size:12px;color:#374151;margin-top:4px">📦 <strong>Entrega ao comprador:</strong> ${e.entregue ? 'ENTREGUE' + (dtEntrega ? ' em ' + dtEntrega : '') : 'não confirmada'}${e.status ? ' (' + escapeHtml(e.status) + ')' : ''}</div>`;
+      // linha devolução
+      const d = r.devolucao || {};
+      const prev = d.previsao ? new Date(d.previsao * 1000).toLocaleDateString('pt-BR') : '';
+      const linhaDevol = `<div style="font-size:12px;color:#374151;margin-top:2px">↩️ <strong>Devolução (volta pra você):</strong> ${d.chegou ? 'JÁ CHEGOU' : (d.temDevolucaoFisica ? 'a caminho' + (prev ? ', previsão ' + prev : '') : 'sem devolução física')}${d.trackingNumber ? ' · cód ' + escapeHtml(d.trackingNumber) : ''}</div>`;
+
+      // botão de disputa se couber
+      const btnDisputa = r.cabeDisputa
+        ? `<button onclick="acaoDisputa(${id},'contestar',this)" style="background:#b91c1c;color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;margin-top:8px">⚔️ Abrir disputa e recuperar o pagamento</button>`
+        : '';
+
+      box.innerHTML = `<div style="background:${bgV};border:1px solid ${corV}33;border-radius:8px;padding:10px;margin-top:8px">
+        <div style="font-size:13px;color:${corV};font-weight:700">${iconV} ${escapeHtml(r.detalheVeredito || '')}</div>
+        ${linhaEntrega}${linhaDevol}${btnDisputa}
+      </div>`;
+    } catch (e) {
+      box.innerHTML = `<div style="font-size:12px;color:#991b1b;padding:8px">⚠ ${escapeHtml(e.message)}</div>`;
+    }
+    if (btn) btn.disabled = false;
+  }
+  window.rastrearDisputa = rastrearDisputa;
 
   async function acaoDisputa(id, acao, btn, extra) {
     const rotulo = {
