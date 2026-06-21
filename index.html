@@ -29313,13 +29313,54 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   window.carregarFilaAuditoria = carregarFilaAuditoria;
 
   async function iniciarAuditoria() {
+    // Pergunta o escopo: todas as lojas ou uma específica.
+    abrirEscopoAuditoria();
+  }
+  window.iniciarAuditoria = iniciarAuditoria;
+
+  function abrirEscopoAuditoria() {
+    const existente = document.getElementById('audEscopoModal');
+    if (existente) existente.remove();
+    // monta a lista de lojas (agrupada por marketplace), usando idBanco como valor
+    const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp.filter(l => l.idBanco || l.id) : [];
+    const opcoesLojas = lojas.map(l => {
+      const idb = l.idBanco || l.id;
+      const mk = l.marketplace === 'shopee' ? '🟠' : (l.marketplace === 'mercadolivre' ? '📦' : '🏪');
+      return `<button onclick="iniciarAuditoriaEscopo('${idb}')" style="display:block;width:100%;text-align:left;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;cursor:pointer;margin-bottom:6px;font-size:13px">${mk} ${escapeHtml(l.nome || ('loja ' + idb))}</button>`;
+    }).join('');
+    const modal = document.createElement('div');
+    modal.id = 'audEscopoModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100004;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:#fff;border-radius:16px;width:min(460px,95vw);max-height:85vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:14px 18px;background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;display:flex;justify-content:space-between;align-items:center">
+        <h3 style="margin:0;font-size:15px">🔍 Auditar quais anúncios?</h3>
+        <button onclick="document.getElementById('audEscopoModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:16px 18px;overflow:auto">
+        <button onclick="iniciarAuditoriaEscopo(null)" style="display:block;width:100%;text-align:left;padding:12px;border:2px solid #7c3aed;border-radius:8px;background:#f5f3ff;color:#5b21b6;cursor:pointer;margin-bottom:12px;font-size:14px;font-weight:700">🌐 Todas as lojas</button>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:8px;font-weight:600">OU UMA LOJA ESPECÍFICA:</div>
+        ${opcoesLojas || '<div style="font-size:12px;color:#9ca3af">Nenhuma loja cadastrada.</div>'}
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+  window.abrirEscopoAuditoria = abrirEscopoAuditoria;
+
+  async function iniciarAuditoriaEscopo(lojaIdBanco) {
+    const modal = document.getElementById('audEscopoModal');
+    if (modal) modal.remove();
     const painel = document.getElementById('auditoriaPanel');
     if (!painel) return;
-    if (!confirm('A IA vai revisar TODOS os anúncios cadastrados (título × descrição × variações). Isso pode levar alguns minutos. Iniciar agora?')) return;
+    const escopoTxt = lojaIdBanco ? 'os anúncios desta loja' : 'TODOS os anúncios cadastrados';
+    if (!confirm('A IA vai revisar ' + escopoTxt + ' (título × descrição × variações). Isso pode levar alguns minutos. Iniciar agora?')) return;
+
     _renderAuditoriaProgresso({ produtos_lidos: 0, total_produtos: 0, produto_atual: null, achados: 0 });
     let execId;
     try {
-      const ini = await fetch(BACKEND_URL + '/api/tarefas/auditoria/iniciar', { method: 'POST', headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      const ini = await fetch(BACKEND_URL + '/api/tarefas/auditoria/iniciar', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(lojaIdBanco ? { lojaId: lojaIdBanco } : {})
+      }).then(x => x.json());
       if (!ini.ok || !ini.execId) { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro ao iniciar: ${escapeHtml((ini && ini.erro) || 'falha')}</div>`; return; }
       execId = ini.execId;
     } catch (e) { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml(e.message)}</div>`; return; }
@@ -29340,7 +29381,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       showToast('✅ Auditoria concluída: ' + (ex.achados || 0) + ' anúncio(s) com sugestão de correção.');
     }, 2000);
   }
-  window.iniciarAuditoria = iniciarAuditoria;
+  window.iniciarAuditoriaEscopo = iniciarAuditoriaEscopo;
 
   function _renderAuditoriaProgresso(ex) {
     const painel = document.getElementById('auditoriaPanel');
