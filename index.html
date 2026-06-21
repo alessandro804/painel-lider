@@ -29057,30 +29057,79 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const el = document.getElementById(id); if (el) el.style.display = 'none';
     });
     painel.style.display = 'block';
-    painel.innerHTML = `<div style="padding:30px;text-align:center;color:#6b7280">⏳ Buscando pedidos atrasados nas lojas (Shopee + ML)… isso pode levar alguns segundos.</div>`;
+    _renderAtrasoProgresso({ lojas_prontas: 0, total_lojas: 0, loja_atual: null, total_pedidos: 0 });
 
-    // status da automação diária (pra mostrar no cabeçalho)
-    let ligado = false;
+    // 1) inicia a varredura assíncrona no backend (devolve execId na hora)
+    let execId;
     try {
-      const st = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/status', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
-      ligado = st && st.agendado;
-    } catch (_) {}
-
-    let data;
-    try {
-      data = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/listar', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      const ini = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/listar', {
+        method: 'POST', headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+      if (!ini.ok || !ini.execId) {
+        painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro ao iniciar: ${escapeHtml((ini && ini.erro) || 'falha')}</div>`;
+        return;
+      }
+      execId = ini.execId;
     } catch (e) {
-      painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro ao carregar: ${escapeHtml(e.message)}</div>`;
+      painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro ao iniciar a varredura: ${escapeHtml(e.message)}</div>`;
       return;
     }
-    if (!data || !data.ok) {
-      painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml((data && data.erro) || 'falha')}</div>`;
-      return;
-    }
-    window._pedidosAtrasadosCache = data;
-    renderPedidosAtrasados();
+
+    // 2) polling do progresso até concluir/erro
+    if (window._atrasoPollTimer) clearInterval(window._atrasoPollTimer);
+    let tentativas = 0;
+    window._atrasoPollTimer = setInterval(async () => {
+      tentativas++;
+      if (tentativas > 150) { // ~5min de teto (2s cada)
+        clearInterval(window._atrasoPollTimer);
+        painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">A varredura demorou demais. Tente novamente.</div>`;
+        return;
+      }
+      let p;
+      try {
+        p = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/progresso/' + execId, {
+          headers: { 'x-api-token': getApiToken() }
+        }).then(x => x.json());
+      } catch (_) { return; } // erro de rede pontual: tenta no próximo ciclo
+      if (!p || !p.ok || !p.exec) return;
+      const ex = p.exec;
+      if (ex.status === 'rodando') {
+        _renderAtrasoProgresso(ex);
+        return;
+      }
+      clearInterval(window._atrasoPollTimer);
+      if (ex.status === 'erro') {
+        painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro na varredura: ${escapeHtml(ex.erro || 'falha')}</div>`;
+        return;
+      }
+      // concluído → monta o cache no formato que o render espera
+      window._pedidosAtrasadosCache = {
+        ok: true, totalPedidos: ex.total_pedidos || 0,
+        grupos: Array.isArray(ex.grupos) ? ex.grupos : [],
+      };
+      renderPedidosAtrasados();
+    }, 2000);
   }
   window.abrirPedidosAtrasados = abrirPedidosAtrasados;
+
+  // Barra de progresso da varredura
+  function _renderAtrasoProgresso(ex) {
+    const painel = document.getElementById('pedidosAtrasadosPanel');
+    if (!painel) return;
+    const total = ex.total_lojas || 0;
+    const prontas = ex.lojas_prontas || 0;
+    const pct = total > 0 ? Math.round((prontas / total) * 100) : 0;
+    const lojaAtual = ex.loja_atual ? `Verificando: <strong>${escapeHtml(ex.loja_atual)}</strong>` : 'Preparando…';
+    painel.innerHTML = `
+      <div style="padding:22px;border:1px solid #e5e7eb;border-radius:12px;background:#fff">
+        <div style="font-size:15px;font-weight:700;color:#111827;margin-bottom:4px">⏰ Buscando pedidos atrasados…</div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:12px">${lojaAtual} ${total > 0 ? `· ${prontas}/${total} loja(s)` : ''} · ${ex.total_pedidos || 0} atrasado(s) até agora</div>
+        <div style="height:14px;background:#f3f4f6;border-radius:999px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#b91c1c,#ef4444);transition:width .4s ease;border-radius:999px"></div>
+        </div>
+        <div style="text-align:right;font-size:11px;color:#9ca3af;margin-top:6px">${pct}%</div>
+      </div>`;
+  }
 
   function renderPedidosAtrasados() {
     const painel = document.getElementById('pedidosAtrasadosPanel');
