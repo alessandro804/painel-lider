@@ -29576,12 +29576,19 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.abrirDisputas = abrirDisputas;
 
-  async function carregarCasosDisputas() {
+  async function carregarCasosDisputas(filtro) {
     const painel = document.getElementById('disputasPanel');
     if (!painel) return;
+    if (filtro !== undefined) window._dispFiltro = filtro || {};
+    const f = window._dispFiltro || {};
+    const qs = new URLSearchParams({ status: 'pendente' });
+    if (f.prioridade) qs.set('prioridade', f.prioridade);
+    if (f.prejuizo) qs.set('prejuizo', '1');
+    if (f.precisa_resposta) qs.set('precisa_resposta', '1');
+    if (f.marketplace) qs.set('marketplace', f.marketplace);
     let data;
     try {
-      data = await fetch(BACKEND_URL + '/api/tarefas/disputas/casos?status=pendente', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      data = await fetch(BACKEND_URL + '/api/tarefas/disputas/casos?' + qs.toString(), { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
     } catch (e) { painel.innerHTML = `<div style="padding:24px;color:#991b1b;text-align:center">Erro: ${escapeHtml(e.message)}</div>`; return; }
     window._disputasCache = data;
     renderDisputas();
@@ -29597,7 +29604,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const opcoes = lojas.map(l => {
       const idb = l.idBanco || l.id;
       const mk = l.marketplace === 'shopee' ? '🟠 Shopee' : '📦 ML';
-      return `<button onclick="iniciarDisputasEscopo('${l.id}')" style="display:block;width:100%;text-align:left;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;cursor:pointer;margin-bottom:6px;font-size:13px">${mk} — ${escapeHtml(l.nome || ('loja ' + idb))}</button>`;
+      return `<button onclick="iniciarDisputasEscopo('${idb}')" style="display:block;width:100%;text-align:left;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;cursor:pointer;margin-bottom:6px;font-size:13px">${mk} — ${escapeHtml(l.nome || ('loja ' + idb))}</button>`;
     }).join('');
     const modal = document.createElement('div');
     modal.id = 'dispEscopoModal';
@@ -29683,18 +29690,30 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const data = window._disputasCache;
     if (!painel || !data) return;
     const casos = data.casos || [];
+    const resumo = data.resumo || {};
+    const f = window._dispFiltro || {};
+    const chip = (label, ativo, onclick, cor) => `<button onclick="${onclick}" style="background:${ativo ? cor : '#fff'};color:${ativo ? '#fff' : '#374151'};border:1px solid ${ativo ? cor : '#d1d5db'};padding:5px 10px;border-radius:999px;cursor:pointer;font-size:12px;font-weight:600">${label}</button>`;
 
     const cab = `
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#ea580c,#9a3412);color:#fff;border-radius:12px 12px 0 0">
         <div>
           <div style="font-size:16px;font-weight:700">⚖️ Disputas / Devoluções</div>
-          <div style="font-size:12px;opacity:0.9;margin-top:2px">${casos.length} caso(s) na fila de revisão</div>
+          <div style="font-size:12px;opacity:0.9;margin-top:2px">${resumo.total || casos.length} caso(s) · ${resumo.alta || 0} alta prioridade · ${resumo.prejuizo || 0} com prejuízo</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <button onclick="iniciarDisputas()" style="background:rgba(255,255,255,0.18);color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">▶️ Verificar agora</button>
+          <button onclick="configCronDisputas()" style="background:rgba(255,255,255,0.18);color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px">⚙️ Auto diário 14h</button>
           <button onclick="carregarCasosDisputas()" style="background:rgba(255,255,255,0.18);color:#fff;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:12px">🔄 Atualizar</button>
           <button onclick="document.getElementById('disputasPanel').style.display='none'" style="background:rgba(255,255,255,0.18);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
         </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px;background:#fff;border:1px solid #e5e7eb;border-top:none">
+        ${chip('Todos', !f.prioridade && !f.prejuizo && !f.precisa_resposta && !f.marketplace, "carregarCasosDisputas({})", '#6b7280')}
+        ${chip('🔴 Alta prioridade', f.prioridade === 'alta', "carregarCasosDisputas({prioridade:'alta'})", '#b91c1c')}
+        ${chip('⚠️ Com prejuízo', !!f.prejuizo, "carregarCasosDisputas({prejuizo:1})", '#9a3412')}
+        ${chip('⏳ Precisa resposta', !!f.precisa_resposta, "carregarCasosDisputas({precisa_resposta:1})", '#0891b2')}
+        ${chip('📦 Só ML', f.marketplace === 'mercadolivre', "carregarCasosDisputas({marketplace:'mercadolivre'})", '#1d4ed8')}
+        ${chip('🟠 Só Shopee', f.marketplace === 'shopee', "carregarCasosDisputas({marketplace:'shopee'})", '#ea580c')}
       </div>`;
 
     if (casos.length === 0) {
@@ -29720,19 +29739,23 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const ac = Array.isArray(c.acoes_disponiveis) ? c.acoes_disponiveis : [];
       let botoes = '';
       if (ehML) {
-        const podeTroca = ac.includes('change');
-        const podeDevol = ac.includes('allow_return') || ac.includes('return');
-        const podeReemb = ac.includes('refund');
-        const podeParcial = ac.includes('allow_partial_refund');
-        if (podeTroca) botoes += `<button onclick="acaoDisputa(${c.id},'trocar',this)" style="background:#7c3aed;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">🔄 Oferecer troca</button>`;
-        if (podeDevol) botoes += `<button onclick="acaoDisputa(${c.id},'devolver',this)" style="background:#0891b2;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">↩️ Autorizar devolução</button>`;
-        if (podeReemb) botoes += `<button onclick="acaoDisputa(${c.id},'reembolsar',this)" style="background:#16a34a;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">💵 Reembolsar</button>`;
+        const ac2 = ac.length ? ac : ['refund', 'allow_return']; // fallback: ações principais sempre disponíveis
+        const podeTroca = ac2.includes('change');
+        const podeDevol = ac2.includes('allow_return') || ac2.includes('return');
+        const podeReemb = ac2.includes('refund');
+        const podeParcial = ac2.includes('allow_partial_refund');
+        // devolução + reembolso é a modalidade principal → primeiro e em destaque
+        if (podeDevol) botoes += `<button onclick="acaoDisputa(${c.id},'devolver',this)" style="background:#0891b2;color:#fff;border:none;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700">↩️ Devolução + reembolso</button>`;
+        if (podeReemb) botoes += `<button onclick="acaoDisputa(${c.id},'reembolsar',this)" style="background:#16a34a;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">💵 Só reembolsar</button>`;
+        if (podeTroca) botoes += `<button onclick="acaoDisputa(${c.id},'trocar',this)" style="background:#7c3aed;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">🔄 Oferecer troca</button>`;
         if (podeParcial) botoes += `<button onclick="acaoDisputaParcial(${c.id},this)" style="background:#d97706;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">½ Parcial</button>`;
-        if (ac.includes('open_dispute')) botoes += `<button onclick="acaoDisputa(${c.id},'abrir_disputa',this)" style="background:#b91c1c;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">⚔️ Abrir disputa</button>`;
+        if (ac2.includes('open_dispute')) botoes += `<button onclick="acaoDisputa(${c.id},'abrir_disputa',this)" style="background:#b91c1c;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">⚔️ Abrir disputa</button>`;
       } else {
-        botoes += `<button onclick="acaoDisputa(${c.id},'contestar',this)" style="background:#b91c1c;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">⚔️ Contestar</button>`;
-        botoes += `<button onclick="acaoDisputa(${c.id},'aceitar',this)" style="background:#16a34a;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">✓ Aceitar</button>`;
-        botoes += `<button onclick="acaoDisputaParcial(${c.id},this)" style="background:#d97706;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">½ Parcial</button>`;
+        // Shopee. "Aceitar" aprova a solicitação do comprador (devolução + reembolso) —
+        // que é a modalidade principal. Deixamos esse botão em destaque e renomeado.
+        botoes += `<button onclick="acaoDisputa(${c.id},'aceitar',this)" style="background:#16a34a;color:#fff;border:none;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700">↩️ Aceitar devolução + reembolso</button>`;
+        botoes += `<button onclick="acaoDisputaParcial(${c.id},this)" style="background:#d97706;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">½ Reembolso parcial</button>`;
+        botoes += `<button onclick="acaoDisputa(${c.id},'contestar',this)" style="background:#b91c1c;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">⚔️ Contestar</button>`;
       }
       const btnIgnorar = `<button onclick="ignorarDisputa(${c.id},this)" style="background:#f3f4f6;color:#6b7280;border:1px solid #d1d5db;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px">Ignorar</button>`;
       const mkBadge = ehML
@@ -29745,11 +29768,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             ${foto}
             <div style="flex:1;min-width:240px">
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                ${c.prejuizo ? '<span style="background:#fef2f2;color:#991b1b;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;border:1px solid #fecaca">⚠️ PREJUÍZO</span>' : ''}
+                ${c.prioridade === 'alta' ? '<span style="background:#fee2e2;color:#b91c1c;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">🔴 Alta</span>' : (c.prioridade === 'media' ? '<span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600">🟡 Média</span>' : '<span style="background:#f3f4f6;color:#6b7280;padding:2px 8px;border-radius:6px;font-size:11px">⚪ Baixa</span>')}
+                ${c.precisa_resposta ? '<span style="background:#ecfeff;color:#0e7490;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600">⏳ Precisa resposta</span>' : ''}
                 <span style="background:${rec.bg};color:${rec.c};padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">${rec.l}</span>
                 <span style="font-size:11px;color:#6b7280">confiança: ${escapeHtml(c.confianca || '-')}</span>
                 ${mkBadge}
                 <span style="font-size:11px;color:#374151">🏪 ${escapeHtml(c.loja_nome || '')}</span>
               </div>
+              ${c.prejuizo && c.prejuizo_motivo ? `<div style="font-size:11px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:5px 8px;margin-top:5px">⚠️ ${escapeHtml(c.prejuizo_motivo)}</div>` : ''}
               <div style="font-size:14px;font-weight:700;color:#111827;margin-top:5px">${escapeHtml(c.produto_nome || (ehML ? 'Reclamação ' + c.externo_id : '(produto)'))}</div>
               <div style="font-size:12px;color:#374151;margin-top:3px">Pedido <code>${escapeHtml(c.order_id || '')}</code>${Number(c.valor || 0) > 0 ? ' · ' + escapeHtml(c.moeda || '') + ' ' + Number(c.valor || 0).toFixed(2) : ''} · status: ${escapeHtml(c.status_externo || '')}</div>
               <div style="font-size:12px;color:#6b7280;margin-top:3px"><strong>Motivo:</strong> ${escapeHtml(c.motivo || '-')}</div>
@@ -29783,10 +29810,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       }).then(x => x.json());
       if (r.ok) {
-        showToast('✓ Ação enviada à Shopee');
+        showToast('✓ Ação enviada à plataforma');
         if (card) { card.style.transition = 'opacity .3s'; card.style.opacity = '0.4'; card.querySelectorAll('button').forEach(b => b.disabled = true); }
       } else {
-        showToast('⚠ ' + ((r.resultado && r.resultado.erro) || r.erro || 'falha'), true);
+        const msgErro = (r.resultado && r.resultado.erro) || r.erro || 'falha desconhecida';
+        showToast('⚠ ' + msgErro, true);
+        // mostra o erro REAL fixo no card (não some, pra você ver o que a plataforma respondeu)
+        if (card) {
+          let box = card.querySelector('.disp-erro-box');
+          if (!box) {
+            box = document.createElement('div');
+            box.className = 'disp-erro-box';
+            box.style.cssText = 'margin-top:8px;font-size:12px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px 10px';
+            card.querySelector('div').appendChild(box);
+          }
+          box.innerHTML = '⚠ A plataforma recusou a ação: <strong>' + escapeHtml(msgErro) + '</strong>';
+        }
         if (btn) { btn.disabled = false; btn.textContent = '↺'; }
       }
     } catch (e) { showToast('⚠ Erro: ' + e.message, true); if (btn) { btn.disabled = false; } }
@@ -29811,6 +29850,25 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
   }
   window.ignorarDisputa = ignorarDisputa;
+
+  async function configCronDisputas() {
+    try {
+      const st = await fetch(BACKEND_URL + '/api/tarefas/disputas/cron-status', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      const ligado = st && st.agendado;
+      if (ligado) {
+        if (confirm('A análise automática diária de disputas (14h) está LIGADA.\n\nDeseja DESLIGAR?')) {
+          const r = await fetch(BACKEND_URL + '/api/tarefas/disputas/desativar-diario', { method: 'POST', headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+          showToast(r.ok ? '⏸️ Auto diário desligado' : ('⚠ ' + (r.erro || 'falha')), !r.ok);
+        }
+      } else {
+        if (confirm('Ligar a análise AUTOMÁTICA diária às 14h?\n\nTodo dia o sistema verifica as devoluções/disputas (Shopee + ML), age sozinho nos casos óbvios (aceitar reembolso pequeno; oferecer troca/devolução no ML quando cabível) e deixa o resto na fila pra você revisar.')) {
+          const r = await fetch(BACKEND_URL + '/api/tarefas/disputas/ativar-diario', { method: 'POST', headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+          showToast(r.ok ? '✅ Auto diário ligado (14h)' : ('⚠ ' + (r.erro || 'falha')), !r.ok);
+        }
+      }
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
+  }
+  window.configCronDisputas = configCronDisputas;
 
   function renderPromocoes() {    // CHUNK 3.5-FIX: popula stats no topo
     renderPromocoesStats();
