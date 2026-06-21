@@ -11637,6 +11637,33 @@ Retorne JSON: {"ID": "valor", ...}`;
     localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
     LiderSync.schedulePush('settings', () => LiderSync.pushAppData('lojas', lojasErp));
   }
+
+  // ============================================================
+  // BLINDAGEM: merge de lojas vindas da nuvem com as locais.
+  // A nuvem é a fonte da LISTA (estrutura, tokens, idBanco), mas
+  // o clienteVinculado é PRESERVADO do local quando a nuvem vier
+  // sem ele. Isso impede que um boot com app_data['lojas'] antiga/
+  // vazia apague os vínculos cliente↔loja (bug que já ocorreu).
+  // Casamento por idBanco (preferencial) e por id (fallback).
+  // ============================================================
+  function mergeLojasPreservandoVinculo(lojasNuvem, lojasLocais) {
+    if (!Array.isArray(lojasNuvem)) return lojasLocais || [];
+    const locais = Array.isArray(lojasLocais) ? lojasLocais : [];
+    const acharLocal = (ln) => locais.find(ll =>
+      (ln.idBanco != null && String(ll.idBanco) === String(ln.idBanco)) ||
+      (ln.id != null && String(ll.id) === String(ln.id))
+    );
+    return lojasNuvem.map(ln => {
+      const local = acharLocal(ln);
+      const out = { ...ln };
+      // se a nuvem NÃO trouxe clienteVinculado mas o local tinha, preserva o local
+      if ((out.clienteVinculado == null || out.clienteVinculado === '') &&
+          local && local.clienteVinculado) {
+        out.clienteVinculado = local.clienteVinculado;
+      }
+      return out;
+    });
+  }
   
   // ============================================================
   // MULTI-LOJA: garante que a loja existe no banco (tabela lojas)
@@ -11995,7 +12022,11 @@ Retorne JSON: {"ID": "valor", ...}`;
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
         <div>
           <div style="font-weight:800;color:#1e2a47;font-size:14px">🏪 ${escapeHtml(loja.nome)}</div>
-          ${userId ? `<div style="font-size:10px;color:#6b7280;margin-top:2px">${userId}</div>` : ''}
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:3px">
+            <span style="font-size:10px;font-weight:700;color:#3730a3;background:#eef2ff;border:1px solid #c7d2fe;padding:1px 6px;border-radius:5px" title="ID interno da loja (use nos comandos do servidor)">ID ${loja.idBanco != null ? loja.idBanco : (loja.id != null ? loja.id : '—')}${loja.idBanco == null ? ' (local)' : ''}</span>
+            <span style="font-size:10px;font-weight:600;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:5px;text-transform:capitalize">${escapeHtml(loja.marketplace || '—')}</span>
+            ${userId ? `<span style="font-size:10px;color:#9ca3af" title="ID da conta no marketplace">${userId}</span>` : ''}
+          </div>
         </div>
         <span style="background:${statusBg};color:${statusTxt};padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700">${statusLabel}</span>
       </div>
@@ -12265,18 +12296,40 @@ Retorne JSON: {"ID": "valor", ...}`;
   let _adsSubaba = 'anuncios';
 
   function renderAds() {
-    // popula o seletor de lojas Shopee (uma vez por abertura)
+    // popula o seletor de lojas: Shopee + Mercado Livre (agrupadas)
     const sel = document.getElementById('adsLojaFiltro');
     if (sel) {
       const atual = sel.value;
       const shopees = lojasErp.filter(l => l.marketplace === 'shopee');
-      sel.innerHTML = '<option value="">Todas as lojas Shopee</option>' +
-        shopees.map(l => `<option value="${l.idBanco || ''}">${escapeHtml(l.nome)}</option>`).join('');
+      const mls = lojasErp.filter(l => l.marketplace === 'mercadolivre');
+      let html = '<option value="">Todas as lojas Shopee (visão geral de Ads)</option>';
+      if (shopees.length) {
+        html += '<optgroup label="🛒 Shopee">' +
+          shopees.map(l => `<option value="${l.idBanco || ''}" data-mk="shopee">${escapeHtml(l.nome)}</option>`).join('') +
+          '</optgroup>';
+      }
+      if (mls.length) {
+        html += '<optgroup label="💛 Mercado Livre">' +
+          mls.map(l => `<option value="${l.idBanco || ''}" data-mk="mercadolivre">${escapeHtml(l.nome)} — só vendas</option>`).join('') +
+          '</optgroup>';
+      }
+      sel.innerHTML = html;
       sel.value = atual;
     }
     adsTrocarSubaba(_adsSubaba);
   }
   window.renderAds = renderAds;
+
+  // Detecta o marketplace da loja selecionada no dropdown de Ads.
+  // Retorna 'shopee' | 'mercadolivre' | '' (todas/nenhuma).
+  function adsMarketplaceSelecionado() {
+    const sel = document.getElementById('adsLojaFiltro');
+    if (!sel || !sel.value) return '';
+    const lojaId = sel.value;
+    const loja = lojasErp.find(l => String(l.idBanco) === String(lojaId));
+    return loja ? (loja.marketplace || '') : '';
+  }
+  window.adsMarketplaceSelecionado = adsMarketplaceSelecionado;
 
   function adsTrocarSubaba(qual) {
     _adsSubaba = qual;
@@ -12303,19 +12356,33 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!cont) return;
     // botão "sincronizar esta loja" visível só quando há loja selecionada
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
+    const ehMl = adsMarketplaceSelecionado() === 'mercadolivre';
     const btnSync = document.getElementById('adsBtnSyncLoja');
-    if (btnSync) btnSync.style.display = loja ? '' : 'none';
+    if (btnSync) btnSync.style.display = loja ? '' : 'none'; // sync funciona p/ vendas ML também
+    // botões específicos de Ads não fazem sentido p/ Mercado Livre
     const btnDiag = document.getElementById('adsBtnDiag');
-    if (btnDiag) btnDiag.style.display = loja ? '' : 'none';
+    if (btnDiag) btnDiag.style.display = (loja && !ehMl) ? '' : 'none';
     const btnMotor = document.getElementById('adsBtnMotorDados');
-    if (btnMotor) btnMotor.style.display = loja ? '' : 'none';
+    if (btnMotor) btnMotor.style.display = (loja && !ehMl) ? '' : 'none';
     const btnRec = document.getElementById('adsBtnMotorRec');
-    if (btnRec) btnRec.style.display = loja ? '' : 'none';
-    // barra de filtros só aparece na aba Anúncios
+    if (btnRec) btnRec.style.display = (loja && !ehMl) ? '' : 'none';
+    // barra de filtros só aparece na aba Anúncios (e não p/ ML)
     const filtros = document.getElementById('adsFiltrosAnuncios');
-    if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && loja) ? 'flex' : 'none';
+    if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && loja && !ehMl) ? 'flex' : 'none';
     cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">Carregando…</div>';
     try {
+      // Mercado Livre ainda não tem Ads integrado — só vendas.
+      // Nas abas que dependem de Ads, mostra aviso em vez de erro.
+      const mkSel = adsMarketplaceSelecionado();
+      if (mkSel === 'mercadolivre' && (_adsSubaba === 'anuncios' || _adsSubaba === 'resumo')) {
+        cont.innerHTML = '<div style="padding:24px;text-align:center;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;line-height:1.6">' +
+          '<div style="font-size:15px;font-weight:700;margin-bottom:6px">💛 Loja do Mercado Livre</div>' +
+          'A integração de <strong>Ads do Mercado Livre</strong> ainda não está disponível.<br>' +
+          'Por enquanto, esta loja mostra apenas as <strong>vendas</strong>.<br>' +
+          '<button class="toolbar-btn" style="margin-top:12px" onclick="adsTrocarSubaba(\'vendas\')">📦 Ver vendas desta loja</button>' +
+          '</div>';
+        return;
+      }
       if (_adsSubaba === 'anuncios') return await renderAdsAnuncios(cont);
       if (_adsSubaba === 'resumo') return await renderAdsResumo(cont);
       if (_adsSubaba === 'vendas') return await renderAdsVendas(cont);
@@ -12328,9 +12395,29 @@ Retorne JSON: {"ID": "valor", ...}`;
   async function adsSincronizarLojaSelecionada() {
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
     if (!loja) { showToast('Escolha uma loja primeiro.', true); return; }
+    // Mercado Livre: sincroniza VENDAS (não tem Ads). Shopee: ETL de Ads.
+    if (adsMarketplaceSelecionado() === 'mercadolivre') {
+      await adsSincronizarVendasLoja(loja);
+      return;
+    }
     await adsSincronizarLoja(loja);
   }
   window.adsSincronizarLojaSelecionada = adsSincronizarLojaSelecionada;
+
+  // Sincroniza as VENDAS de uma loja (usado pelo ML; também serve Shopee).
+  async function adsSincronizarVendasLoja(lojaIdBanco) {
+    const dias = document.getElementById('adsPeriodo')?.value || '7';
+    showToast('🔄 Sincronizando vendas da loja...');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/sincronizar-vendas?dias=' + dias, {
+        method: 'POST', headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+      if (!r.ok) { showToast('⚠ ' + (r.erro || 'falha na sincronização'), true); return; }
+      showToast('✓ ' + (r.gravados != null ? r.gravados : (r.resultado && r.resultado.gravados) || 0) + ' vendas sincronizadas');
+      renderAdsSubaba();
+    } catch (e) { showToast('⚠ Erro: ' + e.message, true); }
+  }
+  window.adsSincronizarVendasLoja = adsSincronizarVendasLoja;
 
   async function adsDiagnosticar() {
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
@@ -32046,7 +32133,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.118-deteccao-banimento';
+  const _DIAG_VERSAO_PAINEL = 'v33k.120-ads-vendas-ml';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -43295,8 +43382,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         localStorage.setItem('lider_cats_v1', JSON.stringify(categorias));
       }
       // Lojas vêm da app_data. (Produtos vêm do backend, não daqui.)
+      // BLINDADO: merge preserva clienteVinculado local se a nuvem vier sem.
       if (Array.isArray(cloudData.appData.lojas)) {
-        lojasErp = cloudData.appData.lojas;
+        lojasErp = mergeLojasPreservandoVinculo(cloudData.appData.lojas, lojasErp);
         localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
       }
       if (cloudData.appData.settings) {
@@ -43328,8 +43416,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         configIntegracoes = { ...configIntegracoes, ...cloudData.appData.integracoes };
         localStorage.setItem('lider_integracoes_v1', JSON.stringify(configIntegracoes));
       }
+      // BLINDADO: merge preserva clienteVinculado local se a nuvem vier sem.
       if (Array.isArray(cloudData.appData.lojas)) {
-        lojasErp = cloudData.appData.lojas;
+        lojasErp = mergeLojasPreservandoVinculo(cloudData.appData.lojas, lojasErp);
         localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
       }
       if (Array.isArray(cloudData.appData.produtos)) {
