@@ -29585,6 +29585,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (f.prioridade) qs.set('prioridade', f.prioridade);
     if (f.prejuizo) qs.set('prejuizo', '1');
     if (f.precisa_resposta) qs.set('precisa_resposta', '1');
+    if (f.mediacao) qs.set('mediacao', '1');
     if (f.marketplace) qs.set('marketplace', f.marketplace);
     let data;
     try {
@@ -29712,6 +29713,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         ${chip('🔴 Alta prioridade', f.prioridade === 'alta', "carregarCasosDisputas({prioridade:'alta'})", '#b91c1c')}
         ${chip('⚠️ Com prejuízo', !!f.prejuizo, "carregarCasosDisputas({prejuizo:1})", '#9a3412')}
         ${chip('⏳ Precisa resposta', !!f.precisa_resposta, "carregarCasosDisputas({precisa_resposta:1})", '#0891b2')}
+        ${chip('⚖️ Em mediação', !!f.mediacao, "carregarCasosDisputas({mediacao:1})", '#b91c1c')}
         ${chip('📦 Só ML', f.marketplace === 'mercadolivre', "carregarCasosDisputas({marketplace:'mercadolivre'})", '#1d4ed8')}
         ${chip('🟠 Só Shopee', f.marketplace === 'shopee', "carregarCasosDisputas({marketplace:'shopee'})", '#ea580c')}
       </div>`;
@@ -29781,6 +29783,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               <div style="font-size:12px;color:#374151;margin-top:3px">Pedido <code>${escapeHtml(c.order_id || '')}</code>${Number(c.valor || 0) > 0 ? ' · ' + escapeHtml(c.moeda || '') + ' ' + Number(c.valor || 0).toFixed(2) : ''} · status: ${escapeHtml(c.status_externo || '')}</div>
               <div style="font-size:12px;color:#6b7280;margin-top:3px"><strong>Motivo:</strong> ${escapeHtml(c.motivo || '-')}</div>
               <div style="font-size:12px;color:#374151;margin-top:6px;background:#f9fafb;border-left:3px solid ${rec.c};padding:6px 10px;border-radius:4px"><strong>IA:</strong> ${escapeHtml(c.justificativa || '-')}</div>
+              ${_dispProgresso(c)}
+              <div style="margin-top:8px">
+                <button onclick="verProvasDisputa(${c.id},this)" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">📷 Ver provas + análise da IA</button>
+              </div>
+              <div id="disp-prova-${c.id}"></div>
               ${msgSug}
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;min-width:150px">
@@ -29793,6 +29800,72 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     painel.innerHTML = cab + corpo + `<div style="height:12px;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px"></div>`;
   }
   window.renderDisputas = renderDisputas;
+
+  // Barra de progresso do caso: aberto → réplica → tréplica → mediação → encerrado
+  function _dispProgresso(c) {
+    const etapas = [
+      { k: 'aberto', l: 'Aberto' },
+      { k: 'replica', l: 'Réplica' },
+      { k: 'treplica', l: 'Tréplica' },
+      { k: 'mediacao', l: 'Mediação' },
+      { k: 'encerrado', l: 'Encerrado' },
+    ];
+    const atual = c.estagio || 'aberto';
+    let idxAtual = etapas.findIndex(e => e.k === atual);
+    if (idxAtual < 0) idxAtual = 0;
+    const passos = etapas.map((e, i) => {
+      const feito = i <= idxAtual;
+      const ehMediacao = e.k === 'mediacao' && i === idxAtual;
+      const cor = e.k === 'encerrado' && i === idxAtual ? '#15803d' : (ehMediacao ? '#b91c1c' : (feito ? '#ea580c' : '#e5e7eb'));
+      const txtCor = feito ? '#111827' : '#9ca3af';
+      return `<div style="flex:1;text-align:center;position:relative">
+        <div style="height:6px;background:${cor};border-radius:3px"></div>
+        <div style="font-size:9px;color:${txtCor};margin-top:3px;font-weight:${i === idxAtual ? '700' : '400'}">${e.l}</div>
+      </div>`;
+    }).join('<div style="width:4px"></div>');
+    const aviso = c.mediacao ? ' <span style="color:#b91c1c;font-weight:700">⚠ Plataforma interveio</span>' : '';
+    return `<div style="margin-top:8px">
+      <div style="font-size:10px;color:#6b7280;margin-bottom:3px">Progresso da reclamação${aviso}</div>
+      <div style="display:flex;align-items:flex-start">${passos}</div>
+    </div>`;
+  }
+
+  async function verProvasDisputa(id, btn) {
+    const box = document.getElementById('disp-prova-' + id);
+    if (!box) return;
+    if (box.dataset.aberto === '1') { box.innerHTML = ''; box.dataset.aberto = '0'; return; }
+    box.innerHTML = `<div style="font-size:12px;color:#6b7280;padding:8px">⏳ Carregando provas e analisando imagens com a IA…</div>`;
+    box.dataset.aberto = '1';
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/tarefas/disputas/casos/' + id + '/evidencias', {
+        method: 'POST', headers: { 'x-api-token': getApiToken() }
+      }).then(x => x.json());
+      if (!r.ok) { box.innerHTML = `<div style="font-size:12px;color:#991b1b;padding:8px">⚠ ${escapeHtml(r.erro || 'falha')}</div>`; if (btn) btn.disabled = false; return; }
+      const imgs = (r.imagensComprador || []).filter(u => /^https?:\/\//i.test(u));
+      const galeria = imgs.length
+        ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${imgs.slice(0, 8).map(u => `<a href="${escapeHtml(u)}" target="_blank"><img src="${escapeHtml(u)}" style="width:70px;height:70px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb"></a>`).join('')}</div>`
+        : `<div style="font-size:12px;color:#9ca3af;margin-top:4px">Sem imagens do comprador.</div>`;
+      const analise = r.analiseImagens
+        ? `<div style="font-size:12px;color:#111827;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:8px;margin-top:8px;white-space:pre-wrap"><strong>🔍 Análise das imagens (IA):</strong>\n${escapeHtml(r.analiseImagens)}</div>`
+        : '';
+      const tl = (r.historico || []).length
+        ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#4338ca">linha do tempo (${r.historico.length} interação(ões))</summary>
+           <div style="margin-top:6px">${(r.historico || []).map(h => `<div style="font-size:11px;color:#374151;border-left:2px solid #c7d2fe;padding:3px 8px;margin-bottom:4px"><strong>${escapeHtml(h.autor || '?')}</strong>${h.acao ? ' · ' + escapeHtml(h.acao) : ''}: ${escapeHtml(h.texto || '')}</div>`).join('')}</div></details>`
+        : '';
+      box.innerHTML = `<div style="background:#fafafa;border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-top:8px">${galeria}${analise}${tl}</div>`;
+      // atualiza o progresso do card (estágio pode ter mudado)
+      const cache = window._disputasCache;
+      if (cache && cache.casos) {
+        const cc = cache.casos.find(x => x.id === id);
+        if (cc) { cc.estagio = r.estagio; cc.mediacao = r.mediacao; }
+      }
+    } catch (e) {
+      box.innerHTML = `<div style="font-size:12px;color:#991b1b;padding:8px">⚠ ${escapeHtml(e.message)}</div>`;
+    }
+    if (btn) btn.disabled = false;
+  }
+  window.verProvasDisputa = verProvasDisputa;
 
   async function acaoDisputa(id, acao, btn, extra) {
     const rotulo = {
