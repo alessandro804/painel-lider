@@ -22385,7 +22385,8 @@ REGRAS DURAS:
         </div>` : '';
       
       return `
-      <div class="var-item">
+      <div class="var-item"${v._promoInativa ? ' style="border-left:3px solid #f59e0b"' : ''}>
+        ${v._origemReconciliacao ? `<div style="font-size:10px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:5px;padding:3px 7px;margin-bottom:5px">🆕 Variação trazida do anúncio Shopee — confira e ative pra promoção quando quiser</div>` : ''}
         <div class="var-item-row">
           ${corSelectHtml}
           <input type="text" value="${escapeHtml(v.tamanho||'')}" placeholder="Tamanho (ex: 40)"
@@ -22404,12 +22405,28 @@ REGRAS DURAS:
           <input type="number" value="${v.preco||''}" placeholder="Preço (opcional, sobrescreve o do pai)" step="0.01"
                  oninput="_variacoesProduto[${i}].preco = this.value">
         </div>
-        <div style="text-align:right;margin-top:4px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#374151;cursor:pointer">
+            <input type="checkbox" ${v._promoInativa ? '' : 'checked'} onchange="_toggleVarPromo(${i}, this.checked)">
+            <span>${v._promoInativa ? '⏸️ Inativa pra promoção' : '✅ Ativa pra promoção'}</span>
+          </label>
           <button type="button" class="var-item-del" onclick="removerVariacaoProduto(${i})">🗑 Remover variação</button>
         </div>
       </div>
     `;}).join('');
   }
+
+  // Liga/desliga a flag _promoInativa de uma variação (controle do usuário).
+  // Marcada como inativa = a tela de promoções NÃO aplica desconto nela
+  // automaticamente; o usuário precisa ativá-la aqui primeiro.
+  function _toggleVarPromo(idx, ativa) {
+    const v = _variacoesProduto[idx];
+    if (!v) return;
+    if (ativa) { delete v._promoInativa; }
+    else { v._promoInativa = true; }
+    renderVariacoesProduto();
+  }
+  window._toggleVarPromo = _toggleVarPromo;
   
   // v32c: setter pra dimensão extra
   function _setarDimensaoExtra(idx, dimNome, valor) {
@@ -39042,8 +39059,34 @@ ${JSON.stringify(metricas, null, 2)}`
     // Pra cada produto: busca os models reais da Shopee (model_id confiável) e monta o item
     const itensParaAdd = [];
     const semEstoque = [];
+    let puladasInativas = 0;
+    // normalizador local pra casar variação interna ↔ model da Shopee
+    const _norm = s => String(s || '').trim().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
     for (const chk of sel) {
       const itemId = chk.dataset.itemid;
+      // variações INATIVAS pra promoção deste anúncio (flag _promoInativa no ERP)
+      // → indexadas por sku e por cor|tamanho pra casar com os models da Shopee.
+      const inativasSku = new Set();
+      const inativasCorTam = new Set();
+      (produtosErp || []).forEach(p => (p.variacoes || []).forEach(v => {
+        if (!v._promoInativa) return;
+        const ligaEsteItem = (v.vinculos || []).some(vi =>
+          /shopee/i.test(vi.marketplace || '') && String(vi.anuncioId) === String(itemId));
+        if (!ligaEsteItem) return;
+        if (v.sku) inativasSku.add(_norm(v.sku));
+        inativasCorTam.add(_norm(v.cor) + '|' + _norm(v.tamanho));
+      }));
+      const ehInativa = (m) => {
+        if (m.sku && inativasSku.has(_norm(m.sku))) return true;
+        // o endpoint /models nem sempre traz cor/tam separados; tenta pelo nome
+        const nome = _norm(m.nome || '');
+        for (const k of inativasCorTam) {
+          const [c, t] = k.split('|');
+          if ((c && nome.includes(c)) && (!t || nome.includes(t))) return true;
+        }
+        return false;
+      };
       try {
         const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/item/' + itemId + '/models', {
           headers: { 'x-api-token': getApiToken() }
@@ -39054,16 +39097,24 @@ ${JSON.stringify(metricas, null, 2)}`
           itensParaAdd.push({ itemId: parseInt(itemId, 10), precoItem: preco });
         } else {
           // só variações com estoque > 0 (Shopee bloqueia as sem estoque)
-          const comEstoque = (data.models || []).filter(m => m.estoque == null || m.estoque > 0);
+          // E que NÃO estejam marcadas como inativas pra promoção no ERP.
+          const comEstoque = (data.models || []).filter(m => (m.estoque == null || m.estoque > 0) && !ehInativa(m));
+          const inativas = (data.models || []).filter(m => (m.estoque == null || m.estoque > 0) && ehInativa(m));
           const semEst = (data.models || []).filter(m => m.estoque != null && m.estoque <= 0);
           if (semEst.length > 0) semEstoque.push({ nome: data.nome, qtd: semEst.length });
+          if (inativas.length > 0) puladasInativas += inativas.length;
           if (comEstoque.length > 0) {
             itensParaAdd.push({ itemId: parseInt(itemId, 10), variacoes: comEstoque.map(m => ({ modelId: m.modelId, preco })) });
           }
         }
       } catch (_) {}
     }
-    if (itensParaAdd.length === 0) { promoToast('Nenhuma variação com estoque pra adicionar', true); return; }
+    if (itensParaAdd.length === 0) {
+      promoToast(puladasInativas > 0
+        ? 'Todas as variações estão inativas pra promoção. Ative-as na grade do produto antes.'
+        : 'Nenhuma variação com estoque pra adicionar', true);
+      return;
+    }
 
     try {
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.idBanco + '/promocoes/' + campanha.discountId + '/itens', {
