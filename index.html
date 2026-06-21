@@ -13067,6 +13067,24 @@ Retorne JSON: {"ID": "valor", ...}`;
             : '<button onclick="adsBanimentoToggle(true)" style="padding:8px 14px;border:none;background:#dc2626;color:white;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">Ligar</button>') +
         '</span></div>';
     } catch (e) { /* silencioso */ }
+
+    // status da REAVALIAÇÃO de banimentos (Fase 2 — ciclo de 7 dias)
+    try {
+      const rr = await fetch(BACKEND_URL + '/api/ads/banimentos/reavaliar/status', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      const ligadoR = rr.agendado;
+      const infoR = [];
+      if (rr.pendentesReavaliacao) infoR.push(rr.pendentesReavaliacao + ' p/ reavaliar hoje');
+      if (rr.reativados) infoR.push(rr.reativados + ' reativado(s)');
+      if (rr.encerrados) infoR.push(rr.encerrados + ' encerrado(s)');
+      box.innerHTML += '<div style="margin-top:8px;padding:12px 14px;background:' + (ligadoR ? '#fffbeb' : '#f9fafb') + ';border:1px solid ' + (ligadoR ? '#fde68a' : '#e5e7eb') + ';border-radius:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+        '<span style="font-size:13px;color:' + (ligadoR ? '#92400e' : '#6b7280') + '">🔁 Reavaliação de banimentos (7 dias) — ' + (ligadoR ? '<strong>LIGADO</strong>, 1x/dia 7h30' : 'desligado') + (infoR.length ? ' · ' + infoR.join(' · ') : '') + '</span>' +
+        '<span style="display:flex;gap:6px">' +
+          '<button onclick="adsTestarReavaliacao()" class="toolbar-btn" style="font-size:12px">🧪 Testar</button>' +
+          (ligadoR
+            ? '<button onclick="adsReavaliacaoToggle(false)" class="toolbar-btn" style="font-size:12px">Desligar</button>'
+            : '<button onclick="adsReavaliacaoToggle(true)" style="padding:8px 14px;border:none;background:#d97706;color:white;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">Ligar</button>') +
+        '</span></div>';
+    } catch (e) { /* silencioso */ }
   }
   window.adsCarregarStatusAuto = adsCarregarStatusAuto;
 
@@ -13107,6 +13125,55 @@ Retorne JSON: {"ID": "valor", ...}`;
     } catch (e) { showToast('⚠ ' + e.message, true); }
   }
   window.adsBanimentoToggle = adsBanimentoToggle;
+
+  async function adsTestarReavaliacao() {
+    const cont = document.getElementById('adsConteudo');
+    cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🔁 Reavaliando banimentos vencidos (dry-run, não envia WhatsApp nem cria demandas)…<br><span style="font-size:12px">Pode levar um minuto.</span></div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/banimentos/reavaliar/testar', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: true }),
+      }).then(x => x.json());
+      if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
+      const res = r.resultado || {};
+      const det = (res.detalhe || []).filter(d => !d.erro);
+      let html = '<div style="padding:12px 14px;background:#fffbeb;border-radius:10px;font-size:13px;color:#92400e;margin-bottom:12px">' +
+        '🔁 <strong>Teste de reavaliação</strong> (dry-run) — ' + (res.reavaliados || 0) + ' banimento(s) reavaliado(s): ' +
+        '<strong>' + (res.reativados || 0) + '</strong> voltaram ao ar, <strong>' + (res.naoReativados || 0) + '</strong> continuam banidos.</div>';
+      if (!det.length) html += '<div style="padding:20px;text-align:center;color:#6b7280">Nenhum banimento vencido (7 dias) para reavaliar hoje. ✅</div>';
+      else det.forEach(d => {
+        const voltou = d.resultado === 'reativado';
+        const cor = voltou ? '#16a34a' : '#b91c1c';
+        const bg = voltou ? '#f0fdf4' : '#fef2f2';
+        html += '<div style="margin-bottom:10px;padding:12px;background:white;border:1px solid #e5e7eb;border-radius:10px">' +
+          '<div style="font-weight:700;color:' + cor + ';font-size:13px;margin-bottom:4px">' +
+            (voltou ? '✅ Voltou ao ar' : '🚫 Continua banido') + ' · loja ' + d.loja + ' · item ' + d.item + '</div>';
+        if (!voltou) {
+          html += '<div style="font-size:11px;color:#6b7280;margin-bottom:6px">' +
+            (d.produtoInterno ? '🔗 Produto interno: id ' + d.produtoInterno : '⚠ Produto interno não localizado (preencher manual)') +
+            ' · criaria 2 demandas (contato plataforma + recriar anúncio)</div>';
+        }
+        if (d.mensagem) html += '<div style="font-size:12px;color:#1e2a47;white-space:pre-wrap;line-height:1.5;background:' + bg + ';border-radius:8px;padding:10px">' + escapeHtml(d.mensagem) + '</div>';
+        html += '</div>';
+      });
+      cont.innerHTML = html;
+    } catch (e) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>'; }
+  }
+  window.adsTestarReavaliacao = adsTestarReavaliacao;
+
+  async function adsReavaliacaoToggle(ligar) {
+    const acao = ligar ? 'agendar' : 'desativar';
+    if (ligar && !confirm('Ligar a reavaliação de banimentos (ciclo de 7 dias)?\n\nTodo dia às 7h30, o sistema verifica os banimentos que completaram 7 dias:\n• Se o anúncio voltou ao ar → avisa o cliente que deu certo.\n• Se continua banido → avisa o cliente E cria 2 demandas (contato com a plataforma + recriar o anúncio com os mesmos dados).')) return;
+    if (!ligar && !confirm('Desligar a reavaliação de banimentos?')) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/banimentos/reavaliar/' + acao, {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: '{}',
+      }).then(x => x.json());
+      if (r.ok) { showToast(ligar ? '🔁 Reavaliação de banimentos ligada' : 'Reavaliação desligada'); adsAbrirCronLojas(); }
+      else showToast('⚠ ' + (r.erro || 'falha'), true);
+    } catch (e) { showToast('⚠ ' + e.message, true); }
+  }
+  window.adsReavaliacaoToggle = adsReavaliacaoToggle;
 
   async function adsAtivarAuto() {
     if (!confirm('Ligar o motor automático?\n\nEle vai rodar sozinho TODA segunda, quarta e sexta às 8h30, executar as ações nas lojas e enviar WhatsApp aos clientes.\n\nSó ative depois de validar que as recomendações estão corretas.')) return;
@@ -32133,7 +32200,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.120-ads-vendas-ml';
+  const _DIAG_VERSAO_PAINEL = 'v33k.121-banimento-fase2';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
