@@ -4423,8 +4423,12 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
 
   /* board: 3 colunas agora (sem revisão e sem reprovado) */
   @media (min-width: 901px) {
-    #kanbanBoard { grid-template-columns: repeat(3, 1fr) !important; }
+    #kanbanBoard { grid-template-columns: repeat(3, 1fr) !important; align-items: stretch !important; }
   }
+  /* colunas com mesma altura (a mais alta define) — assim dá pra soltar em qualquer
+     ponto da coluna, mesmo nas vazias/curtas. O corpo cresce pra preencher. */
+  #kanbanBoard .kanban-col { display: flex; flex-direction: column; height: 100%; }
+  #kanbanBoard .kanban-col-body { flex: 1 1 auto; min-height: 120px; }
   /* indicador visual de onde o card vai cair ao arrastar */
   .kanban-card.drop-before { box-shadow: 0 -3px 0 0 var(--lc-primary); }
   .kanban-card.drop-after { box-shadow: 0 3px 0 0 var(--lc-primary); }
@@ -44114,7 +44118,7 @@ ${JSON.stringify(metricas, null, 2)}`
     // calcula a nova posição manual (entre os cards de MESMA prioridade na coluna alvo)
     if (col) {
       const alvo = _kanbanAlvoNaPosicao(col, e.clientY, getPrioridadeEfetiva(d));
-      _reordenarDemandaManual(d, novoStatus, alvo);
+      _reordenarDemandaManual(d, novoStatus, alvo, col);
     }
 
     if (mudouColuna) {
@@ -44141,24 +44145,34 @@ ${JSON.stringify(metricas, null, 2)}`
   // PRIORIDADE (alta→média→baixa); dentro da MESMA prioridade, respeita a posição
   // manual (campo `ordemManual`). Aqui recalculamos o ordemManual da demanda movida
   // pra que ela caia exatamente onde foi solta, entre seus pares de mesma prioridade.
-  function _reordenarDemandaManual(d, statusAlvo, alvo) {
+  function _reordenarDemandaManual(d, statusAlvo, alvo, colEl) {
     const prioD = getPrioridadeEfetiva(d);
-    // pares: demandas da MESMA coluna-alvo e MESMA prioridade (exceto a própria)
     const mapaStatus = s => ({ aguardando:'recebido', revisao:'producao', concluido:'aprovado', finalizado:'aprovado' }[s] || s);
-    const pares = demandas.filter(x =>
-      x.id !== d.id && mapaStatus(x.status) === statusAlvo && getPrioridadeEfetiva(x) === prioD
-    ).sort((a,b) => (a.ordemManual ?? 0) - (b.ordemManual ?? 0));
+    // pares = demandas da MESMA coluna-alvo e MESMA prioridade efetiva (exceto a própria),
+    // NA ORDEM EM QUE APARECEM NO DOM (não por ordemManual, que pode estar indefinido).
+    let paresIds = [];
+    if (colEl) {
+      paresIds = [...colEl.querySelectorAll('.kanban-card')]
+        .map(c => c.dataset.id)
+        .filter(id => id && id !== d.id);
+    }
+    let pares = paresIds
+      .map(id => demandas.find(x => x.id === id))
+      .filter(x => x && getPrioridadeEfetiva(x) === prioD);
+    // fallback se não veio coluna: usa o array em memória
+    if (!colEl) {
+      pares = demandas.filter(x => x.id !== d.id && mapaStatus(x.status) === statusAlvo && getPrioridadeEfetiva(x) === prioD);
+    }
 
-    // descobre o índice de inserção a partir do card-alvo
-    let idx = pares.length; // default: no fim
+    // índice de inserção a partir do card-alvo
+    let idx = pares.length; // default: fim
     if (alvo && alvo.card && alvo.card.dataset && alvo.card.dataset.id) {
-      const alvoId = alvo.card.dataset.id;
-      const pos = pares.findIndex(x => x.id === alvoId);
+      const pos = pares.findIndex(x => x.id === alvo.card.dataset.id);
       if (pos >= 0) idx = alvo.antes ? pos : pos + 1;
     }
-    // reatribui ordemManual sequencial inserindo d na posição idx
     const novaLista = [...pares];
     novaLista.splice(idx, 0, d);
+    // reatribui ordemManual sequencial; usa passo 10 pra deixar folga, mas o que importa é a ordem relativa
     novaLista.forEach((x, i) => { x.ordemManual = i; });
   }
 
