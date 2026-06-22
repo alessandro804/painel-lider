@@ -44066,15 +44066,18 @@ ${JSON.stringify(metricas, null, 2)}`
   let _kanbanArrastou = false;       // true se houve movimento suficiente (pra diferenciar de clique)
   let _kbDrag = null;                // estado do arraste atual
 
-  function _kanbanAlvoNaPosicao(colEl, clientY, prioArrastada) {
+  function _kanbanAlvoNaPosicao(colEl, refY, prioArrastada) {
     const cards = [...colEl.querySelectorAll('.kanban-card:not(.dragging)')]
       .filter(c => c.dataset && c.dataset.prio === prioArrastada);
     if (!cards.length) return { card: null, antes: false };
-    const primeiro = cards[0].getBoundingClientRect();
-    if (clientY <= primeiro.top + primeiro.height * 0.5) return { card: cards[0], antes: true };
+    // refY = MEIO do card arrastado (não o cursor). Cai ANTES do primeiro card cujo
+    // meio fique abaixo do meio do card arrastado. Comparar centro-com-centro é o que
+    // dá o comportamento previsível: o card "ultrapassa" outro assim que seus centros
+    // se cruzam — igual aos kanbans do Trello/Jira.
     for (const card of cards) {
       const r = card.getBoundingClientRect();
-      if (clientY < r.top + r.height / 2) return { card, antes: true };
+      const meio = r.top + r.height / 2;
+      if (refY < meio) return { card, antes: true };
     }
     return { card: cards[cards.length - 1], antes: false };
   }
@@ -44122,6 +44125,7 @@ ${JSON.stringify(metricas, null, 2)}`
       const r = _kbDrag.cardEl.getBoundingClientRect();
       _kbDrag.offX = _kbDrag.startX - r.left;
       _kbDrag.offY = _kbDrag.startY - r.top;
+      _kbDrag.cardH = r.height;
       const clone = _kbDrag.cardEl.cloneNode(true);
       clone.classList.add('kanban-drag-clone');
       clone.style.width = r.width + 'px';
@@ -44144,7 +44148,9 @@ ${JSON.stringify(metricas, null, 2)}`
       if (body) body.classList.add('drag-over');
       const d = demandas.find(x => x.id === _kbDrag.id);
       if (d) {
-        const alvo = _kanbanAlvoNaPosicao(col, e.clientY, getPrioridadeEfetiva(d));
+        // refY = meio do card arrastado (clone), não o cursor
+        const refY = e.clientY - _kbDrag.offY + (_kbDrag.cardH || 0) / 2;
+        const alvo = _kanbanAlvoNaPosicao(col, refY, getPrioridadeEfetiva(d));
         if (alvo.card) alvo.card.classList.add(alvo.antes ? 'drop-before' : 'drop-after');
       }
     }
@@ -44175,7 +44181,8 @@ ${JSON.stringify(metricas, null, 2)}`
     const novoStatus = col.dataset.status;
     const mudouColuna = d.status !== novoStatus;
     // calcula o alvo ENQUANTO o card arrastado ainda tem .dragging (pra ser excluído da conta)
-    const alvo = _kanbanAlvoNaPosicao(col, e.clientY, getPrioridadeEfetiva(d));
+    const refY = e.clientY - drag.offY + (drag.cardH || 0) / 2;
+    const alvo = _kanbanAlvoNaPosicao(col, refY, getPrioridadeEfetiva(d));
     if (drag.cardEl) drag.cardEl.classList.remove('dragging');
     _limparIndicadores();
     _reordenarDemandaManual(d, novoStatus, alvo, col);
