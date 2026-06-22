@@ -8084,10 +8084,10 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       </div>
 
       <div class="content">
-        <!-- Acesso à Administração de Usuários (só super admin) -->
-        <div style="margin-bottom:14px" data-superadmin-only>
+        <!-- Acesso à gestão de usuários/colaboradores (admin vê os dele; super admin vê tudo) -->
+        <div style="margin-bottom:14px" data-admin-only>
           <button class="primary-btn" style="width:100%;padding:12px;font-size:14px;font-weight:700" onclick="goTo('admScreen')">
-            👥 Administração de Usuários — criar e gerenciar acessos
+            👥 <span id="btnAdmLabel">Gerenciar colaboradores</span> — criar e definir acessos
           </button>
         </div>
         <!-- Tabs -->
@@ -34833,25 +34833,62 @@ Responda APENAS com JSON válido (sem markdown), formato:
   let _usuarioLogado = null;
   try { _usuarioLogado = JSON.parse(localStorage.getItem('lider_usuario')||'null'); } catch(e) {}
   function papelAtual() { return (_usuarioLogado && _usuarioLogado.papel) || 'admin'; }
+  window.papelAtual = papelAtual;
   function lojasDoUsuario() { return (_usuarioLogado && Array.isArray(_usuarioLogado.lojas)) ? _usuarioLogado.lojas : []; }
   // telas permitidas por papel
   const TELAS_POR_PAPEL = {
     // super admin: SOMENTE a tela de administração (gestão de usuários + métricas)
     superadmin: ['admScreen','settingsScreen','loginScreen'],
-    admin: null, // null = todas
-    // colaborador: Operações + as telas de trabalho que a operação usa
-    colaborador: ['operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','loginScreen'],
+    admin: null, // null = todas (inclui admScreen p/ gerenciar colaboradores dele)
+    // colaborador: definido individualmente por permissões (ver PERMISSOES_DISPONIVEIS)
+    colaborador: [],
     demo: ['operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','homeScreen','settingsScreen','loginScreen'],
   };
+  // Catálogo de telas que um colaborador PODE receber permissão (checklist granular).
+  // 'always' = telas sempre liberadas (login, perfil) que não entram no checklist.
+  const PERMISSOES_DISPONIVEIS = [
+    { screen: 'homeScreen',          label: 'Início (visão geral)' },
+    { screen: 'financialScreen',     label: 'Financeiro' },
+    { screen: 'commercialScreen',    label: 'Comercial' },
+    { screen: 'marketingScreen',     label: 'Marketing' },
+    { screen: 'operacaoScreen',      label: 'Operações (Demandas)' },
+    { screen: 'produtosScreen',      label: 'Operações · Produtos' },
+    { screen: 'estoqueScreen',       label: 'Operações · Estoque' },
+    { screen: 'promocoesScreen',     label: 'Operações · Promoções' },
+    { screen: 'adsScreen',           label: 'Operações · Ads' },
+    { screen: 'lojasConexoesScreen', label: 'Lojas & Conexões' },
+  ];
+  window.PERMISSOES_DISPONIVEIS = PERMISSOES_DISPONIVEIS;
+  const TELAS_SEMPRE_LIBERADAS = ['loginScreen','semAcessoScreen'];
+  // lê as permissões individuais do colaborador (array de screens). Sem permissões = nada.
+  function permissoesColaborador() {
+    try {
+      const p = _usuarioLogado && _usuarioLogado.permissoes;
+      if (Array.isArray(p)) return p;
+    } catch(e) {}
+    return [];
+  }
   function podeAcessarTela(screenId) {
-    const permitidas = TELAS_POR_PAPEL[papelAtual()];
+    if (TELAS_SEMPRE_LIBERADAS.includes(screenId)) return true;
+    const papel = papelAtual();
+    if (papel === 'colaborador') {
+      // colaborador: só o que foi explicitamente liberado pelo admin dele
+      return permissoesColaborador().includes(screenId);
+    }
+    const permitidas = TELAS_POR_PAPEL[papel];
     if (permitidas === null || permitidas === undefined) return true; // admin
     return permitidas.includes(screenId);
   }
   function papelHomeInicial() {
     const p = papelAtual();
     if (p === 'superadmin') return 'admScreen';
-    if (p === 'colaborador') return 'operacaoScreen';
+    if (p === 'colaborador') {
+      // primeira tela que o colaborador tem permissão; senão login
+      const perms = permissoesColaborador();
+      const ordem = ['operacaoScreen','homeScreen','financialScreen','commercialScreen','marketingScreen','produtosScreen','estoqueScreen','promocoesScreen','adsScreen','lojasConexoesScreen'];
+      const primeira = ordem.find(s => perms.includes(s));
+      return primeira || 'semAcessoScreen';
+    }
     return 'homeScreen';
   }
   // esconde itens de navegação que o papel não pode acessar
@@ -47128,6 +47165,17 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
 </script>
 
+<!-- ═══ TELA: colaborador sem nenhuma permissão liberada ═══ -->
+<div class="screen" id="semAcessoScreen">
+  <div class="content" style="display:flex;align-items:center;justify-content:center;min-height:60vh">
+    <div style="text-align:center;max-width:420px;padding:24px">
+      <div style="font-size:42px;margin-bottom:12px">🔒</div>
+      <h2 style="margin:0 0 8px;font-size:20px;color:#1e293b">Sem áreas liberadas</h2>
+      <p style="color:#6b7280;font-size:14px;line-height:1.5">Seu acesso ainda não tem nenhuma área liberada. Fale com o administrador da sua empresa para liberar as páginas que você precisa usar.</p>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ TELA ADM — GESTÃO DE USUÁRIOS (só admin) ═══ -->
 <div class="screen" id="admScreen">
   <div class="header" style="display:flex;align-items:center;gap:12px">
@@ -47171,6 +47219,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   async function renderAdmUsuarios() {
     const cont = document.getElementById('admUsuariosLista');
     if (!cont) return;
+    // adapta título por papel (admin gerencia colaboradores; super admin gerencia o sistema)
+    try {
+      const ehSuper = papelAtual() === 'superadmin';
+      const titulo = document.querySelector('#admScreen .page-title-text');
+      if (titulo) titulo.innerHTML = ehSuper ? '👥 Administração de Usuários' : '👥 Meus Colaboradores';
+      const btnLabel = document.getElementById('btnAdmLabel');
+      if (btnLabel) btnLabel.textContent = ehSuper ? 'Administração de Usuários' : 'Gerenciar colaboradores';
+    } catch(e) {}
     cont.innerHTML = '<em style="color:#9ca3af;font-size:13px">Carregando...</em>';
     try {
       const r = await (await fetch(BACKEND_URL + '/api/auth/usuarios', { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
@@ -47245,13 +47301,28 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <input type="text" class="form-input" id="admSenha" style="margin-bottom:10px" placeholder="${u?'Digite a nova senha para alterar':'Defina a senha'}">
       <label class="form-label" style="font-size:12px">Papel</label>
       <select class="form-input" id="admPapel" style="margin-bottom:10px" onchange="admToggleDono()">
-        <option value="colaborador" ${u&&u.papel==='colaborador'?'selected':''}>Colaborador (Operações — vê as lojas da empresa)</option>
-        <option value="admin" ${u&&u.papel==='admin'?'selected':''}>Administrador (tudo)</option>
+        <option value="colaborador" ${(!u||u.papel==='colaborador')?'selected':''}>Colaborador (acessos definidos abaixo)</option>
+        ${papelAtual()==='superadmin' ? `
+        <option value="admin" ${u&&u.papel==='admin'?'selected':''}>Administrador (empresa — tudo)</option>
         <option value="superadmin" ${u&&u.papel==='superadmin'?'selected':''}>Super Admin (supremo — métricas globais)</option>
         <option value="demo" ${u&&u.papel==='demo'?'selected':''}>Demonstração (Shopee — sem dados reais)</option>
+        ` : ''}
       </select>
       <div style="font-size:11px;color:#6b7280;background:#f0fdf4;border-radius:8px;padding:8px;margin-bottom:10px">
         ℹ️ O colaborador acessa a página de <b>Operações</b> com as <b>lojas da empresa dele</b> (do administrador a que está vinculado) — incluindo as que essa empresa adicionar no futuro. Não precisa vincular loja a loja.
+      </div>
+      <div id="admPermsBox" style="display:${(u&&u.papel==='colaborador')?'block':'none'};margin-bottom:10px">
+        <label class="form-label" style="font-size:12px">Acessos liberados (marque o que o colaborador pode usar)</label>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:8px">Colaborador novo começa sem nada. Marque só as áreas que ele precisa.</div>
+        <div id="admPermsLista" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:10px;padding:10px">
+          ${(window.PERMISSOES_DISPONIVEIS||[]).map(p => {
+            const marcado = (u && Array.isArray(u.permissoes) && u.permissoes.includes(p.screen)) ? 'checked' : '';
+            return `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+              <input type="checkbox" class="adm-perm-check" value="${p.screen}" ${marcado}>
+              <span>${p.label}</span>
+            </label>`;
+          }).join('')}
+        </div>
       </div>
       <div id="admDonoBox" style="display:${(u&&u.papel==='colaborador')?'block':'none'};margin-bottom:10px">
         <label class="form-label" style="font-size:12px">Empresa do colaborador (dono das lojas)</label>
@@ -47278,11 +47349,16 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   window.admToggleLojas = admToggleLojas;
 
-  // mostra/esconde o seletor de empresa (dono) conforme o papel
+  // mostra/esconde seletor de empresa (dono) e checklist de permissões conforme papel
   function admToggleDono() {
     const papel = (document.getElementById('admPapel')||{}).value;
-    const box = document.getElementById('admDonoBox');
-    if (box) box.style.display = papel === 'colaborador' ? 'block' : 'none';
+    const ehColab = papel === 'colaborador';
+    const boxDono = document.getElementById('admDonoBox');
+    const boxPerms = document.getElementById('admPermsBox');
+    // só super admin escolhe a empresa; admin é dono automático
+    const souSuper = (papelAtual() === 'superadmin');
+    if (boxDono) boxDono.style.display = (ehColab && souSuper) ? 'block' : 'none';
+    if (boxPerms) boxPerms.style.display = ehColab ? 'block' : 'none';
   }
   window.admToggleDono = admToggleDono;
 
@@ -47293,12 +47369,18 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const papel = (document.getElementById('admPapel')||{}).value;
     if (!nome || (!id && !email)) { showToast('Nome e e-mail obrigatórios', true); return; }
     if (!id && senha.length < 4) { showToast('Defina uma senha (mín 4)', true); return; }
-    // colaborador vê as lojas da empresa (dono) — envia dono_id
+    // colaborador vê as lojas da empresa (dono) — envia dono_id e permissões
     const body = { nome, papel, lojas_vinculadas: [] };
     if (papel === 'colaborador') {
-      const donoSel = (document.getElementById('admDonoId')||{}).value;
-      if (!donoSel) { showToast('Selecione a empresa do colaborador', true); return; }
-      body.dono_id = parseInt(donoSel, 10);
+      // só super admin escolhe a empresa; admin é dono automático (backend resolve)
+      if (papelAtual() === 'superadmin') {
+        const donoSel = (document.getElementById('admDonoId')||{}).value;
+        if (!donoSel) { showToast('Selecione a empresa do colaborador', true); return; }
+        body.dono_id = parseInt(donoSel, 10);
+      }
+      // checklist de acessos
+      body.permissoes = Array.from(document.querySelectorAll('.adm-perm-check'))
+        .filter(c => c.checked).map(c => c.value);
     }
     if (!id) { body.email = email; body.senha = senha; }
     else { if (senha) body.senha = senha; const at=document.getElementById('admAtivo'); if(at) body.ativo = at.checked; }
