@@ -43951,14 +43951,13 @@ ${JSON.stringify(metricas, null, 2)}`
     }
     
     // Ordena por PRIORIDADE (alta primeiro); dentro da mesma prioridade, respeita a
-    // ordem manual (ordemManual) definida ao arrastar; sem ordem manual, cai pela data.
+    // ordem definida ao arrastar (ordemKanban). Cards sem ordemKanban vão por data.
     const prioOrdem = { alta: 0, media: 1, baixa: 2 };
     demandasFiltradas.sort((a,b) => {
       const pa = prioOrdem[getPrioridadeEfetiva(a)] ?? 1;
       const pb = prioOrdem[getPrioridadeEfetiva(b)] ?? 1;
       if (pa !== pb) return pa - pb;
-      // mesma prioridade: ordem manual primeiro (se ambas têm), senão data
-      const oa = a.ordemManual, ob = b.ordemManual;
+      const oa = a.ordemKanban, ob = b.ordemKanban;
       const temA = typeof oa === 'number', temB = typeof ob === 'number';
       if (temA && temB && oa !== ob) return oa - ob;
       if (temA && !temB) return -1;
@@ -44151,34 +44150,38 @@ ${JSON.stringify(metricas, null, 2)}`
   // manual (campo `ordemManual`). Aqui recalculamos o ordemManual da demanda movida
   // pra que ela caia exatamente onde foi solta, entre seus pares de mesma prioridade.
   function _reordenarDemandaManual(d, statusAlvo, alvo, colEl) {
-    const prioD = getPrioridadeEfetiva(d);
     const mapaStatus = s => ({ aguardando:'recebido', revisao:'producao', concluido:'aprovado', finalizado:'aprovado' }[s] || s);
-    // pares = demandas da MESMA coluna-alvo e MESMA prioridade efetiva (exceto a própria),
-    // NA ORDEM EM QUE APARECEM NO DOM (não por ordemManual, que pode estar indefinido).
-    let paresIds = [];
+    const prioOrdemLocal = { alta: 0, media: 1, baixa: 2 };
+
+    // 1) lista atual da coluna-alvo NA ORDEM DO DOM (exceto a demanda arrastada)
+    let idsDom = [];
     if (colEl) {
-      paresIds = [...colEl.querySelectorAll('.kanban-card')]
-        .map(c => c.dataset.id)
-        .filter(id => id && id !== d.id);
+      idsDom = [...colEl.querySelectorAll('.kanban-card')]
+        .map(c => c.dataset.id).filter(id => id && id !== d.id);
     }
-    let pares = paresIds
-      .map(id => demandas.find(x => x.id === id))
-      .filter(x => x && getPrioridadeEfetiva(x) === prioD);
-    // fallback se não veio coluna: usa o array em memória
-    if (!colEl) {
-      pares = demandas.filter(x => x.id !== d.id && mapaStatus(x.status) === statusAlvo && getPrioridadeEfetiva(x) === prioD);
+    let lista = idsDom.map(id => demandas.find(x => x.id === id)).filter(Boolean);
+    // fallback sem coluna: monta do array em memória, ordenado por prioridade + ordem
+    if (!colEl || !lista.length) {
+      lista = demandas
+        .filter(x => x.id !== d.id && mapaStatus(x.status) === statusAlvo)
+        .sort((a,b) => {
+          const pa = prioOrdemLocal[getPrioridadeEfetiva(a)] ?? 1, pb = prioOrdemLocal[getPrioridadeEfetiva(b)] ?? 1;
+          if (pa !== pb) return pa - pb;
+          return (a.ordemKanban ?? 0) - (b.ordemKanban ?? 0);
+        });
     }
 
-    // índice de inserção a partir do card-alvo
-    let idx = pares.length; // default: fim
+    // 2) índice de inserção da demanda arrastada (a partir do card-alvo)
+    let idx = lista.length;
     if (alvo && alvo.card && alvo.card.dataset && alvo.card.dataset.id) {
-      const pos = pares.findIndex(x => x.id === alvo.card.dataset.id);
+      const pos = lista.findIndex(x => x.id === alvo.card.dataset.id);
       if (pos >= 0) idx = alvo.antes ? pos : pos + 1;
     }
-    const novaLista = [...pares];
-    novaLista.splice(idx, 0, d);
-    // reatribui ordemManual sequencial; usa passo 10 pra deixar folga, mas o que importa é a ordem relativa
-    novaLista.forEach((x, i) => { x.ordemManual = i; });
+    lista.splice(idx, 0, d);
+
+    // 3) reatribui ordemKanban sequencial PRA TODA a coluna (estado sempre consistente,
+    //    sem mistura de "tem/não tem" que embaralhava após vários arrastes).
+    lista.forEach((x, i) => { x.ordemKanban = i; });
   }
 
   // Enfileira o aviso ao cliente quando a demanda é aprovada. Gera a mensagem com IA
