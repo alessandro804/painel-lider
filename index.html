@@ -9464,10 +9464,14 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       } catch(e) {}
       // DEMO: não puxa nada real
       if (_papel === 'demo') { console.log('[sync] demo: pull bloqueado'); return null; }
-      // Donos do financeiro (Leva 1 — por email; Leva 2 será por usuario_id no banco)
-      const DONOS_FINANCEIRO = ['alessandro@lidercommerce.com.br'];
-      const podeFinanceiro = (_papel === 'superadmin') ? false /* super admin não usa financeiro */
-        : (_papel === 'admin' && DONOS_FINANCEIRO.includes(_email));
+      // Donos dos dados da operação Lider (financeiro + comercial + demandas/operações).
+      // Trava de transição: essas tabelas ainda não têm dono no banco e hoje
+      // pertencem à conta Lider. Outros admins NÃO carregam esses dados.
+      // (Leva 2-B moverá isso pro backend com isolamento real por empresa.)
+      const DONOS_DADOS_LIDER = ['alessandro@lidercommerce.com.br'];
+      const ehDonoLider = (_papel === 'admin' && DONOS_DADOS_LIDER.includes(_email));
+      const podeFinanceiro = ehDonoLider; // mantém nome usado abaixo
+      const podeDadosOperacao = ehDonoLider; // demandas, vínculos, fluxos, comercial
       this.syncing = true;
       this.updateStatusBadge('syncing');
       try {
@@ -9479,6 +9483,9 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
           podeFinanceiro ? this.client.from('marketing_criativos').select('*') : Promise.resolve(vazio),
           this.client.from('app_data').select('*')
         ]);
+        // app_data contém configs sensíveis da operação (WhatsApp, integrações,
+        // automação). Só o dono carrega; outros admins recebem vazio.
+        if (!podeDadosOperacao && ad && !ad.error) { ad.data = []; }
         
         if (tx.error || bi.error || me.error || mc.error || ad.error) {
           throw new Error((tx.error || bi.error || me.error || mc.error || ad.error).message);
@@ -9486,21 +9493,21 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         
         // Demandas: busca separada, com tolerância caso a tabela ainda não exista
         let demandasData = [];
-        try {
+        if (podeDadosOperacao) try {
           const dm = await this.client.from('demandas').select('*');
           if (!dm.error) demandasData = (dm.data || []).map(r => this._fromDbDemanda(r));
         } catch(e) { console.warn('Tabela demandas ainda não criada:', e.message); }
         
         // Vínculos marketplace: busca tolerante
         let vinculosData = [];
-        try {
+        if (podeDadosOperacao) try {
           const vm = await this.client.from('marketplace_vinculos').select('*');
           if (!vm.error) vinculosData = (vm.data || []).map(r => this._fromDbVinculo(r));
         } catch(e) { console.warn('Tabela marketplace_vinculos ainda não criada:', e.message); }
         
         // Fluxos de demanda: busca tolerante
         let fluxosData = [];
-        try {
+        if (podeDadosOperacao) try {
           const fx = await this.client.from('fluxos_demanda').select('*');
           if (!fx.error) fluxosData = (fx.data || []).map(r => this._fromDbFluxo(r));
         } catch(e) { console.warn('Tabela fluxos_demanda ainda não criada:', e.message); }
