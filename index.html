@@ -651,7 +651,12 @@
   }
   .kanban-card:hover { box-shadow: 0 3px 10px rgba(0,0,0,0.12); }
   .kanban-card:active { cursor: grabbing; }
-  .kanban-card.dragging { opacity: 0.5; transform: rotate(2deg); }
+  .kanban-card.dragging { opacity: 0.35; }
+  .kanban-drag-clone {
+    position: fixed; z-index: 9999; pointer-events: none; margin: 0 !important;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.28); transform: rotate(1.5deg);
+    opacity: 0.96; cursor: grabbing;
+  }
   .kanban-card.prio-alta { border-left-color: #ef4444; }
   .kanban-card.prio-media { border-left-color: #eab308; }
   .kanban-card.prio-baixa { border-left-color: #94a3b8; }
@@ -5851,7 +5856,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
 
         <!-- KANBAN -->
         <div class="kanban-board" id="kanbanBoard">
-          <div class="kanban-col" data-status="recebido" ondragover="kanbanDragOver(event)" ondrop="kanbanDrop(event,'recebido')">
+          <div class="kanban-col" data-status="recebido">
             <div class="kanban-col-header recebido">
               <span class="kanban-col-dot"></span>
               <span class="kanban-col-title">Recebido</span>
@@ -5859,7 +5864,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             </div>
             <div class="kanban-col-body" id="colRecebido"></div>
           </div>
-          <div class="kanban-col" data-status="producao" ondragover="kanbanDragOver(event)" ondrop="kanbanDrop(event,'producao')">
+          <div class="kanban-col" data-status="producao">
             <div class="kanban-col-header producao">
               <span class="kanban-col-dot"></span>
               <span class="kanban-col-title">Em produção</span>
@@ -5867,7 +5872,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             </div>
             <div class="kanban-col-body" id="colProducao"></div>
           </div>
-          <div class="kanban-col" data-status="aprovado" ondragover="kanbanDragOver(event)" ondrop="kanbanDrop(event,'aprovado')">
+          <div class="kanban-col" data-status="aprovado">
             <div class="kanban-col-header aprovado">
               <span class="kanban-col-dot"></span>
               <span class="kanban-col-title">Aprovado</span>
@@ -44017,12 +44022,11 @@ ${JSON.stringify(metricas, null, 2)}`
       const concluido2 = (d.status === 'aprovado' || d.status === 'concluido' || d.status === 'finalizado');
       const corCard = concluido2 ? 'card-concluido' : (prioEf === 'alta' ? 'card-urgente' : 'card-normal');
       card.className = `kanban-card prio-${prioEf} ${corCard}`;
-      card.draggable = true;
+      card.draggable = false;
       card.dataset.id = d.id;
       card.dataset.prio = prioEf;
-      card.ondragstart = (e) => kanbanDragStart(e, d.id);
-      card.ondragend = kanbanDragEnd;
-      card.onclick = () => abrirNovaDemanda(d.id);
+      card.onpointerdown = (e) => kanbanPointerDown(e, d.id);
+      card.onclick = (e) => { if (_kanbanArrastou) { e.preventDefault(); e.stopPropagation(); return; } abrirNovaDemanda(d.id); };
       card.innerHTML = `
         <div class="kanban-card-top">
           <span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -44056,74 +44060,125 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   
   // Drag and drop
-  function kanbanDragStart(e, id) {
-    _dragDemandaId = id;
-    e.target.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    try { e.dataTransfer.setData('text/plain', id); } catch(_){}
-  }
-  function kanbanDragEnd(e) {
-    e.target.classList.remove('dragging');
-    document.querySelectorAll('.kanban-col-body').forEach(c => c.classList.remove('drag-over'));
-    document.querySelectorAll('.kanban-card.drop-before, .kanban-card.drop-after').forEach(c => c.classList.remove('drop-before','drop-after'));
-  }
-  // acha o card sob o cursor e se a inserção é antes/depois dele
-  // Acha, entre os cards de MESMA prioridade da demanda arrastada, qual será o vizinho
-  // e se a inserção é antes/depois dele — baseado na posição vertical do cursor.
+  // ===== DRAG-AND-DROP POR PONTEIRO (mouse/touch) =====
+  // Substitui o drag nativo do HTML5 (que falhava de forma intermitente — drop não
+  // disparava após alguns arrastes). Aqui controlamos tudo: início, movimento e solta.
+  let _kanbanArrastou = false;       // true se houve movimento suficiente (pra diferenciar de clique)
+  let _kbDrag = null;                // estado do arraste atual
+
   function _kanbanAlvoNaPosicao(colEl, clientY, prioArrastada) {
-    // só considera cards da mesma prioridade (a ordenação manual é dentro da prioridade)
     const cards = [...colEl.querySelectorAll('.kanban-card:not(.dragging)')]
       .filter(c => c.dataset && c.dataset.prio === prioArrastada);
     if (!cards.length) return { card: null, antes: false };
-    // se o cursor está ACIMA do topo do primeiro card (na área do header/topo da coluna),
-    // força inserção ANTES do primeiro — assim dá pra colocar em 1º lugar facilmente.
     const primeiro = cards[0].getBoundingClientRect();
     if (clientY <= primeiro.top + primeiro.height * 0.5) return { card: cards[0], antes: true };
-    // senão, acha o card cujo meio fica abaixo do cursor
     for (const card of cards) {
       const r = card.getBoundingClientRect();
       if (clientY < r.top + r.height / 2) return { card, antes: true };
     }
-    return { card: cards[cards.length - 1], antes: false }; // depois do último
+    return { card: cards[cards.length - 1], antes: false };
   }
-  function _kanbanColDe(target) {
-    if (!target || !target.closest) return null;
-    return target.closest('.kanban-col');
-  }
-  function kanbanDragOver(e) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const col = _kanbanColDe(e.currentTarget) || _kanbanColDe(e.target);
-    if (!col) return;
-    const colBody = col.querySelector('.kanban-col-body');
-    if (colBody) colBody.classList.add('drag-over');
-    // limpa indicadores anteriores em todas as colunas
-    document.querySelectorAll('.kanban-card.drop-before, .kanban-card.drop-after').forEach(c => c.classList.remove('drop-before','drop-after'));
-    document.querySelectorAll('.kanban-col-body.drag-over').forEach(b => { if (b !== colBody) b.classList.remove('drag-over'); });
-    // indicador de onde vai cair (entre os pares de mesma prioridade)
-    const d = demandas.find(x => x.id === _dragDemandaId);
-    if (d) {
-      const alvo = _kanbanAlvoNaPosicao(col, e.clientY, getPrioridadeEfetiva(d));
-      if (alvo.card) alvo.card.classList.add(alvo.antes ? 'drop-before' : 'drop-after');
+  function _kanbanColSob(x, y) {
+    // acha a .kanban-col sob o ponto (x,y), mesmo que o ponto caia no espaço vazio
+    const el = document.elementFromPoint(x, y);
+    let col = el && el.closest ? el.closest('.kanban-col') : null;
+    if (col) return col;
+    // fallback: testa cada coluna pelo retângulo horizontal
+    const cols = [...document.querySelectorAll('#kanbanBoard .kanban-col')];
+    for (const c of cols) {
+      const r = c.getBoundingClientRect();
+      if (x >= r.left && x <= r.right) return c;
     }
+    return null;
   }
-  function kanbanDrop(e, novoStatus) {
-    e.preventDefault();
-    const col = _kanbanColDe(e.currentTarget) || _kanbanColDe(e.target);
-    if (col) { const b = col.querySelector('.kanban-col-body'); if (b) b.classList.remove('drag-over'); }
+  function _limparIndicadores() {
     document.querySelectorAll('.kanban-card.drop-before, .kanban-card.drop-after').forEach(c => c.classList.remove('drop-before','drop-after'));
-    if (!_dragDemandaId) return;
+    document.querySelectorAll('.kanban-col-body.drag-over').forEach(b => b.classList.remove('drag-over'));
+  }
 
-    const d = demandas.find(x => x.id === _dragDemandaId);
-    if (!d) { _dragDemandaId = null; return; }
-
-    const mudouColuna = d.status !== novoStatus;
-
-    // calcula a nova posição manual (entre os cards de MESMA prioridade na coluna alvo)
+  function kanbanPointerDown(e, id) {
+    if (e.button != null && e.button !== 0) return; // só botão esquerdo
+    const cardEl = e.currentTarget;
+    _kanbanArrastou = false;
+    _kbDrag = {
+      id, cardEl,
+      startX: e.clientX, startY: e.clientY,
+      ativo: false, clone: null,
+    };
+    // captura os próximos movimentos mesmo se sair do card
+    document.addEventListener('pointermove', _kanbanPointerMove);
+    document.addEventListener('pointerup', _kanbanPointerUp, { once: true });
+  }
+  function _kanbanPointerMove(e) {
+    if (!_kbDrag) return;
+    const dx = e.clientX - _kbDrag.startX, dy = e.clientY - _kbDrag.startY;
+    if (!_kbDrag.ativo) {
+      if (Math.hypot(dx, dy) < 6) return; // ainda não é arraste (threshold)
+      // inicia o arraste
+      _kbDrag.ativo = true;
+      _kanbanArrastou = true;
+      _kbDrag.cardEl.classList.add('dragging');
+      // clone flutuante que segue o cursor
+      const r = _kbDrag.cardEl.getBoundingClientRect();
+      _kbDrag.offX = _kbDrag.startX - r.left;
+      _kbDrag.offY = _kbDrag.startY - r.top;
+      const clone = _kbDrag.cardEl.cloneNode(true);
+      clone.classList.add('kanban-drag-clone');
+      clone.style.width = r.width + 'px';
+      clone.style.left = (e.clientX - _kbDrag.offX) + 'px';
+      clone.style.top = (e.clientY - _kbDrag.offY) + 'px';
+      document.body.appendChild(clone);
+      _kbDrag.clone = clone;
+      document.body.style.userSelect = 'none';
+    }
+    // move o clone
+    if (_kbDrag.clone) {
+      _kbDrag.clone.style.left = (e.clientX - _kbDrag.offX) + 'px';
+      _kbDrag.clone.style.top = (e.clientY - _kbDrag.offY) + 'px';
+    }
+    // atualiza indicadores de destino
+    _limparIndicadores();
+    const col = _kanbanColSob(e.clientX, e.clientY);
     if (col) {
-      const alvo = _kanbanAlvoNaPosicao(col, e.clientY, getPrioridadeEfetiva(d));
-      _reordenarDemandaManual(d, novoStatus, alvo, col);
+      const body = col.querySelector('.kanban-col-body');
+      if (body) body.classList.add('drag-over');
+      const d = demandas.find(x => x.id === _kbDrag.id);
+      if (d) {
+        const alvo = _kanbanAlvoNaPosicao(col, e.clientY, getPrioridadeEfetiva(d));
+        if (alvo.card) alvo.card.classList.add(alvo.antes ? 'drop-before' : 'drop-after');
+      }
     }
+  }
+  function _kanbanPointerUp(e) {
+    document.removeEventListener('pointermove', _kanbanPointerMove);
+    document.body.style.userSelect = '';
+    const drag = _kbDrag;
+    _kbDrag = null;
+    if (!drag) return;
+    if (drag.clone) drag.clone.remove();
+    if (!drag.ativo) {
+      if (drag.cardEl) drag.cardEl.classList.remove('dragging');
+      _limparIndicadores();
+      _kanbanArrastou = false;
+      return; // foi clique, não arraste
+    }
+
+    const col = _kanbanColSob(e.clientX, e.clientY);
+    const d = demandas.find(x => x.id === drag.id);
+    if (!col || !d) {
+      if (drag.cardEl) drag.cardEl.classList.remove('dragging');
+      _limparIndicadores();
+      setTimeout(() => { _kanbanArrastou = false; }, 50);
+      return;
+    }
+
+    const novoStatus = col.dataset.status;
+    const mudouColuna = d.status !== novoStatus;
+    // calcula o alvo ENQUANTO o card arrastado ainda tem .dragging (pra ser excluído da conta)
+    const alvo = _kanbanAlvoNaPosicao(col, e.clientY, getPrioridadeEfetiva(d));
+    if (drag.cardEl) drag.cardEl.classList.remove('dragging');
+    _limparIndicadores();
+    _reordenarDemandaManual(d, novoStatus, alvo, col);
 
     if (mudouColuna) {
       d.status = novoStatus;
@@ -44142,7 +44197,8 @@ ${JSON.stringify(metricas, null, 2)}`
       const statusLabels = { recebido: 'Recebido', producao: 'Em produção', aprovado: 'Aprovado' };
       showToast(`${d.cliente || 'Demanda'} → ${statusLabels[novoStatus] || novoStatus}`);
     }
-    _dragDemandaId = null;
+    // reseta o flag de arraste depois do clique sintético do navegador
+    setTimeout(() => { _kanbanArrastou = false; }, 50);
   }
 
   // Define a ordem manual da demanda na coluna alvo. A ordenação base é por
