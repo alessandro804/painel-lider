@@ -9453,19 +9453,30 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     // === CARREGAR TUDO DO SUPABASE ===
     async pullAll() {
       if (!this.enabled || !this.client) return null;
-      // DEMO: não puxa dados reais do Supabase (segurança — demo só vê dados via backend filtrado)
+      // Quem pode carregar os dados FINANCEIROS (transactions/billings/marketing).
+      // Trava de transição (Leva 1): financeiro é por empresa/usuário e hoje
+      // pertence à conta Lider. Colaborador NUNCA carrega financeiro; admins
+      // que não sejam o dono também não. (Leva 2 moverá isso pro backend.)
+      let _papel = 'admin', _email = '';
       try {
         const uRaw = localStorage.getItem('lider_usuario');
-        if (uRaw) { const u = JSON.parse(uRaw); if (u && u.papel === 'demo') { console.log('[sync] demo: pull bloqueado'); return null; } }
+        if (uRaw) { const u = JSON.parse(uRaw) || {}; _papel = u.papel || 'admin'; _email = (u.email||'').toLowerCase(); }
       } catch(e) {}
+      // DEMO: não puxa nada real
+      if (_papel === 'demo') { console.log('[sync] demo: pull bloqueado'); return null; }
+      // Donos do financeiro (Leva 1 — por email; Leva 2 será por usuario_id no banco)
+      const DONOS_FINANCEIRO = ['alessandro@lidercommerce.com.br'];
+      const podeFinanceiro = (_papel === 'superadmin') ? false /* super admin não usa financeiro */
+        : (_papel === 'admin' && DONOS_FINANCEIRO.includes(_email));
       this.syncing = true;
       this.updateStatusBadge('syncing');
       try {
+        const vazio = { data: [], error: null };
         const [tx, bi, me, mc, ad] = await Promise.all([
-          this.client.from('transactions').select('*'),
-          this.client.from('billings').select('*'),
-          this.client.from('marketing_entries').select('*'),
-          this.client.from('marketing_criativos').select('*'),
+          podeFinanceiro ? this.client.from('transactions').select('*') : Promise.resolve(vazio),
+          podeFinanceiro ? this.client.from('billings').select('*') : Promise.resolve(vazio),
+          podeFinanceiro ? this.client.from('marketing_entries').select('*') : Promise.resolve(vazio),
+          podeFinanceiro ? this.client.from('marketing_criativos').select('*') : Promise.resolve(vazio),
           this.client.from('app_data').select('*')
         ]);
         
@@ -34825,7 +34836,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
   function lojasDoUsuario() { return (_usuarioLogado && Array.isArray(_usuarioLogado.lojas)) ? _usuarioLogado.lojas : []; }
   // telas permitidas por papel
   const TELAS_POR_PAPEL = {
-    superadmin: null, // null = todas (super admin supremo)
+    // super admin: SOMENTE a tela de administração (gestão de usuários + métricas)
+    superadmin: ['admScreen','settingsScreen','loginScreen'],
     admin: null, // null = todas
     // colaborador: Operações + as telas de trabalho que a operação usa
     colaborador: ['operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','loginScreen'],
@@ -34838,6 +34850,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   function papelHomeInicial() {
     const p = papelAtual();
+    if (p === 'superadmin') return 'admScreen';
     if (p === 'colaborador') return 'operacaoScreen';
     return 'homeScreen';
   }
@@ -47211,14 +47224,22 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <label class="form-label" style="font-size:12px">${u?'🔑 Trocar senha':'Senha'} ${u?'<span style="color:#9ca3af">(deixe vazio pra manter a atual)</span>':''}</label>
       <input type="text" class="form-input" id="admSenha" style="margin-bottom:10px" placeholder="${u?'Digite a nova senha para alterar':'Defina a senha'}">
       <label class="form-label" style="font-size:12px">Papel</label>
-      <select class="form-input" id="admPapel" style="margin-bottom:10px">
-        <option value="colaborador" ${u&&u.papel==='colaborador'?'selected':''}>Colaborador (Operações — vê todas as lojas)</option>
+      <select class="form-input" id="admPapel" style="margin-bottom:10px" onchange="admToggleDono()">
+        <option value="colaborador" ${u&&u.papel==='colaborador'?'selected':''}>Colaborador (Operações — vê as lojas da empresa)</option>
         <option value="admin" ${u&&u.papel==='admin'?'selected':''}>Administrador (tudo)</option>
         <option value="superadmin" ${u&&u.papel==='superadmin'?'selected':''}>Super Admin (supremo — métricas globais)</option>
         <option value="demo" ${u&&u.papel==='demo'?'selected':''}>Demonstração (Shopee — sem dados reais)</option>
       </select>
       <div style="font-size:11px;color:#6b7280;background:#f0fdf4;border-radius:8px;padding:8px;margin-bottom:10px">
-        ℹ️ O colaborador acessa a página de <b>Operações</b> com <b>todas as lojas do sistema</b> automaticamente — incluindo as que você adicionar no futuro. Não precisa vincular loja a loja.
+        ℹ️ O colaborador acessa a página de <b>Operações</b> com as <b>lojas da empresa dele</b> (do administrador a que está vinculado) — incluindo as que essa empresa adicionar no futuro. Não precisa vincular loja a loja.
+      </div>
+      <div id="admDonoBox" style="display:${(u&&u.papel==='colaborador')?'block':'none'};margin-bottom:10px">
+        <label class="form-label" style="font-size:12px">Empresa do colaborador (dono das lojas)</label>
+        <select class="form-input" id="admDonoId">
+          <option value="">— selecione a empresa —</option>
+          ${_admUsuarios.filter(x=>x.papel==='admin').map(a=>`<option value="${a.id}" ${(u&&u.dono_id===a.id)?'selected':''}>${escapeHtml(a.nome)} (${escapeHtml(a.email)})</option>`).join('')}
+        </select>
+        <div style="font-size:11px;color:#6b7280;margin-top:4px">O colaborador verá apenas as lojas desta empresa.</div>
       </div>
       ${u?`<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="admAtivo" ${u.ativo!==false?'checked':''}> Usuário ativo</label>`:''}
       <div style="display:flex;gap:8px">
@@ -47237,6 +47258,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   window.admToggleLojas = admToggleLojas;
 
+  // mostra/esconde o seletor de empresa (dono) conforme o papel
+  function admToggleDono() {
+    const papel = (document.getElementById('admPapel')||{}).value;
+    const box = document.getElementById('admDonoBox');
+    if (box) box.style.display = papel === 'colaborador' ? 'block' : 'none';
+  }
+  window.admToggleDono = admToggleDono;
+
   async function admSalvarUsuario(id) {
     const nome = (document.getElementById('admNome')||{}).value.trim();
     const email = (document.getElementById('admEmail')||{}).value.trim();
@@ -47244,8 +47273,13 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const papel = (document.getElementById('admPapel')||{}).value;
     if (!nome || (!id && !email)) { showToast('Nome e e-mail obrigatórios', true); return; }
     if (!id && senha.length < 4) { showToast('Defina uma senha (mín 4)', true); return; }
-    // colaborador vê todas as lojas automaticamente — não vincula manualmente
+    // colaborador vê as lojas da empresa (dono) — envia dono_id
     const body = { nome, papel, lojas_vinculadas: [] };
+    if (papel === 'colaborador') {
+      const donoSel = (document.getElementById('admDonoId')||{}).value;
+      if (!donoSel) { showToast('Selecione a empresa do colaborador', true); return; }
+      body.dono_id = parseInt(donoSel, 10);
+    }
     if (!id) { body.email = email; body.senha = senha; }
     else { if (senha) body.senha = senha; const at=document.getElementById('admAtivo'); if(at) body.ativo = at.checked; }
     try {
