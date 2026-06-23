@@ -5024,7 +5024,9 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         <input type="text" id="lcWhatsNum" class="lc-field-input" placeholder="Ex: 37 99999-9999" inputmode="numeric">
         <label class="lc-field-label" style="margin-top:14px">Mensagem</label>
         <textarea id="lcWhatsTxt" class="lc-field-input" rows="4" placeholder="Escreva a mensagem que será enviada..."></textarea>
-        <div class="lc-modal-note"><span class="lc-ic" data-lucide="clock"></span> A mensagem entra na fila e é enviada no próximo ciclo, dentro do horário útil (08h–20h, seg–sáb).</div>
+        <label class="lc-field-label" style="margin-top:14px">Enviar quando? <span style="font-weight:400;color:#6b7280">(opcional — deixe vazio para o próximo ciclo)</span></label>
+        <input type="datetime-local" id="lcWhatsQuando" class="lc-field-input">
+        <div class="lc-modal-note"><span class="lc-ic" data-lucide="clock"></span> Sem data marcada, a mensagem é enviada no próximo ciclo dentro do horário útil (08h–20h, seg–sáb). Com data, ela só sai a partir do horário escolhido (também respeitando o horário útil).</div>
       </div>
       <div class="lc-modal-foot">
         <button class="lc-btn lc-btn--secondary" onclick="lcFecharAgendarWhats()">Cancelar</button>
@@ -34865,6 +34867,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
       const data = await resp.json();
       
       if (data.ok && data.token) {
+        // limpa qualquer cache do usuário ANTERIOR antes de hidratar o novo
+        try { limparDadosOperacionais(); } catch(e){}
         setTokenLogin(data.token);
         if (data.apiToken) {
           localStorage.setItem('lider_api_token', data.apiToken);
@@ -34879,6 +34883,20 @@ Responda APENAS com JSON válido (sem markdown), formato:
         if (typeof aplicarIdentidadeUsuario === 'function') aplicarIdentidadeUsuario();
         goTo(papelHomeInicial());
         renderAll();
+        // PULL dos dados do novo usuário (lojas, financeiro, demandas, etc.)
+        // Sem isso, após limpar o cache do usuário anterior a tela ficaria
+        // vazia até um reload. Aplica o que vier do backend (já isolado por dono).
+        (async () => {
+          try {
+            if (window.LiderSync && LiderSync.pullAll) {
+              const cloudData = await LiderSync.pullAll();
+              if (cloudData && typeof aplicarDadosDaNuvem === 'function') {
+                aplicarDadosDaNuvem(cloudData);
+              }
+            }
+          } catch (e) { console.warn('[login] pull pós-login falhou:', e); }
+          try { if (typeof renderAll === 'function') renderAll(); } catch(e){}
+        })();
         carregarProdutosDoBackend().then(() => {
           if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
           if (typeof renderAll === 'function') renderAll();
@@ -34895,6 +34913,61 @@ Responda APENAS com JSON válido (sem markdown), formato:
     }
   }
   
+  // ============================================================
+  // LIMPEZA DE SESSÃO — zera TODOS os dados operacionais (cache local
+  // + variáveis em memória) pra não vazar dados de um usuário pro outro
+  // ao trocar de conta. Mantém só config de ambiente (supabase, modelo IA,
+  // estado da sidebar) e as chaves de sessão (tratadas à parte).
+  // ============================================================
+  function limparDadosOperacionais() {
+    // 1) chaves de cache de DADOS no localStorage (não as de config/ambiente)
+    const chavesDados = [
+      'lider_lojas_v1', 'lider_produtos_v1', 'lider_billings_v1', 'lider_billings_v2',
+      'lider_billings_v3', 'lider_tx_v3', 'lider_tx_v4', 'lider_tx_v5',
+      'lider_marketing_v1', 'lider_criativos_v1', 'lider_demandas_v1',
+      'lider_mkt_vinculos_v1', 'lider_fluxos_v1', 'lider_cats_v1', 'lider_catmap_v1',
+      'lider_promocoes_v1', 'lider_guias_v1', 'lider_skus_shein_v1',
+      'lider_tipos_custom_v1', 'lider_categorias_ia_v1', 'lider_fechamentos_v1',
+      'lider_cenarios_cobranca', 'lider_clientes_asaas', 'lider_settings_v1',
+      'lider_wa_config_v1', 'lider_automacao_v1', 'lider_integracoes_v1',
+      'lider_nf_config', 'lider_rel_config', 'lider_prompt_reconciliacao_v1',
+      'lider_pendencias_direcao_v1', 'lider_ia_diag_v1', 'lider_contas_apelido',
+      'lc_anuncios_ignorados',
+    ];
+    chavesDados.forEach(k => { try { localStorage.removeItem(k); } catch(e){} });
+    // históricos dos chats das IAs
+    try {
+      if (typeof CONSULTOR_HISTORY_KEYS === 'object') {
+        Object.values(CONSULTOR_HISTORY_KEYS).forEach(k => { try { localStorage.removeItem(k); } catch(e){} });
+      }
+    } catch(e){}
+
+    // 2) zera as variáveis EM MEMÓRIA (senão a tela ainda mostra o cache antigo)
+    try { if (typeof lojasErp !== 'undefined') lojasErp = []; } catch(e){}
+    try { if (typeof produtosErp !== 'undefined') produtosErp = []; } catch(e){}
+    try { if (typeof transactions !== 'undefined') transactions = []; } catch(e){}
+    try { if (typeof billings !== 'undefined') billings = []; } catch(e){}
+    try { if (typeof marketingEntries !== 'undefined') marketingEntries = []; } catch(e){}
+    try { if (typeof marketingCriativos !== 'undefined') marketingCriativos = []; } catch(e){}
+    try { if (typeof demandas !== 'undefined') demandas = []; } catch(e){}
+    try { if (typeof marketplaceVinculos !== 'undefined') marketplaceVinculos = []; } catch(e){}
+    try { if (typeof fluxosDemanda !== 'undefined') fluxosDemanda = []; } catch(e){}
+    try { if (typeof promocoesErp !== 'undefined') promocoesErp = []; } catch(e){}
+    try { if (typeof categoriasMapErp !== 'undefined') categoriasMapErp = []; } catch(e){}
+    try { if (typeof guiasTamanhoErp !== 'undefined') guiasTamanhoErp = []; } catch(e){}
+    try { if (typeof skusUsadosShein !== 'undefined') skusUsadosShein = []; } catch(e){}
+    try { if (typeof fechamentos !== 'undefined') fechamentos = []; } catch(e){}
+    try { if (typeof cenariosCobranca !== 'undefined') cenariosCobranca = []; } catch(e){}
+    try { if (typeof pendencias !== 'undefined') pendencias = []; } catch(e){}
+    try { if (typeof tiposCustomizados !== 'undefined') tiposCustomizados = []; } catch(e){}
+    try { if (typeof _clientesAsaas !== 'undefined') _clientesAsaas = {}; } catch(e){}
+    // mapas/objetos de config viram default (sem dados do outro usuário)
+    try { if (typeof waConfig !== 'undefined') waConfig = { status: 'desconectado' }; } catch(e){}
+    // _automacoesCache do card de automações
+    try { if (typeof _automacoesCache !== 'undefined') _automacoesCache = []; } catch(e){}
+  }
+  window.limparDadosOperacionais = limparDadosOperacionais;
+
   function sair() {
     // limpa toda a sessão (inclui impersonação, se houver)
     setTokenLogin('');
@@ -34902,6 +34975,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     localStorage.removeItem('lider_usuario');
     localStorage.removeItem('lider_token_admin_real');
     localStorage.removeItem('lider_usuario_admin_real');
+    // CRÍTICO: limpa os dados operacionais pra não vazar pro próximo login
+    try { limparDadosOperacionais(); } catch(e){}
     _usuarioLogado = null;
     const fab = document.getElementById('consultorFab');
     if (fab) fab.style.display = 'none';
@@ -35645,7 +35720,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (!el) return;
     let fila = [];
     try {
-      const r = await fetch(BACKEND_URL + '/api/tarefas/whatsapp-fila', { headers: { 'x-api-token': getApiToken() } });
+      const r = await fetch(BACKEND_URL + '/api/tarefas/whatsapp-fila', { headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login')||'') } });
       const d = await r.json();
       fila = (d && d.ok && Array.isArray(d.fila)) ? d.fila : [];
     } catch (e) { fila = []; }
@@ -35656,7 +35731,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (!confirm('Cancelar o envio desta mensagem?')) return;
     try {
       const r = await fetch(BACKEND_URL + '/api/tarefas/whatsapp-fila/cancelar', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login')||'') },
         body: JSON.stringify({ id })
       });
       const d = await r.json();
@@ -35666,7 +35741,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   function lcAbrirAgendarWhats() {
     const ov = document.getElementById('lcWhatsAgendarOverlay');
-    if (ov) { ov.classList.add('active'); document.getElementById('lcWhatsNum').value=''; document.getElementById('lcWhatsTxt').value=''; }
+    if (ov) { ov.classList.add('active'); document.getElementById('lcWhatsNum').value=''; document.getElementById('lcWhatsTxt').value=''; var _q=document.getElementById('lcWhatsQuando'); if(_q) _q.value=''; }
   }
   function lcFecharAgendarWhats() {
     const ov = document.getElementById('lcWhatsAgendarOverlay');
@@ -35675,14 +35750,18 @@ Responda APENAS com JSON válido (sem markdown), formato:
   async function lcConfirmarAgendarWhats() {
     const numero = (document.getElementById('lcWhatsNum').value || '').replace(/\D/g,'');
     const texto = (document.getElementById('lcWhatsTxt').value || '').trim();
+    const quandoRaw = (document.getElementById('lcWhatsQuando') && document.getElementById('lcWhatsQuando').value) || '';
+    // datetime-local não tem timezone; interpreta como horário local e converte pra ISO
+    let agendadoPara = null;
+    if (quandoRaw) { const dq = new Date(quandoRaw); if (!isNaN(dq.getTime())) agendadoPara = dq.toISOString(); }
     if (numero.length < 10) { showToast('Informe DDD + número', true); return; }
     if (!texto) { showToast('Escreva a mensagem', true); return; }
     const btn = document.getElementById('lcWhatsConfirmBtn');
     if (btn) { btn.disabled = true; }
     try {
       const r = await fetch(BACKEND_URL + '/api/tarefas/whatsapp-fila/agendar', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-        body: JSON.stringify({ numero, texto })
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login')||'') },
+        body: JSON.stringify({ numero, texto, agendadoPara })
       });
       const d = await r.json();
       if (d && d.ok) { showToast('Mensagem adicionada à fila'); lcFecharAgendarWhats(); carregarFilaWhatsapp(); }
