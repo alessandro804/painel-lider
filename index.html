@@ -46721,6 +46721,59 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     }
   }
   
+  // ============================================================
+  // MERGE DEFENSIVO DE LOJAS (fix vínculo loja↔cliente sumindo)
+  // ------------------------------------------------------------
+  // O array `lojas` mora numa única chave de app_data. Um push stale
+  // de outra aba/dispositivo (ou um estado carregado cedo, antes de
+  // popular) pode trazer as lojas SEM `clienteVinculado`. Antes, a
+  // nuvem sobrescrevia `lojasErp` direto e zerava os vínculos.
+  //
+  // Regra: a nuvem é a base, MAS campos "pegajosos" (clienteVinculado,
+  // idBanco) nunca são apagados por um valor vazio vindo da nuvem se
+  // o local já tem valor. Casa loja por `id` (id local estável) e,
+  // como fallback, por `idBanco`. Lojas que só existem local também
+  // são preservadas (não somem por estarem ausentes num push antigo).
+  // Retorna o array mesclado.
+  function mesclarLojasNuvem(cloudLojas) {
+    const locais = Array.isArray(lojasErp) ? lojasErp : [];
+    if (!Array.isArray(cloudLojas)) return locais;
+
+    // índice das locais por id e por idBanco
+    const localPorId = {};
+    const localPorBanco = {};
+    locais.forEach(l => {
+      if (l && l.id != null) localPorId[String(l.id)] = l;
+      if (l && l.idBanco != null) localPorBanco[String(l.idBanco)] = l;
+    });
+
+    const usados = new Set();
+    const mescladas = cloudLojas.map(nuvem => {
+      const local = (nuvem.id != null && localPorId[String(nuvem.id)])
+                 || (nuvem.idBanco != null && localPorBanco[String(nuvem.idBanco)])
+                 || null;
+      if (local) usados.add(local);
+      // base = nuvem; reaplica campos pegajosos do local quando a nuvem vier vazia
+      const merged = { ...(local || {}), ...nuvem };
+      // clienteVinculado: nunca deixa um valor vazio da nuvem apagar o local
+      if (local && local.clienteVinculado && !nuvem.clienteVinculado) {
+        merged.clienteVinculado = local.clienteVinculado;
+      }
+      // idBanco: idem (não perde o vínculo com a tabela lojas)
+      if (local && local.idBanco != null && nuvem.idBanco == null) {
+        merged.idBanco = local.idBanco;
+      }
+      return merged;
+    });
+
+    // preserva lojas que só existem localmente (não estavam no push da nuvem)
+    locais.forEach(l => {
+      if (!usados.has(l)) mescladas.push(l);
+    });
+
+    return mescladas;
+  }
+
   function aplicarDadosDaNuvem(cloudData) {
     if (Array.isArray(cloudData.transactions)) {
       transactions = cloudData.transactions;
@@ -46760,8 +46813,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         localStorage.setItem('lider_cats_v1', JSON.stringify(categorias));
       }
       // Lojas vêm da app_data. (Produtos vêm do backend, não daqui.)
+      // MERGE DEFENSIVO: nunca deixa um push stale da nuvem apagar
+      // clienteVinculado/idBanco já preenchidos localmente.
       if (Array.isArray(cloudData.appData.lojas)) {
-        lojasErp = cloudData.appData.lojas;
+        lojasErp = mesclarLojasNuvem(cloudData.appData.lojas);
         localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
       }
       if (cloudData.appData.settings) {
@@ -46797,10 +46852,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         configIntegracoes = { ...configIntegracoes, ...cloudData.appData.integracoes };
         localStorage.setItem('lider_integracoes_v1', JSON.stringify(configIntegracoes));
       }
-      if (Array.isArray(cloudData.appData.lojas)) {
-        lojasErp = cloudData.appData.lojas;
-        localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
-      }
+      // (bloco de lojas duplicado removido — já tratado acima com mesclarLojasNuvem)
       if (Array.isArray(cloudData.appData.produtos)) {
         produtosErp = cloudData.appData.produtos;
         localStorage.setItem('lider_produtos_v1', JSON.stringify(produtosErp));
