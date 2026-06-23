@@ -4797,6 +4797,11 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             <span class="lc-ic" data-size="sm" data-lucide="calendar"></span>
             <select id="lcHomeMesSelect" onchange="lcHomeMudarMes(this.value)" style="border:none;background:transparent;font:inherit;font-weight:600;color:var(--lc-ink-2);cursor:pointer;outline:none"></select>
           </span>
+          <button id="btnDrenarFilaWa" onclick="drenarFilaWhatsappAgora()" title="Envia agora as mensagens que estão na fila do WhatsApp, sem esperar o ciclo automático de 5 minutos."
+            style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border:1px solid #16a34a;background:#16a34a;color:#fff;border-radius:10px;font-weight:600;font-size:13px;cursor:pointer">
+            <span class="lc-ic" data-size="sm" data-lucide="send"></span>
+            <span id="btnDrenarFilaWaLabel">Disparar fila do WhatsApp agora</span>
+          </button>
         </div>
 
         <!-- ===== FAIXA DE KPIs ===== -->
@@ -6180,7 +6185,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         <option value="__avulso__">✍️ Avulso (digitar nome)</option>
       </select>
       <input type="text" class="form-input" id="demandaClienteAvulso" placeholder="Nome do cliente avulso" style="margin-top:6px;display:none" oninput="document.getElementById('demandaCliente').value = this.value">
-      <input type="text" class="form-input" id="demandaClienteAvulsoTel" placeholder="📱 WhatsApp do cliente (ex: 37 98410-2079)" style="margin-top:6px;display:none">
+      <input type="text" class="form-input" id="demandaClienteAvulsoTel" placeholder="📱 WhatsApp do cliente (ex: 99 99999-9999)" style="margin-top:6px;display:none">
     </div>
     <input type="hidden" id="demandaCliente" value="">
     <input type="hidden" id="demandaClienteTel" value="">
@@ -8285,7 +8290,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
                 O sistema te avisa aqui quando algo precisa de atenção — por exemplo, quando uma mensagem fica <b>aguardando na fila</b> porque a loja está sem cliente vinculado. É o <b>seu</b> número (cada usuário tem o seu); não é enviado a clientes.
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-                <input type="tel" id="adminAvisoTelefone" placeholder="Ex: 37 9 8410-2079"
+                <input type="tel" id="adminAvisoTelefone" placeholder="Ex: 99 9 9999-9999"
                   style="flex:1;min-width:220px;padding:9px 12px;border:1px solid #d1d5db;border-radius:10px;font-size:14px"
                   oninput="document.getElementById('adminAvisoHint').textContent=''">
                 <button class="toolbar-btn" onclick="salvarTelefoneAdminAvisos()">💾 Salvar número</button>
@@ -12255,7 +12260,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     const bruto = (inp && inp.value || '').trim();
     const digitos = bruto.replace(/\D/g, '');
     if (bruto && digitos.length < 10) {
-      if (hint) { hint.style.color = '#dc2626'; hint.textContent = '⚠ Número parece curto. Use DDD + número (ex: 37 9 8410-2079).'; }
+      if (hint) { hint.style.color = '#dc2626'; hint.textContent = '⚠ Número parece curto. Use DDD + número (ex: 99 9 9999-9999).'; }
       return;
     }
     // guarda o que o usuário digitou (o backend normaliza DDI/9º dígito no envio).
@@ -34777,7 +34782,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.128-blindagem-fila-wa-numero-admin';
+  const _DIAG_VERSAO_PAINEL = 'v33k.129-botao-drenar-fila-wa-na-hora';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -35779,6 +35784,45 @@ Responda APENAS com JSON válido (sem markdown), formato:
         </div>
         <span class="lc-rank-val">${formatBRLCompact(c[1])}</span>
       </div>`).join('');
+  }
+
+  /* ====== Disparo manual da fila de WhatsApp (botão "Disparar agora") ====== */
+  let _drenandoFilaWa = false;
+  async function drenarFilaWhatsappAgora() {
+    if (_drenandoFilaWa) return;
+    const btn = document.getElementById('btnDrenarFilaWa');
+    const lbl = document.getElementById('btnDrenarFilaWaLabel');
+    const setLbl = (t) => { if (lbl) lbl.textContent = t; };
+    _drenandoFilaWa = true;
+    if (btn) { btn.style.opacity = '0.7'; btn.style.cursor = 'wait'; }
+    setLbl('Disparando…');
+    try {
+      const _tok = localStorage.getItem('lider_token_login') || '';
+      const r = await fetch(BACKEND_URL + '/api/tarefas/whatsapp/drenar-agora', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + _tok },
+        body: '{}',
+      });
+      const d = await r.json();
+      if (d && d.ok) {
+        showToast('✓ Fila disparada agora. As mensagens com telefone saem em segundos; as sem vínculo seguem aguardando.');
+        setLbl('Disparado ✓');
+        // recarrega o resumo da Home depois de alguns segundos pra refletir o envio
+        setTimeout(() => { try { carregarHomeResumo(_lcHomeMes, _lcHomeAno); } catch(e){} }, 6000);
+      } else {
+        showToast('⚠ Não consegui disparar: ' + ((d && d.erro) || 'erro desconhecido'), true);
+        setLbl('Disparar fila do WhatsApp agora');
+      }
+    } catch (e) {
+      showToast('⚠ Falha ao disparar a fila: ' + e.message, true);
+      setLbl('Disparar fila do WhatsApp agora');
+    } finally {
+      setTimeout(() => {
+        _drenandoFilaWa = false;
+        if (btn) { btn.style.opacity = '1'; btn.style.cursor = 'pointer'; }
+        setLbl('Disparar fila do WhatsApp agora');
+      }, 4000);
+    }
   }
 
   /* ====== Resumo da Home via backend (atrasados, banidos, IA, whatsapp, pódio) ====== */
