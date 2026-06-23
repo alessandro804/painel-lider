@@ -34855,7 +34855,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.134-boot-splash-sem-flash-produtos-paralelo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.135-splash-espera-dados-sem-tela-branca';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47758,7 +47758,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       }
     } catch(e) {}
     const token = getTokenLogin();
-    if (!token) return;  // sem token salvo: mostra login normalmente
+    if (!token) { lcMarcarPronto(); return; }  // sem token salvo: mostra login normalmente
     
     // Esconde a tela de login enquanto valida (evita flash)
     const loginScreen = document.getElementById('loginScreen');
@@ -47768,6 +47768,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const backend = getBackendUrl();
       if (!backend) {
         if (loginScreen) loginScreen.style.opacity = '';
+        lcMarcarPronto();
         return;
       }
       
@@ -47788,8 +47789,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           if (typeof ajustarSettingsAoUsuario === 'function') ajustarSettingsAoUsuario();
           if (typeof aplicarIdentidadeUsuario === 'function') aplicarIdentidadeUsuario();
           goTo(typeof papelHomeInicial==='function' ? papelHomeInicial() : 'homeScreen');
-          if (typeof renderAll === 'function') renderAll(); // render imediato com cache local (rápido)
-          // atualiza com dados frescos da nuvem em background (com overlay leve só se demorar)
+          if (typeof renderAll === 'function') renderAll(); // render imediato com cache local (se houver)
+          // Puxa os dados frescos da nuvem. O SPLASH só some DEPOIS que os dados
+          // chegam e a tela é renderizada de verdade — assim nunca expõe a home
+          // vazia (causa da "tela branca depois do loading").
           (async () => {
             try {
               if (window.LiderSync && LiderSync.pullAll) {
@@ -47800,6 +47803,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
                 }
               }
             } catch (e) { console.warn('[autologin] pull falhou:', e); }
+            // já temos dados financeiros/demandas → pode revelar a tela
+            if (typeof lcMarcarPronto === 'function') lcMarcarPronto();
+            // produtos carregam em background (não seguram a revelação da tela)
             try {
               await carregarProdutosDoBackend();
               if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
@@ -47814,10 +47820,12 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       setTokenLogin('');
       localStorage.removeItem('lider_api_token');
       if (loginScreen) loginScreen.style.opacity = '';
+      lcMarcarPronto();
     } catch(err) {
       // Sem rede ou backend fora — mostra login (sem assumir que o token é inválido)
       console.warn('[autoLogin] erro de rede:', err.message);
       if (loginScreen) loginScreen.style.opacity = '';
+      lcMarcarPronto();
     }
   }
   
@@ -47835,10 +47843,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   function _bootDispatch() {
     Promise.resolve()
       .then(() => _autoLoginAoBoot())
-      .catch(e => console.warn('[boot] erro:', e && e.message))
-      .finally(lcMarcarPronto);
-    // fallback: se por algum motivo o boot não resolver, revela mesmo assim
-    setTimeout(lcMarcarPronto, 8000);
+      .catch(e => { console.warn('[boot] erro:', e && e.message); lcMarcarPronto(); });
+    // fallback de SEGURANÇA: se o boot travar e não revelar a tela em 12s,
+    // revela mesmo assim pra nunca deixar o splash preso pra sempre.
+    setTimeout(lcMarcarPronto, 12000);
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', _bootDispatch);
