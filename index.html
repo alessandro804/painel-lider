@@ -10,9 +10,9 @@
      de login piscar antes do auto-login entrar. -->
 <style>
   html { background: #f5f7fb; }
-  /* enquanto não está pronto, segura o conteúdo das telas (mas deixa um fundo limpo) */
-  html:not(.lc-pronto) body > .screen,
-  html:not(.lc-pronto) body > .sidebar { visibility: hidden; }
+  /* o splash (abaixo) já cobre a tela inteira até o app ficar pronto, então NÃO
+     escondemos as telas com visibility (isso deixava paint preso → tela branca
+     que só voltava ao mexer o mouse). O splash some via JS removendo do DOM. */
   /* spinner de boot mostrado até o app marcar lc-pronto */
   #lcBootSplash {
     position: fixed; inset: 0; z-index: 100000; display: flex;
@@ -34855,7 +34855,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.135-splash-espera-dados-sem-tela-branca';
+  const _DIAG_VERSAO_PAINEL = 'v33k.137-repaint-forte-display-toggle';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47832,8 +47832,37 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // Marca a página como pronta: esconde o splash de boot e revela o conteúdo.
   // Idempotente. Chamado pelo boot; também tem um fallback por tempo (abaixo)
   // pra NUNCA deixar o splash preso, mesmo se algo falhar.
+  // IMPORTANTE (v33k.136): além de revelar, FORÇA um repaint. Sem isso, em
+  // alguns casos o navegador não repinta o conteúdo que estava atrás do splash
+  // e a tela fica branca até um evento (ex.: mexer o mouse) forçar o repaint.
   function lcMarcarPronto() {
-    try { document.documentElement.classList.add('lc-pronto'); } catch(e) {}
+    try {
+      const html = document.documentElement;
+      if (html.classList.contains('lc-pronto')) return; // já feito (idempotente)
+      html.classList.add('lc-pronto');
+      // remove o splash do DOM de vez (não só display:none)
+      const sp = document.getElementById('lcBootSplash');
+      if (sp && sp.parentNode) sp.parentNode.removeChild(sp);
+      // REPAINT FORTE (v33k.137): em alguns navegadores o conteúdo fica "pintado
+      // de branco" por cima até um evento (mexer o mouse) forçar o redesenho.
+      // Forçamos uma RECOMPOSIÇÃO completa: piscamos display:none→'' no <body>,
+      // o que obriga o navegador a refazer layout E pintura de tudo. É o método
+      // mais confiável entre navegadores pra destravar pintura presa.
+      const forcarRepaint = () => {
+        try {
+          const b = document.body;
+          const antes = b.style.display;
+          b.style.display = 'none';
+          void b.offsetHeight;            // lê layout = força reflow com a tela "apagada"
+          b.style.display = antes || '';  // re-mostra = força nova pintura
+          void b.offsetHeight;
+        } catch(e) {}
+      };
+      try { if (typeof renderAll === 'function') renderAll(); } catch(e) {}
+      forcarRepaint();
+      // repete no próximo frame (cobre o caso de o conteúdo ainda estar montando)
+      requestAnimationFrame(() => { try { if (typeof renderAll === 'function') renderAll(); } catch(e){} forcarRepaint(); });
+    } catch(e) {}
   }
   window.lcMarcarPronto = lcMarcarPronto;
 
