@@ -4797,11 +4797,6 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             <span class="lc-ic" data-size="sm" data-lucide="calendar"></span>
             <select id="lcHomeMesSelect" onchange="lcHomeMudarMes(this.value)" style="border:none;background:transparent;font:inherit;font-weight:600;color:var(--lc-ink-2);cursor:pointer;outline:none"></select>
           </span>
-          <button id="btnDrenarFilaWa" onclick="drenarFilaWhatsappAgora()" title="Envia agora as mensagens que estão na fila do WhatsApp, sem esperar o ciclo automático de 5 minutos."
-            style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border:1px solid #16a34a;background:#16a34a;color:#fff;border-radius:10px;font-weight:600;font-size:13px;cursor:pointer">
-            <span class="lc-ic" data-size="sm" data-lucide="send"></span>
-            <span id="btnDrenarFilaWaLabel">Disparar fila do WhatsApp agora</span>
-          </button>
         </div>
 
         <!-- ===== FAIXA DE KPIs ===== -->
@@ -4935,7 +4930,12 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
           <div class="lc-block">
             <div class="lc-block-head">
               <div class="lc-block-title"><span class="lc-ic" data-lucide="message-circle"></span> WhatsApp</div>
-              <button class="lc-btn lc-btn--primary lc-btn--sm" onclick="lcAbrirAgendarWhats()"><span class="lc-ic" data-lucide="plus"></span> Mensagem</button>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button id="btnDrenarFilaWa" class="lc-btn lc-btn--success lc-btn--sm" onclick="drenarFilaWhatsappAgora()" title="Envia agora as mensagens que estão na fila, sem esperar o ciclo automático.">
+                  <span class="lc-ic" data-lucide="send-horizontal"></span> <span id="btnDrenarFilaWaLabel">Disparar agora</span>
+                </button>
+                <button class="lc-btn lc-btn--primary lc-btn--sm" onclick="lcAbrirAgendarWhats()"><span class="lc-ic" data-lucide="plus"></span> Mensagem</button>
+              </div>
             </div>
             <div id="lcWhatsapp"><div class="lc-block-empty">carregando…</div></div>
           </div>
@@ -34773,6 +34773,38 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
 
   // ============================================================
+  // OVERLAY DE CARREGANDO (v33k.133) — evita a "tela branca" no
+  // primeiro login: enquanto o pull dos dados não termina, mostra um
+  // spinner em vez da tela vazia. Criado via JS (não depende de HTML).
+  // ============================================================
+  function mostrarOverlayCarregando(texto) {
+    let ov = document.getElementById('lcOverlayCarregando');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'lcOverlayCarregando';
+      ov.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--lc-bg,#0f1115);color:var(--lc-ink,#e5e7eb);font-family:inherit';
+      ov.innerHTML =
+        '<div style="width:42px;height:42px;border:3px solid rgba(125,125,125,.25);border-top-color:#16a34a;border-radius:50%;animation:lcSpin .8s linear infinite"></div>' +
+        '<div id="lcOverlayCarregandoTxt" style="font-size:14px;font-weight:600;opacity:.85"></div>' +
+        '<style>@keyframes lcSpin{to{transform:rotate(360deg)}}</style>';
+      document.body.appendChild(ov);
+    }
+    const t = document.getElementById('lcOverlayCarregandoTxt');
+    if (t) t.textContent = texto || 'Carregando…';
+    ov.style.display = 'flex';
+    // trava de segurança: se algo travar, some sozinho em 20s pra nunca prender a tela
+    clearTimeout(window._lcOverlayTimer);
+    window._lcOverlayTimer = setTimeout(esconderOverlayCarregando, 20000);
+  }
+  function esconderOverlayCarregando() {
+    clearTimeout(window._lcOverlayTimer);
+    const ov = document.getElementById('lcOverlayCarregando');
+    if (ov) ov.style.display = 'none';
+  }
+  window.mostrarOverlayCarregando = mostrarOverlayCarregando;
+  window.esconderOverlayCarregando = esconderOverlayCarregando;
+
+  // ============================================================
   // DIAG - Painel de diagnóstico (sem risco, ferramenta de suporte)
   // ============================================================
   // Acesso:
@@ -34782,7 +34814,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.129-botao-drenar-fila-wa-na-hora';
+  const _DIAG_VERSAO_PAINEL = 'v33k.133-fix-tela-branca-boot-overlay';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -35144,10 +35176,13 @@ Responda APENAS com JSON válido (sem markdown), formato:
         if (typeof ajustarSettingsAoUsuario === 'function') ajustarSettingsAoUsuario();
         if (typeof aplicarIdentidadeUsuario === 'function') aplicarIdentidadeUsuario();
         goTo(papelHomeInicial());
-        renderAll();
+        // Mostra um overlay de "carregando" enquanto puxa os dados, em vez de
+        // renderizar a tela VAZIA (causa da tela branca antes do F5). Só renderiza
+        // de verdade DEPOIS que os dados chegam.
+        if (typeof mostrarOverlayCarregando === 'function') mostrarOverlayCarregando('Carregando seus dados…');
         // PULL dos dados do novo usuário (lojas, financeiro, demandas, etc.)
-        // Sem isso, após limpar o cache do usuário anterior a tela ficaria
-        // vazia até um reload. Aplica o que vier do backend (já isolado por dono).
+        // Aguarda o pull ANTES do primeiro render real, pra a tela não aparecer
+        // vazia e depois preencher (que dava a sensação de "só funciona com F5").
         (async () => {
           try {
             if (window.LiderSync && LiderSync.pullAll) {
@@ -35158,11 +35193,14 @@ Responda APENAS com JSON válido (sem markdown), formato:
             }
           } catch (e) { console.warn('[login] pull pós-login falhou:', e); }
           try { if (typeof renderAll === 'function') renderAll(); } catch(e){}
+          // carrega os produtos (paginado no backend) e re-renderiza ao terminar
+          try {
+            await carregarProdutosDoBackend();
+            if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
+            if (typeof renderAll === 'function') renderAll();
+          } catch (e) { console.warn('[login] falha ao carregar produtos:', e); }
+          if (typeof esconderOverlayCarregando === 'function') esconderOverlayCarregando();
         })();
-        carregarProdutosDoBackend().then(() => {
-          if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
-          if (typeof renderAll === 'function') renderAll();
-        }).catch(e => console.warn('[login] falha ao carregar produtos:', e));
       } else {
         erroEl.textContent = data.erro || 'E-mail ou senha incorretos';
         erroEl.style.display = 'block';
@@ -35811,16 +35849,16 @@ Responda APENAS com JSON válido (sem markdown), formato:
         setTimeout(() => { try { carregarHomeResumo(_lcHomeMes, _lcHomeAno); } catch(e){} }, 6000);
       } else {
         showToast('⚠ Não consegui disparar: ' + ((d && d.erro) || 'erro desconhecido'), true);
-        setLbl('Disparar fila do WhatsApp agora');
+        setLbl('Disparar agora');
       }
     } catch (e) {
       showToast('⚠ Falha ao disparar a fila: ' + e.message, true);
-      setLbl('Disparar fila do WhatsApp agora');
+      setLbl('Disparar agora');
     } finally {
       setTimeout(() => {
         _drenandoFilaWa = false;
         if (btn) { btn.style.opacity = '1'; btn.style.cursor = 'pointer'; }
-        setLbl('Disparar fila do WhatsApp agora');
+        setLbl('Disparar agora');
       }, 4000);
     }
   }
@@ -35996,15 +36034,21 @@ Responda APENAS com JSON válido (sem markdown), formato:
     } else if (fila.length === 0) {
       filaHtml = '<div class="lc-wa-fila-empty">Nenhuma mensagem na fila</div>';
     } else {
-      filaHtml = fila.slice(0, 6).map(m => `
+      filaHtml = fila.slice(0, 6).map(m => {
+        const pendente = m.pendenteVinculo || !m.numero;
+        const destino = pendente
+          ? `<span class="lc-wa-q-num" style="color:#d97706">⏳ aguardando vínculo${m.lojaRef!=null?(' · loja '+m.lojaRef):''}</span>`
+          : `<span class="lc-wa-q-num">${m.numero}</span>`;
+        return `
         <div class="lc-wa-q">
           <div class="lc-wa-q-body">
-            <div class="lc-wa-q-to">${m.nome || m.numero} <span class="lc-wa-q-num">${m.numero}</span></div>
+            <div class="lc-wa-q-to">${m.nome || (pendente ? (m.clienteRef||'(sem destino ainda)') : m.numero)} ${destino}</div>
             <div class="lc-wa-q-txt">${(m.texto||'').replace(/</g,'&lt;')}</div>
             <div class="lc-wa-q-meta">${lcOrigemLabel(m.origem)}</div>
           </div>
           <button class="lc-wa-q-cancel" title="Cancelar envio" onclick="lcCancelarFilaWhats('${m.id}')">${LC_ICON('x','sm')}</button>
-        </div>`).join('');
+        </div>`;
+      }).join('');
     }
     el.innerHTML = `
       <div class="lc-wa-stat"><span class="lc-wa-num">${wa.total||0}</span><span class="lc-wa-lbl">recebidas 24h · ${wa.remetentes||0} clientes</span></div>
@@ -36018,8 +36062,25 @@ Responda APENAS com JSON válido (sem markdown), formato:
     try { window.lcHydrateIcons && window.lcHydrateIcons(el); } catch(e){}
   }
   function lcOrigemLabel(o) {
-    const map = { manual_painel: 'Adicionada manualmente', relatorio: 'Relatório diário', aviso: 'Aviso ao cliente', demanda: 'Demanda', msg: 'Automática' };
-    return map[o] || o || '';
+    const map = {
+      manual_painel: 'Adicionada manualmente',
+      relatorio: 'Relatório diário',
+      aviso: 'Aviso ao cliente',
+      demanda: 'Demanda',
+      msg: 'Automática',
+      ads_zerado: 'Ads — saldo zerado',
+      banimento: 'Anúncio banido',
+      banimento_reativado: 'Anúncio reativado',
+      banimento_naoreativado: 'Anúncio ainda banido',
+      estrategia: 'Estratégia — nova fase',
+      regua_cobranca: 'Régua de cobrança',
+      monitor_whatsapp: 'Monitor de WhatsApp',
+      nosso_whatsapp: 'Demanda (WhatsApp)',
+    };
+    if (map[o]) return map[o];
+    // fallback: transforma "algum_nome_tecnico" em "Algum nome técnico" (sem parecer cru)
+    if (!o) return '';
+    return String(o).replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
   }
   async function carregarFilaWhatsapp() {
     const el = document.getElementById('lcWhatsapp');
@@ -47686,11 +47747,24 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           if (typeof ajustarSettingsAoUsuario === 'function') ajustarSettingsAoUsuario();
           if (typeof aplicarIdentidadeUsuario === 'function') aplicarIdentidadeUsuario();
           goTo(typeof papelHomeInicial==='function' ? papelHomeInicial() : 'homeScreen');
-          if (typeof renderAll === 'function') renderAll();
-          carregarProdutosDoBackend().then(() => {
-            if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
-            if (typeof renderAll === 'function') renderAll();
-          }).catch(e => console.warn('[autologin] falha ao carregar produtos:', e));
+          if (typeof renderAll === 'function') renderAll(); // render imediato com cache local (rápido)
+          // atualiza com dados frescos da nuvem em background (com overlay leve só se demorar)
+          (async () => {
+            try {
+              if (window.LiderSync && LiderSync.pullAll) {
+                const cloudData = await LiderSync.pullAll();
+                if (cloudData && typeof aplicarDadosDaNuvem === 'function') {
+                  aplicarDadosDaNuvem(cloudData);
+                  if (typeof renderAll === 'function') renderAll();
+                }
+              }
+            } catch (e) { console.warn('[autologin] pull falhou:', e); }
+            try {
+              await carregarProdutosDoBackend();
+              if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
+              if (typeof renderAll === 'function') renderAll();
+            } catch (e) { console.warn('[autologin] falha ao carregar produtos:', e); }
+          })();
           return;
         }
       }
