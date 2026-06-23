@@ -22111,6 +22111,8 @@ REGRAS DURAS:
           if (opts._coletarParaAgendar && novo.idBanco) {
             try {
               if (typeof garantirFotosUrlsPublicas === 'function') { try { await garantirFotosUrlsPublicas(novo); } catch(_){} }
+              // v33k.127: completa SKU/EAN/atributos vazios (igual criação) antes de montar payload
+              try { await dupCompletarCamposObjeto(novo, lojaDestino); } catch(_){}
               const payloadCopia = montarPayloadExport(novo, lojaDestino.marketplace);
               opts._coletarParaAgendar.push({ produtoId: novo.idBanco, payload: payloadCopia, duplicadoDeId: novo.duplicadoDeId || null, variacoes: novo.variacoes, preco: novo.preco });
             } catch(eP) { dupLogStep('  ⚠ não consegui montar payload da cópia: '+eP.message, 'err'); }
@@ -22144,6 +22146,9 @@ REGRAS DURAS:
             dupLogStep('  ⚠ Falha hospedando fotos: ' + e.message, 'err');
           }
           
+          // v33k.127: completa SKU/EAN/atributos vazios (igual criação) antes de montar payload
+          try { await dupCompletarCamposObjeto(novo, lojaDestino); } catch(_){}
+
           // CRITICO: precisa MONTAR o payload no formato do marketplace 
           // (com title, category_id, price, listing_type_id etc.) — senao
           // ML rejeita com "body.required_fields".
@@ -22305,7 +22310,148 @@ REGRAS DURAS:
     if (btnC) { btnC.disabled = true; btnC.textContent = '✓ Concluído'; }
     showToast(`Duplicação concluída: ${okCopias} OK · ${errCopias} erro(s)`);
   }
-  
+
+  // ============================================================
+  // AJUSTE FINO DA DUPLICAÇÃO (v33k.127)
+  // Antes de exportar uma CÓPIA, completa o que estiver VAZIO — espelhando
+  // exatamente o que a criação a partir de demandas já faz:
+  //   1) SKUs e EANs das variações que ainda não têm (objeto, não DOM);
+  //   2) atributos da categoria (ML e Shopee) que ainda estão em branco.
+  // NUNCA sobrescreve o que já veio preenchido do anúncio de referência.
+  // Tudo é best-effort: qualquer falha de IA/rede é engolida (a cópia segue
+  // com o que herdou do pai), pra não quebrar o fluxo de duplicação.
+  // ============================================================
+  async function dupCompletarCamposObjeto(novo, lojaDestino) {
+    const mkt = lojaDestino && lojaDestino.marketplace;
+    const log = (msg, tipo) => { try { dupLogStep(msg, tipo); } catch(_) {} };
+
+    // ---- 1. SKUs vazios (mesma lógica de acaoGerarSKUs) ----
+    try {
+      if (Array.isArray(novo.variacoes) && novo.variacoes.length) {
+        if (!novo.skuPai) novo.skuPai = 'P' + Date.now().toString().slice(-5);
+        const normalizarCor = (s) => {
+          const limpo = String(s||'')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .toUpperCase().replace(/[^A-Z0-9\s-]/g, '').trim().replace(/[\s-]+/g, '-');
+          return limpo || 'X';
+        };
+        const usados = new Set((novo.variacoes||[]).map(v => v.sku).filter(Boolean));
+        let nSku = 0;
+        novo.variacoes.forEach(v => {
+          if (v.sku) return;
+          const cor = v.cor ? normalizarCor(v.cor) : '';
+          const tam = String(v.tamanho||'').replace(/[^\w.\-\/]/g,'') || 'UN';
+          let nv = [novo.skuPai, cor, tam].filter(Boolean).join('-');
+          let k = 2;
+          while (usados.has(nv)) { nv = [novo.skuPai, cor, tam, k].filter(Boolean).join('-'); k++; }
+          v.sku = nv; usados.add(nv); nSku++;
+        });
+        if (nSku > 0) log(`  ✓ ${nSku} SKU(s) gerado(s) p/ variações vazias`, 'ok');
+      }
+    } catch (e) { log('  ⚠ geração de SKU falhou: ' + e.message, 'err'); }
+
+    // ---- 2. EANs vazios (mesma lógica de acaoGerarEANs) ----
+    try {
+      let nEan = 0;
+      if ((!novo.variacoes || novo.variacoes.length === 0) && !novo.ean) {
+        novo.ean = gerarEAN13Brasil(novo.skuPai || ('prod-' + (novo.id || Date.now())));
+        nEan++;
+      }
+      const usadosE = new Set((novo.variacoes||[]).map(v => v.ean).filter(Boolean));
+      (novo.variacoes || []).forEach((v, i) => {
+        if (v.ean) return;
+        const seed = [novo.skuPai, v.sku, v.cor, v.tamanho, i].join('|');
+        let nv = gerarEAN13Brasil(seed);
+        let k = 1;
+        while (usadosE.has(nv) && k < 50) { nv = gerarEAN13Brasil(seed + '|' + k); k++; }
+        v.ean = nv; usadosE.add(nv); nEan++;
+      });
+      if (nEan > 0) log(`  ✓ ${nEan} EAN(s) gerado(s) p/ variações vazias`, 'ok');
+    } catch (e) { log('  ⚠ geração de EAN falhou: ' + e.message, 'err'); }
+
+    // ---- 3. Atributos da categoria (só os VAZIOS) ----
+    // ML: precisa da categoryIdMl (herdada do pai). Pede pra IA só os que faltam.
+    if (mkt === 'mercadolivre' && novo.categoryIdMl) {
+      try {
+        const atributosCat = await carregarAtributosCategoria(novo.categoryIdMl);
+        if (Array.isArray(atributosCat) && atributosCat.length) {
+          if (!novo.atributosMl) novo.atributosMl = {};
+          // Só os que ainda não têm valor no objeto
+          const faltantes = atributosCat.filter(a => !novo.atributosMl[a.id]);
+          if (faltantes.length) {
+            let listaTxt = '';
+            for (const a of faltantes.slice(0, 30)) {
+              let linha = '- "' + a.id + '" (' + a.nome + ')';
+              if (a.obrigatorio) linha += ' [OBRIGATÓRIO]';
+              if (a.tipo === 'boolean') linha += ' → Sim ou Não';
+              else if (a.valores && a.valores.length > 0 && a.valores.length <= 15) {
+                linha += ' → valores: ' + a.valores.map(v => v.nome).join(' | ');
+              } else if (a.valores && a.valores.length > 15) {
+                linha += ' → ex: ' + a.valores.slice(0, 5).map(v => v.nome).join(', ') + '...';
+              } else if (a.tipo === 'number_unit') {
+                linha += ' → número com unidade (ex: 0.7 kg)';
+              } else { linha += ' → texto livre'; }
+              listaTxt += linha + '\n';
+            }
+            const promptML = 'Preencha os atributos de Mercado Livre abaixo pro produto.\n\n' +
+              'PRODUTO:\n- Título: ' + (novo.nome || '') + '\n- Marca: ' + (novo.marca || '') +
+              '\n- Categoria interna: ' + (novo.categoria || '') +
+              '\n- Descrição: ' + String(novo.descricao || '').slice(0, 400) + '\n\n' +
+              'ATRIBUTOS (categoria ' + novo.categoryIdMl + '):\n' + listaTxt + '\n' +
+              'Responda APENAS um JSON { "ID_ATRIBUTO": "valor", ... } usando os IDs EXATAMENTE como acima. ' +
+              'Para atributos com lista, use UM dos valores oferecidos (não invente sinônimos). ' +
+              'Se não souber ou não se aplicar, OMITA. Sem markdown nem texto fora do JSON.';
+            const respIA = await chamarIA({ prompt: promptML, system: 'Você responde só com JSON válido.', maxTokens: 1500 });
+            let raw = String(respIA || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+            let dados = {};
+            try { dados = parseJsonTolerante ? parseJsonTolerante(raw) : JSON.parse(raw); } catch(_) { dados = {}; }
+            let nAttr = 0;
+            for (const chave in dados) {
+              if (!dados[chave]) continue;
+              const idML = MAPEAMENTO_LEGADO_ATR[chave] || chave;
+              if (novo.atributosMl[idML]) continue; // não sobrescreve
+              // Se a categoria tem lista de valores, casa pra usar {value_id, value_name}
+              const attrCat = atributosCat.find(a => a.id === idML);
+              if (attrCat && Array.isArray(attrCat.valores) && attrCat.valores.length) {
+                const alvo = String(dados[chave]).toLowerCase().trim();
+                const val = attrCat.valores.find(v => (v.nome||'').toLowerCase().trim() === alvo)
+                  || attrCat.valores.find(v => {
+                    const vn = (v.nome||'').toLowerCase().trim();
+                    return vn && alvo && (vn.includes(alvo) || alvo.includes(vn));
+                  });
+                if (!val) continue; // valor inválido pra lista → pula
+                novo.atributosMl[idML] = { value_id: val.id, value_name: val.nome };
+              } else {
+                novo.atributosMl[idML] = String(dados[chave]);
+              }
+              nAttr++;
+            }
+            if (novo.marca && !novo.atributosMl.BRAND) novo.atributosMl.BRAND = novo.marca;
+            if (nAttr > 0) log(`  ✓ ${nAttr} atributo(s) ML preenchido(s) p/ a categoria`, 'ok');
+          }
+        }
+      } catch (e) { log('  ⚠ preenchimento de atributos ML falhou: ' + e.message, 'err'); }
+    }
+
+    // Shopee: reusa o preenchedor object-based existente (preenche só os vazios).
+    if (mkt === 'shopee') {
+      try {
+        const catSp = novo.categoryIdShopee || novo.categoriaShopee;
+        if (catSp) {
+          const lojaIdBanco = lojaDestino.idBanco || (await garantirLojaNoBanco(lojaDestino).catch(() => null));
+          if (lojaIdBanco) {
+            const n = await preencherAtributosShopeeComIA(novo, lojaIdBanco, String(catSp), {
+              nome: novo.nome, descricao: novo.descricao, marca: novo.marca,
+              material: novo.material, categoria: novo.categoria,
+            });
+            if (n > 0) log(`  ✓ ${n} atributo(s) Shopee preenchido(s) p/ a categoria`, 'ok');
+          }
+        }
+      } catch (e) { log('  ⚠ preenchimento de atributos Shopee falhou: ' + e.message, 'err'); }
+    }
+  }
+  window.dupCompletarCamposObjeto = dupCompletarCamposObjeto;
+
   // Re-importa variações de UM anúncio específico do ML para corrigir
   // o caso de produto interno ter perdido variações.
   async function recuperarVariacoesDoML(produtoId) {
@@ -34585,7 +34731,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.126-promo-busca-id-sync-descontos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.127-dup-completa-campos-ean-atributos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
