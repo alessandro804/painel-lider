@@ -2,6 +2,30 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<!-- CSS CRÍTICO (v33k.133): aplicado no PRIMEIRO paint, antes de qualquer
+     stylesheet/JS carregar. Pinta o fundo já na cor do tema pra eliminar o
+     "flash branco" de ~1s ao dar F5 (o intervalo entre o HTML carregar e o
+     JS decidir o que mostrar). Também esconde o conteúdo até o boot marcar
+     a página como pronta (classe lc-pronto no <html>), evitando ver a tela
+     de login piscar antes do auto-login entrar. -->
+<style>
+  html { background: #f5f7fb; }
+  /* enquanto não está pronto, segura o conteúdo das telas (mas deixa um fundo limpo) */
+  html:not(.lc-pronto) body > .screen,
+  html:not(.lc-pronto) body > .sidebar { visibility: hidden; }
+  /* spinner de boot mostrado até o app marcar lc-pronto */
+  #lcBootSplash {
+    position: fixed; inset: 0; z-index: 100000; display: flex;
+    align-items: center; justify-content: center; background: #f5f7fb;
+  }
+  html.lc-pronto #lcBootSplash { display: none; }
+  #lcBootSplash .lc-boot-spin {
+    width: 40px; height: 40px; border: 3px solid rgba(30,42,71,.15);
+    border-top-color: #16a34a; border-radius: 50%;
+    animation: lcBootSpin .8s linear infinite;
+  }
+  @keyframes lcBootSpin { to { transform: rotate(360deg); } }
+</style>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Painel Lider 10</title>
 <meta name="theme-color" content="#1e2a47">
@@ -4649,6 +4673,10 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
 
 </head>
 <body>
+<!-- SPLASH DE BOOT (v33k.133): coberto/escondido assim que o app marca
+     document.documentElement.classList.add('lc-pronto'). Evita o flash branco
+     e a piscada da tela de login no F5. -->
+<div id="lcBootSplash"><div class="lc-boot-spin"></div></div>
 <!-- ===== SIDEBAR GLOBAL (única, persistente em todas as telas) ===== -->
 <aside class="sidebar" id="lcGlobalSidebar">
   <div class="sidebar-header">
@@ -15800,10 +15828,23 @@ Retorne JSON: {"ID": "valor", ...}`;
       const total = (dCount.ok && dCount.total) || 0;
       if (total > 0) {
         const totalPaginas = Math.ceil(total / 200);
-        for (let p = 1; p <= totalPaginas; p++) {
-          const r = await fetch(BACKEND_URL + '/api/produtos?page=' + p + '&limit=200', { headers: { 'x-api-token': getApiToken() } });
-          const dp = await r.json();
-          if (dp.ok && Array.isArray(dp.produtos)) produtosBanco.push(...dp.produtos);
+        // PARALELO (v33k.133): antes buscava página por página em série (cada await
+        // esperando o anterior) — lento conforme a base cresce. Agora dispara as
+        // páginas em paralelo, em lotes de 5 pra não sobrecarregar o backend/banco.
+        const LOTE = 5;
+        for (let inicio = 1; inicio <= totalPaginas; inicio += LOTE) {
+          const fim = Math.min(inicio + LOTE - 1, totalPaginas);
+          const promessas = [];
+          for (let p = inicio; p <= fim; p++) {
+            promessas.push(
+              fetch(BACKEND_URL + '/api/produtos?page=' + p + '&limit=200', { headers: { 'x-api-token': getApiToken() } })
+                .then(r => r.json())
+                .then(dp => (dp.ok && Array.isArray(dp.produtos)) ? dp.produtos : [])
+                .catch(() => [])
+            );
+          }
+          const resultados = await Promise.all(promessas);
+          resultados.forEach(arr => produtosBanco.push(...arr));
         }
       }
       const data = { ok: true, produtos: produtosBanco };
@@ -34782,7 +34823,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (!ov) {
       ov = document.createElement('div');
       ov.id = 'lcOverlayCarregando';
-      ov.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--lc-bg,#0f1115);color:var(--lc-ink,#e5e7eb);font-family:inherit';
+      ov.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg,#f5f7fb);color:var(--azul,#1e2a47);font-family:inherit';
       ov.innerHTML =
         '<div style="width:42px;height:42px;border:3px solid rgba(125,125,125,.25);border-top-color:#16a34a;border-radius:50%;animation:lcSpin .8s linear infinite"></div>' +
         '<div id="lcOverlayCarregandoTxt" style="font-size:14px;font-weight:600;opacity:.85"></div>' +
@@ -34814,7 +34855,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.133-fix-tela-branca-boot-overlay';
+  const _DIAG_VERSAO_PAINEL = 'v33k.134-boot-splash-sem-flash-produtos-paralelo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47780,12 +47821,29 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     }
   }
   
+  // Marca a página como pronta: esconde o splash de boot e revela o conteúdo.
+  // Idempotente. Chamado pelo boot; também tem um fallback por tempo (abaixo)
+  // pra NUNCA deixar o splash preso, mesmo se algo falhar.
+  function lcMarcarPronto() {
+    try { document.documentElement.classList.add('lc-pronto'); } catch(e) {}
+  }
+  window.lcMarcarPronto = lcMarcarPronto;
+
   // Roda assim que o DOM estiver pronto. Se o script já carregou após o DOMContentLoaded,
-  // executa direto. Senão, espera o evento.
+  // executa direto. Senão, espera o evento. Em qualquer caso, marca a página como
+  // pronta ao terminar (e tem um fallback de 8s caso o boot trave).
+  function _bootDispatch() {
+    Promise.resolve()
+      .then(() => _autoLoginAoBoot())
+      .catch(e => console.warn('[boot] erro:', e && e.message))
+      .finally(lcMarcarPronto);
+    // fallback: se por algum motivo o boot não resolver, revela mesmo assim
+    setTimeout(lcMarcarPronto, 8000);
+  }
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _autoLoginAoBoot);
+    document.addEventListener('DOMContentLoaded', _bootDispatch);
   } else {
-    _autoLoginAoBoot();
+    _bootDispatch();
   }
 </script>
 
