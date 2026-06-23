@@ -8277,6 +8277,21 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
                 <span style="font-size:11px;color:#6b7280">O QR atualiza sozinho a cada 20s. Deixe a câmera pronta antes de gerar.</span>
               </div>
             </div>
+
+            <!-- Número do ADMIN para avisos do sistema (1 por usuário) -->
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid #e5e7eb">
+              <div style="font-weight:600;font-size:14px;margin-bottom:4px">🔔 Seu número para avisos do sistema</div>
+              <div style="font-size:12px;color:#6b7280;margin-bottom:10px">
+                O sistema te avisa aqui quando algo precisa de atenção — por exemplo, quando uma mensagem fica <b>aguardando na fila</b> porque a loja está sem cliente vinculado. É o <b>seu</b> número (cada usuário tem o seu); não é enviado a clientes.
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <input type="tel" id="adminAvisoTelefone" placeholder="Ex: 37 9 8410-2079"
+                  style="flex:1;min-width:220px;padding:9px 12px;border:1px solid #d1d5db;border-radius:10px;font-size:14px"
+                  oninput="document.getElementById('adminAvisoHint').textContent=''">
+                <button class="toolbar-btn" onclick="salvarTelefoneAdminAvisos()">💾 Salvar número</button>
+              </div>
+              <div id="adminAvisoHint" style="font-size:12px;color:#16a34a;margin-top:6px"></div>
+            </div>
           </div>
 
           <!-- (card WhatsApp Financeiro removido — agora é 1 WhatsApp único por usuário) -->
@@ -12225,6 +12240,36 @@ Retorne JSON: {"ID": "valor", ...}`;
     localStorage.setItem('lider_wa_config_v1', JSON.stringify(waConfig));
     LiderSync.schedulePush('settings', () => LiderSync.pushAppData('wa_config', waConfig));
   }
+
+  // ── Número do ADMIN para avisos do sistema (chave app_data 'configAdmin') ──
+  // É lido pelo backend (tarefas-handlers) pra mandar avisos operacionais ao
+  // próprio usuário — ex.: mensagens seguras na fila aguardando vínculo.
+  let configAdmin = JSON.parse(localStorage.getItem('lider_config_admin_v1') || 'null') || {};
+  function renderTelefoneAdminAvisos() {
+    const inp = document.getElementById('adminAvisoTelefone');
+    if (inp) inp.value = configAdmin.telefoneAdmin || configAdmin.whatsappAdmin || configAdmin.telefone || '';
+  }
+  async function salvarTelefoneAdminAvisos() {
+    const inp = document.getElementById('adminAvisoTelefone');
+    const hint = document.getElementById('adminAvisoHint');
+    const bruto = (inp && inp.value || '').trim();
+    const digitos = bruto.replace(/\D/g, '');
+    if (bruto && digitos.length < 10) {
+      if (hint) { hint.style.color = '#dc2626'; hint.textContent = '⚠ Número parece curto. Use DDD + número (ex: 37 9 8410-2079).'; }
+      return;
+    }
+    // guarda o que o usuário digitou (o backend normaliza DDI/9º dígito no envio).
+    configAdmin.telefoneAdmin = bruto;
+    localStorage.setItem('lider_config_admin_v1', JSON.stringify(configAdmin));
+    try {
+      // chave crítica → push IMEDIATO (não usa schedulePush, que já perdeu dado pós-navegação)
+      await LiderSync.pushAppData('configAdmin', configAdmin);
+      if (hint) { hint.style.color = '#16a34a'; hint.textContent = bruto ? '✓ Número salvo. Você passará a receber os avisos do sistema aqui.' : '✓ Número removido. Avisos do sistema desativados.'; }
+      showToast('✓ Número de avisos salvo');
+    } catch (e) {
+      if (hint) { hint.style.color = '#dc2626'; hint.textContent = '⚠ Salvou no aparelho, mas falhou ao sincronizar: ' + e.message; }
+    }
+  }
   
   // Carrega os valores salvos nos campos da tela
   function renderConfigWhats() {
@@ -12235,6 +12280,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (key) key.value = waConfig.apiKey || '';
     if (inst) inst.value = waConfig.instancia || 'lider-commerce';
     atualizarStatusBoxWhats(waConfig.status || 'desconectado');
+    renderTelefoneAdminAvisos();
   }
   
   function salvarConfigWhats() {
@@ -34731,7 +34777,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.127-dup-completa-campos-ean-atributos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.128-blindagem-fila-wa-numero-admin';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47236,6 +47282,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       if (cloudData.appData.wa_config) {
         waConfig = { ...waConfig, ...cloudData.appData.wa_config };
         localStorage.setItem('lider_wa_config_v1', JSON.stringify(waConfig));
+      }
+      // Número do admin para avisos do sistema
+      if (cloudData.appData.configAdmin) {
+        configAdmin = { ...(typeof configAdmin === 'object' && configAdmin ? configAdmin : {}), ...cloudData.appData.configAdmin };
+        localStorage.setItem('lider_config_admin_v1', JSON.stringify(configAdmin));
       }
       if (cloudData.appData.automacao) {
         configAutomacao = { ...configAutomacao, ...cloudData.appData.automacao };
