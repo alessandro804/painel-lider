@@ -8239,7 +8239,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             </div>
             
             <div class="wa-aviso">
-              <b>ℹ️ Como funciona:</b> o WhatsApp já está conectado ao servidor. Use os botões abaixo para verificar a conexão, gerar um novo QR Code (para reconectar ou trocar de número) ou desconectar.
+              <b>ℹ️ Como funciona:</b> cada empresa tem o <b>seu próprio</b> WhatsApp. Clique em <b>Gerar QR Code</b> e escaneie com o aparelho do número que você quer usar — a conexão é criada automaticamente. Esse número é usado para todos os disparos (avisos e cobranças).
             </div>
             
             <!-- Status da conexão -->
@@ -8277,38 +8277,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             </div>
           </div>
 
-          <!-- SEÇÃO: WhatsApp FINANCEIRO (instância separada pra cobranças) -->
-          <div class="settings-card" style="margin-top:16px">
-            <div class="settings-card-header">
-              <div>
-                <div class="settings-card-title">💰 WhatsApp Financeiro</div>
-                <div class="settings-card-subtitle">Número EXCLUSIVO pra cobranças e mensagens de cobrança (separado do operacional).</div>
-              </div>
-            </div>
-            <div class="wa-status-box desconectado" id="waFinStatusBox">
-              <div class="wa-status-icone">📵</div>
-              <div class="wa-status-info">
-                <div class="wa-status-titulo">WhatsApp financeiro não conectado</div>
-                <div class="wa-status-sub">Clique em "Verificar conexão"</div>
-              </div>
-              <div class="wa-bolinha off" id="waFinBolinha"></div>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-              <button class="toolbar-btn" onclick="verificarStatusWhatsFin()">🔄 Verificar conexão</button>
-              <button class="toolbar-btn" onclick="gerarQrCodeWhatsFin()">📷 Gerar QR Code</button>
-              <button class="toolbar-btn" style="border-color:#ef4444;color:#dc2626" onclick="desconectarWhatsFin()">🔌 Desconectar</button>
-            </div>
-            <div class="wa-qr-area" id="waFinQrArea" style="display:none">
-              <div class="wa-qr-img" id="waFinQrImg">QR Code aparecerá aqui</div>
-              <div class="wa-passos">
-                <b>Como conectar o número financeiro:</b><br>
-                1. Abra o <b>WhatsApp do número financeiro</b> no celular<br>
-                2. Configurações → Aparelhos conectados → Conectar um aparelho<br>
-                3. Aponte a câmera para o QR Code acima<br>
-                <span style="font-size:11px;color:#6b7280">O QR atualiza sozinho a cada 20s.</span>
-              </div>
-            </div>
-          </div>
+          <!-- (card WhatsApp Financeiro removido — agora é 1 WhatsApp único por usuário) -->
 
           <!-- SEÇÃO 3.5: Automações (liga/desliga de crons por usuário) -->
           <div class="settings-card" style="margin-top:16px">
@@ -12303,6 +12272,16 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   
+  // headers das chamadas de WhatsApp: precisa do token de login (Bearer) pra
+  // o backend saber DE QUAL usuário é o WhatsApp (1 número por admin).
+  function _waHeaders(extra) {
+    const tok = localStorage.getItem('lider_token_login') || '';
+    return Object.assign({
+      'x-api-token': getApiToken(),
+      'Authorization': 'Bearer ' + tok,
+    }, extra || {});
+  }
+
   // Gera o QR Code chamando o Evolution API
   let _waQrTimer = null;
   async function gerarQrCodeWhats() {
@@ -12317,7 +12296,7 @@ Retorne JSON: {"ID": "valor", ...}`;
 
     async function buscarQr() {
       try {
-        const data = await (await fetch(BACKEND_URL + '/api/whatsapp/qrcode', { headers: { 'x-api-token': getApiToken() } })).json();
+        const data = await (await fetch(BACKEND_URL + '/api/whatsapp/qrcode', { headers: _waHeaders() })).json();
         if (data.ok && data.conectado) {
           // já conectou — para o refresh e atualiza status
           if (_waQrTimer) { clearInterval(_waQrTimer); _waQrTimer = null; }
@@ -12389,65 +12368,20 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.gerarQrCodeWhats = gerarQrCodeWhats;
   
   // Verifica se o WhatsApp está conectado (via backend, que fala com a Evolution)
-  // === WhatsApp FINANCEIRO (instância separada, ?perfil=financeiro) ===
-  let _waFinQrTimer = null;
-  function _atualizarBoxFin(estado) {
-    const box = document.getElementById('waFinStatusBox');
-    const bol = document.getElementById('waFinBolinha');
-    if (!box) return;
-    const conectado = estado === 'conectado';
-    box.className = 'wa-status-box ' + (conectado ? 'conectado' : 'desconectado');
-    box.querySelector('.wa-status-icone').textContent = conectado ? '✅' : '📵';
-    box.querySelector('.wa-status-titulo').textContent = conectado ? 'WhatsApp financeiro conectado · Pronto pra cobranças' : 'WhatsApp financeiro não conectado';
-    box.querySelector('.wa-status-sub').textContent = conectado ? '' : 'Clique em "Verificar conexão"';
-    if (bol) bol.className = 'wa-bolinha ' + (conectado ? 'on' : 'off');
-  }
-  async function verificarStatusWhatsFin() {
-    try {
-      const resp = await fetch(BACKEND_URL + '/api/whatsapp/status?perfil=financeiro', { headers: { 'x-api-token': getApiToken() } });
-      const data = await resp.json();
-      if (!data.ok || !data.configurado) { _atualizarBoxFin('desconectado'); showToast('Financeiro: ' + (data.erro || 'não configurado'), true); return; }
-      if (data.conectado) { _atualizarBoxFin('conectado'); const qa=document.getElementById('waFinQrArea'); if(qa) qa.style.display='none'; if(_waFinQrTimer){clearInterval(_waFinQrTimer);_waFinQrTimer=null;} showToast('✓ WhatsApp financeiro conectado!'); }
-      else { _atualizarBoxFin('desconectado'); showToast('Financeiro ainda não conectado (estado: ' + (data.state||'?') + ')'); }
-    } catch(e) { _atualizarBoxFin('desconectado'); showToast('Erro: ' + e.message, true); }
-  }
+  // === WhatsApp FINANCEIRO removido — agora é 1 número único por usuário ===
+  // Stubs mantidos só pra não quebrar referências antigas (no-op).
+  function verificarStatusWhatsFin() {}
+  function gerarQrCodeWhatsFin() {}
+  function desconectarWhatsFin() {}
   window.verificarStatusWhatsFin = verificarStatusWhatsFin;
-
-  async function gerarQrCodeWhatsFin() {
-    const area = document.getElementById('waFinQrArea');
-    const img = document.getElementById('waFinQrImg');
-    if (area) area.style.display = 'block';
-    async function pega() {
-      try {
-        const resp = await fetch(BACKEND_URL + '/api/whatsapp/qrcode?perfil=financeiro', { headers: { 'x-api-token': getApiToken() } });
-        const data = await resp.json();
-        if (data.ok && data.conectado) { _atualizarBoxFin('conectado'); if(area) area.style.display='none'; if(_waFinQrTimer){clearInterval(_waFinQrTimer);_waFinQrTimer=null;} showToast('✓ Conectado!'); return; }
-        if (data.ok && data.qrcode) { img.innerHTML = '<img src="' + data.qrcode + '" style="width:240px;height:240px">'; }
-        else if (img) img.textContent = data.erro || 'QR indisponível, tentando...';
-      } catch(e) { if(img) img.textContent = 'Erro: ' + e.message; }
-    }
-    pega();
-    if (_waFinQrTimer) clearInterval(_waFinQrTimer);
-    _waFinQrTimer = setInterval(pega, 20000);
-  }
   window.gerarQrCodeWhatsFin = gerarQrCodeWhatsFin;
-
-  async function desconectarWhatsFin() {
-    if (!confirm('Desconectar o WhatsApp financeiro?')) return;
-    try {
-      const resp = await fetch(BACKEND_URL + '/api/whatsapp/desconectar', { method:'POST', headers: { 'Content-Type':'application/json','x-api-token': getApiToken() }, body: JSON.stringify({ perfil: 'financeiro' }) });
-      const data = await resp.json();
-      if (data.ok) { _atualizarBoxFin('desconectado'); showToast('WhatsApp financeiro desconectado'); }
-      else showToast('Erro: ' + (data.erro||'?'), true);
-    } catch(e) { showToast('Erro: ' + e.message, true); }
-  }
   window.desconectarWhatsFin = desconectarWhatsFin;
 
   async function verificarStatusWhats() {
     try {
       const resp = await fetch(BACKEND_URL + '/api/whatsapp/status', {
         method: 'GET',
-        headers: { 'x-api-token': getApiToken() }
+        headers: _waHeaders()
       });
       const data = await resp.json();
       if (!data.ok) { atualizarStatusBoxWhats('desconectado'); showToast('Erro: ' + (data.erro || 'falha'), true); return; }
@@ -12478,7 +12412,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!confirm('Desconectar o WhatsApp? O número será deslogado e você precisará escanear o QR de novo para reconectar.')) return;
     try {
       const data = await (await fetch(BACKEND_URL + '/api/whatsapp/desconectar', {
-        method: 'POST', headers: { 'x-api-token': getApiToken() }
+        method: 'POST', headers: _waHeaders()
       })).json();
       if (data.ok) {
         atualizarStatusBoxWhats('desconectado');
@@ -29181,7 +29115,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (prog) prog.textContent = `Replicando ${i+1}/${tarefas.length}...`;
       try {
         const r = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
-          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
           body: JSON.stringify(t),
         });
         const d = await r.json();
@@ -29361,7 +29295,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     for (const t of tarefas) {
       try {
         const r = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
-          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
           body: JSON.stringify(t),
         });
         const d = await r.json();
@@ -31904,7 +31838,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         if (typeof produtosErp !== 'undefined') await LiderSync.pushAppData('produtos', produtosErp);
       }
       const r = await fetch(BACKEND_URL + '/api/tarefas/promocao-ml/efetivar', {
-        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
         body: JSON.stringify({ promocaoId: promo.id, lojaIdBanco }),
       });
       const d = await r.json();
@@ -31964,7 +31898,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     try {
       // 1) cria a campanha
       const rc = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/campanha', {
-        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
         body: JSON.stringify({ nome: p.nome || 'Campanha Lider', inicio, fim }),
       });
       const dc = await rc.json();
@@ -31975,7 +31909,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       for (const it of itensML) {
         try {
           const ri = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/ml/promocao/item', {
-            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
             body: JSON.stringify({ itemId: it.itemId, promotionId, dealPrice: it.dealPrice }),
           });
           const di = await ri.json();
@@ -32681,7 +32615,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       } catch(e) { console.warn('[ap push]', e); }
       try {
         await fetch(BACKEND_URL + '/api/tarefas', {
-          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
           body: JSON.stringify({
             tipo: 'processar_demanda_ia',
             descricao: 'IA: ' + descricao.slice(0,60),
@@ -35515,7 +35449,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     let d;
     try {
       const qs = (M != null && A != null) ? `?ano=${A}&mes=${M}` : '';
-      const r = await fetch(BACKEND_URL + '/api/tarefas/home-resumo' + qs, { headers: { 'x-api-token': getApiToken() } });
+      const _tok = localStorage.getItem('lider_token_login') || '';
+      const r = await fetch(BACKEND_URL + '/api/tarefas/home-resumo' + qs, { headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + _tok } });
       d = await r.json();
       if (!d || !d.ok) throw new Error('resposta inválida');
     } catch (e) {
@@ -35524,8 +35459,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
       return;
     }
     lcRenderAlertas(d.pedidosAtrasados, d.banidos);
-    lcRenderIaHoje(d.iaHoje);
-    lcRenderIaProgramado(d.iaProgramado);
+    lcRenderIaHoje(d.iaHoje, d.automacoesAtivas);
+    lcRenderIaProgramado(d.iaProgramado, d.automacoesAtivas);
     lcRenderWhatsapp(d.whatsapp24h);
     lcRenderPodio(d.podioProdutos);
     try { window.lcHydrateIcons && window.lcHydrateIcons(document.getElementById('homeScreen')); } catch(e){}
@@ -35554,7 +35489,30 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (bSub) bSub.textContent = ban.total > 0 ? `Shopee ${mk.shopee||0} · ML ${mk.ml||0}` : 'nenhum banido';
     if (bCard) bCard.className = 'lc-alert ' + (ban.total > 0 ? 'danger' : 'ok');
   }
-  function lcRenderIaHoje(ia) {
+  // CTA reutilizável: quando o usuário não tem automações ativas, mostra um
+  // aviso com botão que leva pra Configurações → Automações.
+  function _lcCtaAutomacoes(msg) {
+    return `<div class="lc-block-empty" style="text-align:center">
+      <div style="margin-bottom:8px">${msg}</div>
+      <button onclick="irParaAutomacoes()" style="background:#10b981;color:#fff;border:none;border-radius:10px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">⚙️ Ativar automações</button>
+    </div>`;
+  }
+  function irParaAutomacoes() {
+    try {
+      goTo('settingsScreen');
+      setTimeout(() => {
+        const btn = Array.from(document.querySelectorAll('.settings-tab')).find(b => /Gerais/i.test(b.textContent));
+        if (btn) btn.click();
+        setTimeout(() => {
+          const card = document.getElementById('automacoesLista');
+          if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 300);
+      }, 200);
+    } catch (e) {}
+  }
+  window.irParaAutomacoes = irParaAutomacoes;
+
+  function lcRenderIaHoje(ia, automacoesAtivas) {
     ia = ia || { total: 0, itens: [] };
     const tot = document.getElementById('lcIaHojeTotal');
     if (tot) tot.textContent = (ia.total || 0) + ' ações';
@@ -35566,6 +35524,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
       garantir_campanha_agendada: 'tag', aceitar_ofertas_relampago_ml: 'zap',
       varrer_disputas: 'scale', detectar_banimentos: 'ban', pedidos_atrasados: 'truck',
     };
+    // automações desligadas (0) → mostra o CTA em vez de "nenhuma ação"
+    if (automacoesAtivas === 0) {
+      el.innerHTML = _lcCtaAutomacoes('Suas automações estão <b>inativadas</b>. Ative para a IA trabalhar por você.');
+      return;
+    }
     if (!ia.itens || ia.itens.length === 0) { el.innerHTML = '<div class="lc-block-empty">Nenhuma ação automática hoje</div>'; return; }
     el.innerHTML = ia.itens.slice(0, 6).map(it => {
       const det = (it.lojas && it.lojas.length) ? `<div class="lc-ia-act-when">${it.lojas.slice(0,3).join(', ')}${it.lojas.length>3?'…':''}</div>` : '';
@@ -35601,9 +35564,13 @@ Responda APENAS com JSON válido (sem markdown), formato:
     }).join('');
     el.innerHTML = `<div class="lc-podio">${cells}</div>`;
   }
-  function lcRenderIaProgramado(prog) {
+  function lcRenderIaProgramado(prog, automacoesAtivas) {
     const el = document.getElementById('lcIaProgramado');
     if (!el) return;
+    if (automacoesAtivas === 0) {
+      el.innerHTML = _lcCtaAutomacoes('Nada programado — ative suas automações para a IA agendar as rotinas.');
+      return;
+    }
     if (!prog || prog.length === 0) { el.innerHTML = '<div class="lc-block-empty">Nada programado</div>'; return; }
     el.innerHTML = prog.slice(0, 6).map(p => {
       const quando = lcFmtQuando(p.proximaExecucao);
@@ -37454,7 +37421,7 @@ REGRAS DE OURO:
     try {
       const hoje = new Date().toISOString().slice(0,10);
       const resp = await fetch(BACKEND_URL + '/api/asaas/nota-fiscal', {
-        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
         body: JSON.stringify({
           contaId: 'lider',
           paymentId: f.cobranca.id,
@@ -37489,13 +37456,13 @@ REGRAS DE OURO:
     try {
       const texto = `Olá ${f.cliente}! Segue a nota fiscal referente ao fechamento de ${_fmtMesExt(f.mes)}.` + (linkNf && !nf.pdfUrl ? `\n\nNota fiscal: ${linkNf}` : '');
       await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
-        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
         body: JSON.stringify({ numero: telefone, texto, perfil: 'financeiro' }),
       });
       // Se tem PDF, anexa como documento
       if (nf.pdfUrl) {
         await fetch(BACKEND_URL + '/api/whatsapp/documento', {
-          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
           body: JSON.stringify({ numero: telefone, url: nf.pdfUrl, nomeArquivo: 'NotaFiscal_' + (f.cliente||'').replace(/\s+/g,'_') + '.pdf', legenda: 'Nota Fiscal', perfil: 'financeiro' }),
         });
       }
@@ -37900,19 +37867,19 @@ REGRAS DE OURO:
           ? cenCriacao.mensagem.replace(/\[NOME CLIENTE\]/g, f.cliente||'').replace(/\[VALOR A RECEBER\]/g, _fmtBRL(f.totalPagar)).replace(/\[DATA VENCIMENTO\]/g, (f.vencimento||'').split('-').reverse().join('/'))
           : `Olá ${f.cliente}! Segue o fechamento de ${_fmtMesExt(f.mes)}.`;
         await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
-          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
           body: JSON.stringify({ numero: telefone, texto: textoWa, perfil: 'financeiro' }),
         });
         const pdf = _gerarPdfFechamento(f, { retornarBase64: true });
         if (pdf && pdf.dataUri) {
           const up = await fetch(BACKEND_URL + '/api/upload-foto/pdf', {
-            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
             body: JSON.stringify({ dataUrl: pdf.dataUri, nome: pdf.nomeArq }),
           });
           const upD = await up.json();
           if (upD.ok && upD.url) {
             await fetch(BACKEND_URL + '/api/whatsapp/documento', {
-              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
               body: JSON.stringify({ numero: telefone, url: upD.url, nomeArquivo: pdf.nomeArq, legenda: 'Fechamento ' + _fmtMesExt(f.mes), perfil: 'financeiro' }),
             });
           }
@@ -37982,7 +37949,7 @@ REGRAS DE OURO:
         if (d.cobranca.linkBoleto) textoWa += `\n\nBoleto/Pix: ${d.cobranca.linkBoleto}`;
         try {
           await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
-            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+            method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
             body: JSON.stringify({ numero: telefone, texto: textoWa, perfil: 'financeiro' }),
           });
           // 2) Anexa o PDF: faz upload pro Storage (URL pública) e envia por URL
@@ -37991,13 +37958,13 @@ REGRAS DE OURO:
           if (pdf && pdf.dataUri) {
             try {
               const up = await fetch(BACKEND_URL + '/api/upload-foto/pdf', {
-                method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+                method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
                 body: JSON.stringify({ dataUrl: pdf.dataUri, nome: pdf.nomeArq }),
               });
               const upD = await up.json();
               if (upD.ok && upD.url) {
                 await fetch(BACKEND_URL + '/api/whatsapp/documento', {
-                  method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+                  method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
                   body: JSON.stringify({ numero: telefone, url: upD.url, nomeArquivo: pdf.nomeArq, legenda: 'Fechamento ' + _fmtMesExt(f.mes), perfil: 'financeiro' }),
                 });
               }
@@ -41272,7 +41239,7 @@ ${JSON.stringify(metricas, null, 2)}`
     for (const it of itens) {
       try {
         const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaId + '/ml/promocao/item', {
-          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+          method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
           body: JSON.stringify({ itemId: it.itemId, promotionId: _mlCampanhaAtual.promotionId, dealPrice: it.dealPrice }),
         });
         const d = await r.json();
@@ -41665,7 +41632,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const itensTarefa = [...itemIds].map(itemId => ({ itemId, preco }));
     try {
       await fetch(BACKEND_URL + '/api/tarefas', {
-        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+        method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
         body: JSON.stringify({
           tipo: 'aplicar_preco_promocional',
           descricao: `Agendamento manual: R$ ${preco.toFixed(2)} em ${itensTarefa.length} anúncio(s)`,
@@ -45361,7 +45328,7 @@ ${JSON.stringify(metricas, null, 2)}`
             // todas concluídas → recria com os params da última + status pendente
             const base = tarefasDaDemanda[tarefasDaDemanda.length - 1];
             await fetch(BACKEND_URL + '/api/tarefas', {
-              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken()},
+              method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
               body: JSON.stringify({
                 tipo: 'processar_demanda_ia',
                 descricao: base.descricao || ('IA: ' + (d.descricao||'').slice(0,50)),
@@ -45709,7 +45676,7 @@ ${JSON.stringify(metricas, null, 2)}`
     res.innerHTML = '<span style="color:#6b7280">Enviando...</span>';
     try {
       const r = await (await fetch(BACKEND_URL + '/api/whatsapp/enviar', {
-        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login')||'') },
         body: JSON.stringify({ numero, texto: msg })
       })).json();
       if (r.ok) {
