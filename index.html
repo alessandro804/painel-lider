@@ -9446,81 +9446,42 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       }
     },
     
-    // === CARREGAR TUDO DO SUPABASE ===
+    // === CARREGAR TUDO DO BACKEND (isolado por dono — Leva 2-B) ===
+    // Antes lia direto do Supabase com anon key (vazava entre empresas).
+    // Agora chama /api/dados/pull, que filtra por usuario_id no servidor.
     async pullAll() {
-      if (!this.enabled || !this.client) return null;
-      // Quem pode carregar os dados FINANCEIROS (transactions/billings/marketing).
-      // Trava de transição (Leva 1): financeiro é por empresa/usuário e hoje
-      // pertence à conta Lider. Colaborador NUNCA carrega financeiro; admins
-      // que não sejam o dono também não. (Leva 2 moverá isso pro backend.)
-      let _papel = 'admin', _email = '';
+      let _papel = 'admin';
       try {
         const uRaw = localStorage.getItem('lider_usuario');
-        if (uRaw) { const u = JSON.parse(uRaw) || {}; _papel = u.papel || 'admin'; _email = (u.email||'').toLowerCase(); }
+        if (uRaw) { const u = JSON.parse(uRaw) || {}; _papel = u.papel || 'admin'; }
       } catch(e) {}
-      // DEMO: não puxa nada real
-      if (_papel === 'demo') { console.log('[sync] demo: pull bloqueado'); return null; }
-      // Donos dos dados da operação Lider (financeiro + comercial + demandas/operações).
-      // Trava de transição: essas tabelas ainda não têm dono no banco e hoje
-      // pertencem à conta Lider. Outros admins NÃO carregam esses dados.
-      // (Leva 2-B moverá isso pro backend com isolamento real por empresa.)
-      const DONOS_DADOS_LIDER = ['alessandro@lidercommerce.com.br'];
-      const ehDonoLider = (_papel === 'admin' && DONOS_DADOS_LIDER.includes(_email));
-      const podeFinanceiro = ehDonoLider; // mantém nome usado abaixo
-      const podeDadosOperacao = ehDonoLider; // demandas, vínculos, fluxos, comercial
+      // DEMO e SUPERADMIN não usam esses dados
+      if (_papel === 'demo' || _papel === 'superadmin') { return null; }
+
       this.syncing = true;
       this.updateStatusBadge('syncing');
       try {
-        const vazio = { data: [], error: null };
-        const [tx, bi, me, mc, ad] = await Promise.all([
-          podeFinanceiro ? this.client.from('transactions').select('*') : Promise.resolve(vazio),
-          podeFinanceiro ? this.client.from('billings').select('*') : Promise.resolve(vazio),
-          podeFinanceiro ? this.client.from('marketing_entries').select('*') : Promise.resolve(vazio),
-          podeFinanceiro ? this.client.from('marketing_criativos').select('*') : Promise.resolve(vazio),
-          this.client.from('app_data').select('*')
-        ]);
-        // app_data contém configs sensíveis da operação (WhatsApp, integrações,
-        // automação). Só o dono carrega; outros admins recebem vazio.
-        if (!podeDadosOperacao && ad && !ad.error) { ad.data = []; }
-        
-        if (tx.error || bi.error || me.error || mc.error || ad.error) {
-          throw new Error((tx.error || bi.error || me.error || mc.error || ad.error).message);
-        }
-        
-        // Demandas: busca separada, com tolerância caso a tabela ainda não exista
-        let demandasData = [];
-        if (podeDadosOperacao) try {
-          const dm = await this.client.from('demandas').select('*');
-          if (!dm.error) demandasData = (dm.data || []).map(r => this._fromDbDemanda(r));
-        } catch(e) { console.warn('Tabela demandas ainda não criada:', e.message); }
-        
-        // Vínculos marketplace: busca tolerante
-        let vinculosData = [];
-        if (podeDadosOperacao) try {
-          const vm = await this.client.from('marketplace_vinculos').select('*');
-          if (!vm.error) vinculosData = (vm.data || []).map(r => this._fromDbVinculo(r));
-        } catch(e) { console.warn('Tabela marketplace_vinculos ainda não criada:', e.message); }
-        
-        // Fluxos de demanda: busca tolerante
-        let fluxosData = [];
-        if (podeDadosOperacao) try {
-          const fx = await this.client.from('fluxos_demanda').select('*');
-          if (!fx.error) fluxosData = (fx.data || []).map(r => this._fromDbFluxo(r));
-        } catch(e) { console.warn('Tabela fluxos_demanda ainda não criada:', e.message); }
-        
-        // Converte de volta pro formato do app
+        const backend = (typeof getBackendUrl === 'function') ? getBackendUrl() : '';
+        const token = localStorage.getItem('lider_token_login') || '';
+        const resp = await fetch(backend + '/api/dados/pull', {
+          headers: { 'Authorization': 'Bearer ' + token },
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        if (!data.ok) throw new Error(data.erro || 'falha no pull');
+
+        // Converte do formato do banco pro formato do app (mappers _fromDb*)
         const result = {
-          transactions: (tx.data || []).map(r => this._fromDbTx(r)),
-          billings: (bi.data || []).map(r => this._fromDbBilling(r)),
-          marketingEntries: (me.data || []).map(r => this._fromDbMktEntry(r)),
-          marketingCriativos: (mc.data || []).map(r => this._fromDbCriativo(r)),
-          demandas: demandasData,
-          marketplaceVinculos: vinculosData,
-          fluxosDemanda: fluxosData,
-          appData: {}
+          transactions: (data.transactions || []).map(r => this._fromDbTx(r)),
+          billings: (data.billings || []).map(r => this._fromDbBilling(r)),
+          marketingEntries: (data.marketing_entries || []).map(r => this._fromDbMktEntry(r)),
+          marketingCriativos: (data.marketing_criativos || []).map(r => this._fromDbCriativo(r)),
+          demandas: (data.demandas || []).map(r => this._fromDbDemanda(r)),
+          marketplaceVinculos: (data.marketplace_vinculos || []).map(r => this._fromDbVinculo(r)),
+          fluxosDemanda: (data.fluxos_demanda || []).map(r => this._fromDbFluxo(r)),
+          appData: data.app_data || {},
         };
-        (ad.data || []).forEach(r => { result.appData[r.chave] = r.valor; });
-        
+
         this.syncing = false;
         this.lastError = null;
         this.updateStatusBadge('synced');
@@ -9670,20 +9631,20 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     
     // === PUSH (envia tudo pro Supabase) ===
     async pushTable(tableName, rows, mapper) {
-      if (!this.enabled || !this.client) return false;
+      let _papel = 'admin';
+      try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u) _papel = u.papel || 'admin'; } catch(e) {}
+      if (_papel === 'demo' || _papel === 'superadmin') return false;
       try {
-        // Estratégia simples e robusta: apaga tudo e reinsere
-        // (volume de dados é pequeno: centenas de registros no máximo)
-        await this.client.from(tableName).delete().neq('id', '___never___');
-        if (rows.length > 0) {
-          const mapped = rows.map(mapper);
-          // Insere em lotes de 500
-          for (let i = 0; i < mapped.length; i += 500) {
-            const batch = mapped.slice(i, i + 500);
-            const { error } = await this.client.from(tableName).insert(batch);
-            if (error) throw new Error(error.message);
-          }
-        }
+        const mapped = (rows || []).map(mapper);
+        const backend = (typeof getBackendUrl === 'function') ? getBackendUrl() : '';
+        const token = localStorage.getItem('lider_token_login') || '';
+        const resp = await fetch(backend + '/api/dados/push-tabela', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tabela: tableName, rows: mapped }),
+        });
+        const data = await resp.json();
+        if (!data.ok) throw new Error(data.erro || 'falha no push');
         return true;
       } catch(e) {
         console.error(`Erro pushTable ${tableName}:`, e);
@@ -9693,12 +9654,19 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     },
     
     async pushAppData(chave, valor) {
-      try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u && u.papel==='demo') return; } catch(e) {}
-      if (!this.enabled || !this.client) return false;
+      let _papel = 'admin';
+      try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u) _papel = u.papel || 'admin'; } catch(e) {}
+      if (_papel === 'demo' || _papel === 'superadmin') return false;
       try {
-        const { error } = await this.client.from('app_data')
-          .upsert({ chave, valor, updated_at: new Date().toISOString() });
-        if (error) throw new Error(error.message);
+        const backend = (typeof getBackendUrl === 'function') ? getBackendUrl() : '';
+        const token = localStorage.getItem('lider_token_login') || '';
+        const resp = await fetch(backend + '/api/dados/push-appdata', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chave, valor }),
+        });
+        const data = await resp.json();
+        if (!data.ok) throw new Error(data.erro || 'falha no push-appdata');
         return true;
       } catch(e) {
         console.error('Erro pushAppData:', e);
@@ -9711,10 +9679,13 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     _pushTimers: {},
     schedulePush(what, fn) {
       // DEMO: nunca grava no banco real
-      try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u && u.papel==='demo') return; } catch(e) {}
+      try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u && (u.papel==='demo' || u.papel==='superadmin')) return; } catch(e) {}
       if (this._pushTimers[what]) clearTimeout(this._pushTimers[what]);
       this._pushTimers[what] = setTimeout(async () => {
-        if (!this.enabled) return;
+        // agora o push vai pro backend (não depende do Supabase client do front);
+        // basta estar autenticado (token de login presente).
+        const token = localStorage.getItem('lider_token_login') || '';
+        if (!token) return;
         this.updateStatusBadge('syncing');
         await fn();
         this.updateStatusBadge(this.lastError ? 'error' : 'synced');
@@ -47019,21 +46990,29 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } catch(e) { console.warn('[sync] erro ao buscar config do backend:', e.message); }
 
     const ok = LiderSync.init();
-    if (ok) {
+    // Pull de dados da operação vai pro BACKEND agora (Leva 2-B), então roda
+    // sempre que houver login — não depende mais do Supabase client.
+    const _temLogin = !!(localStorage.getItem('lider_token_login'));
+    if (_temLogin) {
       LiderSync.updateStatusBadge('syncing');
-      // Puxa dados da nuvem ao abrir o painel
       const cloudData = await LiderSync.pullAll();
       if (cloudData) {
-        const cloudVazia = cloudData.transactions.length === 0 && cloudData.billings.length === 0;
+        const cloudVazia = cloudData.transactions.length === 0 && cloudData.billings.length === 0
+                         && Object.keys(cloudData.appData || {}).length === 0;
+        const localTemDados = (typeof transactions !== 'undefined' && transactions.length > 0)
+                           || (typeof billings !== 'undefined' && billings.length > 0);
         if (!cloudVazia) {
-          // Nuvem tem dados → usa eles (a nuvem é a fonte da verdade)
+          // backend tem dados → fonte da verdade
           aplicarDadosDaNuvem(cloudData);
+        } else if (!localTemDados) {
+          // empresa nova (sem dados locais nem na nuvem) → aplica vazio
+          aplicarDadosDaNuvem(cloudData);
+          LiderSync.updateStatusBadge('synced');
         } else {
-          // Nuvem vazia mas tem config → mantém o que tá local (não faz nada)
+          // SEGURANÇA: pull vazio mas há dados locais → não apaga, mantém local
           LiderSync.updateStatusBadge('synced');
         }
       }
-      // Atualiza UI de status se estiver na tela de config
       if (typeof renderSyncStatus === 'function') renderSyncStatus();
     } else {
       LiderSync.updateStatusBadge('offline');
