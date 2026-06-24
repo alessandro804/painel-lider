@@ -29562,7 +29562,62 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.limparFantasmasAgora = limparFantasmasAgora;
   
+  // Popup mostrado na PRIMEIRA sincronização de uma conta nova: avisa que as
+  // métricas (vendas, lucro, ads) podem levar alguns minutos pra aparecer.
+  function mostrarPopupPrimeiraSync(marketplace) {
+    const nomeMkt = { shopee: 'Shopee', mercadolivre: 'Mercado Livre', tiktok: 'TikTok Shop', shein: 'Shein' }[marketplace] || marketplace;
+    // remove popup anterior se houver
+    const antigo = document.getElementById('popupPrimeiraSync');
+    if (antigo) antigo.remove();
+    const ov = document.createElement('div');
+    ov.id = 'popupPrimeiraSync';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    ov.innerHTML = `
+      <div style="background:#fff;border-radius:16px;max-width:440px;width:100%;padding:26px 24px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="font-size:40px;text-align:center;margin-bottom:8px">🚀</div>
+        <div style="font-weight:800;font-size:18px;color:#1e2a47;text-align:center;margin-bottom:10px">Sincronização iniciada!</div>
+        <div style="font-size:14px;color:#475569;line-height:1.6;text-align:center">
+          Estamos buscando seus <strong>produtos, vendas e campanhas de Ads</strong> da ${escapeHtml(nomeMkt)}.<br><br>
+          A primeira sincronização pode levar <strong>alguns minutos</strong> — em breve as métricas do seu negócio (lucro, pedidos, anúncios) vão aparecer automaticamente nos relatórios.
+        </div>
+        <button onclick="document.getElementById('popupPrimeiraSync').remove()"
+          style="margin-top:20px;width:100%;background:#4f46e5;color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:700;cursor:pointer">
+          Entendi
+        </button>
+      </div>`;
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+    document.body.appendChild(ov);
+  }
+  window.mostrarPopupPrimeiraSync = mostrarPopupPrimeiraSync;
+
+  // Dispara, em segundo plano, a sincronização de VENDAS e de ADS de uma loja
+  // recém-conectada. Não bloqueia a UI; falhas são silenciosas (o cron diário
+  // cobre depois). Serve pra acelerar o aparecimento das métricas na 1ª conexão.
+  async function dispararSyncVendasEAds(lojaIdBanco, marketplace) {
+    const tok = getApiToken();
+    const tentar = async (url) => {
+      try {
+        await fetch(BACKEND_URL + url, { method: 'POST', headers: { 'x-api-token': tok } });
+      } catch (_) { /* silencioso: cron diário cobre */ }
+    };
+    // vendas (popula Lucro/Pedidos). dias=30 pra já trazer um histórico inicial.
+    tentar('/api/marketplaces/loja/' + lojaIdBanco + '/sincronizar-vendas?dias=30');
+    // ads (popula métricas de Marketing). rota do ETL de ads por loja.
+    tentar('/api/ads/sincronizar-agora?lojaId=' + lojaIdBanco + '&dias=30');
+  }
+  window.dispararSyncVendasEAds = dispararSyncVendasEAds;
+
   async function sincronizarConta(marketplace) {
+    // Detecta se é a PRIMEIRA sincronização desta conta (loja nova). Se for,
+    // mostra o popup explicativo e dispara, em background, também a sync de
+    // VENDAS e ADS — pra pessoa ver as métricas do negócio o quanto antes.
+    const chavePrimeira = 'lider_primeira_sync_' + marketplace;
+    const ehPrimeira = !localStorage.getItem(chavePrimeira);
+    if (ehPrimeira) {
+      mostrarPopupPrimeiraSync(marketplace);
+      localStorage.setItem(chavePrimeira, '1');
+    }
+
     showToast('🔄 Sincronizando anúncios da conta ' + marketplace + '...');
     
     // Acha a loja correspondente no localStorage e garante que existe no banco
@@ -29570,15 +29625,24 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               || lojasErp.find(l => l.marketplace === marketplace);
     
     let urlSync;
+    let _lojaIdBancoSync = null;
     if (loja) {
       const lojaIdBanco = await garantirLojaNoBanco(loja);
       if (lojaIdBanco) {
+        _lojaIdBancoSync = lojaIdBanco;
         urlSync = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/sincronizar';
       }
     }
     if (!urlSync) {
       // Fallback: rota legada
       urlSync = BACKEND_URL + '/api/marketplaces/' + marketplace + '/sincronizar';
+    }
+
+    // dispara VENDAS + ADS em background (não bloqueia a importação de produtos).
+    // Sempre roda quando temos o lojaIdBanco — assim as métricas (Lucro/Ads) já
+    // começam a popular logo após conectar, não só os produtos.
+    if (_lojaIdBancoSync) {
+      dispararSyncVendasEAds(_lojaIdBancoSync, marketplace);
     }
     
     try {
@@ -35197,7 +35261,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.162-cliente-cadastrado-disputas-haiku';
+  const _DIAG_VERSAO_PAINEL = 'v33k.163-play-cron-autosync-loja-nova';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42927,20 +42991,104 @@ ${JSON.stringify(metricas, null, 2)}`
       const lojaTag = a.precisaLoja
         ? '<span style="font-size:10px;background:#eef2ff;color:#4f46e5;padding:2px 7px;border-radius:7px;margin-left:6px;font-weight:600">precisa de loja</span>'
         : '';
-      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid #f3f4f6">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:700;color:#1e2a47;font-size:14px">${escapeHtml(a.nome)}${lojaTag}</div>
-          <div style="font-size:12px;color:#6b7280;margin-top:2px">${escapeHtml(a.descricao)}</div>
+      return `<div style="padding:12px 0;border-bottom:1px solid #f3f4f6">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;color:#1e2a47;font-size:14px">${escapeHtml(a.nome)}${lojaTag}</div>
+            <div style="font-size:12px;color:#6b7280;margin-top:2px">${escapeHtml(a.descricao)}</div>
+          </div>
+          <button onclick="rodarAutomacaoAgora('${a.tipo}', this)" title="Rodar agora"
+            style="flex-shrink:0;display:inline-flex;align-items:center;gap:5px;background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;border-radius:9px;padding:7px 11px;font-size:12px;font-weight:700;cursor:pointer">
+            <span class="rodar-ico">▶</span><span class="rodar-txt">Rodar</span>
+          </button>
+          <label class="switch-auto" style="position:relative;display:inline-block;width:46px;height:26px;flex-shrink:0">
+            <input type="checkbox" ${on ? 'checked' : ''} onchange="toggleAutomacao('${a.tipo}', this.checked, this)" style="opacity:0;width:0;height:0">
+            <span class="switch-slider" style="position:absolute;cursor:pointer;inset:0;background:${on ? '#10b981' : '#cbd5e1'};border-radius:26px;transition:.2s">
+              <span style="position:absolute;height:20px;width:20px;left:${on ? '23px' : '3px'};top:3px;background:white;border-radius:50%;transition:.2s"></span>
+            </span>
+          </label>
         </div>
-        <label class="switch-auto" style="position:relative;display:inline-block;width:46px;height:26px;flex-shrink:0">
-          <input type="checkbox" ${on ? 'checked' : ''} onchange="toggleAutomacao('${a.tipo}', this.checked, this)" style="opacity:0;width:0;height:0">
-          <span class="switch-slider" style="position:absolute;cursor:pointer;inset:0;background:${on ? '#10b981' : '#cbd5e1'};border-radius:26px;transition:.2s">
-            <span style="position:absolute;height:20px;width:20px;left:${on ? '23px' : '3px'};top:3px;background:white;border-radius:50%;transition:.2s"></span>
-          </span>
-        </label>
+        <div id="prog-${a.tipo}" style="display:none;margin-top:8px">
+          <div style="height:6px;background:#e5e7eb;border-radius:6px;overflow:hidden">
+            <div class="prog-bar" style="height:100%;width:30%;background:#4f46e5;border-radius:6px;transition:width .3s;animation:progPulse 1.2s ease-in-out infinite"></div>
+          </div>
+          <div class="prog-txt" style="font-size:11px;color:#6b7280;margin-top:4px">Rodando…</div>
+        </div>
       </div>`;
     }).join('');
+    // injeta o keyframe da barra (1x)
+    if (!document.getElementById('progPulseKf')) {
+      const st = document.createElement('style');
+      st.id = 'progPulseKf';
+      st.textContent = '@keyframes progPulse{0%{width:15%;margin-left:0}50%{width:60%;margin-left:40%}100%{width:15%;margin-left:85%}}';
+      document.head.appendChild(st);
+    }
   }
+
+  // Roda um cron na hora e mostra a barra de progresso até concluir.
+  async function rodarAutomacaoAgora(tipo, btn) {
+    const prog = document.getElementById('prog-' + tipo);
+    const ico = btn ? btn.querySelector('.rodar-ico') : null;
+    const txt = btn ? btn.querySelector('.rodar-txt') : null;
+    if (btn) btn.disabled = true;
+    if (ico) ico.textContent = '⏳';
+    if (txt) txt.textContent = 'Rodando';
+    if (prog) prog.style.display = 'block';
+    const progTxt = prog ? prog.querySelector('.prog-txt') : null;
+    try {
+      const r = await _automacoesFetch('/rodar-agora', {
+        method: 'POST', body: JSON.stringify({ tipo }),
+      });
+      const execId = r.execId;
+      // polling do progresso
+      let tentativas = 0;
+      const maxTentativas = 150; // ~5 min (2s cada)
+      const poll = async () => {
+        tentativas++;
+        try {
+          const p = await _automacoesFetch('/progresso/' + execId, { method: 'GET' });
+          const ex = p.exec || {};
+          if (ex.status === 'concluida') {
+            if (progTxt) progTxt.textContent = '✓ Concluído';
+            const barra = prog ? prog.querySelector('.prog-bar') : null;
+            if (barra) { barra.style.animation = 'none'; barra.style.width = '100%'; barra.style.marginLeft = '0'; barra.style.background = '#10b981'; }
+            showToast('✓ ' + tipo + ' executado');
+            setTimeout(() => { if (prog) prog.style.display = 'none'; }, 2500);
+            return _finRodar(btn, ico, txt);
+          }
+          if (ex.status === 'erro') {
+            if (progTxt) progTxt.textContent = '⚠ Erro: ' + (ex.erro || 'falhou');
+            showToast('⚠ Falha ao rodar: ' + (ex.erro || ''), true);
+            return _finRodar(btn, ico, txt);
+          }
+          if (ex.sumiu || ex.status === 'desconhecido') {
+            // execução já saiu da memória (terminou há tempo) — assume concluído
+            if (prog) prog.style.display = 'none';
+            return _finRodar(btn, ico, txt);
+          }
+          if (tentativas >= maxTentativas) {
+            if (progTxt) progTxt.textContent = 'Ainda rodando em segundo plano…';
+            return _finRodar(btn, ico, txt);
+          }
+          setTimeout(poll, 2000);
+        } catch (e) {
+          if (progTxt) progTxt.textContent = '⚠ ' + e.message;
+          _finRodar(btn, ico, txt);
+        }
+      };
+      setTimeout(poll, 1500);
+    } catch (e) {
+      showToast('⚠ Não foi possível iniciar: ' + e.message, true);
+      if (prog) prog.style.display = 'none';
+      _finRodar(btn, ico, txt);
+    }
+  }
+  function _finRodar(btn, ico, txt) {
+    if (btn) btn.disabled = false;
+    if (ico) ico.textContent = '▶';
+    if (txt) txt.textContent = 'Rodar';
+  }
+  window.rodarAutomacaoAgora = rodarAutomacaoAgora;
 
   async function toggleAutomacao(tipo, ativo, el) {
     // otimista: atualiza cache e UI já
