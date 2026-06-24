@@ -35167,7 +35167,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.143-custos-catalogo-massa-fotos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.144-hibrido-sync-progresso-conferencia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -40906,11 +40906,30 @@ ${JSON.stringify(metricas, null, 2)}`
         } catch (e) {}
       }
       _custosSelComp = LcAcctSel.montar(hostSel, _lucroCacheLojas, {
-        selecionados: [], placeholder: 'Todas as lojas', salvarLabel: 'Filtrar',
+        selecionados: [], placeholder: 'Selecione as lojas', salvarLabel: 'Filtrar',
         aoMudar: () => lucroCarregarCustos(1),
       });
       hostSel.dataset.montado = '1';
     }
+
+    // vazio por padrão: sem loja selecionada e sem busca → não carrega nada
+    const lojasSel = _custosSelComp ? _custosSelComp.getSelecionados() : [];
+    const buscaTxt = ((document.getElementById('custosBusca') || {}).value || '').trim();
+    if (!lojasSel.length && !buscaTxt) {
+      if (loading) loading.style.display = 'none';
+      if (lista) lista.innerHTML = '<div style="text-align:center;padding:50px 20px;color:var(--lc-muted)">' +
+        '<div style="font-weight:600;color:var(--lc-ink-2)">Selecione uma ou mais lojas para ver os custos</div>' +
+        '<div style="font-size:13px;margin-top:4px">Ou pesquise por nome/ID do produto.</div></div>';
+      const massaBar = document.getElementById('custosMassaBar');
+      if (massaBar) massaBar.style.display = 'none';
+      const res0 = document.getElementById('custosResultados');
+      if (res0) res0.textContent = '';
+      if (salvarBtn) salvarBtn.style.display = 'none';
+      const pag0 = document.getElementById('custosPaginacao');
+      if (pag0) pag0.innerHTML = '';
+      return;
+    }
+
     if (loading) loading.style.display = 'block';
     if (lista) lista.innerHTML = '';
     if (salvarBtn) salvarBtn.style.display = 'none';
@@ -41272,18 +41291,27 @@ ${JSON.stringify(metricas, null, 2)}`
   async function renderPedidos() {
     const host = document.getElementById('pedLojasSel');
     if (host && !host.dataset.montado) {
-      try {
-        const resp = await fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: { 'x-api-token': getApiToken() } });
-        const data = await resp.json();
-        _pedCacheLojas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
-      } catch (e) { _pedCacheLojas = []; }
-      _pedSelComp = LcAcctSel.montar(host, _pedCacheLojas, {
+      // monta JÁ com a lista que tiver em cache (aparece na hora, sem esperar fetch)
+      _pedSelComp = LcAcctSel.montar(host, _pedCacheLojas || [], {
         selecionados: [],
-        placeholder: 'Todas as contas',
+        placeholder: 'Selecione as contas',
         salvarLabel: 'Aplicar',
         aoMudar: () => pedAplicar(),
       });
       host.dataset.montado = '1';
+      // popula as lojas em background e re-monta quando chegar
+      fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: { 'x-api-token': getApiToken() } })
+        .then(r => r.json())
+        .then(data => {
+          _pedCacheLojas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
+          _pedSelComp = LcAcctSel.montar(host, _pedCacheLojas, {
+            selecionados: _pedSelComp ? _pedSelComp.getSelecionados() : [],
+            placeholder: 'Selecione as contas',
+            salvarLabel: 'Aplicar',
+            aoMudar: () => pedAplicar(),
+          });
+        })
+        .catch(() => {});
     }
     pedTrocarAba('lista');
   }
@@ -41382,12 +41410,23 @@ ${JSON.stringify(metricas, null, 2)}`
     const lista = document.getElementById('pedLista');
     const resumo = document.getElementById('pedResumoBar');
     if (erro) erro.style.display = 'none';
+
+    // por padrão NÃO carrega nada — exige seleção de loja (não sobrecarrega o sistema)
+    const lojas = pedLojasSelecionadas();
+    if (!lojas.length) {
+      if (loading) loading.style.display = 'none';
+      if (resumo) resumo.innerHTML = '';
+      if (lista) lista.innerHTML = '<div style="text-align:center;padding:50px 20px;color:var(--lc-muted)">' +
+        '<div style="font-weight:600;color:var(--lc-ink-2)">Selecione uma ou mais contas para ver os pedidos</div>' +
+        '<div style="font-size:13px;margin-top:4px">Use o seletor de contas acima.</div></div>';
+      return;
+    }
+
     if (loading) loading.style.display = 'block';
     if (lista) lista.innerHTML = '';
     try {
       const params = pedParamsPeriodo(new URLSearchParams({ limit: '300' }));
-      const lojas = pedLojasSelecionadas();
-      if (lojas.length) params.set('lojaIds', lojas.join(','));
+      params.set('lojaIds', lojas.join(','));
       const q = (document.getElementById('pedBusca') || {}).value || '';
       if (q.trim()) params.set('q', q.trim());
 
@@ -41397,12 +41436,12 @@ ${JSON.stringify(metricas, null, 2)}`
       _pedCache = data.pedidos || [];
 
       if (resumo) resumo.innerHTML =
-        '<span><b style="color:#1e293b">' + (data.total || 0) + '</b> pedidos</span>' +
-        '<span><b style="color:#1e293b">' + (data.totalProdutos || 0) + '</b> produtos</span>' +
-        '<span>Total: <b style="color:#16a34a">' + formatBRL(data.totalValor || 0) + '</b></span>';
+        '<span><b style="color:var(--lc-ink)">' + (data.total || 0) + '</b> pedidos</span>' +
+        '<span><b style="color:var(--lc-ink)">' + (data.totalProdutos || 0) + '</b> produtos</span>' +
+        '<span>Total: <b style="color:var(--lc-success)">' + formatBRL(data.totalValor || 0) + '</b></span>';
 
       if (!_pedCache.length) {
-        if (lista) lista.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280">Nenhum pedido pago nesse período.<br><span style="font-size:12px">Sincronize as vendas em Operações → Sincronizar vendas.</span></div>';
+        if (lista) lista.innerHTML = '<div style="text-align:center;padding:40px;color:var(--lc-muted)">Nenhum pedido pago nesse período.<br><span style="font-size:12px">Use o botão Sincronizar vendas para buscar os pedidos recentes.</span></div>';
       } else {
         if (lista) lista.innerHTML = _pedCache.map((p, i) => pedCardHtml(p, i)).join('');
       }
@@ -41530,60 +41569,71 @@ ${JSON.stringify(metricas, null, 2)}`
   }
 
   // ─── CONFERÊNCIA CONTÁBIL ───
+  let _confCasos = []; // guarda os casos pra abrir o detalhe
   async function pedCarregarConferencia() {
     const loading = document.getElementById('confLoading');
     const resumo = document.getElementById('confResumo');
     const lista = document.getElementById('confLista');
-    if (loading) loading.style.display = 'block';
     if (resumo) resumo.innerHTML = '';
     if (lista) lista.innerHTML = '';
+
+    // vazio por padrão — exige seleção de loja
+    const lojas = pedLojasSelecionadas();
+    if (!lojas.length) {
+      if (loading) loading.style.display = 'none';
+      if (lista) lista.innerHTML = '<div style="text-align:center;padding:50px 20px;color:var(--lc-muted)">' +
+        '<div style="font-weight:600;color:var(--lc-ink-2)">Selecione uma ou mais contas para conferir</div>' +
+        '<div style="font-size:13px;margin-top:4px">Use o seletor de contas acima.</div></div>';
+      return;
+    }
+
+    if (loading) loading.style.display = 'block';
     try {
       const params = pedParamsPeriodo(new URLSearchParams());
-      const lojas = pedLojasSelecionadas();
-      if (lojas.length) params.set('lojaIds', lojas.join(','));
+      params.set('lojaIds', lojas.join(','));
       const resp = await fetch(BACKEND_URL + '/api/pedidos/conferencia?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
       const data = await resp.json();
       if (!data.ok) throw new Error(data.erro || 'Falha');
       const r = data.resumo;
+      _confCasos = data.casos || [];
 
-      const card = (label, valor, cor, sub) => '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px">' +
-        '<div style="font-size:12px;color:#6b7280;margin-bottom:4px">' + label + '</div>' +
+      const card = (label, valor, cor, sub) => '<div style="background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:10px;padding:14px">' +
+        '<div style="font-size:12px;color:var(--lc-muted);margin-bottom:4px">' + label + '</div>' +
         '<div style="font-size:20px;font-weight:800;color:' + cor + '">' + valor + '</div>' +
-        (sub ? '<div style="font-size:11px;color:#9ca3af;margin-top:2px">' + sub + '</div>' : '') +
+        (sub ? '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:2px">' + sub + '</div>' : '') +
       '</div>';
       if (resumo) resumo.innerHTML =
-        card('Prejuízo total (Shopee cobrou a mais)', formatBRL(r.prejuizoTotal), r.prejuizoTotal > 0 ? '#dc2626' : '#16a34a', null) +
-        card('Pedidos cobrados a mais', String(r.pedidosCobradosAMais), '#b45309', 'de ' + r.totalPedidos + ' conferidos') +
-        card('Pedidos corretos', String(r.pedidosOk), '#16a34a', null) +
-        card('Cobrado a menos (a favor)', formatBRL(r.cobradoAMenos), '#16a34a', 'informativo');
+        card('Prejuízo total (Shopee cobrou a mais)', formatBRL(r.prejuizoTotal), r.prejuizoTotal > 0 ? 'var(--lc-danger)' : 'var(--lc-success)', null) +
+        card('Pedidos cobrados a mais', String(r.pedidosCobradosAMais), 'var(--lc-warning)', 'de ' + r.totalPedidos + ' conferidos') +
+        card('Pedidos corretos', String(r.pedidosOk), 'var(--lc-success)', null) +
+        card('Cobrado a menos (a favor)', formatBRL(r.cobradoAMenos), 'var(--lc-success)', 'informativo');
 
-      if (!data.casos || !data.casos.length) {
-        if (lista) lista.innerHTML = '<div style="text-align:center;padding:30px;color:#6b7280">Nenhum pedido Shopee com escrow nesse período.<br><span style="font-size:12px">A conferência usa a taxa real do extrato — sincronize as vendas Shopee primeiro.</span></div>';
+      if (!_confCasos.length) {
+        if (lista) lista.innerHTML = '<div style="text-align:center;padding:30px;color:var(--lc-muted)">Nenhum pedido Shopee com extrato (escrow) nesse período.<br><span style="font-size:12px">A conferência usa a taxa real do extrato — sincronize as vendas Shopee primeiro.</span></div>';
       } else {
-        // só mostra os com diferença relevante primeiro, mas lista todos
-        if (lista) lista.innerHTML = data.casos.map(c => confCardHtml(c)).join('');
+        if (lista) lista.innerHTML = _confCasos.map((c, i) => confCardHtml(c, i)).join('');
       }
     } catch (e) {
-      if (lista) lista.innerHTML = '<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;padding:12px;border-radius:8px">' + escapeHtml(e.message) + '</div>';
+      if (lista) lista.innerHTML = '<div style="background:var(--lc-danger-soft);border:1px solid var(--lc-danger);color:var(--lc-danger);padding:12px;border-radius:8px">' + escapeHtml(e.message) + '</div>';
     } finally {
       if (loading) loading.style.display = 'none';
     }
   }
 
-  function confCardHtml(c) {
+  function confCardHtml(c, idx) {
     const dif = c.diferenca;
-    const corDif = dif > 0.009 ? '#dc2626' : (dif < -0.009 ? '#16a34a' : '#6b7280');
+    const corDif = dif > 0.009 ? 'var(--lc-danger)' : (dif < -0.009 ? 'var(--lc-success)' : 'var(--lc-muted)');
     const sinal = dif > 0.009 ? '+' : '';
     const tag = dif > 0.009 ? 'Cobrou a mais' : (dif < -0.009 ? 'A favor' : 'OK');
-    const tagBg = dif > 0.009 ? '#fef2f2' : (dif < -0.009 ? '#f0fdf4' : '#f9fafb');
-    return '<div style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px">' +
+    const tagBg = dif > 0.009 ? 'var(--lc-danger-soft)' : (dif < -0.009 ? 'var(--lc-success-soft)' : 'var(--lc-surface-2)');
+    return '<div onclick="confAbrirDetalhe(' + idx + ')" style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:10px;cursor:pointer;transition:box-shadow .15s" onmouseover="this.style.boxShadow=\'0 2px 8px rgba(0,0,0,0.08)\'" onmouseout="this.style.boxShadow=\'none\'">' +
       '<div style="flex:1;min-width:0">' +
-        '<div style="font-weight:600;color:#1e293b;font-size:13px">#' + escapeHtml(c.orderSn) + '</div>' +
-        '<div style="font-size:11px;color:#9ca3af">' + escapeHtml(c.loja) + ' · pedido ' + formatBRL(c.valorPedido) + '</div>' +
+        '<div style="font-weight:600;color:var(--lc-ink);font-size:13px">#' + escapeHtml(c.orderSn) + '</div>' +
+        '<div style="font-size:11px;color:var(--lc-muted-2)">' + escapeHtml(c.loja) + ' · pedido ' + formatBRL(c.valorPedido) + '</div>' +
       '</div>' +
       '<div style="text-align:right;font-size:12px">' +
-        '<div style="color:#6b7280">esperado <b>' + formatBRL(c.taxaEsperada) + '</b></div>' +
-        '<div style="color:#6b7280">real <b>' + formatBRL(c.taxaReal) + '</b></div>' +
+        '<div style="color:var(--lc-muted)">esperado <b>' + formatBRL(c.taxaEsperada) + '</b></div>' +
+        '<div style="color:var(--lc-muted)">real <b>' + formatBRL(c.taxaReal) + '</b></div>' +
       '</div>' +
       '<div style="text-align:right;min-width:90px">' +
         '<div style="font-weight:800;color:' + corDif + '">' + sinal + formatBRL(dif) + '</div>' +
@@ -41591,6 +41641,60 @@ ${JSON.stringify(metricas, null, 2)}`
       '</div>' +
     '</div>';
   }
+
+  // detalhe da conferência com a CONTA MATEMÁTICA
+  function confAbrirDetalhe(idx) {
+    const c = _confCasos[idx];
+    if (!c) return;
+    const dif = c.diferenca;
+    const cobrouAMais = dif > 0.009;
+    const corDif = cobrouAMais ? 'var(--lc-danger)' : (dif < -0.009 ? 'var(--lc-success)' : 'var(--lc-muted)');
+
+    const ov = document.createElement('div');
+    ov.id = 'confDetOverlay';
+    ov.style.cssText = 'display:flex;align-items:center;justify-content:center;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;padding:16px';
+    ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+
+    // monta a explicação: esperado = pct% × valor + fixo
+    ov.innerHTML = '<div style="background:var(--lc-surface);border-radius:var(--lc-radius-lg);max-width:480px;width:100%;max-height:88vh;overflow:auto;padding:22px;box-shadow:0 20px 50px rgba(0,0,0,.25)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
+        '<h3 style="font-size:16px;font-weight:800;color:var(--lc-ink);margin:0">Conferência · ' + escapeHtml(c.orderSn) + '</h3>' +
+        '<button onclick="document.getElementById(\'confDetOverlay\').remove()" style="border:none;background:none;font-size:22px;cursor:pointer;color:var(--lc-muted-2)">×</button>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--lc-muted);margin-bottom:14px">' + escapeHtml(c.loja) + ' · valor do pedido <b style="color:var(--lc-ink)">' + formatBRL(c.valorPedido) + '</b></div>' +
+
+      // bloco ESPERADO
+      '<div style="background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:var(--lc-radius);padding:14px;margin-bottom:12px">' +
+        '<div style="font-size:11px;font-weight:700;color:var(--lc-muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">O que a Shopee deveria cobrar</div>' +
+        '<div style="font-size:13px;color:var(--lc-ink-2);line-height:1.7">' +
+          'Faixa: <b>' + c.pctEsperado + '% de comissão + ' + formatBRL(c.taxaFixa) + ' fixo</b><br>' +
+          'Comissão: ' + c.pctEsperado + '% × ' + formatBRL(c.valorPedido) + ' = <b>' + formatBRL(c.comissaoEsperada) + '</b><br>' +
+          'Taxa fixa: <b>' + formatBRL(c.taxaFixa) + '</b>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;border-top:1px solid var(--lc-border);margin-top:8px;padding-top:8px">' +
+          '<span style="font-weight:700;color:var(--lc-ink)">Total esperado</span>' +
+          '<span style="font-weight:800;color:var(--lc-success)">' + formatBRL(c.taxaEsperada) + '</span></div>' +
+      '</div>' +
+
+      // bloco COBRADO
+      '<div style="background:' + (cobrouAMais ? 'var(--lc-danger-soft)' : 'var(--lc-surface-2)') + ';border:1px solid ' + (cobrouAMais ? 'var(--lc-danger)' : 'var(--lc-border)') + ';border-radius:var(--lc-radius);padding:14px;margin-bottom:12px">' +
+        '<div style="font-size:11px;font-weight:700;color:var(--lc-muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">O que a Shopee realmente cobrou</div>' +
+        '<div style="font-size:13px;color:var(--lc-ink-2);line-height:1.7">' +
+          'Taxa real cobrada: <b>' + formatBRL(c.taxaReal) + '</b><br>' +
+          'Equivale a <b>' + c.pctRealCobrado.toFixed(1).replace('.', ',') + '%</b> do valor do pedido' +
+        '</div>' +
+      '</div>' +
+
+      // RESULTADO
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:var(--lc-surface);border:2px solid ' + corDif + ';border-radius:var(--lc-radius)">' +
+        '<span style="font-weight:800;font-size:14px;color:var(--lc-ink)">' + (cobrouAMais ? 'Cobrado a mais (prejuízo)' : (dif < -0.009 ? 'Cobrado a menos (a seu favor)' : 'Cobrança correta')) + '</span>' +
+        '<span style="font-weight:800;font-size:18px;color:' + corDif + '">' + (cobrouAMais ? '+' : '') + formatBRL(dif) + '</span>' +
+      '</div>' +
+      (cobrouAMais ? '<div style="font-size:12px;color:var(--lc-danger);margin-top:10px;text-align:center">A Shopee cobrou ' + formatBRL(dif) + ' a mais do que a tabela oficial prevê para essa faixa.</div>' : '') +
+    '</div>';
+    document.body.appendChild(ov);
+  }
+  window.confAbrirDetalhe = confAbrirDetalhe;
 
   window.renderPedidos = renderPedidos;
   window.pedTrocarAba = pedTrocarAba;
@@ -41618,13 +41722,20 @@ ${JSON.stringify(metricas, null, 2)}`
         '<option value="15">Últimos 15 dias</option>' +
         '<option value="30">Últimos 30 dias</option>' +
       '</select>' +
-      '<div style="display:flex;flex-direction:column;gap:8px">' +
+      '<div id="pedSyncBotoes" style="display:flex;flex-direction:column;gap:8px">' +
         (temSel
           ? '<button class="lc-btn lc-btn--primary lc-btn--block" onclick="pedExecutarSincronizar(false)">Sincronizar as ' + selecionadas.length + ' loja(s) selecionada(s)</button>'
           : '') +
         '<button class="lc-btn ' + (temSel ? 'lc-btn--secondary' : 'lc-btn--primary') + ' lc-btn--block" onclick="pedExecutarSincronizar(true)">Sincronizar TODAS as lojas</button>' +
       '</div>' +
-      '<div id="pedSyncStatus" style="margin-top:14px;font-size:13px;color:var(--lc-muted);display:none"></div>' +
+      // barra de progresso
+      '<div id="pedSyncProg" style="display:none;margin-top:16px">' +
+        '<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--lc-muted);margin-bottom:6px">' +
+          '<span id="pedSyncProgLabel">Preparando…</span><span id="pedSyncProgPct">0%</span></div>' +
+        '<div style="height:8px;background:var(--lc-surface-2);border-radius:99px;overflow:hidden">' +
+          '<div id="pedSyncProgBar" style="height:100%;width:0%;background:var(--lc-primary);transition:width .3s"></div></div>' +
+        '<div id="pedSyncProgDetalhe" style="font-size:11px;color:var(--lc-muted-2);margin-top:8px;max-height:120px;overflow-y:auto"></div>' +
+      '</div>' +
     '</div>';
     document.body.appendChild(ov);
   }
@@ -41632,27 +41743,51 @@ ${JSON.stringify(metricas, null, 2)}`
 
   async function pedExecutarSincronizar(todas) {
     const dias = parseInt((document.getElementById('pedSyncDias') || {}).value) || 7;
-    const status = document.getElementById('pedSyncStatus');
-    const lojaIds = todas ? [] : pedLojasSelecionadas();
-    if (status) { status.style.display = 'block'; status.textContent = 'Sincronizando… isso pode levar alguns minutos.'; }
-    // desabilita os botões
-    document.querySelectorAll('#pedSyncOverlay .lc-btn').forEach(b => { b.disabled = true; });
-    try {
-      const resp = await fetch(BACKEND_URL + '/api/pedidos/sincronizar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-        body: JSON.stringify({ lojaIds, dias }),
-      });
-      const data = await resp.json();
-      if (!data.ok) throw new Error(data.erro || 'Falha');
-      if (status) status.innerHTML = '<span style="color:var(--lc-success);font-weight:600">' + data.sincronizadas + ' de ' + data.total + ' loja(s) sincronizada(s).</span>' +
-        (data.falhas > 0 ? '<br><span style="color:var(--lc-warning)">' + data.falhas + ' não conectada(s) ou com erro.</span>' : '');
-      showToast(data.sincronizadas + ' loja(s) sincronizada(s)');
-      setTimeout(() => { const ov = document.getElementById('pedSyncOverlay'); if (ov) ov.remove(); pedCarregarLista(); }, 1400);
-    } catch (e) {
-      if (status) status.innerHTML = '<span style="color:var(--lc-danger)">Erro: ' + escapeHtml(e.message) + '</span>';
-      document.querySelectorAll('#pedSyncOverlay .lc-btn').forEach(b => { b.disabled = false; });
+    // resolve a lista de lojas-alvo (objeto {id,nome})
+    let alvo;
+    if (todas) alvo = _pedCacheLojas.slice();
+    else {
+      const ids = pedLojasSelecionadas().map(String);
+      alvo = _pedCacheLojas.filter(l => ids.includes(String(l.id)));
     }
+    if (!alvo.length) { showToast('Nenhuma loja para sincronizar', true); return; }
+
+    // troca botões pela barra de progresso
+    const botoes = document.getElementById('pedSyncBotoes');
+    const prog = document.getElementById('pedSyncProg');
+    const bar = document.getElementById('pedSyncProgBar');
+    const pct = document.getElementById('pedSyncProgPct');
+    const label = document.getElementById('pedSyncProgLabel');
+    const det = document.getElementById('pedSyncProgDetalhe');
+    if (botoes) botoes.style.display = 'none';
+    if (prog) prog.style.display = 'block';
+
+    let ok = 0, falhas = 0;
+    const linhasDet = [];
+    for (let i = 0; i < alvo.length; i++) {
+      const loja = alvo[i];
+      const pctNum = Math.round((i / alvo.length) * 100);
+      if (bar) bar.style.width = pctNum + '%';
+      if (pct) pct.textContent = pctNum + '%';
+      if (label) label.textContent = 'Sincronizando ' + (i + 1) + ' de ' + alvo.length + ' · ' + (loja.nome || ('Loja ' + loja.id));
+      try {
+        // chama o endpoint POR LOJA (rápido, não estoura timeout)
+        const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.id + '/sincronizar-vendas?dias=' + dias, {
+          method: 'POST', headers: { 'x-api-token': getApiToken() },
+        });
+        const data = await resp.json().catch(() => ({ ok: false }));
+        if (resp.ok && data.ok) { ok++; linhasDet.push('✓ ' + (loja.nome || loja.id)); }
+        else { falhas++; linhasDet.push('✗ ' + (loja.nome || loja.id) + (data.erro ? ' — ' + data.erro : '')); }
+      } catch (e) {
+        falhas++; linhasDet.push('✗ ' + (loja.nome || loja.id) + ' — erro de conexão');
+      }
+      if (det) det.innerHTML = linhasDet.slice().reverse().join('<br>');
+    }
+    if (bar) bar.style.width = '100%';
+    if (pct) pct.textContent = '100%';
+    if (label) label.innerHTML = '<span style="color:var(--lc-success);font-weight:700">Concluído: ' + ok + ' loja(s)' + (falhas ? ', ' + falhas + ' com falha' : '') + '</span>';
+    showToast(ok + ' loja(s) sincronizada(s)');
+    setTimeout(() => { const ov = document.getElementById('pedSyncOverlay'); if (ov) ov.remove(); if (_pedAba === 'conferencia') pedCarregarConferencia(); else pedCarregarLista(); }, 1800);
   }
   window.pedExecutarSincronizar = pedExecutarSincronizar;
 
