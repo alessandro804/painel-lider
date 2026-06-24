@@ -12003,8 +12003,8 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     if (resp && (resp.id || resp.idBanco)) {
       limpo.idBanco = resp.idBanco || resp.id;
     } else {
-      // Fallback: busca pelo skuPai
-      const respBusca = await fetch(BACKEND_URL + '/api/produtos', { headers: { 'x-api-token': getApiToken() } });
+      // Fallback: busca pelo skuPai (com filtro q, sem baixar a base inteira)
+      const respBusca = await fetch(BACKEND_URL + '/api/produtos?limit=5&q=' + encodeURIComponent(limpo.skuPai || ''), { headers: { 'x-api-token': getApiToken() } });
       const dataB = await respBusca.json();
       const enc = (dataB.produtos || []).find(pr => pr.skuPai === limpo.skuPai);
       if (enc) limpo.idBanco = enc.id;
@@ -15338,17 +15338,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       });
       const dCount = await respCount.json();
       const total = (dCount.ok && dCount.total) || 0;
-      
-      if (total <= 500) {
-        // Cabe em 1 request
-        const r = await fetch(BACKEND_URL + '/api/produtos?limit=' + Math.max(total, 1), {
-          headers: { 'x-api-token': getApiToken() }
-        });
-        const d = await r.json();
-        return d.ok ? _normalizarListaBackend(d.produtos || []) : [];
-      }
-      
-      // Pega em chunks de 200
+      if (total <= 0) return [];
+
+      // SEMPRE pagina em chunks de 200 (o backend tem teto de 200 por request,
+      // pra não estourar memória/timeout em contas com muitos produtos).
       const todos = [];
       const totalPaginas = Math.ceil(total / 200);
       for (let p = 1; p <= totalPaginas; p++) {
@@ -16141,6 +16134,23 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   // Carrega os produtos do backend e atualiza o cache local
+  // Garante que o catálogo COMPLETO está em memória (produtosErp). Carrega só
+  // uma vez (lazy) — usado quando a tela realmente precisa de tudo (ex.: filtrar
+  // produtos por loja via vínculo). No boot NÃO chamamos isso, pra não travar.
+  let _catalogoCarregado = false;
+  let _catalogoCarregandoPromise = null;
+  async function garantirCatalogoCompleto() {
+    if (_catalogoCarregado) return;
+    if (_catalogoCarregandoPromise) return _catalogoCarregandoPromise;
+    _catalogoCarregandoPromise = (async () => {
+      await carregarProdutosDoBackend();
+      _catalogoCarregado = true;
+      _catalogoCarregandoPromise = null;
+    })();
+    return _catalogoCarregandoPromise;
+  }
+  window.garantirCatalogoCompleto = garantirCatalogoCompleto;
+
   async function carregarProdutosDoBackend() {
     try {
       // Busca TODOS os produtos paginando (a rota sem limit corta em 1000 no Supabase).
@@ -19865,6 +19875,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     // completo (em memória) por vínculo — não vamos ao backend (que filtraria pelo id errado).
     if (filtroLoja) {
       try {
+        // filtrar por loja usa os VÍNCULOS (em memória) → precisa do catálogo completo.
+        // Carrega sob demanda (1ª vez que filtra por loja), não no boot.
+        await garantirCatalogoCompleto();
         const loja = (lojasErp||[]).find(l => String(l.id) === String(filtroLoja));
         const idBanco = loja ? String(loja.idBanco) : null;
         const filtroStatusL = document.getElementById('prodFiltroStatus')?.value || '';
@@ -35180,7 +35193,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.149-devolucoes-status-frete';
+  const _DIAG_VERSAO_PAINEL = 'v33k.150-promo-real-perf-seletor';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -40563,6 +40576,9 @@ ${JSON.stringify(metricas, null, 2)}`
       let selecionados = new Set((opts.selecionados || []).map(String));
       let pendentes = new Set(selecionados); // edições antes de Salvar
       const aoMudar = typeof opts.aoMudar === 'function' ? opts.aoMudar : function(){};
+      // conjunto de ids válidos (existem na lista). Usado pra contar o label sem
+      // contar ids órfãos/duplicados — corrige "1 selecionada mostra 2".
+      const idsValidos = () => new Set((lojas || []).map(l => String(l.id)));
 
       host.classList.add('lc-acctsel');
       host.innerHTML =
@@ -40587,11 +40603,18 @@ ${JSON.stringify(metricas, null, 2)}`
       const btnSave = host.querySelector('.lc-acctsel__save');
 
       function atualizarLabel() {
-        const n = selecionados.size;
+        // quando a lista de lojas já carregou, conta só os ids que existem nela
+        // (evita contar id órfão/duplicado → "1 selecionada mostra 2").
+        let arr = [...selecionados];
+        if (lojas && lojas.length) {
+          const validos = idsValidos();
+          arr = arr.filter(id => validos.has(id));
+        }
+        const n = arr.length;
         if (n === 0) label.textContent = placeholder;
-        else if (n === lojas.length) label.textContent = 'Todas as contas (' + n + ')';
+        else if (lojas.length && n === lojas.length) label.textContent = 'Todas as contas (' + n + ')';
         else if (n === 1) {
-          const l = lojas.find(x => String(x.id) === [...selecionados][0]);
+          const l = lojas.find(x => String(x.id) === arr[0]);
           label.textContent = l ? (l.nome || ('Loja ' + l.id)) : '1 conta';
         } else label.textContent = n + ' contas selecionadas';
       }
@@ -41639,20 +41662,36 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // mapa dos tipos de promoção → label + cor da tag
   const PED_PROMO_INFO = {
-    flash_sale:        { label: 'Oferta relâmpago', cor: 'var(--lc-danger)',  soft: 'var(--lc-danger-soft)' },
-    desconto_vendedor: { label: 'Leve+ por menos',  cor: 'var(--lc-warning)', soft: 'var(--lc-warning-soft)' },
-    price_discount:    { label: 'Promoção',         cor: 'var(--lc-warning)', soft: 'var(--lc-warning-soft)' },
-    bundle_deal:       { label: 'Combo',            cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
-    add_on_deal:       { label: 'Compre junto',     cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
-    wholesale:         { label: 'Atacado',          cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
-    cupom_vendedor:    { label: 'Cupom do vendedor',cor: 'var(--lc-primary)', soft: 'var(--lc-primary-soft)' },
-    cupom_shopee:      { label: 'Cupom Shopee',     cor: 'var(--lc-muted)',   soft: 'var(--lc-surface-2)' },
-    desconto_shopee:   { label: 'Desconto Shopee',  cor: 'var(--lc-muted)',   soft: 'var(--lc-surface-2)' },
-    free_gift:         { label: 'Brinde',           cor: 'var(--lc-success)', soft: 'var(--lc-success-soft)' },
-    add_on_deal_main:  { label: 'Compre junto',     cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
-    affiliate:         { label: 'Afiliado',         cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
+    flash_sale:           { label: 'Oferta relâmpago',  cor: 'var(--lc-danger)',  soft: 'var(--lc-danger-soft)' },
+    leve_mais_por_menos:  { label: 'Leve+ por menos',   cor: 'var(--lc-warning)', soft: 'var(--lc-warning-soft)' },
+    oferta_combo:         { label: 'Oferta no combo',   cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
+    promocao_vendedor:    { label: 'Promoção',          cor: 'var(--lc-warning)', soft: 'var(--lc-warning-soft)' },
+    atacado:              { label: 'Atacado',           cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
+    cupom_vendedor:       { label: 'Cupom do vendedor', cor: 'var(--lc-primary)', soft: 'var(--lc-primary-soft)' },
+    cupom_shopee:         { label: 'Cupom Shopee',      cor: 'var(--lc-muted)',   soft: 'var(--lc-surface-2)' },
+    free_gift:            { label: 'Brinde',            cor: 'var(--lc-success)', soft: 'var(--lc-success-soft)' },
+    affiliate:            { label: 'Afiliado',          cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
   };
   function pedPromoLabel(t) { return (PED_PROMO_INFO[t] || { label: t }).label; }
+  // explicação do que é cada promoção (aparece no detalhe do pedido)
+  const PED_PROMO_EXPLICA = {
+    leve_mais_por_menos: 'Leve+ por menos: desconto extra quando o cliente compra 2 ou mais unidades do mesmo anúncio (ex.: +5% no pedido). Você banca esse desconto.',
+    oferta_combo: 'Oferta no combo: desconto em venda casada — o cliente leva 2 ou mais produtos diferentes juntos e ganha um desconto no conjunto. Você banca esse desconto.',
+    flash_sale: 'Oferta relâmpago: promoção por tempo limitado da Shopee. O preço de venda já reflete o desconto.',
+    promocao_vendedor: 'Promoção: desconto de preço que você cadastrou no anúncio.',
+    cupom_vendedor: 'Cupom do vendedor: cupom que você ofereceu ao cliente. É um custo seu (sai do seu repasse).',
+    cupom_shopee: 'Cupom Shopee: cupom bancado pela Shopee. Não afeta o seu lucro.',
+    atacado: 'Atacado: preço por faixa de quantidade configurado no anúncio.',
+  };
+  function pedPromoExplicacaoHtml(promocoes) {
+    if (!Array.isArray(promocoes) || !promocoes.length) return '';
+    const explicacoes = promocoes.map(t => PED_PROMO_EXPLICA[t]).filter(Boolean);
+    if (!explicacoes.length) return '';
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--lc-surface-2)">' +
+      explicacoes.map(e => '<div style="font-size:11px;color:var(--lc-muted-2);line-height:1.5;margin-top:2px">• ' + escapeHtml(e) + '</div>').join('') +
+      '</div>';
+  }
+  window.pedPromoExplicacaoHtml = pedPromoExplicacaoHtml;
   function pedPromoTagsHtml(promocoes, max) {
     if (!Array.isArray(promocoes) || !promocoes.length) return '';
     const lim = max || 3;
@@ -41755,6 +41794,7 @@ ${JSON.stringify(metricas, null, 2)}`
       (p.pagoEm ? dado('Pago em', fmtData(p.pagoEm)) : '') +
       (Array.isArray(p.promocoes) && p.promocoes.length
         ? '<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--lc-surface-2);gap:12px"><span style="font-size:13px;color:var(--lc-muted)">Promoções</span><span style="text-align:right">' + pedPromoTagsHtml(p.promocoes, 8).replace('margin-top:4px', 'justify-content:flex-end') + '</span></div>'
+          + pedPromoExplicacaoHtml(p.promocoes)
         : '') +
       // itens
       '<div style="margin-top:14px">' + itensHtml + '</div>' +
@@ -49620,12 +49660,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
             } catch (e) { console.warn('[autologin] pull falhou:', e); }
             // já temos dados financeiros/demandas → pode revelar a tela
             if (typeof lcMarcarPronto === 'function') lcMarcarPronto();
-            // produtos carregam em background (não seguram a revelação da tela)
+            // produtos: NÃO baixa o catálogo inteiro no boot (em contas com muitas
+            // lojas isso estourava memória/timeout e dava 500 + tela branca).
+            // Carrega só a 1ª página paginada; o resto vem sob demanda quando a
+            // pessoa entra na tela de Produtos e filtra/pagina.
             try {
-              await carregarProdutosDoBackend();
-              if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
+              if (typeof carregarPaginaProdutos === 'function') await carregarPaginaProdutos({ page: 1 });
               if (typeof renderAll === 'function') renderAll();
-            } catch (e) { console.warn('[autologin] falha ao carregar produtos:', e); }
+            } catch (e) { console.warn('[autologin] falha ao carregar 1ª página de produtos:', e); }
           })();
           return;
         }
