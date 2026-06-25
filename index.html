@@ -3983,6 +3983,8 @@
     padding: 10px 12px; border-top: 1px solid var(--lc-border); background: var(--lc-surface-2);
   }
   .lc-acctsel__empty { padding: 18px; text-align: center; color: var(--lc-muted); font-size: var(--lc-fs-sm); }
+  .lc-acctsel__group { padding: 6px 12px 3px; font-size: var(--lc-fs-xs); font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--lc-muted); }
+  .lc-acctsel__divider { height: 1px; background: var(--lc-border); margin: 6px 8px; }
 
   /* ============ CARDS / SUPERFÍCIES ============ */
   .lc-card {
@@ -11424,6 +11426,13 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       for (const tam of tamanhos) {
         vars.push({ id: gerarId(), cor: '', tamanho: tam, nome: tam, sku: '', ean: '', estoque: estoqueDefault, preco: precoVar, vinculos: [], fotos: [] });
       }
+    } else {
+      // SEM cor e SEM tamanho: produto de variação única (1 só). Cria uma
+      // variação "Padrão" pra o anúncio funcionar sem precisar de cor/tamanho.
+      vars.push({
+        id: gerarId(), cor: '', tamanho: '', nome: 'Padrão', variacaoUnica: true,
+        sku: '', ean: '', estoque: estoqueDefault, preco: precoVar, vinculos: [], fotos: []
+      });
     }
     return vars;
   }
@@ -12062,15 +12071,36 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
   
   async function acaoSalvarProduto(d) {
     const p = _produtoDaDemanda(d);
-    
-    // Validações pre-flight pra dar erro claro
+
+    // ─── AUTO-RESOLUÇÃO (100% automático, sem pedir nada ao humano) ───
+    // 1) Loja: se não veio, tenta as contas marcadas, depois a seleção global,
+    //    depois a 1ª loja disponível. Loja é sempre obrigatória.
+    if (!p.lojaId) {
+      const candidatas = []
+        .concat((d.contas || []))
+        .concat((typeof _demandaContasSel !== 'undefined' ? _demandaContasSel : []))
+        .concat((typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []))
+        .map(String).filter(Boolean);
+      let escolhida = candidatas[0];
+      if (!escolhida && Array.isArray(lojasErp) && lojasErp.length) escolhida = String(lojasErp[0].id);
+      if (escolhida) { p.lojaId = escolhida; if (!d.contas || !d.contas.length) d.contas = [escolhida]; }
+    }
+    // 2) Variação única: se por algum motivo não há variação, cria 1 "Padrão".
+    if (!p.variacoes || p.variacoes.length === 0) {
+      p.variacoes = [{ id: gerarId(), cor: '', tamanho: '', nome: 'Padrão', variacaoUnica: true, sku: '', ean: '', estoque: parseInt(d.estoqueDefault) || 5, preco: p.preco || 0.01, vinculos: [], fotos: [] }];
+    }
+    // 3) SKUs: gera automaticamente os que faltam (não pede ao humano).
+    if ((p.variacoes || []).some(v => !v.sku || !v.sku.trim())) {
+      try { await acaoGerarSKUs(d); } catch (e) { console.warn('[salvar] gerar SKUs:', e.message); }
+    }
+
+    // Validações que SOBRAM (só as que não dá pra resolver sozinho)
     const errosPre = [];
     if (!p.nome || p.nome.length < 3) errosPre.push('Nome muito curto (' + (p.nome||'').length + ' chars, mínimo 3)');
     if (!p.preco || p.preco < 0.01) errosPre.push('Preço inválido (R$ ' + p.preco + ')');
-    if (!p.lojaId) errosPre.push('Sem lojaId');
-    if (!p.variacoes || p.variacoes.length === 0) errosPre.push('Sem variações');
+    if (!p.lojaId) errosPre.push('Nenhuma loja disponível — conecte/selecione uma loja');
     (p.variacoes || []).forEach((v,i) => {
-      if (!v.nome || !v.nome.trim()) errosPre.push('Var ' + (i+1) + ' sem nome');
+      if (!v.nome || !v.nome.trim()) v.nome = 'Padrão'; // resolve em vez de barrar
       if (!v.sku || !v.sku.trim()) errosPre.push('Var ' + (i+1) + ' sem SKU');
     });
     if (errosPre.length > 0) {
@@ -26608,10 +26638,17 @@ REGRAS DURAS:
     // === MERCADO LIVRE — novo modelo (preço por variação + guia de tamanhos) ===
     if (marketplace === 'mercadolivre') {
       const modeloNovo = (p.modeloPreco || 'variacao') === 'variacao';
+
+      // VARIAÇÃO ÚNICA: produto com 1 variação sem cor E sem tamanho não vira
+      // variations[] no ML (o ML rejeita variação com attribute_combinations vazio).
+      // Vira item SIMPLES: preço/estoque/SKU no nível do item.
+      const _vlist = (p.variacoes || []);
+      const ehVariacaoUnica = _vlist.length === 1 &&
+        !(_vlist[0].cor || '').trim() && !(_vlist[0].tamanho || '').trim();
       
       // Variações no formato ML: cada uma com price, available_quantity,
       // attribute_combinations e pictures (modelo novo = preço por variação)
-      const variacoesML = (p.variacoes||[]).map(v => {
+      const variacoesML = ehVariacaoUnica ? [] : (p.variacoes||[]).map(v => {
         // attributes da variação: SELLER_SKU + GTIN (EAN) + outros que tiver
         const attrsVar = [];
         if (v.sku) attrsVar.push({ id: 'SELLER_SKU', value_name: String(v.sku) });
@@ -26654,7 +26691,8 @@ REGRAS DURAS:
       
     // Converte atributosMl objeto → array
     const attrsItem = _converterAtributosMlParaArray(p);
-    const temVariacoes = (p.variacoes || []).length > 0;
+    // variação única conta como "sem variações" → SKU/GTIN/preço/estoque no item
+    const temVariacoes = !ehVariacaoUnica && (p.variacoes || []).length > 0;
     
     // REGRA CRÍTICA DO ML: SELLER_SKU e GTIN ficam APENAS nas variações
     // quando o anúncio tem variações. Senão duplicariam (item.attributes
@@ -26662,14 +26700,17 @@ REGRAS DURAS:
     // in more than of item.attributes, variation.attribute_combinations
     // and variation.attributes". Já passamos por isso.
     if (!temVariacoes) {
+      // se for variação única, o SKU/EAN da variação são mais específicos que o skuPai
+      const skuItem = ehVariacaoUnica ? ((p.variacoes[0]||{}).sku || p.skuPai) : p.skuPai;
+      const eanItem = ehVariacaoUnica ? ((p.variacoes[0]||{}).ean || p.ean) : p.ean;
       const jaTemSeller = attrsItem.some(a => a.id === 'SELLER_SKU');
-      if (!jaTemSeller && p.skuPai) {
-        attrsItem.push({ id: 'SELLER_SKU', value_name: String(p.skuPai) });
+      if (!jaTemSeller && skuItem) {
+        attrsItem.push({ id: 'SELLER_SKU', value_name: String(skuItem) });
       }
       const jaTemGtin = attrsItem.some(a => a.id === 'GTIN' || a.id === 'EMPTY_GTIN_REASON');
       if (!jaTemGtin) {
-        if (p.ean && /^\d{8}$|^\d{12,14}$/.test(String(p.ean))) {
-          attrsItem.push({ id: 'GTIN', value_name: String(p.ean) });
+        if (eanItem && /^\d{8}$|^\d{12,14}$/.test(String(eanItem))) {
+          attrsItem.push({ id: 'GTIN', value_name: String(eanItem) });
         } else {
           attrsItem.push({ id: 'EMPTY_GTIN_REASON', value_id: '17055160' });
         }
@@ -26687,8 +26728,11 @@ REGRAS DURAS:
         marketplace: 'mercadolivre',
         title: String(p.nome || '').slice(0, 60), // ML limita título a 60; nome base pode ter até 100
         category_id: categoriaMkt,
-        // No modelo legado, o preço fica no item; no novo, fica nas variações
-        price: modeloNovo ? undefined : p.preco,
+        // Preço no item: no modelo novo COM variações fica nas variações; mas
+        // se for VARIAÇÃO ÚNICA (item simples), o preço/estoque ficam no item.
+        price: ehVariacaoUnica ? (parseFloat((p.variacoes[0]||{}).preco) || p.preco) : (modeloNovo ? undefined : p.preco),
+        // estoque no item só quando é item simples (sem variations[])
+        available_quantity: ehVariacaoUnica ? (parseInt((p.variacoes[0]||{}).estoque) || 0) : undefined,
         currency_id: 'BRL',
         // ITEM_CONDITION: a API só aceita "New" para anúncios novos
         condition: 'new',
@@ -26722,7 +26766,7 @@ REGRAS DURAS:
         attributes: attrsItem,
         variations: variacoesML,
         // seller_custom_field só no item quando NÃO tem variações
-        seller_custom_field: temVariacoes ? undefined : (p.skuPai || ''),
+        seller_custom_field: temVariacoes ? undefined : (ehVariacaoUnica ? ((p.variacoes[0]||{}).sku || p.skuPai || '') : (p.skuPai || '')),
         // Guia de tamanhos — obrigatório no modelo novo para moda/calçados
         size_guide: p.guiaTamanhos || null,
         modelo: modeloNovo ? 'user_products' : 'legado',
@@ -34241,6 +34285,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
         hiddenTel.value = tel;
       }
     }
+    // mostra as lojas DESSE cliente no topo do seletor de contas (depois uma
+    // divisória com as demais). Continua dando pra marcar lojas dos dois lados.
+    try {
+      const nomeCli = (hidden && hidden.value) ? hidden.value : '';
+      const lojasDoCliente = (Array.isArray(lojasErp) ? lojasErp : [])
+        .filter(l => nomeCli && l.clienteVinculado === nomeCli)
+        .map(l => String(l.id));
+      if (_demandaContasComp && typeof _demandaContasComp.setPrioritarios === 'function') {
+        _demandaContasComp.setPrioritarios(lojasDoCliente);
+      }
+    } catch (e) { console.warn('[demanda] prioritizar lojas do cliente:', e.message); }
   }
   window.onDemandaClienteSelect = onDemandaClienteSelect;
   let _demandaClienteNovo = false;
@@ -35857,7 +35912,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.182-regua-horaria';
+  const _DIAG_VERSAO_PAINEL = 'v33k.183-anuncio-auto-variacao-unica';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41245,6 +41300,11 @@ ${JSON.stringify(metricas, null, 2)}`
       let selecionados = new Set((opts.selecionados || []).map(String));
       let pendentes = new Set(selecionados); // edições antes de Salvar
       const aoMudar = typeof opts.aoMudar === 'function' ? opts.aoMudar : function(){};
+      // ids de lojas "prioritárias" (ex.: as do cliente selecionado) — sobem pro topo
+      // e ganham uma divisória separando das demais. Pode ser atualizado depois.
+      let prioritarios = new Set((opts.prioritarios || []).map(String));
+      const tituloPrior = opts.tituloPrioritarios || 'Lojas do cliente';
+      const tituloResto = opts.tituloResto || 'Outras lojas';
       // conjunto de ids válidos (existem na lista). Usado pra contar o label sem
       // contar ids órfãos/duplicados — corrige "1 selecionada mostra 2".
       const idsValidos = () => new Set((lojas || []).map(l => String(l.id)));
@@ -41299,14 +41359,24 @@ ${JSON.stringify(metricas, null, 2)}`
         if (!filtradas.length) {
           html += '<div class="lc-acctsel__empty">Nenhuma loja encontrada</div>';
         } else {
-          filtradas.forEach(l => {
+          const optHtml = (l) => {
             const on = pendentes.has(String(l.id));
-            html += '<div class="lc-acctsel__opt' + (on ? ' checked' : '') + '" data-id="' + l.id + '">' +
+            return '<div class="lc-acctsel__opt' + (on ? ' checked' : '') + '" data-id="' + l.id + '">' +
               '<span class="lc-acctsel__cb">' + checkSvg + '</span>' +
               '<span><span class="lc-acctsel__name">' + escapeHtml(l.nome || ('Loja ' + l.id)) + '</span>' +
               (l.marketplace ? '<span class="lc-acctsel__mkt">' + escapeHtml(l.marketplace) + '</span>' : '') +
               '</span></div>';
-          });
+          };
+          // separa prioritárias (do cliente) das demais, mantendo seleção mista possível
+          const temPrior = prioritarios.size > 0;
+          const prior = temPrior ? filtradas.filter(l => prioritarios.has(String(l.id))) : [];
+          const resto = temPrior ? filtradas.filter(l => !prioritarios.has(String(l.id))) : filtradas;
+          if (temPrior && prior.length) {
+            html += '<div class="lc-acctsel__group">' + escapeHtml(tituloPrior) + '</div>';
+            prior.forEach(l => { html += optHtml(l); });
+            if (resto.length) html += '<div class="lc-acctsel__divider"></div><div class="lc-acctsel__group">' + escapeHtml(tituloResto) + '</div>';
+          }
+          resto.forEach(l => { html += optHtml(l); });
         }
         lista.innerHTML = html;
       }
@@ -41365,6 +41435,8 @@ ${JSON.stringify(metricas, null, 2)}`
           return [...selecionados].filter(id => validos.has(id));
         },
         setSelecionados: (ids) => { selecionados = new Set((ids || []).map(String)); atualizarLabel(); },
+        // atualiza quais lojas sobem pro topo (ex.: as do cliente recém-selecionado)
+        setPrioritarios: (ids) => { prioritarios = new Set((ids || []).map(String)); if (host.classList.contains('open')) renderLista(); },
         abrir: () => trigger.click(),
         fechar: () => { host.classList.remove('open'); _abertoAtual = null; },
       };
@@ -48104,8 +48176,20 @@ ${JSON.stringify(metricas, null, 2)}`
       }).join('');
       return;
     }
+    // lojas do cliente já selecionado (se houver) vão pro topo com divisória
+    let prioIni = [];
+    try {
+      const nomeCli = (document.getElementById('demandaCliente') || {}).value || '';
+      if (nomeCli) prioIni = lista.filter(l => {
+        const lj = lojasErp.find(x => String(x.id) === String(l.id));
+        return lj && lj.clienteVinculado === nomeCli;
+      }).map(l => String(l.id));
+    } catch (e) {}
     _demandaContasComp = LcAcctSel.montar(host, lista, {
       selecionados: (_demandaContasSel || []).map(String),
+      prioritarios: prioIni,
+      tituloPrioritarios: 'Lojas do cliente',
+      tituloResto: 'Outras lojas',
       placeholder: 'Selecione as contas',
       salvarLabel: 'Aplicar contas',
       aoMudar: () => {
