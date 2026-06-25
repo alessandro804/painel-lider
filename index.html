@@ -6824,13 +6824,14 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
 <!-- ===== ADS (Shopee) ===== -->
 <div class="screen" id="adsScreen">
   <div class="app-header">
-    <div class="header-title">📊 Ads — Shopee</div>
+    <div class="header-title">📊 Ads</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <select id="adsPeriodo" onchange="renderAdsSubaba()" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
-        <option value="7">7 dias</option>
-        <option value="15">15 dias</option>
-        <option value="30">30 dias</option>
-      </select>
+      <div class="ads-periodo-grupo" style="display:inline-flex;gap:4px">
+        <button class="ads-periodo-btn lc-btn lc-btn--primary lc-btn--sm" data-dias="7" onclick="adsSetPeriodo(7,this)">7 Dias</button>
+        <button class="ads-periodo-btn lc-btn lc-btn--ghost lc-btn--sm" data-dias="15" onclick="adsSetPeriodo(15,this)">15 Dias</button>
+        <button class="ads-periodo-btn lc-btn lc-btn--ghost lc-btn--sm" data-dias="30" onclick="adsSetPeriodo(30,this)">30 Dias</button>
+        <button class="lc-btn lc-btn--ghost lc-btn--sm" id="adsPeriodoCustomBtn" onclick="adsAbrirCalendario(this)"><span id="adsPeriodoCustomLabel">Período</span></button>
+      </div>
       <button class="toolbar-btn" onclick="adsSincronizarTodas()" title="Buscar dados de Ads de todas as lojas Shopee agora">🔄 Sincronizar todas</button>
     </div>
   </div>
@@ -6842,12 +6843,11 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       <button class="ads-tab-btn" id="adsTabResumo" onclick="adsTrocarSubaba('resumo')" style="padding:10px 16px;border:none;background:none;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid transparent;color:#6b7280">Resumo por loja</button>
     </div>
 
-    <!-- Filtro de loja (compartilhado) -->
-    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <label style="font-size:12px;color:#6b7280;font-weight:600">Loja:</label>
-      <select id="adsLojaFiltro" onchange="renderAdsSubaba()" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;min-width:200px">
-        <option value="">Todas as lojas Shopee</option>
-      </select>
+    <!-- Filtro de loja (compartilhado com Pedidos/Financeiro) + período legível -->
+    <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <div id="adsLojasSel" style="min-width:240px"></div>
+      <span id="adsPeriodoInfo" style="font-size:12px;color:#64748b;font-weight:600"></span>
+      <select id="adsLojaFiltro" style="display:none"><option value="">Todas</option></select>
       <button id="adsBtnSyncLoja" class="toolbar-btn" onclick="adsSincronizarLojaSelecionada()" style="display:none">🔄 Sincronizar esta loja</button>
       <button id="adsBtnDiag" class="toolbar-btn" onclick="adsDiagnosticar()" style="display:none">🔬 Diagnosticar</button>
       <button id="adsBtnMotorDados" class="toolbar-btn" onclick="adsVerDadosMotor()" style="display:none">🧪 Dados do motor</button>
@@ -13154,6 +13154,31 @@ Retorne JSON: {"ID": "valor", ...}`;
     const overlay = document.getElementById('conexaoOverlay');
     document.getElementById('conexaoTitulo').textContent = '🔗 Conectar ' + integ.nome;
     document.getElementById('conexaoLink').value = link;
+
+    // extrai o lojaId do link pra revalidar o status quando o usuário voltar
+    let lojaIdConex = null;
+    try { lojaIdConex = new URLSearchParams(link.split('?')[1]).get('lojaId'); } catch (_) {}
+
+    // quando o usuário voltar pra esta aba (terminou o OAuth na outra aba),
+    // revalida o vínculo e atualiza a tela — sem precisar de F5.
+    if (_conexaoFocusHandler) { window.removeEventListener('focus', _conexaoFocusHandler); _conexaoFocusHandler = null; }
+    if (lojaIdConex) {
+      _conexaoFocusHandler = async () => {
+        try {
+          const r = await fetch(BACKEND_URL + '/api/vincular/loja/' + lojaIdConex + '/situacao', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+          if (r && r.ok && r.vinculado) {
+            window.removeEventListener('focus', _conexaoFocusHandler); _conexaoFocusHandler = null;
+            fecharModalConexao();
+            showToast('✓ ' + integ.nome + ' conectado!');
+            // limpa o cache de status pra forçar releitura fresca
+            if (typeof renderLojasConexoes === 'function') await renderLojasConexoes({ forcar: true });
+            if (typeof renderIntegracoes === 'function') renderIntegracoes();
+          }
+        } catch (_) {}
+      };
+      window.addEventListener('focus', _conexaoFocusHandler);
+    }
+
     document.getElementById('conexaoAbrir').onclick = () => {
       window.open(link, '_blank');
     };
@@ -13169,9 +13194,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     };
     overlay.classList.add('active');
   }
-  
+
+  let _conexaoFocusHandler = null;
   function fecharModalConexao() {
     document.getElementById('conexaoOverlay').classList.remove('active');
+    if (_conexaoFocusHandler) { window.removeEventListener('focus', _conexaoFocusHandler); _conexaoFocusHandler = null; }
   }
   
   // ============================================================
@@ -13317,24 +13344,29 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Estado: status de conexão das lojas (vem do backend)
   let _lojasStatusBackend = []; // [{lojaId, nome, marketplace, conectada, expiraEm, ...}]
   
-  async function renderLojasConexoes() {
+  async function renderLojasConexoes(opts) {
+    opts = opts || {};
     const lista = document.getElementById('lojasConexoesLista');
     if (!lista) return;
-    
+
     // Primeira pintura com o que sabemos local
     desenharLojasConexoes();
-    
+
     // Sincroniza ids primeiro pra garantir que cada lojaErp tem idBanco
     await sincronizarIdsLojasDoBanco();
-    
-    // Garante que todas as lojas locais existam no banco
-    for (const loja of lojasErp) {
-      if (!loja.idBanco) {
-        await garantirLojaNoBanco(loja);
+
+    // Garante que todas as lojas locais existam no banco.
+    // Quando 'forcar' (logo após conectar/desconectar), pulamos esse loop pesado
+    // — só queremos o status fresco, não recriar lojas.
+    if (!opts.forcar) {
+      for (const loja of lojasErp) {
+        if (!loja.idBanco) {
+          await garantirLojaNoBanco(loja);
+        }
       }
     }
-    
-    // Consulta status real do backend
+
+    // Consulta status real do backend (sempre fresco)
     try {
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/lojas', {
         headers: { 'x-api-token': getApiToken() }
@@ -13346,7 +13378,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     } catch (e) {
       // backend offline - usa o que sabemos
     }
-    
+
     desenharLojasConexoes();
   }
   
@@ -13821,19 +13853,115 @@ Retorne JSON: {"ID": "valor", ...}`;
   let _adsSubaba = 'resumo';
   let _adsResumoOrdem = 'receita'; // receita | acos | gasto | saldo
 
-  function renderAds() {
-    // popula o seletor de lojas Shopee (uma vez por abertura)
+  let _adsCacheLojas = [];
+  let _adsSelComp = null;
+
+  // sincroniza o hidden <select adsLojaFiltro> com a 1ª loja selecionada no global.
+  // As views por loja (Anúncios/Diagnóstico) usam 1 loja; o Resumo usa todas.
+  function adsSyncHiddenSelect() {
     const sel = document.getElementById('adsLojaFiltro');
-    if (sel) {
-      const atual = sel.value;
-      const shopees = lojasErp.filter(l => l.marketplace === 'shopee');
-      sel.innerHTML = '<option value="">Todas as lojas Shopee</option>' +
-        shopees.map(l => `<option value="${l.idBanco || ''}">${escapeHtml(l.nome)}</option>`).join('');
-      sel.value = atual;
+    if (!sel) return;
+    const selecionadas = getLojasSelGlobal();
+    // monta options a partir do cache (ou lojasErp como fallback)
+    const fonte = (_adsCacheLojas && _adsCacheLojas.length) ? _adsCacheLojas
+      : lojasErp.map(l => ({ id: l.idBanco, nome: l.nome, marketplace: l.marketplace }));
+    sel.innerHTML = '<option value="">Todas</option>' +
+      fonte.filter(l => l.id != null).map(l => `<option value="${l.id}">${escapeHtml(l.nome)}</option>`).join('');
+    // 1ª selecionada vira o valor (se só 1 loja, é ela; se várias, a 1ª)
+    sel.value = (selecionadas.length === 1) ? String(selecionadas[0]) : (selecionadas[0] != null ? String(selecionadas[0]) : '');
+  }
+
+  function adsAtualizarPeriodoUI() {
+    const p = (typeof getPeriodoGlobal === 'function') ? getPeriodoGlobal() : { dias: 7, custom: null };
+    // botões
+    document.querySelectorAll('.ads-periodo-btn').forEach(b => {
+      const ativo = !p.custom && String(b.dataset.dias) === String(p.dias);
+      b.classList.toggle('lc-btn--primary', ativo);
+      b.classList.toggle('lc-btn--ghost', !ativo);
+    });
+    const lblBtn = document.getElementById('adsPeriodoCustomLabel');
+    if (lblBtn) lblBtn.textContent = p.custom ? (p.custom.desde.split('-').reverse().join('/') + ' – ' + p.custom.ate.split('-').reverse().join('/')) : 'Período';
+    const info = document.getElementById('adsPeriodoInfo');
+    if (info && typeof getPeriodoLabel === 'function') info.textContent = '📅 ' + getPeriodoLabel();
+  }
+
+  function renderAds() {
+    const host = document.getElementById('adsLojasSel');
+    if (host && !host.dataset.montado) {
+      _adsSelComp = LcAcctSel.montar(host, _adsCacheLojas || [], {
+        selecionados: getLojasSelGlobal(),
+        placeholder: 'Selecione as contas',
+        salvarLabel: 'Aplicar',
+        aoMudar: () => { setLojasSelGlobal(_adsSelComp.getSelecionados()); adsSyncHiddenSelect(); renderAdsSubaba(); },
+      });
+      host.dataset.montado = '1';
+      fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: { 'x-api-token': getApiToken() } })
+        .then(r => r.json())
+        .then(data => {
+          _adsCacheLojas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
+          _adsSelComp = LcAcctSel.montar(host, _adsCacheLojas, {
+            selecionados: getLojasSelGlobal(),
+            placeholder: 'Selecione as contas',
+            salvarLabel: 'Aplicar',
+            aoMudar: () => { setLojasSelGlobal(_adsSelComp.getSelecionados()); adsSyncHiddenSelect(); renderAdsSubaba(); },
+          });
+          adsSyncHiddenSelect();
+        })
+        .catch(() => {});
+    } else if (_adsSelComp) {
+      _adsSelComp.setSelecionados(getLojasSelGlobal());
     }
+    adsSyncHiddenSelect();
+    adsAtualizarPeriodoUI();
     adsTrocarSubaba(_adsSubaba);
   }
   window.renderAds = renderAds;
+
+  // período do Ads (compartilhado com Pedidos/Financeiro)
+  function adsSetPeriodo(dias, btn) {
+    setPeriodoGlobal(dias, null);
+    adsAtualizarPeriodoUI();
+    renderAdsSubaba();
+  }
+  window.adsSetPeriodo = adsSetPeriodo;
+
+  function adsAbrirCalendario(btn) {
+    if (document.getElementById('adsCalPop')) { document.getElementById('adsCalPop').remove(); return; }
+    const hoje = new Date();
+    const isoHoje = hoje.toISOString().slice(0, 10);
+    const p = getPeriodoGlobal();
+    const isoDesde = (p.custom && p.custom.desde) || new Date(hoje.getTime() - 7 * 86400000).toISOString().slice(0, 10);
+    const isoAte = (p.custom && p.custom.ate) || isoHoje;
+    const pop = document.createElement('div');
+    pop.id = 'adsCalPop';
+    pop.style.cssText = 'position:absolute;z-index:9999;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,0.12);padding:14px;margin-top:6px';
+    pop.innerHTML =
+      '<div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:8px">Período personalizado</div>' +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input type="date" id="adsCalDe" value="' + isoDesde + '" max="' + isoHoje + '" style="padding:6px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">' +
+        '<span style="color:#9ca3af">até</span>' +
+        '<input type="date" id="adsCalAte" value="' + isoAte + '" max="' + isoHoje + '" style="padding:6px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:6px;margin-top:10px">' +
+        '<button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="document.getElementById(\'adsCalPop\').remove()">Cancelar</button>' +
+        '<button class="lc-btn lc-btn--primary lc-btn--sm" onclick="adsAplicarCalendario()">Aplicar</button>' +
+      '</div>';
+    btn.parentElement.style.position = 'relative';
+    btn.parentElement.appendChild(pop);
+  }
+  window.adsAbrirCalendario = adsAbrirCalendario;
+
+  function adsAplicarCalendario() {
+    const de = (document.getElementById('adsCalDe') || {}).value;
+    const ate = (document.getElementById('adsCalAte') || {}).value;
+    if (!de || !ate) { showToast('Escolha as duas datas', true); return; }
+    if (de > ate) { showToast('A data inicial não pode ser maior que a final', true); return; }
+    setPeriodoGlobal(null, { desde: de, ate: ate });
+    const pop = document.getElementById('adsCalPop'); if (pop) pop.remove();
+    adsAtualizarPeriodoUI();
+    renderAdsSubaba();
+  }
+  window.adsAplicarCalendario = adsAplicarCalendario;
 
   function adsTrocarSubaba(qual) {
     _adsSubaba = qual;
@@ -13850,14 +13978,16 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.adsTrocarSubaba = adsTrocarSubaba;
 
   function adsParams() {
-    const dias = document.getElementById('adsPeriodo')?.value || '7';
+    const dias = (typeof getPeriodoDias === 'function') ? getPeriodoDias() : (parseInt(document.getElementById('adsPeriodo')?.value, 10) || 7);
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
     return { dias, loja };
   }
 
+  let _adsRenderToken = 0;
   async function renderAdsSubaba() {
     const cont = document.getElementById('adsConteudo');
     if (!cont) return;
+    const meuToken = ++_adsRenderToken; // invalida renders async anteriores
     // botão "sincronizar esta loja" visível só quando há loja selecionada
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
     const btnSync = document.getElementById('adsBtnSyncLoja');
@@ -13873,10 +14003,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && loja) ? 'flex' : 'none';
     cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">Carregando…</div>';
     try {
-      if (_adsSubaba === 'anuncios') return await renderAdsAnuncios(cont);
-      if (_adsSubaba === 'resumo') return await renderAdsResumo(cont);
+      if (_adsSubaba === 'anuncios') { await renderAdsAnuncios(cont, meuToken); return; }
+      if (_adsSubaba === 'resumo')   { await renderAdsResumo(cont, meuToken); return; }
     } catch (e) {
-      cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
+      if (meuToken === _adsRenderToken) cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
     }
   }
   window.renderAdsSubaba = renderAdsSubaba;
@@ -13891,7 +14021,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   async function adsDiagnosticar() {
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
     if (!loja) { showToast('Escolha uma loja primeiro.', true); return; }
-    const dias = document.getElementById('adsPeriodo')?.value || '7';
+    const dias = (typeof getPeriodoDias === 'function') ? getPeriodoDias() : 7;
     const cont = document.getElementById('adsConteudo');
     cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">🔬 Diagnosticando (rodando as 3 etapas do ETL)…</div>';
     try {
@@ -14716,7 +14846,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   // ---- Sub-aba ANÚNCIOS (cards com foto + filtros client-side) ----
   let _adsAnunciosCache = [];
 
-  async function renderAdsAnuncios(cont) {
+  async function renderAdsAnuncios(cont, meuToken) {
     const { dias, loja } = adsParams();
     const headers = { 'x-api-token': getApiToken() };
 
@@ -14729,6 +14859,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
 
     const r = await fetch(BACKEND_URL + '/api/ads/loja/' + loja + '/anuncios?dias=' + dias, { headers }).then(x => x.json());
+    if (meuToken != null && meuToken !== _adsRenderToken) return; // outro render assumiu
     if (!r.ok) {
       if (r.semAds) { cont.innerHTML = blocoSemAds(); return; }
       cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>';
@@ -14748,6 +14879,8 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.adsAplicarFiltros = adsAplicarFiltros;
 
   function adsDesenharAnuncios() {
+    // só desenha anúncios se a aba ativa for "anuncios" (evita sobrescrever o Resumo)
+    if (_adsSubaba !== 'anuncios') return;
     const cont = document.getElementById('adsConteudo');
     if (!cont) return;
     let lista = _adsAnunciosCache.slice();
@@ -14793,7 +14926,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       return;
     }
 
-    let html = aviso + '<div style="display:flex;flex-direction:column;gap:10px">';
+    let html = aviso + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px">';
     lista.forEach(a => { html += cardAnuncio(a); });
     html += '</div>';
     html += '<div style="font-size:10px;color:#9ca3af;margin-top:12px">ACOS = gasto em Ads ÷ receita paga × 100 (só pedidos pagos). "—" = sem receita no período.</div>';
@@ -14817,52 +14950,52 @@ Retorne JSON: {"ID": "valor", ...}`;
   function cardAnuncio(a) {
     const acosCor = corAcos(a.acos);
     const acosTxt = a.acos === null ? '—' : a.acos + '%';
-    // thumbnail (foto do produto) ou placeholder
     const thumb = a.foto
-      ? '<img src="' + a.foto + '" style="width:64px;height:64px;object-fit:cover;border-radius:10px;flex-shrink:0" onerror="this.style.display=\'none\'">'
-      : '<div style="width:64px;height:64px;border-radius:10px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:24px;color:#cbd5e1">📦</div>';
+      ? '<img src="' + a.foto + '" style="width:72px;height:72px;object-fit:cover;border-radius:12px;flex-shrink:0" onerror="this.style.display=\'none\'">'
+      : '<div style="width:72px;height:72px;border-radius:12px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:26px;color:#cbd5e1">📦</div>';
 
     let alerta = '';
-    if (a.gastouSemVender) alerta = '<span style="font-size:10px;background:#fef2f2;color:#b91c1c;padding:2px 7px;border-radius:5px;margin-left:6px">gastou s/ vender</span>';
-    else if (a.vendeuSemAnunciar) alerta = '<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;padding:2px 7px;border-radius:5px;margin-left:6px">vendeu s/ anunciar</span>';
+    if (a.gastouSemVender) alerta = '<span style="font-size:10px;background:#fef2f2;color:#b91c1c;padding:2px 7px;border-radius:5px">gastou s/ vender</span>';
+    else if (a.vendeuSemAnunciar) alerta = '<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;padding:2px 7px;border-radius:5px">vendeu s/ anunciar</span>';
 
-    // botão de ação: agora age POR PRODUTO (item_id). O backend consulta o
-    // status atual na Shopee e decide a campanha certa.
-    let botaoAcao = '';
     const loja = document.getElementById('adsLojaFiltro')?.value || '';
     const nomeEsc = (a.nome || ('Item ' + a.itemId)).replace(/'/g, "\\'").replace(/"/g, '');
-    if (a.status === 'ongoing' || a.status === 'paused') {
-      if (a.status === 'ongoing') {
-        botaoAcao = '<button onclick="adsAcaoProduto(' + loja + ',\'' + a.itemId + '\',\'pause\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #fcd34d;background:#fffbeb;color:#92400e;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">⏸ Pausar</button>';
-      } else {
-        botaoAcao = '<button onclick="adsAcaoProduto(' + loja + ',\'' + a.itemId + '\',\'resume\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #86efac;background:#f0fdf4;color:#166534;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">▶ Ativar</button>';
-      }
-    } else {
-      // sem campanha ativa nem pausada → opção de CRIAR campanha nova
-      botaoAcao = '<button onclick="adsCriarCampanha(' + loja + ',\'' + a.itemId + '\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #a5b4fc;background:#eef2ff;color:#3730a3;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">➕ Criar campanha</button>';
-    }
-    // botão de ajuste ROAS/orçamento: só pra campanha ativa
-    let botaoAjuste = '';
+
+    // ações conforme status
+    let acoes = '';
     if (a.status === 'ongoing') {
-      botaoAjuste = '<button onclick="adsAbrirAjuste(' + loja + ',\'' + a.itemId + '\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #c7d2fe;background:#eef2ff;color:#3730a3;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">⚙ ROAS / Orçamento</button>';
+      acoes += '<button onclick="adsAcaoProduto(' + loja + ',\'' + a.itemId + '\',\'pause\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #fcd34d;background:#fffbeb;color:#92400e;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">⏸ Pausar</button>';
+      acoes += '<button onclick="adsAbrirAjuste(' + loja + ',\'' + a.itemId + '\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #c7d2fe;background:#eef2ff;color:#3730a3;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">⚙ ROAS / Orçamento</button>';
+    } else if (a.status === 'paused') {
+      acoes += '<button onclick="adsAcaoProduto(' + loja + ',\'' + a.itemId + '\',\'resume\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #86efac;background:#f0fdf4;color:#166534;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">▶ Ativar</button>';
+    } else {
+      acoes += '<button onclick="adsCriarCampanha(' + loja + ',\'' + a.itemId + '\',\'' + nomeEsc + '\')" style="padding:7px 12px;border:1px solid #a5b4fc;background:#eef2ff;color:#3730a3;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">➕ Criar campanha</button>';
     }
 
-    return '<div style="display:flex;gap:14px;align-items:center;padding:14px;background:white;border:1px solid #e5e7eb;border-radius:14px">' +
-      thumb +
-      '<div style="flex:1;min-width:0">' +
-        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
-          '<div style="font-weight:700;color:#1e2a47;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(a.nome || ('Item ' + a.itemId)) + '</div>' +
+    const metrica = (lbl, val, cor) =>
+      '<div><div style="font-size:10px;color:#94a3b8;font-weight:600">' + lbl + '</div>' +
+      '<div style="font-size:14px;font-weight:800;color:' + (cor || '#1e293b') + ';margin-top:1px">' + val + '</div></div>';
+
+    return '<div style="border:1px solid #e8ebf0;border-radius:16px;background:#fff;padding:16px;box-shadow:0 1px 3px rgba(15,23,42,0.04)">' +
+      '<div style="display:flex;gap:14px;align-items:flex-start">' +
+        thumb +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-weight:700;color:#1e293b;font-size:14px;line-height:1.3;margin-bottom:3px">' + escapeHtml(a.nome || ('Item ' + a.itemId)) + '</div>' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+            '<span style="font-size:11px;color:#3b82f6;font-weight:600">' + a.itemId + '</span>' + alerta +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0">' +
           badgeStatus(a.status) +
         '</div>' +
-        '<div style="font-size:11px;color:#9ca3af;margin-bottom:8px">' + a.itemId + alerta + '</div>' +
-        '<div style="display:flex;gap:18px;flex-wrap:wrap">' +
-          metricaInline('Receita', fmtBRL(a.receitaPaga)) +
-          metricaInline('Vendas', String(a.unidades || 0)) +
-          metricaInline('Gasto Ads', fmtBRL(a.gastoAds)) +
-          metricaInline('ACOS', acosTxt, acosCor) +
-        '</div>' +
       '</div>' +
-      (botaoAcao || botaoAjuste ? '<div style="flex-shrink:0;display:flex;flex-direction:column;gap:6px">' + botaoAcao + botaoAjuste + '</div>' : '') +
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9">' +
+        metrica('Receita', fmtBRL(a.receitaPaga), '#16a34a') +
+        metrica('Vendas', String(a.unidades || 0)) +
+        metrica('Investimento em Ads', fmtBRL(a.gastoAds)) +
+        metrica('ACOS', acosTxt, acosCor) +
+      '</div>' +
+      (acoes ? '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;justify-content:flex-end">' + acoes + '</div>' : '') +
     '</div>';
   }
 
@@ -15136,11 +15269,12 @@ Retorne JSON: {"ID": "valor", ...}`;
   function adsResumoOrdenar(ordem) { _adsResumoOrdem = ordem; renderAdsSubaba(); }
   window.adsResumoOrdenar = adsResumoOrdenar;
 
-  async function renderAdsResumo(cont) {
+  async function renderAdsResumo(cont, meuToken) {
     const { dias } = adsParams();
     const headers = { 'x-api-token': getApiToken() };
     cont.innerHTML = '<div style="padding:40px;text-align:center;color:#9ca3af">Carregando lojas…</div>';
     const r = await fetch(BACKEND_URL + '/api/ads/resumo?dias=' + dias, { headers }).then(x => x.json());
+    if (meuToken != null && meuToken !== _adsRenderToken) return; // outro render assumiu
     if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
     if (!r.lojas || r.lojas.length === 0) { cont.innerHTML = blocoVazio('Nenhuma loja com dados.', ''); return; }
 
@@ -15182,7 +15316,6 @@ Retorne JSON: {"ID": "valor", ...}`;
       const mktLabel = l.ehML ? 'Mercado Livre' : 'Shopee';
       const mktCor = l.ehML ? '#2d3277' : '#ee4d2d';
       const acosTxt = l.acos === null ? '—' : (String(l.acos).replace('.', ',') + '%');
-      const saldoTxt = l.saldoAds != null ? fmtBRL(l.saldoAds) : '—';
       const sync = l.ultimaSync ? ('Última sincronização: ' + new Date(l.ultimaSync).toLocaleString('pt-BR')) : 'Sem sincronização';
 
       // selo "Ads não conectado" pra ML (ainda sem ETL de gasto)
@@ -15192,7 +15325,7 @@ Retorne JSON: {"ID": "valor", ...}`;
 
       html += '<div style="border:1px solid #e8ebf0;border-radius:16px;background:#fff;padding:18px;box-shadow:0 1px 3px rgba(15,23,42,0.04);transition:box-shadow .15s" onmouseover="this.style.boxShadow=\'0 6px 20px rgba(15,23,42,0.10)\'" onmouseout="this.style.boxShadow=\'0 1px 3px rgba(15,23,42,0.04)\'">' +
         '<div style="display:flex;gap:14px;align-items:flex-start">' +
-          avatarLojaFoto(l.nome, l.fotoPerfil, 56) +
+          '<div id="adsFoto-' + l.lojaId + '" data-foto="' + (l.fotoPerfil ? '1' : '0') + '">' + avatarLojaFoto(l.nome, l.fotoPerfil, 56) + '</div>' +
           '<div style="flex:1;min-width:0">' +
             '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
               '<span style="font-weight:800;color:#1e293b;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">' + escapeHtml(l.nome) + '</span>' +
@@ -15209,7 +15342,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:16px">' +
           '<div><div style="font-size:10px;color:#94a3b8;font-weight:600">Gastos em Ads</div><div style="font-size:14px;font-weight:800;color:#1e293b;margin-top:1px">' + fmtBRL(l.gastoAds) + '</div></div>' +
           '<div><div style="font-size:10px;color:#94a3b8;font-weight:600">Receitas Totais</div><div style="font-size:14px;font-weight:800;color:#16a34a;margin-top:1px">' + fmtBRL(l.receitaPaga) + '</div></div>' +
-          '<div><div style="font-size:10px;color:#94a3b8;font-weight:600">Saldo Ads</div><div style="font-size:14px;font-weight:800;color:#1e293b;margin-top:1px">' + saldoTxt + '</div></div>' +
+          '<div><div style="font-size:10px;color:#94a3b8;font-weight:600">Saldo Ads</div><div id="adsSaldo-' + l.lojaId + '" style="font-size:14px;font-weight:800;color:#1e293b;margin-top:1px">' + (l.ehML ? '—' : '<span style="color:#cbd5e1">···</span>') + '</div></div>' +
         '</div>' +
 
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding-top:12px;border-top:1px solid #f1f5f9">' +
@@ -15220,6 +15353,45 @@ Retorne JSON: {"ID": "valor", ...}`;
     });
     html += '</div>';
     cont.innerHTML = html;
+
+    // preenche FOTO (das que faltam) e SALDO sob demanda, devagar, pra não
+    // sobrecarregar o banco/APIs. Cada loja espera ~250ms da próxima.
+    adsPreencherLazy(lojas, meuToken);
+  }
+
+  // busca foto faltante + saldo, 1 loja por vez, respeitando o render token
+  async function adsPreencherLazy(lojas, meuToken) {
+    for (const l of lojas) {
+      if (meuToken != null && meuToken !== _adsRenderToken) return; // trocou de tela/aba
+      if (l.erro) continue;
+      // FOTO: só se ainda não veio do cache
+      const elFoto = document.getElementById('adsFoto-' + l.lojaId);
+      if (elFoto && elFoto.dataset.foto === '0') {
+        try {
+          const r = await fetch(BACKEND_URL + '/api/ads/loja/' + l.lojaId + '/foto-perfil', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+          if (r && r.ok && r.fotoPerfil && meuToken === _adsRenderToken) {
+            const alvo = document.getElementById('adsFoto-' + l.lojaId);
+            if (alvo) { alvo.innerHTML = avatarLojaFoto(l.nome, r.fotoPerfil, 56); alvo.dataset.foto = '1'; }
+          }
+        } catch (_) {}
+        await new Promise(r => setTimeout(r, 250));
+      }
+      // SALDO: só Shopee
+      if (!l.ehML) {
+        if (meuToken != null && meuToken !== _adsRenderToken) return;
+        try {
+          const r = await fetch(BACKEND_URL + '/api/ads/loja/' + l.lojaId + '/saldo', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+          const alvo = document.getElementById('adsSaldo-' + l.lojaId);
+          if (alvo && meuToken === _adsRenderToken) {
+            alvo.innerHTML = (r && r.saldoAds != null) ? fmtBRL(r.saldoAds) : '—';
+          }
+        } catch (_) {
+          const alvo = document.getElementById('adsSaldo-' + l.lojaId);
+          if (alvo) alvo.innerHTML = '—';
+        }
+        await new Promise(r => setTimeout(r, 250));
+      }
+    }
   }
 
 
@@ -15236,7 +15408,7 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   // ---- Sincronização (testar ETL pela tela) ----
   async function adsSincronizarLoja(lojaIdBanco) {
-    const dias = document.getElementById('adsPeriodo')?.value || '7';
+    const dias = (typeof getPeriodoDias === 'function') ? getPeriodoDias() : 7;
     showToast('🔄 Sincronizando Ads da loja...');
     try {
       const r = await fetch(BACKEND_URL + '/api/ads/sincronizar-agora?lojaId=' + lojaIdBanco + '&dias=' + dias, {
@@ -15251,7 +15423,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.adsSincronizarLoja = adsSincronizarLoja;
 
   async function adsSincronizarTodas() {
-    const dias = document.getElementById('adsPeriodo')?.value || '7';
+    const dias = (typeof getPeriodoDias === 'function') ? getPeriodoDias() : 7;
     if (!confirm('Sincronizar os dados de Ads de TODAS as lojas Shopee agora?\n\nIsso pode levar alguns minutos (uma loja de cada vez, pra respeitar o limite da Shopee).')) return;
     showToast('🔄 Sincronizando todas as lojas... aguarde.');
     try {
@@ -15329,18 +15501,29 @@ Retorne JSON: {"ID": "valor", ...}`;
     const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
     if (!loja || !loja.idBanco) return;
     if (!confirm('Desconectar a conta de "' + loja.nome + '"?\n\nVocê precisará reconectar pra exportar/sincronizar de novo.')) return;
-    
+
     try {
-      await fetch(BACKEND_URL + '/api/vincular/loja/' + loja.idBanco, {
+      const resp = await fetch(BACKEND_URL + '/api/vincular/loja/' + loja.idBanco, {
         method: 'DELETE',
         headers: { 'x-api-token': getApiToken() }
       });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || (data && data.ok === false)) {
+        showToast('⚠ Não foi possível desconectar: ' + ((data && data.erro) || ('erro ' + resp.status)), true);
+        return;
+      }
+      // atualiza o cache local NA HORA pra refletir sem precisar de F5:
+      // marca a loja como desconectada no status em memória.
+      _lojasStatusBackend = _lojasStatusBackend.map(s =>
+        String(s.lojaId) === String(loja.idBanco) ? { ...s, conectada: false, expiraEm: null } : s);
       showToast('✓ ' + loja.nome + ' desconectada');
-      renderLojasConexoes();
+      // recarrega do banco SEM usar o atalho de cache (força status atual)
+      await renderLojasConexoes({ forcar: true });
     } catch (e) {
       showToast('⚠ Erro: ' + e.message, true);
     }
   }
+  window.acaoLojaDesconectar = acaoLojaDesconectar;
   
   async function acaoLojaExcluir(lojaLocalId) {
     const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
@@ -35503,7 +35686,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.177-ads-config-disputas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.179-filtros-fix-conexao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41018,7 +41201,13 @@ ${JSON.stringify(metricas, null, 2)}`
   // Página nova: aproveita /api/lucro do backend. Relatório cruza vendas (com
   // escrow real) × custos × ads. Custos = cadastro por item/variação.
   let _lucroPeriodoDias = 7;
-  let _lucroPeriodoCustom = null; // {desde:'YYYY-MM-DD', ate:'YYYY-MM-DD'} ou null
+  let _lucroPeriodoCustom = null; // {desde,ate} — sincronizado com o período global no boot abaixo
+  (function () { // hidrata do período global salvo (sem depender de funções ainda não definidas)
+    try {
+      const r = JSON.parse(localStorage.getItem('lider10_periodo_sel') || 'null');
+      if (r) { if (r.dias) _lucroPeriodoDias = r.dias; if (r.custom) _lucroPeriodoCustom = r.custom; }
+    } catch (e) {}
+  })();
   let _lucroCustosPag = { page: 1, total: 0, limit: 50, alterados: {} };
   let _lucroCacheLojas = [];
   let _lucroUltimoRelatorio = null; // guarda a resposta pro PDF
@@ -41041,6 +41230,47 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.getLojasSelGlobal = getLojasSelGlobal;
   window.setLojasSelGlobal = setLojasSelGlobal;
+
+  // ===== PERÍODO GLOBAL COMPARTILHADO (Pedidos / Ads / Financeiro) =====
+  // dias fixos (7/15/30) OU range custom {desde,ate}. Persistido em localStorage.
+  const _PERIODO_SEL_KEY = 'lider10_periodo_sel';
+  let _periodoGlobal = (function () {
+    try {
+      const r = JSON.parse(localStorage.getItem(_PERIODO_SEL_KEY) || 'null');
+      if (r && (r.dias || r.custom)) return r;
+    } catch (e) {}
+    return { dias: 7, custom: null };
+  })();
+  function getPeriodoGlobal() { return { dias: _periodoGlobal.dias || 7, custom: _periodoGlobal.custom || null }; }
+  function setPeriodoGlobal(dias, custom) {
+    _periodoGlobal = { dias: custom ? null : (dias || 7), custom: custom || null };
+    try { localStorage.setItem(_PERIODO_SEL_KEY, JSON.stringify(_periodoGlobal)); } catch (e) {}
+  }
+  // nº de dias efetivo (pra APIs que só aceitam "dias")
+  function getPeriodoDias() {
+    const p = getPeriodoGlobal();
+    if (p.custom && p.custom.desde && p.custom.ate) {
+      const d1 = new Date(p.custom.desde + 'T00:00:00-03:00');
+      const d2 = new Date(p.custom.ate + 'T23:59:59-03:00');
+      const dd = Math.max(1, Math.round((d2 - d1) / 86400000) + 1);
+      return Math.min(dd, 90);
+    }
+    return p.dias || 7;
+  }
+  // rótulo legível do período (com datas) — usado no cabeçalho do Ads
+  function getPeriodoLabel() {
+    const p = getPeriodoGlobal();
+    const fmt = (iso) => { const d = new Date(iso + 'T12:00:00-03:00'); return d.toLocaleDateString('pt-BR'); };
+    if (p.custom && p.custom.desde && p.custom.ate) return fmt(p.custom.desde) + ' a ' + fmt(p.custom.ate);
+    const dias = p.dias || 7;
+    const ate = new Date();
+    const desde = new Date(ate.getTime() - (dias - 1) * 86400000);
+    return desde.toLocaleDateString('pt-BR') + ' a ' + ate.toLocaleDateString('pt-BR') + ' (' + dias + ' dias)';
+  }
+  window.getPeriodoGlobal = getPeriodoGlobal;
+  window.setPeriodoGlobal = setPeriodoGlobal;
+  window.getPeriodoDias = getPeriodoDias;
+  window.getPeriodoLabel = getPeriodoLabel;
 
   async function renderLucro() {
     // monta o seletor premium de contas (usa a seleção global compartilhada)
@@ -41105,6 +41335,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function lucroSetPeriodo(dias, btn) {
     _lucroPeriodoDias = dias;
     _lucroPeriodoCustom = null; // limpa custom ao escolher período fixo
+    setPeriodoGlobal(dias, null); // compartilha com Pedidos/Ads
     const lbl = document.getElementById('lucroPeriodoCustomLabel');
     if (lbl) lbl.textContent = 'Período';
     document.querySelectorAll('.lucro-periodo-btn').forEach(b => {
@@ -41144,6 +41375,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!de || !ate) { showToast('Escolha as duas datas', true); return; }
     if (de > ate) { showToast('A data inicial não pode ser maior que a final', true); return; }
     _lucroPeriodoCustom = { desde: de, ate: ate };
+    setPeriodoGlobal(null, { desde: de, ate: ate }); // compartilha range com Pedidos/Ads
     const lbl = document.getElementById('lucroPeriodoCustomLabel');
     if (lbl) {
       const fmt = (s) => s.split('-').reverse().join('/');
@@ -41745,7 +41977,13 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // ==================== PEDIDOS + CONFERÊNCIA CONTÁBIL ====================
   let _pedPeriodoDias = 7;
+  (function () {
+    try { const r = JSON.parse(localStorage.getItem('lider10_periodo_sel') || 'null'); if (r && r.dias) _pedPeriodoDias = r.dias; } catch (e) {}
+  })();
   let _pedPeriodoCustom = null;
+  (function () {
+    try { const r = JSON.parse(localStorage.getItem('lider10_periodo_sel') || 'null'); if (r && r.custom) _pedPeriodoCustom = r.custom; } catch (e) {}
+  })();
   let _pedAba = 'lista';
   let _pedCacheLojas = []; // {id,nome,marketplace}
   let _pedSelComp = null;
@@ -41815,6 +42053,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function pedSetPeriodo(dias, btn) {
     _pedPeriodoDias = dias;
     _pedPeriodoCustom = null;
+    setPeriodoGlobal(dias, null); // compartilha com Ads/Financeiro
     const lbl = document.getElementById('pedPeriodoCustomLabel');
     if (lbl) lbl.textContent = 'Período';
     document.querySelectorAll('.ped-periodo-btn').forEach(b => {
@@ -41852,6 +42091,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!de || !ate) { showToast('Escolha as duas datas', true); return; }
     if (de > ate) { showToast('Data inicial maior que a final', true); return; }
     _pedPeriodoCustom = { desde: de, ate: ate };
+    setPeriodoGlobal(null, { desde: de, ate: ate }); // compartilha range com Ads/Financeiro
     const lbl = document.getElementById('pedPeriodoCustomLabel');
     if (lbl) { const fmt = (s) => s.split('-').reverse().join('/'); lbl.textContent = fmt(de) + ' – ' + fmt(ate); }
     document.querySelectorAll('.ped-periodo-btn').forEach(b => { b.classList.remove('lc-btn--primary'); b.classList.add('lc-btn--ghost'); });
