@@ -6967,9 +6967,8 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       <div class="prod-busca">
         <input type="text" id="prodBusca" placeholder="🔍 Buscar por nome, SKU ou EAN..." oninput="aoMudarFiltroProdutos()">
       </div>
-      <select id="prodFiltroLoja" class="prod-select" onchange="aoMudarFiltroProdutos()">
-        <option value="">Todas as lojas</option>
-      </select>
+      <div id="prodLojasSel" style="min-width:220px"></div>
+      <select id="prodFiltroLoja" style="display:none"><option value="">Todas as lojas</option></select>
       <select id="prodFiltroMarketplace" class="prod-select" onchange="renderProdutos()" title="Filtra por marketplace">
         <option value="">Todos marketplaces</option>
         <option value="mercadolivre">📦 Mercado Livre</option>
@@ -7866,9 +7865,8 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       <div class="prod-busca">
         <input type="text" id="estoqueBusca" placeholder="🔍 Buscar produto ou SKU..." oninput="_estoquePagina=1; renderEstoque()">
       </div>
-      <select id="estoqueFiltroLoja" class="prod-select" onchange="_estoquePagina=1; renderEstoque()">
-        <option value="">Todas as lojas</option>
-      </select>
+      <div id="estoqueLojasSel" style="min-width:240px"></div>
+      <select id="estoqueFiltroLoja" style="display:none"><option value="">Todas as lojas</option></select>
       <button class="primary-btn" style="background:#16a34a;white-space:nowrap" onclick="abrirSincronizarEstoques()">🔄 Sincronizar estoques</button>
       
     </div>
@@ -8197,9 +8195,8 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       <input type="text" class="form-input" id="catBusca" placeholder="🔍 Buscar por nome ou SKU..."
              oninput="renderCatalogoProdutos()">
       <div class="cat-filtros-linha">
-        <select class="form-input" id="catFiltroLoja" onchange="renderCatalogoProdutos()">
-          <option value="">Todas as lojas</option>
-        </select>
+        <div id="catLojasSel" style="min-width:220px"></div>
+        <select class="form-input" id="catFiltroLoja" style="display:none"><option value="">Todas as lojas</option></select>
         <select class="form-input" id="catFiltroStatus" onchange="renderCatalogoProdutos()">
           <option value="">Todos os status</option>
           <option value="ativo">🟢 Ativo</option>
@@ -16775,6 +16772,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   
   // Estado da tela
   let _filtroProdStatus = 'todos';
+  let _prodLojasComp = null;  // seletor premium de loja na tela de Produtos
   let _produtoEditandoId = null;
   let _fotosProdutoSessao = []; // fotos no modal
   let _variacoesProduto = [];   // variações no modal
@@ -17313,6 +17311,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (el) el.value = '';
     });
     _filtroProdStatus = 'todos';
+    if (_prodLojasComp && typeof _prodLojasComp.setSelecionados === 'function') _prodLojasComp.setSelecionados([]);
     document.querySelectorAll('.prod-filtro-btn').forEach(b => b.classList.remove('ativo'));
     const btnTodos = document.querySelector('.prod-filtro-btn[data-status="todos"]');
     if (btnTodos) btnTodos.classList.add('ativo');
@@ -20640,19 +20639,31 @@ Retorne JSON: {"ID": "valor", ...}`;
   window._precoCardHTML = _precoCardHTML;
 
   function renderProdutos() {
-    // Popula filtro de loja
+    // Popula o select OCULTO (fonte da lógica de filtro existente) e monta o
+    // seletor premium visível (padrão imagem 1). O premium é multi, mas a lógica
+    // de filtro de Produtos é por 1 loja: usamos a 1ª selecionada como filtro.
     const selLoja = document.getElementById('prodFiltroLoja');
     if (selLoja) {
       const atual = selLoja.value;
       selLoja.innerHTML = '<option value="">Todas as lojas</option>' +
-        lojasErp.map(l => {
-          // v32i.4 FIX: usa l.id (o id local longo) porque é isso que o backend
-          // armazena na coluna loja_id. Antes usava l.idBanco (2,3,4...) mas o
-          // banco tem strings tipo "1779997849198181" — filtro retornava zero.
-          const val = l.id;
-          return `<option value="${val}">${escapeHtml(l.nome)}</option>`;
-        }).join('');
+        lojasErp.map(l => `<option value="${l.id}">${escapeHtml(l.nome)}</option>`).join('');
       if (atual) selLoja.value = atual;
+    }
+    const hostP = document.getElementById('prodLojasSel');
+    if (hostP && !hostP._montado && typeof LcAcctSel !== 'undefined' && LcAcctSel.montar) {
+      const lista = lojasErp.map(l => ({ id: l.id, nome: l.nome, marketplace: l.marketplace }));
+      _prodLojasComp = LcAcctSel.montar(hostP, lista, {
+        selecionados: selLoja && selLoja.value ? [selLoja.value] : [],
+        placeholder: 'Todas as lojas',
+        salvarLabel: 'Aplicar',
+        aoMudar: () => {
+          const sel = _prodLojasComp.getSelecionados();
+          // a lógica de Produtos filtra por 1 loja → usa a 1ª marcada
+          if (selLoja) selLoja.value = sel.length ? String(sel[0]) : '';
+          aoMudarFiltroProdutos();
+        },
+      });
+      hostP._montado = '1';
     }
     
     // Popula filtros de categoria interna e marca a partir do catálogo
@@ -28007,13 +28018,22 @@ São o mesmo produto?`;
   // ============================================================
   // ====== CATÁLOGO DE PRODUTOS (tela na Operação) =============
   // ============================================================
+  let _catLojasSel = [];      // lojas filtradas (multi) no catálogo
+  let _catLojasComp = null;   // instância do LcAcctSel do catálogo
   function abrirProdutosOperacao() {
     goTo('catalogoProdutosScreen');
-    // Preenche o filtro de lojas
-    const selLoja = document.getElementById('catFiltroLoja');
-    if (selLoja) {
-      selLoja.innerHTML = '<option value="">Todas as lojas</option>' +
-        lojasErp.map(l => `<option value="${l.id}">${escapeHtml(l.nome)}</option>`).join('');
+    // Seletor premium de lojas (padrão imagem 1), multi-loja
+    const host = document.getElementById('catLojasSel');
+    if (host && typeof LcAcctSel !== 'undefined' && LcAcctSel.montar) {
+      host.innerHTML = ''; host._montado = '';
+      const lista = lojasErp.map(l => ({ id: l.id, nome: l.nome, marketplace: l.marketplace }));
+      _catLojasComp = LcAcctSel.montar(host, lista, {
+        selecionados: (_catLojasSel || []).map(String),
+        placeholder: 'Todas as lojas',
+        salvarLabel: 'Aplicar',
+        aoMudar: () => { _catLojasSel = _catLojasComp.getSelecionados(); renderCatalogoProdutos(); },
+      });
+      host._montado = '1';
     }
     renderCatalogoProdutos();
   }
@@ -28030,14 +28050,14 @@ São o mesmo produto?`;
     if (!cont) return;
     
     const busca = (document.getElementById('catBusca').value || '').toLowerCase().trim();
-    const fLoja = document.getElementById('catFiltroLoja').value;
+    const lojasSelCat = (_catLojasSel || []).map(String);
     const fStatus = document.getElementById('catFiltroStatus').value;
     const ordenar = document.getElementById('catOrdenar').value;
     
     // Filtra
     let lista = produtosErp.filter(p => {
       if (p.status === 'excluido') return false;
-      if (fLoja && String(p.lojaId) !== String(fLoja)) return false;
+      if (lojasSelCat.length > 0 && !lojasSelCat.includes(String(p.lojaId))) return false;
       if (fStatus && p.status !== fStatus) return false;
       if (busca) {
         const alvo = ((p.nome||'') + ' ' + (p.skuPai||'')).toLowerCase();
@@ -30313,6 +30333,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // ============================================================
   let _estoqueSelecionados = []; // ids de "produtoId:variacaoId"
   let _estoqueProdSelecionados = []; // ids de produtos selecionados (ação em massa)
+  let _estoqueLojasSel = [];     // lojas filtradas (multi) no seletor premium
+  let _estoqueLojasComp = null;  // instância do LcAcctSel da tela de estoque
 
   // Liga a barra de massa da tela de PRODUTOS (_prodSelecionados, Set) às
   // ações em massa unificadas (que leem _estoqueProdSelecionados, array).
@@ -31008,14 +31030,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const box = document.getElementById('vars-' + produtoId);
     const seta = document.getElementById('seta-' + produtoId);
     if (!box) return;
-    if (box.style.display === 'none') {
+    const aberto = box.style.display !== 'none';
+    if (!aberto) {
       // Expande: monta as variações se ainda não montou
       if (!box.dataset.montado) {
         const p = produtosErp.find(x => String(x.id) === String(produtoId));
         if (p) { box.innerHTML = _montarVarHtmlEstoque(p); box.dataset.montado = '1'; }
       }
       box.style.display = 'block';
-      if (seta) seta.style.transform = 'rotate(90deg)';
+      if (seta) seta.style.transform = 'rotate(180deg)';
     } else {
       box.style.display = 'none';
       if (seta) seta.style.transform = '';
@@ -31024,14 +31047,23 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   window.toggleVariacoesEstoque = toggleVariacoesEstoque;
 
   function renderEstoque() {
-    const selLoja = document.getElementById('estoqueFiltroLoja');
-    if (selLoja) {
-      const atual = selLoja.value;
-      selLoja.innerHTML = '<option value="">Todas as lojas</option>' +
-        lojasErp.map(l => `<option value="${l.id}">${escapeHtml(l.nome)}</option>`).join('');
-      if (atual) selLoja.value = atual;
+    // Seletor premium de loja (padrão imagem 1, igual Pedidos/Ads), multi-loja.
+    const host = document.getElementById('estoqueLojasSel');
+    if (host && !host._montado && typeof LcAcctSel !== 'undefined' && LcAcctSel.montar) {
+      const lista = lojasErp.map(l => ({ id: l.id, nome: l.nome, marketplace: l.marketplace }));
+      _estoqueLojasComp = LcAcctSel.montar(host, lista, {
+        selecionados: (_estoqueLojasSel || []).map(String),
+        placeholder: 'Todas as lojas',
+        salvarLabel: 'Aplicar',
+        aoMudar: () => {
+          _estoqueLojasSel = _estoqueLojasComp.getSelecionados();
+          _estoquePagina = 1;
+          renderEstoque();
+        },
+      });
+      host._montado = '1';
     }
-    
+
     // CHUNK 3.3: popula stats no topo
     renderEstoqueStats();
     
@@ -31040,20 +31072,23 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!lista) return;
     
     const busca = (document.getElementById('estoqueBusca')?.value || '').toLowerCase().trim();
-    const filtroLoja = document.getElementById('estoqueFiltroLoja')?.value || '';
+    // conjunto de lojas selecionadas (vazio = todas)
+    const lojasSel = (_estoqueLojasSel || []).map(String);
     
     let produtos = produtosErp.filter(p => {
       if (p.status === 'excluido') return false;
-      if (filtroLoja) {
-        // Mostra o produto se ele é "dono" da loja OU se tem algum vínculo com
-        // um anúncio dessa loja (produto consolidado fica em 1 lojaId, mas tem
+      if (lojasSel.length > 0) {
+        // Produto aparece se é dono de alguma loja selecionada OU tem vínculo de
+        // anúncio com alguma delas (produto consolidado vive em 1 lojaId mas tem
         // anúncios em várias lojas — deve aparecer no filtro de cada uma).
-        const ehDono = String(p.lojaId) === String(filtroLoja);
-        const lojaFiltroObj = lojasErp.find(l => String(l.id) === String(filtroLoja));
-        const idBancoFiltro = lojaFiltroObj ? String(lojaFiltroObj.idBanco) : null;
+        const ehDono = lojasSel.includes(String(p.lojaId));
+        const idsBanco = lojasSel.map(fid => {
+          const lo = lojasErp.find(l => String(l.id) === String(fid));
+          return lo ? String(lo.idBanco) : null;
+        }).filter(Boolean);
         const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi => {
           const lid = String(vi.lojaIdBanco || vi.lojaId);
-          return lid === String(filtroLoja) || (idBancoFiltro && lid === idBancoFiltro);
+          return lojasSel.includes(lid) || idsBanco.includes(lid);
         }));
         if (!ehDono && !temVinculo) return false;
       }
@@ -31097,21 +31132,34 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         ? `<span class="estoque-prod-vinc clicavel" title="Ver e gerenciar os ${nAnunciosProd} anúncios vinculados" onclick="event.stopPropagation(); abrirGerenciarVinculos('${p.id}')">📌 ${nAnunciosProd} anúncio(s) vinculado(s)</span>`
         : `<span class="estoque-prod-vinc semvinc" title="Nenhum anúncio vinculado">sem vínculos</span>`;
 
+      // foto de capa do produto/anúncio (1ª global, senão 1ª de alguma cor)
+      let foto = (p.fotos && p.fotos[0]) || null;
+      if (!foto && Array.isArray(p.cores)) {
+        for (const c of p.cores) { if (c.fotos && c.fotos[0]) { foto = c.fotos[0]; break; } }
+      }
+      const fotoHtml = foto
+        ? '<img src="' + escapeHtml(foto) + '" style="width:46px;height:46px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:46px;height:46px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0&quot;></div>\'">'
+        : '<div style="width:46px;height:46px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0"></div>';
+
+      const nVars = variacoes.length;
+      const totalTag = '<span style="font-size:11px;background:var(--lc-info-soft);color:var(--lc-info);padding:2px 8px;border-radius:10px;font-weight:600;flex-shrink:0;white-space:nowrap">' + total + ' un. no estoque</span>';
+
       // Variações NÃO são renderizadas de início (lazy) — só ao expandir.
-      // Isso deixa o render inicial rápido e a tela curta.
-      return `<div class="estoque-prod" data-prodid="${p.id}">
-        <div class="estoque-prod-head" style="cursor:pointer">
-          <input type="checkbox" class="estoque-prod-check" ${_estoqueProdSelecionados.includes(String(p.id))?'checked':''} onclick="event.stopPropagation(); toggleProdSelEstoque('${p.id}')" style="width:18px;height:18px;margin-right:6px;cursor:pointer">
-          <span class="estoque-prod-seta" id="seta-${p.id}" style="transition:transform .15s;display:inline-block;margin-right:8px" onclick="toggleVariacoesEstoque('${p.id}')">▶</span>
-          <div class="estoque-prod-nome" style="flex:1" onclick="toggleVariacoesEstoque('${p.id}')">${escapeHtml(p.nome)}</div>
-          <div class="estoque-prod-total" onclick="toggleVariacoesEstoque('${p.id}')">${total} un. · ${variacoes.length} var.</div>
+      return `<div class="estoque-prod custos-card" data-prodid="${p.id}" style="background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:var(--lc-radius);padding:14px 16px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:12px">
+          <input type="checkbox" class="estoque-prod-check" ${_estoqueProdSelecionados.includes(String(p.id))?'checked':''} onclick="event.stopPropagation(); toggleProdSelEstoque('${p.id}')" style="width:17px;height:17px;cursor:pointer;flex-shrink:0">
+          ${fotoHtml}
+          <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleVariacoesEstoque('${p.id}')">
+            <div style="font-size:14px;font-weight:600;color:var(--lc-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.nome)}</div>
+            <div style="font-size:11px;color:var(--lc-info);margin-top:2px">${escapeHtml(p.skuPai||'sem SKU')} · ${nVars} variaç${nVars>1?'ões':'ão'}</div>
+            <div style="margin-top:4px">${vincBadge}</div>
+          </div>
+          ${totalTag}
+          <button type="button" class="estoque-toggle" id="seta-${p.id}" onclick="toggleVariacoesEstoque('${p.id}')" style="border:none;background:none;cursor:pointer;color:var(--lc-muted);padding:6px;display:flex;align-items:center;flex-shrink:0;transition:transform .2s" title="Expandir/recolher">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
         </div>
-        <div class="estoque-prod-subhead">
-          <span class="estoque-prod-sku">SKU: ${escapeHtml(p.skuPai||'—')}</span>
-          ${vincBadge}
-          
-        </div>
-        <div class="estoque-prod-vars" id="vars-${p.id}" style="display:none"></div>
+        <div class="estoque-prod-vars" id="vars-${p.id}" style="display:none;margin-top:8px"></div>
       </div>`;
     }).join('');
 
@@ -35912,7 +35960,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.183-anuncio-auto-variacao-unica';
+  const _DIAG_VERSAO_PAINEL = 'v33k.184-estoque-redesign-filtros';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
