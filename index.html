@@ -35991,7 +35991,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.197-saude-superadmin';
+  const _DIAG_VERSAO_PAINEL = 'v33k.198-tarefas-erro-painel';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -51246,6 +51246,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <div id="admSaudeGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
         <em style="color:#9ca3af;font-size:13px">Carregando saúde do sistema...</em>
       </div>
+      <div id="admTarefasErroBox" style="display:none;margin-top:14px;border-top:1px solid #e5e7eb;padding-top:14px"></div>
     </div>
 
     <div class="transactions-card" style="margin-bottom:14px">
@@ -51359,16 +51360,26 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const upt = r.maquina ? r.maquina.uptimeSeg : 0;
       const uptTxt = upt > 86400 ? Math.floor(upt/86400)+'d '+Math.floor((upt%86400)/3600)+'h' : (upt > 3600 ? Math.floor(upt/3600)+'h '+Math.floor((upt%3600)/60)+'m' : Math.floor(upt/60)+'m');
       const c = r.contagens || {};
+      const cardErro = (c.tarefasComErro > 0)
+        ? `<div onclick="admVerTarefasErro()" style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:14px;cursor:pointer">
+            <div style="font-size:24px;font-weight:800;color:#dc2626;line-height:1.05">${c.tarefasComErro}</div>
+            <div style="font-size:12px;color:#374151;font-weight:600;margin-top:4px">Tarefas com erro</div>
+            <div style="font-size:11px;color:#dc2626;margin-top:2px;text-decoration:underline">clique pra ver e dispensar</div>
+          </div>`
+        : card('Tarefas com erro', c.tarefasComErro!=null?c.tarefasComErro:'—', 'tudo ok', '#16a34a');
       grid.innerHTML = [
         card('Banco — latência', (r.banco&&r.banco.ok) ? lat+' ms' : 'offline', (r.banco&&r.banco.ok) ? (lat<150?'ótimo':(lat<500?'aceitável':'lento')) : (r.banco&&r.banco.erro||'sem resposta'), corBanco),
         card('Cache — acertos', (cache.taxaAcerto||0)+'%', (cache.hits||0)+' hits · '+(cache.itens||0)+' itens', corCache),
         card('Memória (Node)', (mem.rssMB||0)+' MB', 'heap '+(mem.heapUsadoMB||0)+'/'+(mem.heapTotalMB||0)+' MB', '#2563eb'),
         card('Uptime', uptTxt, 'backend no ar', '#7c3aed'),
         card('Tarefas pendentes', c.tarefasPendentes!=null?c.tarefasPendentes:'—', 'na fila de crons', '#0891b2'),
-        card('Tarefas com erro', c.tarefasComErro!=null?c.tarefasComErro:'—', c.tarefasComErro>0?'precisa olhar':'tudo ok', c.tarefasComErro>0?'#dc2626':'#16a34a'),
+        cardErro,
         card('Lojas', c.lojas!=null?c.lojas:'—', 'no sistema', '#ea580c'),
         card('Usuários', c.usuarios!=null?c.usuarios:'—', 'cadastrados', '#16a34a'),
       ].join('');
+      // se a caixa de detalhe está aberta, mantém atualizada
+      const box = document.getElementById('admTarefasErroBox');
+      if (box && box.style.display !== 'none' && c.tarefasComErro === 0) { box.style.display = 'none'; box.innerHTML = ''; }
     } catch(e) { grid.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
   }
   window.renderAdmSaude = renderAdmSaude;
@@ -51384,6 +51395,70 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (_admSaudeTimer) { clearInterval(_admSaudeTimer); _admSaudeTimer = null; }
     const cb = document.getElementById('admSaudeAuto'); if (cb) cb.checked = false;
   };
+
+  // ═══ TAREFAS COM ERRO (ver e dispensar) ═══
+  async function admVerTarefasErro() {
+    const box = document.getElementById('admTarefasErroBox');
+    if (!box) return;
+    box.style.display = 'block';
+    box.innerHTML = '<em style="color:#9ca3af;font-size:13px">Carregando tarefas com erro...</em>';
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/saude/tarefas-erro', { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
+      if (!r.ok) { box.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro ao carregar</span>'; return; }
+      if (!r.tarefas || !r.tarefas.length) {
+        box.innerHTML = '<div style="color:#16a34a;font-size:13px;font-weight:600">Nenhuma tarefa com erro. Tudo limpo! ✓</div>';
+        return;
+      }
+      const fmtData = (iso) => { try { const d = new Date(iso); return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); } catch(_) { return iso||'—'; } };
+      const linhas = r.tarefas.map(t => `<tr style="border-bottom:1px solid #f1f5f9">
+        <td style="padding:8px 10px;font-size:12px;font-weight:600;color:#1e293b">${escapeHtml(t.rotulo)}</td>
+        <td style="padding:8px 10px;font-size:12px;color:#475569">${escapeHtml(t.conta)}</td>
+        <td style="padding:8px 10px;font-size:12px;color:#64748b">${escapeHtml(t.erro)}</td>
+        <td style="padding:8px 10px;font-size:11px;color:#94a3b8;white-space:nowrap">${fmtData(t.quando)}</td>
+        <td style="padding:8px 10px"><button class="toolbar-btn" style="font-size:11px;padding:4px 10px" onclick="admDispensarTarefa('${t.id}', this)">Dispensar</button></td>
+      </tr>`).join('');
+      box.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <div style="font-size:14px;font-weight:700;color:#1e293b">${r.total} tarefa(s) com erro</div>
+          <button class="toolbar-btn" style="font-size:12px;color:#dc2626;border-color:#fecaca" onclick="admDispensarTodas(this)">Dispensar todas</button>
+        </div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:#f8fafc">
+            <th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;font-weight:700">AÇÃO</th>
+            <th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;font-weight:700">CONTA</th>
+            <th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;font-weight:700">O QUE ACONTECEU</th>
+            <th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;font-weight:700">QUANDO</th>
+            <th style="padding:8px 10px"></th>
+          </tr></thead>
+          <tbody>${linhas}</tbody>
+        </table></div>`;
+    } catch(e) { box.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+escapeHtml(e.message)+'</span>'; }
+  }
+  window.admVerTarefasErro = admVerTarefasErro;
+
+  async function admDispensarTarefa(id, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '...'; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/saude/tarefas-erro/'+id+'/dispensar', { method:'POST', headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
+      if (r.ok) { const tr = btn && btn.closest('tr'); if (tr) tr.remove(); renderAdmSaude(); }
+      else if (btn) { btn.disabled = false; btn.textContent = 'Dispensar'; }
+    } catch(_) { if (btn) { btn.disabled = false; btn.textContent = 'Dispensar'; } }
+  }
+  window.admDispensarTarefa = admDispensarTarefa;
+
+  async function admDispensarTodas(btn) {
+    if (!confirm('Dispensar TODAS as tarefas com erro? Elas saem da lista mas ficam registradas.')) return;
+    if (btn) { btn.disabled = true; btn.textContent = '...'; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/saude/tarefas-erro/dispensar-todas', { method:'POST', headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
+      if (r.ok) {
+        const box = document.getElementById('admTarefasErroBox');
+        if (box) { box.innerHTML = '<div style="color:#16a34a;font-size:13px;font-weight:600">'+(r.dispensadas||0)+' tarefa(s) dispensada(s). Lista limpa! ✓</div>'; }
+        renderAdmSaude();
+      } else if (btn) { btn.disabled = false; btn.textContent = 'Dispensar todas'; }
+    } catch(_) { if (btn) { btn.disabled = false; btn.textContent = 'Dispensar todas'; } }
+  }
+  window.admDispensarTodas = admDispensarTodas;
 
   function abrirAdmUsuarioModal(id) {
     const u = id ? _admUsuarios.find(x=>x.id===id) : null;
