@@ -3566,6 +3566,16 @@
   .motor-rel-aplicar-info { display: flex; align-items: center; gap: 8px; font-size: var(--lc-fs-sm); font-weight: 600; color: #166534; }
   .motor-rel-aplicado-ok { display: flex; align-items: center; gap: 8px; font-size: var(--lc-fs-base); font-weight: 700; color: #166534; }
   .motor-rel-aplicado-falhas { margin-top: 8px; font-size: 12px; color: #92400e; background: var(--lc-warning-soft); border: 1px solid #fcd34d; border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; gap: 3px; }
+  /* blocos por loja na simulação */
+  .motor-rel-loja-bloco { margin-top: 16px; border: 1px solid var(--lc-border); border-radius: var(--lc-radius-lg); padding: 14px 16px; background: var(--lc-surface); }
+  .motor-rel-loja-cab { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .motor-rel-loja-nome { display: flex; align-items: center; gap: 7px; font-size: var(--lc-fs-base); font-weight: 800; color: var(--lc-ink); }
+  .motor-rel-loja-meta { font-size: 12px; color: var(--lc-muted); font-weight: 600; }
+  /* resultado por loja na aplicação */
+  .motor-rel-aplicado-lojas { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
+  .motor-rel-aplicado-loja { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 7px 11px; border-radius: 8px; }
+  .motor-rel-aplicado-loja.ok { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+  .motor-rel-aplicado-loja.falha { background: var(--lc-warning-soft); color: #92400e; border: 1px solid #fcd34d; }
   .motor-rel-aviso {
     display: flex; align-items: flex-start; gap: 8px;
     background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: var(--lc-radius);
@@ -32944,8 +32954,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             </div>
           </div>
           <div class="motor-rel-campo">
-            <label>Quantos produtos</label>
-            <input type="number" class="form-input" id="motorQtd" placeholder="20" min="1" style="max-width:100px">
+            <label>Produtos por loja</label>
+            <input type="number" class="form-input" id="motorQtd" placeholder="20" min="1" value="20" style="max-width:110px">
           </div>
           <div class="motor-rel-campo">
             <label>Margem mínima (%)</label>
@@ -32963,6 +32973,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               <option value="30" selected>30 dias</option>
               <option value="60">60 dias</option>
               <option value="90">90 dias</option>
+            </select>
+          </div>
+          <div class="motor-rel-campo">
+            <label>Dias de campanha</label>
+            <select class="form-input" id="motorDiasCampanha" style="max-width:140px" title="Cria 1 oferta-relâmpago por dia, de amanhã (D+1) em diante">
+              <option value="1">só amanhã (D+1)</option>
+              <option value="5">5 dias (D+1 a D+5)</option>
+              <option value="7">7 dias (D+1 a D+7)</option>
+              <option value="10" selected>10 dias (D+1 a D+10)</option>
             </select>
           </div>
           <div class="motor-rel-campo">
@@ -33059,65 +33078,74 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   function renderMotorResultado(r) {
     const out = document.getElementById('motorResultado');
     if (!out) return;
-    const res = r.resumo || {};
-    const sel = r.selecionados || [];
-    const blo = r.bloqueados || [];
     const fmtBRL = (n) => 'R$ ' + (Number(n) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const lojas = r.lojas || [];
+    const diasCampanha = parseInt((document.getElementById('motorDiasCampanha') || {}).value, 10) || 10;
 
-    // faixa de métricas da simulação (mesmo verde aprovado)
-    const escopoLojas = (r.lojasFiltradas && r.lojasFiltradas > 0) ? (r.lojasFiltradas + ' loja(s) selecionada(s)') : 'todas as lojas';
+    if (!lojas.length) {
+      out.innerHTML = '<div class="motor-rel-vazio">Nenhuma loja com produtos para ofertar no período. Verifique a seleção de lojas e o período de análise.</div>';
+      return;
+    }
+
+    // resumo geral (topo): total de lojas, total de produtos que entram, campanhas que serão criadas
+    const totalSel = lojas.reduce((s, l) => s + (l.selecionados || []).length, 0);
+    const lojasComProduto = lojas.filter(l => (l.selecionados || []).length).length;
     let html = '<div class="promo-metricas-v2" style="margin-top:16px">' +
-      '<div class="promo-metricas-head"><span class="lc-ic" data-size="sm" data-lucide="flask-conical"></span> Simulação · ' + r.totalCandidatos + ' produtos analisados · ' + escopoLojas + '</div>' +
+      '<div class="promo-metricas-head"><span class="lc-ic" data-size="sm" data-lucide="flask-conical"></span> Simulação por loja · ' + r.totalCandidatos + ' produtos analisados</div>' +
       '<div class="promo-metricas-grid">' +
-        '<div class="promo-metrica"><div class="promo-metrica-valor">' + (res.totalSelecionados || 0) + '</div><div class="promo-metrica-label">Entram na oferta</div><div class="promo-metrica-sub">passaram na margem</div></div>' +
-        '<div class="promo-metrica"><div class="promo-metrica-valor">' + (res.margemMedia != null ? res.margemMedia + '%' : '—') + '</div><div class="promo-metrica-label">Margem média</div><div class="promo-metrica-sub">após desconto</div></div>' +
-        '<div class="promo-metrica"><div class="promo-metrica-valor">' + (res.descontoMedio != null ? res.descontoMedio + '%' : '—') + '</div><div class="promo-metrica-label">Desconto médio</div><div class="promo-metrica-sub">aplicado</div></div>' +
-        '<div class="promo-metrica"><div class="promo-metrica-valor">' + fmtBRL(res.receitaEstimada) + '</div><div class="promo-metrica-label">Receita estimada</div><div class="promo-metrica-sub">potencial do ciclo</div></div>' +
+        '<div class="promo-metrica"><div class="promo-metrica-valor">' + lojasComProduto + '</div><div class="promo-metrica-label">Lojas com oferta</div><div class="promo-metrica-sub">de ' + lojas.length + ' analisadas</div></div>' +
+        '<div class="promo-metrica"><div class="promo-metrica-valor">' + totalSel + '</div><div class="promo-metrica-label">Produtos no total</div><div class="promo-metrica-sub">somando as lojas</div></div>' +
+        '<div class="promo-metrica"><div class="promo-metrica-valor">' + diasCampanha + '</div><div class="promo-metrica-label">Campanhas por loja</div><div class="promo-metrica-sub">D+1 a D+' + diasCampanha + '</div></div>' +
+        '<div class="promo-metrica"><div class="promo-metrica-valor">' + (lojasComProduto * diasCampanha) + '</div><div class="promo-metrica-label">Total de campanhas</div><div class="promo-metrica-sub">serão criadas</div></div>' +
       '</div></div>';
 
-    // tabela de selecionados
-    if (sel.length) {
-      html += '<div class="motor-rel-secao-titulo"><span class="lc-ic" data-size="sm" data-lucide="check-circle-2" style="color:#16a34a"></span> Produtos selecionados (' + sel.length + ')</div>';
-      html += '<div class="motor-rel-tabela">';
-      html += '<div class="motor-rel-linha motor-rel-cab"><span>Produto</span><span>Score</span><span>De</span><span>Por</span><span>Margem</span><span>Estoque</span></div>';
-      sel.forEach(p => {
-        const margemTxt = p.margem != null ? p.margem + '%' : '<span style="color:var(--lc-muted-2);font-size:11px" title="Custo não cadastrado">sem custo</span>';
-        html += '<div class="motor-rel-linha">' +
-          '<span class="motor-rel-prod">' + (p.foto ? '<img src="' + escapeHtml(p.foto) + '" onerror="this.style.display=\'none\'">' : '') + '<span>' + escapeHtml(p.nome) + '</span></span>' +
-          '<span><span class="motor-rel-score">' + (p.score != null ? p.score.toFixed(2) : '—') + '</span></span>' +
-          '<span style="color:var(--lc-muted);text-decoration:line-through">' + fmtBRL(p.precoOriginal) + '</span>' +
-          '<span style="font-weight:800;color:#16a34a">' + fmtBRL(p.precoFinal) + '</span>' +
-          '<span>' + margemTxt + '</span>' +
-          '<span>' + p.estoqueAplicado + '</span>' +
-        '</div>';
-      });
-      html += '</div>';
-    } else {
-      html += '<div class="motor-rel-vazio">Nenhum produto passou na proteção de margem com essa regra. Tente um desconto menor ou margem mínima mais baixa.</div>';
-    }
+    // bloco por loja
+    lojas.forEach(loja => {
+      const sel = loja.selecionados || [];
+      const res = loja.resumo || {};
+      html += '<div class="motor-rel-loja-bloco">';
+      html += '<div class="motor-rel-loja-cab">' +
+        '<span class="motor-rel-loja-nome"><span class="lc-ic" data-size="sm" data-lucide="store"></span> ' + escapeHtml(loja.lojaNome) + '</span>' +
+        '<span class="motor-rel-loja-meta">' + sel.length + ' produto(s)' + (res.descontoMedio != null ? ' · ' + res.descontoMedio + '% médio' : '') + (res.receitaEstimada ? ' · ' + fmtBRL(res.receitaEstimada) + ' est.' : '') + '</span>' +
+      '</div>';
 
-    // bloqueados (transparência)
-    if (blo.length) {
-      const motivosTxt = { preco_abaixo_custo: 'Preço abaixo do custo', margem_abaixo_minima: 'Margem abaixo da mínima', custo_desconhecido: 'Custo não cadastrado', estoque_insuficiente: 'Estoque insuficiente' };
-      html += '<div class="motor-rel-secao-titulo" style="margin-top:18px"><span class="lc-ic" data-size="sm" data-lucide="shield-alert" style="color:#d97706"></span> Bloqueados pela proteção (' + blo.length + ')</div>';
-      html += '<div class="motor-rel-bloqueados">';
-      blo.slice(0, 30).forEach(b => {
-        html += '<div class="motor-rel-bloq-item">' +
-          '<span class="motor-rel-bloq-nome">' + escapeHtml(b.nome) + '</span>' +
-          '<span class="motor-rel-bloq-motivo">' + escapeHtml(motivosTxt[b.motivo] || b.motivo) + '</span>' +
-          '<span class="motor-rel-bloq-detalhe">' + escapeHtml(b.detalhe || '') + '</span>' +
-        '</div>';
-      });
-      if (blo.length > 30) html += '<div style="font-size:12px;color:var(--lc-muted);padding:6px 2px">e mais ' + (blo.length - 30) + '…</div>';
+      if (!sel.length) {
+        html += '<div class="motor-rel-vazio" style="margin-top:8px">Nenhum produto desta loja passou nas regras.</div>';
+      } else {
+        html += '<div class="motor-rel-tabela">';
+        html += '<div class="motor-rel-linha motor-rel-cab"><span>Produto</span><span>Score</span><span>De</span><span>Por</span><span>Margem</span><span>Estoque</span></div>';
+        sel.forEach(p => {
+          const margemTxt = p.margem != null ? p.margem + '%' : '<span style="color:var(--lc-muted-2);font-size:11px" title="Custo não cadastrado">sem custo</span>';
+          html += '<div class="motor-rel-linha">' +
+            '<span class="motor-rel-prod">' + (p.foto ? '<img src="' + escapeHtml(p.foto) + '" onerror="this.style.display=\'none\'">' : '') + '<span>' + escapeHtml(p.nome) + '</span></span>' +
+            '<span><span class="motor-rel-score">' + (p.score != null ? p.score.toFixed(2) : '—') + '</span></span>' +
+            '<span style="color:var(--lc-muted);text-decoration:line-through">' + fmtBRL(p.precoOriginal) + '</span>' +
+            '<span style="font-weight:800;color:#16a34a">' + fmtBRL(p.precoFinal) + '</span>' +
+            '<span>' + margemTxt + '</span>' +
+            '<span>' + p.estoqueAplicado + '</span>' +
+          '</div>';
+        });
+        html += '</div>';
+      }
+
+      // bloqueados desta loja (resumido)
+      const blo = loja.bloqueados || [];
+      if (blo.length) {
+        const motivosTxt = { preco_abaixo_custo: 'preço abaixo do custo', margem_abaixo_minima: 'margem baixa', custo_desconhecido: 'sem custo', estoque_insuficiente: 'estoque insuficiente' };
+        const cont = {};
+        blo.forEach(b => { cont[b.motivo] = (cont[b.motivo] || 0) + 1; });
+        const resumoBloq = Object.entries(cont).map(([m, n]) => n + ' ' + (motivosTxt[m] || m)).join(' · ');
+        html += '<div style="font-size:12px;color:var(--lc-muted);margin-top:6px"><span class="lc-ic" data-size="sm" data-lucide="shield-alert" style="color:#d97706"></span> ' + blo.length + ' bloqueado(s): ' + escapeHtml(resumoBloq) + '</div>';
+      }
       html += '</div>';
-    }
+    });
 
     out.innerHTML = html;
-    // botão de aplicar de verdade (só quando há produtos selecionados)
-    if (sel.length) {
+    // botão de aplicar de verdade (só quando há ao menos 1 produto em alguma loja)
+    if (totalSel > 0) {
       const barra = document.createElement('div');
       barra.className = 'motor-rel-aplicar-barra';
-      barra.innerHTML = '<div class="motor-rel-aplicar-info"><span class="lc-ic" data-size="sm" data-lucide="rocket"></span> Pronto pra criar a oferta-relâmpago na Shopee com estes ' + sel.length + ' produtos.</div>' +
+      barra.innerHTML = '<div class="motor-rel-aplicar-info"><span class="lc-ic" data-size="sm" data-lucide="rocket"></span> Pronto pra criar ' + (lojasComProduto * diasCampanha) + ' campanhas (' + diasCampanha + ' dias × ' + lojasComProduto + ' loja(s)), com os produtos de cada loja.</div>' +
         '<button class="lc-btn lc-btn--primary" onclick="motorAplicar()"><span class="lc-ic" data-size="sm" data-lucide="zap"></span> Aplicar na Shopee</button>';
       out.appendChild(barra);
     }
@@ -33130,17 +33158,21 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!_motorUltimaSimulacao) { showToast('Simule primeiro', true); return; }
     const sim = _motorUltimaSimulacao;
     const lojaIds = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || [];
-    const escopoTxt = lojaIds.length ? lojaIds.length + ' loja(s) selecionada(s)' : 'TODAS as lojas';
-    const nSel = (sim.selecionados || []).length;
-    if (!nSel) { showToast('Nada para aplicar', true); return; }
+    const lojas = sim.lojas || [];
+    const lojasComProduto = lojas.filter(l => (l.selecionados || []).length).length;
+    const totalSel = lojas.reduce((s, l) => s + (l.selecionados || []).length, 0);
+    const diasCampanha = parseInt(document.getElementById('motorDiasCampanha').value, 10) || 10;
+    if (!totalSel) { showToast('Nada para aplicar', true); return; }
+    const escopoTxt = lojaIds.length ? lojaIds.length + ' loja(s) selecionada(s)' : 'TODAS as suas lojas';
     if (!lojaIds.length) {
-      if (!confirm('Nenhuma loja selecionada — isso vai tentar criar a oferta em TODAS as suas lojas Shopee.\n\nRecomendo selecionar as lojas primeiro (no seletor de lojas do painel). Deseja continuar mesmo assim?')) return;
+      if (!confirm('Nenhuma loja selecionada — isso vai criar ofertas em TODAS as suas lojas Shopee.\n\nRecomendo selecionar as lojas primeiro (no seletor de lojas do painel). Deseja continuar mesmo assim?')) return;
     }
-    if (!confirm('Criar oferta-relâmpago na Shopee agora?\n\n• ' + nSel + ' produtos\n• ' + escopoTxt + '\n• Desconto/preços conforme a simulação\n\nIsto altera preços reais na Shopee. Confirmar?')) return;
+    const totalCampanhas = lojasComProduto * diasCampanha;
+    if (!confirm('Criar as ofertas-relâmpago na Shopee agora?\n\n• ' + lojasComProduto + ' loja(s) com produtos\n• ' + totalSel + ' produtos no total (os melhores de cada loja)\n• ' + diasCampanha + ' campanhas por loja (D+1 a D+' + diasCampanha + ')\n• ' + totalCampanhas + ' campanhas no total\n\nIsto cria campanhas e altera preços reais na Shopee. Confirmar?')) return;
 
     const out = document.getElementById('motorResultado');
     const barra = out ? out.querySelector('.motor-rel-aplicar-barra') : null;
-    if (barra) barra.innerHTML = '<div class="motor-rel-aplicar-info"><span class="lc-ic" data-lucide="loader"></span> Aplicando na Shopee… isso pode levar alguns segundos.</div>';
+    if (barra) barra.innerHTML = '<div class="motor-rel-aplicar-info"><span class="lc-ic" data-lucide="loader"></span> Criando as campanhas na Shopee… isso pode levar um tempo (são várias campanhas).</div>';
     if (window.lcHydrateIcons && barra) { try { window.lcHydrateIcons(barra); } catch(e){} }
 
     // remonta a regra atual da tela (mesma da simulação)
@@ -33159,7 +33191,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const r = await fetch(BACKEND_URL + '/api/motor-relampago/aplicar', {
         method: 'POST',
         headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dias, regra, lojaIds }),
+        body: JSON.stringify({ dias, regra, lojaIds, diasCampanha }),
       }).then(x => x.json());
       if (!r.ok) { if (barra) barra.innerHTML = '<div class="motor-rel-erro">Não consegui aplicar: ' + escapeHtml(r.erro || 'erro') + '</div>'; return; }
       renderMotorAplicado(r, barra);
@@ -33176,14 +33208,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       return;
     }
     let html = '<div class="motor-rel-aplicado-ok"><span class="lc-ic" data-size="sm" data-lucide="circle-check-big" style="color:#16a34a"></span> ' +
-      'Oferta-relâmpago criada em ' + r.lojasOk + ' de ' + r.lojasTotal + ' loja(s) · ' + r.totalSelecionados + ' produtos.</div>';
-    const falhas = (r.resultadosPorLoja || []).filter(x => !x.ok);
-    if (falhas.length) {
-      html += '<div class="motor-rel-aplicado-falhas">';
-      falhas.forEach(f => { html += '<div>Loja ' + f.lojaId + ': ' + escapeHtml(f.erro || 'falhou') + '</div>'; });
-      html += '</div>';
-    }
-    html += '<div style="font-size:12px;color:var(--lc-muted);margin-top:8px">As ofertas entram conforme o horário (time slot) da Shopee. Confira no painel de Flash Sale Shopee.</div>';
+      r.totalCampanhas + ' campanha(s) criada(s) em ' + r.lojasOk + ' de ' + r.lojasTotal + ' loja(s).</div>';
+    // detalhe por loja
+    html += '<div class="motor-rel-aplicado-lojas">';
+    (r.resultadosPorLoja || []).forEach(l => {
+      const ok = l.ok;
+      const nome = escapeHtml(l.lojaNome || ('Loja ' + l.lojaId));
+      if (ok) {
+        html += '<div class="motor-rel-aplicado-loja ok"><span class="lc-ic" data-size="sm" data-lucide="check"></span> ' + nome + ': ' + (l.campanhasOk || 0) + '/' + (l.campanhasTotal || 0) + ' campanhas · ' + (l.itensPreparados || 0) + ' produtos</div>';
+      } else {
+        html += '<div class="motor-rel-aplicado-loja falha"><span class="lc-ic" data-size="sm" data-lucide="x"></span> ' + nome + ': ' + escapeHtml(l.erro || 'falhou') + '</div>';
+      }
+    });
+    html += '</div>';
+    html += '<div style="font-size:12px;color:var(--lc-muted);margin-top:8px">As ofertas entram conforme o horário (time slot) de cada dia na Shopee. Confira no painel de Flash Sale Shopee.</div>';
     barra.innerHTML = html;
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(barra); } catch(e){} }
   }
@@ -36657,7 +36695,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.211-motor-fase2-execucao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.212-motor-por-loja-dplus10';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
