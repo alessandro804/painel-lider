@@ -35991,7 +35991,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.193-webhook-fix-2xx';
+  const _DIAG_VERSAO_PAINEL = 'v33k.197-saude-superadmin';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -36508,7 +36508,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (screenId === 'operacaoScreen') { renderOperacao(); iniciarVidaEscritorio(); }
     else { pararVidaEscritorio(); }
     if (screenId === 'settingsScreen') { renderSettings(); if (typeof aplicarPermissoesUI==='function') aplicarPermissoesUI(); }
-    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); }
+    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); }
+    else if (typeof window.admSaudePararAuto === 'function') { window.admSaudePararAuto(); }
     if (screenId === 'produtosScreen') {
       // v32i.1: carrega página 1 do backend (paginação). Se já tem itens carregados
       // e a página atual é 1 e sem filtros, só re-renderiza (evita re-fetch desnecessário).
@@ -37045,9 +37046,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
       const timer = setTimeout(() => ctrl.abort(), 25000);
       let r;
       try {
-        r = await fetch(BACKEND_URL + '/api/ads/dashboard?' + params.toString(), { headers: { 'x-api-token': getApiToken() }, signal: ctrl.signal }).then(x => x.json());
+        const resp = await fetch(BACKEND_URL + '/api/ads/dashboard?' + params.toString(), { headers: { 'x-api-token': getApiToken() }, signal: ctrl.signal });
+        r = await resp.json();
       } finally { clearTimeout(timer); }
       if (meu !== _homeDashToken) return; // resposta antiga
+      // servidor ocupado calculando (trava de concorrência): tenta de novo
+      // sozinho em alguns segundos — quando o cache provavelmente já está pronto.
+      if (r && r.processando) {
+        grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--lc-muted);padding:30px">Calculando métricas…</div>';
+        setTimeout(() => { if (meu === _homeDashToken) homeCarregarDashboard(); }, 4000);
+        return;
+      }
       if (!r || !r.ok || r.vazio) {
         grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--lc-muted);padding:30px">Sem dados de vendas no período' + (r && r.vazio ? ' (selecione uma loja Shopee).' : '.') + '</div>';
         if (_homeChartEvol) { _homeChartEvol.destroy(); _homeChartEvol = null; }
@@ -51222,6 +51231,23 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       </div>
     </div>
 
+    <!-- SAÚDE DA INFRAESTRUTURA (só super admin) -->
+    <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div>
+          <h3 style="margin:0">🩺 Saúde do sistema</h3>
+          <div style="font-size:12px;color:#6b7280">Máquina, banco e cache em tempo real (rumo a 1.000 contas)</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <label style="font-size:12px;color:#6b7280;display:flex;align-items:center;gap:5px"><input type="checkbox" id="admSaudeAuto" onchange="admSaudeToggleAuto()"> auto (10s)</label>
+          <button class="toolbar-btn" style="font-size:12px" onclick="renderAdmSaude()">↻ Atualizar</button>
+        </div>
+      </div>
+      <div id="admSaudeGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+        <em style="color:#9ca3af;font-size:13px">Carregando saúde do sistema...</em>
+      </div>
+    </div>
+
     <div class="transactions-card" style="margin-bottom:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div>
@@ -51308,6 +51334,56 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } catch(e) { grid.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
   }
   window.renderAdmMetricas = renderAdmMetricas;
+
+  // ═══ SAÚDE DO SISTEMA (infra) ═══
+  let _admSaudeTimer = null;
+  async function renderAdmSaude() {
+    const grid = document.getElementById('admSaudeGrid');
+    if (!grid) return;
+    if (papelAtual() !== 'superadmin') return;
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/saude', { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
+      if (!r.ok) { grid.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro ao carregar saúde do sistema</span>'; return; }
+      const card = (titulo, valor, sub, cor) => `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:14px">
+        <div style="font-size:24px;font-weight:800;color:${cor||'#10b981'};line-height:1.05">${valor}</div>
+        <div style="font-size:12px;color:#374151;font-weight:600;margin-top:4px">${titulo}</div>
+        ${sub?`<div style="font-size:11px;color:#9ca3af;margin-top:2px">${sub}</div>`:''}
+      </div>`;
+      // cores por faixa: latência e memória
+      const lat = r.banco ? r.banco.latenciaMs : null;
+      const corLat = lat == null ? '#9ca3af' : (lat < 150 ? '#16a34a' : (lat < 500 ? '#d97706' : '#dc2626'));
+      const corBanco = (r.banco && r.banco.ok) ? corLat : '#dc2626';
+      const mem = r.maquina ? r.maquina.memoria : {};
+      const cache = r.cache || {};
+      const corCache = cache.taxaAcerto >= 70 ? '#16a34a' : (cache.taxaAcerto >= 40 ? '#d97706' : '#9ca3af');
+      const upt = r.maquina ? r.maquina.uptimeSeg : 0;
+      const uptTxt = upt > 86400 ? Math.floor(upt/86400)+'d '+Math.floor((upt%86400)/3600)+'h' : (upt > 3600 ? Math.floor(upt/3600)+'h '+Math.floor((upt%3600)/60)+'m' : Math.floor(upt/60)+'m');
+      const c = r.contagens || {};
+      grid.innerHTML = [
+        card('Banco — latência', (r.banco&&r.banco.ok) ? lat+' ms' : 'offline', (r.banco&&r.banco.ok) ? (lat<150?'ótimo':(lat<500?'aceitável':'lento')) : (r.banco&&r.banco.erro||'sem resposta'), corBanco),
+        card('Cache — acertos', (cache.taxaAcerto||0)+'%', (cache.hits||0)+' hits · '+(cache.itens||0)+' itens', corCache),
+        card('Memória (Node)', (mem.rssMB||0)+' MB', 'heap '+(mem.heapUsadoMB||0)+'/'+(mem.heapTotalMB||0)+' MB', '#2563eb'),
+        card('Uptime', uptTxt, 'backend no ar', '#7c3aed'),
+        card('Tarefas pendentes', c.tarefasPendentes!=null?c.tarefasPendentes:'—', 'na fila de crons', '#0891b2'),
+        card('Tarefas com erro', c.tarefasComErro!=null?c.tarefasComErro:'—', c.tarefasComErro>0?'precisa olhar':'tudo ok', c.tarefasComErro>0?'#dc2626':'#16a34a'),
+        card('Lojas', c.lojas!=null?c.lojas:'—', 'no sistema', '#ea580c'),
+        card('Usuários', c.usuarios!=null?c.usuarios:'—', 'cadastrados', '#16a34a'),
+      ].join('');
+    } catch(e) { grid.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
+  }
+  window.renderAdmSaude = renderAdmSaude;
+
+  function admSaudeToggleAuto() {
+    const on = document.getElementById('admSaudeAuto') && document.getElementById('admSaudeAuto').checked;
+    if (_admSaudeTimer) { clearInterval(_admSaudeTimer); _admSaudeTimer = null; }
+    if (on) { renderAdmSaude(); _admSaudeTimer = setInterval(renderAdmSaude, 10000); }
+  }
+  window.admSaudeToggleAuto = admSaudeToggleAuto;
+  // chamado pelo goTo (outro escopo) ao sair do painel admin, pra parar o polling
+  window.admSaudePararAuto = function() {
+    if (_admSaudeTimer) { clearInterval(_admSaudeTimer); _admSaudeTimer = null; }
+    const cb = document.getElementById('admSaudeAuto'); if (cb) cb.checked = false;
+  };
 
   function abrirAdmUsuarioModal(id) {
     const u = id ? _admUsuarios.find(x=>x.id===id) : null;
