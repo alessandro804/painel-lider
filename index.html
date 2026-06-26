@@ -119,6 +119,18 @@
     transition: border 0.2s; font-family: inherit; color: var(--azul);
   }
   .form-input:focus, .form-select:focus { outline: none; border-color: var(--verde); background: white; }
+  /* CORREÇÃO (texto branco no branco, v33k.205): em alguns ambientes os <option>
+     populados dinamicamente herdavam cor clara, ficando texto branco sobre fundo
+     branco nas listas que abrem ao clicar num select (ex.: seleção de anúncios).
+     Força texto escuro sobre fundo claro em TODAS as listas de opção. */
+  select option,
+  .form-select option,
+  .lc-kanban-select option,
+  optgroup {
+    color: #1f2937 !important;
+    background-color: #ffffff !important;
+  }
+  select:disabled option { color: #6b7280 !important; }
   .login-btn, .primary-btn {
     width: 100%; padding: 15px; border: none; border-radius: 12px;
     background: linear-gradient(135deg, var(--verde-claro) 0%, var(--verde) 100%);
@@ -1995,6 +2007,20 @@
   }
   .dropdown-massa-menu button:hover { background: #f3f4f6; }
   .dropdown-massa-menu hr { margin: 4px 0; border: none; border-top: 1px solid #e5e7eb; }
+  /* CORREÇÃO (texto branco no branco, item 6): o dropdown fica DENTRO da barra
+     escura .estoque-massa, cuja regra ".estoque-massa .toolbar-btn{color:#f1f5f9}"
+     tem mais especificidade e pintava o texto do menu de branco sobre fundo branco.
+     Estas regras (mesma cadeia de especificidade) restauram o texto escuro. */
+  .estoque-massa .dropdown-massa-menu button,
+  .dropdown-massa .dropdown-massa-menu button {
+    color: #374151 !important;
+    background: none;
+  }
+  .estoque-massa .dropdown-massa-menu button:hover,
+  .dropdown-massa .dropdown-massa-menu button:hover {
+    background: #f3f4f6 !important;
+    color: #111827 !important;
+  }
   .prod-resumo {
     font-size: 12px; color: var(--cinza-texto);
     margin-bottom: 12px;
@@ -4094,7 +4120,12 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     '🎟':'ticket','🎫':'ticket','👗':'shirt','👕':'shirt','👔':'shirt','👞':'footprints',
     '👠':'footprints','👟':'footprints','💄':'sparkles','🖼':'image','🚚':'truck','✂':'scissors',
     '❤':'heart','❤️':'heart','💚':'heart','💛':'heart','💼':'briefcase','🏁':'flag','🎬':'clapperboard',
-    '🎠':'rotate-cw','🔧':'wrench','📍':'map-pin'
+    '🎠':'rotate-cw','🔧':'wrench','📍':'map-pin',
+    '⏳':'hourglass','⏰':'alarm-clock','⏱':'timer','⏲':'timer','⏸':'pause','⏸️':'pause',
+    '⏹':'square','⏹️':'square','▶':'play','▶️':'play','⏭':'skip-forward','⏮':'skip-back',
+    '🆕':'badge-plus','🆔':'badge','📜':'scroll-text','⛔':'ban','☕':'coffee','🔑':'key',
+    '🩺':'stethoscope','🅰':'circle','🅱':'circle','🅲':'circle','🔅':'sun-dim','🔆':'sun',
+    '💲':'dollar-sign','🧴':'flask-round','🪙':'coins','🗳':'vote','🧰':'briefcase','🛡':'shield','🛡️':'shield'
   };
 
   /* ---- LOGOS OFICIAIS (inline SVG) ---- */
@@ -4162,6 +4193,45 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     });
     try { window.lucide && window.lucide.createIcons(); } catch(e){}
   };
+
+  /* ---- VARREDURA GLOBAL AUTOMÁTICA DE EMOJIS (item 8, v33k.205) ----
+     A varredura manual só rodava na troca de tela (goTo). Muitos emojis aparecem
+     em conteúdo renderizado DEPOIS: modais, listas recarregadas via fetch, toasts.
+     Este observador roda lcReplaceEmojis automaticamente sempre que o DOM muda,
+     com debounce (agrupa rajadas) e guarda anti-loop (a própria varredura altera
+     o DOM ao inserir os ícones). Cobre o sistema inteiro sem editar render a render. */
+  (function instalarObservadorEmojis(){
+    var pendente = false, varrendo = false, timer = null;
+    function varrer(){
+      timer = null;
+      if (!window.lcReplaceEmojis) return;
+      varrendo = true;
+      try { window.lcReplaceEmojis(document.body); } catch(e){}
+      // libera o observador só no próximo tick, ignorando as mutações que a
+      // própria varredura acabou de gerar (evita loop infinito).
+      setTimeout(function(){ varrendo = false; }, 0);
+    }
+    function agendar(){
+      if (varrendo) return;            // ignora mutações causadas pela varredura
+      if (timer) return;               // já há varredura agendada
+      timer = setTimeout(varrer, 150); // debounce: agrupa rajadas de render
+    }
+    function start(){
+      try {
+        var obs = new MutationObserver(function(muts){
+          if (varrendo) return;
+          // só agenda se entrou conteúdo novo (childList) — ignora attrs/estilo
+          for (var i=0;i<muts.length;i++){ if (muts[i].addedNodes && muts[i].addedNodes.length){ agendar(); return; } }
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
+        window._lcEmojiObserver = obs;
+        // varredura inicial após carregar (pega o HTML estático todo)
+        varrer();
+      } catch(e){}
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+    else start();
+  })();
 })();
 </script>
 <style id="lc-home-redesign">
@@ -4406,10 +4476,10 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   .lc-wa-fila-load, .lc-wa-fila-empty { font-size: var(--lc-fs-sm); color: var(--lc-muted); text-align: center; padding: 14px 0; }
   .lc-wa-q { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--lc-border); }
   .lc-wa-q:last-child { border-bottom: none; }
-  .lc-wa-q-body { flex: 1; min-width: 0; }
+  .lc-wa-q-body { flex: 1; min-width: 0; overflow: hidden; }
   .lc-wa-q-to { font-size: var(--lc-fs-sm); font-weight: 700; color: var(--lc-ink); }
   .lc-wa-q-num { font-size: 11px; font-weight: 500; color: var(--lc-muted); }
-  .lc-wa-q-txt { font-size: var(--lc-fs-xs); color: var(--lc-ink-2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lc-wa-q-txt { font-size: var(--lc-fs-xs); color: var(--lc-ink-2); margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; word-break: break-word; white-space: normal; max-width: 100%; }
   .lc-wa-q-meta { font-size: 10px; color: var(--lc-muted-2); margin-top: 3px; }
   .lc-wa-q-cancel { flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--lc-border); background: var(--lc-surface); color: var(--lc-danger); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: all .15s; }
   .lc-wa-q-cancel:hover { background: var(--lc-danger-soft); border-color: transparent; }
@@ -6921,7 +6991,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         <div class="header-title">📦 Produtos</div>
         <div class="header-subtitle">Catálogo central do ERP</div>
       </div>
-      <button class="icon-action" onclick="goTo('settingsScreen')" title="Configurações">⚙️</button>
+      <button class="icon-action" onclick="goTo('settingsScreen')" title="Configurações"><span class="lc-ic" data-lucide="settings"></span></button>
     </div>
   </div>
   
@@ -8280,7 +8350,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         <div class="header-title">🏪 Lojas & Conexões</div>
         <div class="header-subtitle">Suas contas em todos os marketplaces</div>
       </div>
-      <button class="icon-action" onclick="goTo('settingsScreen')" title="Configurações">⚙️</button>
+      <button class="icon-action" onclick="goTo('settingsScreen')" title="Configurações"><span class="lc-ic" data-lucide="settings"></span></button>
     </div>
   </div>
   
@@ -14362,7 +14432,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   function adsAbrirLogs(containerId) {
     const cont = document.getElementById(containerId || 'adsConteudo');
     if (!cont) return;
-    const hoje = new Date().toISOString().slice(0, 10);
+    const hoje = _isoHojeBR();
     cont.innerHTML =
       '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:14px">' +
         '<div style="font-weight:800;color:#1e2a47;font-size:15px;margin-bottom:12px">📋 Central de Logs</div>' +
@@ -18492,7 +18562,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   
   // Confirma pausar/ativar — 1x/dia segundo escolha do user
   function v32d_pedirConfirmacao(acao, vinc) {
-    const hoje = new Date().toISOString().slice(0, 10);
+    const hoje = _isoHojeBR();
     const ultimaChave = 'v32d_confirma_pausar_ultima';
     const ultima = localStorage.getItem(ultimaChave);
     if (ultima === hoje) return true;   // já confirmou hoje
@@ -32718,7 +32788,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // Verifica se uma promoção está válida hoje
   function promocaoEstaValida(promo) {
     if (promo.status === 'encerrada') return false;
-    const hoje = new Date().toISOString().slice(0, 10);
+    const hoje = _isoHojeBR();
     if (promo.inicio && hoje < promo.inicio) return false;
     if (promo.fim && hoje > promo.fim) return false;
     return true;
@@ -35991,7 +36061,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.204-crons-reconciliacao-ui';
+  const _DIAG_VERSAO_PAINEL = 'v33k.205-correcoes-ui-cliente-pedidos-emoji';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -36231,8 +36301,9 @@ Responda APENAS com JSON válido (sem markdown), formato:
     admin: null, // null = todas (inclui admScreen p/ gerenciar colaboradores dele)
     // colaborador: definido individualmente por permissões (ver PERMISSOES_DISPONIVEIS)
     colaborador: [],
-    // cliente (dono de loja que loga pra acompanhar): SÓ a página Lucro (Custos read-only + Relatório)
-    cliente: ['lucroScreen','pedidosScreen','settingsScreen','loginScreen'],
+    // cliente (dono de loja que loga pra acompanhar): Home (métricas da própria loja), Lucro e Pedidos.
+    // NUNCA Configurações (settingsScreen) — escopo já filtra os dados por dono via resolverEscopo.
+    cliente: ['homeScreen','lucroScreen','pedidosScreen','loginScreen'],
     demo: ['operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','homeScreen','settingsScreen','loginScreen'],
   };
   // Catálogo de telas que um colaborador PODE receber permissão (checklist granular).
@@ -36273,7 +36344,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   function papelHomeInicial() {
     const p = papelAtual();
     if (p === 'superadmin') return 'admScreen';
-    if (p === 'cliente') return 'lucroScreen';
+    if (p === 'cliente') return 'homeScreen';
     if (p === 'colaborador') {
       // primeira tela que o colaborador tem permissão; senão login
       const perms = permissoesColaborador();
@@ -36298,6 +36369,15 @@ Responda APENAS com JSON válido (sem markdown), formato:
     document.querySelectorAll('[data-admin-only]').forEach(el => {
       el.style.display = (p === 'admin' || p === 'superadmin') ? '' : 'none';
     });
+    // TRAVA DE SEGURANÇA (acesso cliente): esconde QUALQUER botão de engrenagem que
+    // leve a settingsScreen quando o papel não pode acessar Configurações. Cobre os
+    // ~14 botões icon-action/nav-item espalhados sem editar cada um deles.
+    if (!podeAcessarTela('settingsScreen')) {
+      document.querySelectorAll('button[onclick]').forEach(btn => {
+        const oc = btn.getAttribute('onclick') || '';
+        if (oc.indexOf("goTo('settingsScreen')") !== -1) btn.style.display = 'none';
+      });
+    }
     // o item exclusivo de SUPER ADMIN (métricas globais) só pra superadmin
     document.querySelectorAll('[data-superadmin-only]').forEach(el => {
       el.style.display = (p === 'superadmin') ? '' : 'none';
@@ -36676,7 +36756,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       document.getElementById('typeToggle').style.opacity = '1';
       document.getElementById('typeToggle').style.pointerEvents = 'auto';
       ['receitaComissaoValor','receitaClienteNome','receitaServico','receitaServicoValor','despesaDescricao','despesaValor'].forEach(id => document.getElementById(id).value = '');
-      const hoje = new Date().toISOString().slice(0,10);
+      const hoje = _isoHojeBR();
       document.getElementById('receitaData').value = hoje;
       document.getElementById('despesaData').value = hoje;
       setDespesaStatus('paga');
@@ -36805,7 +36885,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       const data = document.getElementById('despesaData').value;
       if (!data || valor <= 0) { showToast('Preencha valor e data', true); return; }
       // Auto-status pela data se o user não escolheu agendada explicitamente
-      const hoje = new Date().toISOString().slice(0,10);
+      const hoje = _isoHojeBR();
       let statusFinal = currentDespesaStatus;
       if (currentDespesaStatus === 'paga' && data > hoje) {
         statusFinal = 'agendada'; // data futura → agendada automaticamente
@@ -36854,7 +36934,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   function isVencida(t) {
     if (!isAgendada(t)) return false;
-    const hoje = new Date().toISOString().slice(0,10);
+    const hoje = _isoHojeBR();
     return t.data < hoje;
   }
   // Ajustes de balanço NÃO devem contar como receita/despesa real
@@ -39151,7 +39231,7 @@ REGRAS DE OURO:
   function renderDashboardFinanceira() {
     let emAberto = 0, recebido = 0, atrasado = 0;
     let nAberto = 0, nPago = 0, nVencido = 0;
-    const hoje = new Date().toISOString().slice(0,10);
+    const hoje = _isoHojeBR();
     const baseList = (typeof _fechamentosFiltrados === 'function') ? _fechamentosFiltrados() : (fechamentos||[]);
     (baseList).forEach(f => {
       if (!f.cobranca) return; // só conta os que viraram cobrança
@@ -39259,7 +39339,7 @@ REGRAS DE OURO:
       return false;
     }
     try {
-      const hoje = new Date().toISOString().slice(0,10);
+      const hoje = _isoHojeBR();
       const resp = await fetch(BACKEND_URL + '/api/asaas/nota-fiscal', {
         method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
         body: JSON.stringify({
@@ -40638,7 +40718,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const cur = billings.filter(b => b.periodo === periodo && b.status !== 'CANCELADO');
     const pagos = cur.filter(b => b.status === 'PAGO');
     const pagosVal = pagos.reduce((s,b) => s + b.valor, 0);
-    const hoje = new Date().toISOString().slice(0,10);
+    const hoje = _isoHojeBR();
     
     // A RECEBER = PENDENTE ou A_VENCER (independente da data - o usuário controla quando marcar como ATRASADO)
     const pendentes = cur.filter(b => b.status === 'PENDENTE' || b.status === 'A_VENCER');
@@ -40704,7 +40784,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const cardEl = document.getElementById('scheduledCard');
     if (!el || !cardEl) return;
     
-    const hoje = new Date().toISOString().slice(0,10);
+    const hoje = _isoHojeBR();
     const agendadas = transactions.filter(t => {
       if (!isAgendada(t)) return false;
       const [y, m] = t.data.split('-').map(Number);
@@ -40737,7 +40817,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const t = transactions.find(x => x.id === id);
     if (!t) return;
     t.status = 'paga';
-    t.data = new Date().toISOString().slice(0,10); // data efetiva = hoje
+    t.data = _isoHojeBR(); // data efetiva = hoje
     saveTx();
     showToast(`✓ ${t.titulo} pago`);
     renderAll();
@@ -40791,7 +40871,7 @@ ${JSON.stringify(metricas, null, 2)}`
 
   function aplicarBalanco() {
     const inputs = document.querySelectorAll('.balanco-input');
-    const hoje = new Date().toISOString().slice(0,10);
+    const hoje = _isoHojeBR();
     let count = 0;
     inputs.forEach(inp => {
       const novoStr = inp.value.trim();
@@ -40878,7 +40958,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function openReceivablesModal(tipo) {
     const periodo = `${anoAtual}-${String(mesAtual+1).padStart(2,'0')}`;
     const cur = billings.filter(b => b.periodo === periodo && b.status !== 'CANCELADO');
-    const hoje = new Date().toISOString().slice(0,10);
+    const hoje = _isoHojeBR();
     let lista = [], titulo = '', subtitulo = '', isDespesa = false;
     
     if (tipo === 'pagos') {
@@ -41027,7 +41107,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (contas.includes('Asaas Líder')) sel.value = 'Asaas Líder';
     
     // Data de hoje
-    document.getElementById('recebimentoContaData').value = new Date().toISOString().slice(0,10);
+    document.getElementById('recebimentoContaData').value = _isoHojeBR();
     document.getElementById('recebimentoContaSubtitle').textContent = `${b.cliente} · ${formatBRL(b.valor)}`;
     document.getElementById('recebimentoContaOverlay').classList.add('active');
   }
@@ -41046,7 +41126,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!b) { closeRecebimentoConta(); return; }
     
     const conta = document.getElementById('recebimentoContaSelect').value;
-    const data = document.getElementById('recebimentoContaData').value || new Date().toISOString().slice(0,10);
+    const data = document.getElementById('recebimentoContaData').value || _isoHojeBR();
     const tipoModal = _recebimentoPendente.tipoModal;
     
     b.status = 'PAGO';
@@ -41770,6 +41850,33 @@ ${JSON.stringify(metricas, null, 2)}`
     return { dias: 7, custom: null };
   })();
   function getPeriodoGlobal() { return { dias: _periodoGlobal.dias || 7, custom: _periodoGlobal.custom || null }; }
+
+  // ─── HELPERS DE DATA NO FUSO DE BRASÍLIA (correção de fuso v33k.205) ───
+  // O container/navegador podem rodar em UTC. Como o Brasil é UTC-3, após ~21h
+  // o toISOString() já retorna o DIA SEGUINTE — fazendo "hoje" e a janela de
+  // dias (ex.: últimos 7) ficarem deslocados. Estes helpers calculam a data
+  // SEMPRE no fuso America/Sao_Paulo, independente de onde o código roda.
+  function _isoBR(date) {
+    // formata um Date como YYYY-MM-DD no fuso de Brasília (en-CA já gera YYYY-MM-DD)
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit'
+      }).format(date);
+    } catch (e) {
+      // fallback: offset fixo -3h
+      return new Date(date.getTime() - 3 * 3600000).toISOString().slice(0, 10);
+    }
+  }
+  function _isoHojeBR() { return _isoBR(new Date()); }
+  // data BR de hoje +/- N dias (N negativo = passado), retorna YYYY-MM-DD
+  function _isoMaisDiasBR(n) {
+    const base = new Date(_isoHojeBR() + 'T12:00:00-03:00');
+    return _isoBR(new Date(base.getTime() + n * 86400000));
+  }
+  window._isoBR = _isoBR;
+  window._isoHojeBR = _isoHojeBR;
+  window._isoMaisDiasBR = _isoMaisDiasBR;
+
   function setPeriodoGlobal(dias, custom) {
     _periodoGlobal = { dias: custom ? null : (dias || 7), custom: custom || null };
     try { localStorage.setItem(_PERIODO_SEL_KEY, JSON.stringify(_periodoGlobal)); } catch (e) {}
@@ -41791,9 +41898,9 @@ ${JSON.stringify(metricas, null, 2)}`
     const fmt = (iso) => { const d = new Date(iso + 'T12:00:00-03:00'); return d.toLocaleDateString('pt-BR'); };
     if (p.custom && p.custom.desde && p.custom.ate) return fmt(p.custom.desde) + ' a ' + fmt(p.custom.ate);
     const dias = p.dias || 7;
-    const ate = new Date();
-    const desde = new Date(ate.getTime() - (dias - 1) * 86400000);
-    return desde.toLocaleDateString('pt-BR') + ' a ' + ate.toLocaleDateString('pt-BR') + ' (' + dias + ' dias)';
+    const ateIso = _isoHojeBR();
+    const desdeIso = _isoMaisDiasBR(-(dias - 1));
+    return fmt(desdeIso) + ' a ' + fmt(ateIso) + ' (' + dias + ' dias)';
   }
   window.getPeriodoGlobal = getPeriodoGlobal;
   window.setPeriodoGlobal = setPeriodoGlobal;
@@ -41808,10 +41915,7 @@ ${JSON.stringify(metricas, null, 2)}`
       return { desde: p.custom.desde, ate: p.custom.ate };
     }
     const dias = p.dias || 7;
-    const ate = new Date();
-    const desde = new Date(ate.getTime() - (dias - 1) * 86400000);
-    const iso = (d) => d.toISOString().slice(0, 10);
-    return { desde: iso(desde), ate: iso(ate) };
+    return { desde: _isoMaisDiasBR(-(dias - 1)), ate: _isoHojeBR() };
   }
   // Período ANTERIOR de mesma duração, imediatamente antes do atual.
   // Ex.: 02–24/06 (23 dias) → anterior 10/05–01/06. Base do comparativo (imagem 5).
@@ -41822,7 +41926,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const dias = Math.max(1, Math.round((d2 - d1) / 86400000) + 1);
     const fimAnt = new Date(d1.getTime() - 86400000);          // dia antes do início atual
     const iniAnt = new Date(fimAnt.getTime() - (dias - 1) * 86400000);
-    const iso = (d) => d.toISOString().slice(0, 10);
+    const iso = (d) => _isoBR(d);
     return { desde: iso(iniAnt), ate: iso(fimAnt), dias };
   }
   window.getPeriodoIntervalo = getPeriodoIntervalo;
@@ -41838,7 +41942,7 @@ ${JSON.stringify(metricas, null, 2)}`
     let _onAplicar = null;
     let _ancora = null;
 
-    const ISO = (d) => d.toISOString().slice(0, 10);
+    const ISO = (d) => (typeof _isoBR === 'function' ? _isoBR(d) : d.toISOString().slice(0, 10));
     const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
     const DOW = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 
@@ -42051,9 +42155,8 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // calendário de período personalizado (popover com inputs de data nativos)
   function lucroAbrirCalendario(btn) {
-    const hoje = new Date();
-    const isoDesde = (_lucroPeriodoCustom && _lucroPeriodoCustom.desde) || new Date(hoje.getTime() - 7 * 86400000).toISOString().slice(0, 10);
-    const isoAte = (_lucroPeriodoCustom && _lucroPeriodoCustom.ate) || hoje.toISOString().slice(0, 10);
+    const isoDesde = (_lucroPeriodoCustom && _lucroPeriodoCustom.desde) || _isoMaisDiasBR(-7);
+    const isoAte = (_lucroPeriodoCustom && _lucroPeriodoCustom.ate) || _isoHojeBR();
     LcDateRange.abrir(btn, {
       desde: isoDesde, ate: isoAte,
       onAplicar: (de, ate) => {
@@ -42744,9 +42847,8 @@ ${JSON.stringify(metricas, null, 2)}`
   }
 
   function pedAbrirCalendario(btn) {
-    const hoje = new Date();
-    const isoDesde = (_pedPeriodoCustom && _pedPeriodoCustom.desde) || new Date(hoje.getTime() - 7 * 86400000).toISOString().slice(0, 10);
-    const isoAte = (_pedPeriodoCustom && _pedPeriodoCustom.ate) || hoje.toISOString().slice(0, 10);
+    const isoDesde = (_pedPeriodoCustom && _pedPeriodoCustom.desde) || _isoMaisDiasBR(-7);
+    const isoAte = (_pedPeriodoCustom && _pedPeriodoCustom.ate) || _isoHojeBR();
     LcDateRange.abrir(btn, {
       desde: isoDesde, ate: isoAte,
       onAplicar: (de, ate) => {
@@ -42785,7 +42887,9 @@ ${JSON.stringify(metricas, null, 2)}`
   let _pedStatusFiltro = new Set(); // situações filtradas (cancelado/devolvido)
 
   const PED_STATUS_INFO = {
-    a_enviar:  { label: '📦 Para enviar', cor: '#2563eb', soft: '#dbeafe' },
+    a_enviar:  { label: 'Para enviar', cor: '#2563eb', soft: '#dbeafe' },
+    enviado:   { label: 'Enviado',    cor: '#0891b2', soft: '#cffafe' },
+    concluido: { label: 'Concluído',  cor: 'var(--lc-success)', soft: 'var(--lc-success-soft)' },
     pago:      { label: 'Pago',      cor: 'var(--lc-success)', soft: 'var(--lc-success-soft)' },
     cancelado: { label: 'Cancelado', cor: 'var(--lc-danger)',  soft: 'var(--lc-danger-soft)' },
     devolvido: { label: 'Devolvido', cor: 'var(--lc-warning)', soft: 'var(--lc-warning-soft)' },
@@ -42796,9 +42900,10 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!cont) return;
     cont.style.display = 'flex';
     let html = '<span style="font-size:12px;color:var(--lc-muted);font-weight:600;margin-right:2px">Status:</span>';
-    ['a_enviar', 'pago', 'cancelado', 'devolvido', 'parcial'].forEach(k => {
+    ['a_enviar', 'enviado', 'concluido', 'pago', 'cancelado', 'devolvido', 'parcial'].forEach(k => {
       const n = (contagens || {})[k] || 0;
       if (k === 'parcial' && !n) return; // só mostra parcial se houver
+      if ((k === 'enviado' || k === 'concluido') && !n) return; // só mostra se houver
       const ativo = _pedStatusFiltro.has(k);
       const inf = PED_STATUS_INFO[k];
       const cor = inf.cor.startsWith('#') ? inf.cor : inf.cor;
@@ -42994,10 +43099,13 @@ ${JSON.stringify(metricas, null, 2)}`
     const sitBadge = (p.situacao && p.situacao !== 'pago' && sitInfo)
       ? '<span style="font-size:10px;background:' + sitInfo.soft + ';color:' + sitInfo.cor + ';padding:2px 8px;border-radius:6px;font-weight:700">' + sitInfo.label + '</span>'
       : '';
-    // badge "para enviar" (pendente de envio na Shopee)
-    const envBadge = p.aEnviar
-      ? '<span style="font-size:10px;background:#dbeafe;color:#2563eb;padding:2px 8px;border-radius:6px;font-weight:700;white-space:nowrap">📦 Para enviar</span>'
-      : '';
+    // badge de faceta de envio (a_enviar / enviado / concluido) — sem emoji
+    let envBadge = '';
+    const facetaEnv = p.aEnviar ? 'a_enviar' : (p.enviado ? 'enviado' : (p.concluido ? 'concluido' : ''));
+    if (facetaEnv && PED_STATUS_INFO[facetaEnv]) {
+      const fi = PED_STATUS_INFO[facetaEnv];
+      envBadge = '<span style="font-size:10px;background:' + fi.soft + ';color:' + fi.cor + ';padding:2px 8px;border-radius:6px;font-weight:700;white-space:nowrap">' + fi.label + '</span>';
+    }
     const foto = (p.foto || (item0 && item0.foto));
     const fotoHtml = foto
       ? '<img src="' + escapeHtml(foto) + '" style="width:44px;height:44px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:44px;height:44px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0&quot;></div>\'">'
@@ -43143,12 +43251,31 @@ ${JSON.stringify(metricas, null, 2)}`
       const r = data.resumo;
       _confCasos = data.casos || [];
 
+      const df = r.devFacil || {};
+      let alertaDevFacil = '';
+      if (df.detectada) {
+        alertaDevFacil =
+          '<div style="background:var(--lc-danger-soft);border:1px solid var(--lc-danger);border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;gap:12px;align-items:flex-start">' +
+            '<span class="lc-ic" data-lucide="alert-triangle" style="color:var(--lc-danger);flex-shrink:0;margin-top:2px"></span>' +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="font-weight:800;color:var(--lc-danger);font-size:14px;margin-bottom:4px">Taxa "Devolução Fácil" (3,5%) cobrando da sua loja</div>' +
+              '<div style="font-size:13px;color:var(--lc-ink-2);line-height:1.5">' +
+                'Detectamos <b>' + df.pedidos + ' pedido(s)</b> com uma cobrança extra de ~3,5% do valor — a assinatura da taxa <b>Devolução Fácil Shopee</b>, um seguro que a Shopee ativa automaticamente <b>sem sua aceitação prévia</b>. ' +
+                'No período conferido isso custou <b style="color:var(--lc-danger)">' + formatBRL(df.prejuizo) + '</b>.' +
+              '</div>' +
+              '<div style="font-size:12px;color:var(--lc-muted);margin-top:8px;background:var(--lc-surface-2);border-radius:8px;padding:8px 10px">' +
+                '<b>Como desativar no painel da Shopee:</b><br>' +
+                'Configuração da loja › Envio › <b>Devolução Fácil Shopee</b> — e desative o programa.' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+      }
       const card = (label, valor, cor, sub) => '<div style="background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:10px;padding:14px">' +
         '<div style="font-size:12px;color:var(--lc-muted);margin-bottom:4px">' + label + '</div>' +
         '<div style="font-size:20px;font-weight:800;color:' + cor + '">' + valor + '</div>' +
         (sub ? '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:2px">' + sub + '</div>' : '') +
       '</div>';
-      if (resumo) resumo.innerHTML =
+      if (resumo) resumo.innerHTML = alertaDevFacil +
         card('Prejuízo total (Shopee cobrou a mais)', formatBRL(r.prejuizoTotal), r.prejuizoTotal > 0 ? 'var(--lc-danger)' : 'var(--lc-success)', null) +
         card('Pedidos cobrados a mais', String(r.pedidosCobradosAMais), 'var(--lc-warning)', 'de ' + r.totalPedidos + ' conferidos') +
         card('Pedidos corretos', String(r.pedidosOk), 'var(--lc-success)', null) +
@@ -47023,7 +47150,7 @@ ${JSON.stringify(metricas, null, 2)}`
           if (cols.length < 2) continue;
           
           const parseNum = (s) => parseFloat((s || '0').replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
-          const dataIni = idxData >= 0 ? cols[idxData] : new Date().toISOString().slice(0,10);
+          const dataIni = idxData >= 0 ? cols[idxData] : _isoHojeBR();
           const dataFim = idxFim >= 0 ? cols[idxFim] : dataIni;
           const inv = idxInv >= 0 ? parseNum(cols[idxInv]) : 0;
           const alc = idxAlc >= 0 ? Math.round(parseNum(cols[idxAlc])) : 0;
@@ -47127,7 +47254,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (typeof renderContasAuditoria === 'function') renderContasAuditoria();
     
     // Stats do header
-    const hoje = new Date().toISOString().slice(0,10);
+    const hoje = _isoHojeBR();
     const mesAtualStr = hoje.slice(0,7);
     const criadasHoje = demandas.filter(d => (d.criadoEm || '').slice(0,10) === hoje).length;
     const emAndamento = demandas.filter(d => d.status === 'producao').length;
@@ -50421,7 +50548,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const hoje = new Date().toISOString().slice(0,10);
+    const hoje = _isoHojeBR();
     a.href = url;
     a.download = `lider-backup-${hoje}.json`;
     document.body.appendChild(a);
@@ -51564,7 +51691,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     ov.innerHTML = `<div style="background:#fff;border-radius:16px;padding:22px;max-width:460px;width:94%;max-height:90vh;overflow-y:auto" onclick="event.stopPropagation()">
       <h3 style="margin:0 0 14px;font-size:17px">${u?'Editar':'Novo'} usuário</h3>
       <label class="form-label" style="font-size:12px">Nome</label>
-      <input type="text" class="form-input" id="admNome" style="margin-bottom:10px" value="${u?escapeHtml(u.nome):''}">
+      <input type="text" class="form-input" id="admNome" style="margin-bottom:10px" value="${u?escapeHtml(u.nome):''}" oninput="if((document.getElementById('admPapel')||{}).value==='cliente') admAutoMarcarLojasCliente(this.value)">
       <label class="form-label" style="font-size:12px">E-mail ${u?'<span style="color:#9ca3af">(não editável)</span>':''}</label>
       <input type="email" class="form-input" id="admEmail" style="margin-bottom:10px" value="${u?escapeHtml(u.email):''}" ${u?'disabled':''}>
       <label class="form-label" style="font-size:12px">${u?'🔑 Trocar senha':'Senha'} ${u?'<span style="color:#9ca3af">(deixe vazio pra manter a atual)</span>':''}</label>
@@ -51605,7 +51732,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       </div>
       <div id="admClienteBox" style="display:${(u&&u.papel==='cliente')?'block':'none'};margin-bottom:10px">
         <label class="form-label" style="font-size:12px">Lojas que este cliente pode acompanhar</label>
-        <div style="font-size:11px;color:#6b7280;margin-bottom:8px">O cliente vê o Lucro (relatório + custos, só leitura) apenas das lojas marcadas. As lojas continuam sendo da sua empresa.</div>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:8px">As lojas vinculadas a este cliente (pelo nome) já vêm marcadas automaticamente — você pode acrescentar ou remover qualquer uma. O cliente vê Home, Lucro e Pedidos apenas das lojas marcadas. As lojas continuam sendo da sua empresa.</div>
         <div id="admClienteLojas" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:10px;padding:10px">
           ${((typeof lojasErp!=='undefined'&&Array.isArray(lojasErp))?lojasErp:[]).filter(l=>l&&l.id).map(l => {
             const marcado = (u && Array.isArray(u.lojas_vinculadas) && u.lojas_vinculadas.map(String).includes(String(l.id))) ? 'checked' : '';
@@ -51624,6 +51751,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       </div>
     </div>`;
     document.body.appendChild(ov);
+    // se está editando um CLIENTE existente, pré-marca as lojas vinculadas pelo nome
+    // (além das já salvas em lojas_vinculadas que o template já marcou)
+    if (u && u.papel === 'cliente' && u.nome) {
+      try { admAutoMarcarLojasCliente(u.nome); } catch(e) {}
+    }
   }
   window.abrirAdmUsuarioModal = abrirAdmUsuarioModal;
 
@@ -51647,8 +51779,31 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (boxDono) boxDono.style.display = (ehColab && souSuper) ? 'block' : 'none';
     if (boxPerms) boxPerms.style.display = ehColab ? 'block' : 'none';
     if (boxCliente) boxCliente.style.display = ehCliente ? 'block' : 'none';
+    // ao escolher "cliente", já pré-marca as lojas vinculadas pelo nome digitado
+    if (ehCliente) {
+      const nome = (document.getElementById('admNome')||{}).value || '';
+      if (nome.trim()) admAutoMarcarLojasCliente(nome);
+    }
   }
   window.admToggleDono = admToggleDono;
+
+  // Pré-marca (sem desmarcar manualmente o que o admin já mexeu na sessão atual)
+  // as lojas cujo clienteVinculado bate com o nome do cliente. Mantém o admin
+  // livre pra acrescentar/remover. (auto-seleção de lojas do cliente, v33k.205)
+  function admAutoMarcarLojasCliente(nome) {
+    const alvo = (nome||'').trim().toLowerCase();
+    if (!alvo) return;
+    const lojas = (typeof lojasErp!=='undefined'&&Array.isArray(lojasErp)) ? lojasErp : [];
+    const idsVinculados = new Set(
+      lojas.filter(l => l && l.clienteVinculado && String(l.clienteVinculado).trim().toLowerCase() === alvo)
+           .map(l => String(l.id))
+    );
+    document.querySelectorAll('.adm-cliente-loja').forEach(chk => {
+      // marca as vinculadas; não desmarca as demais (o admin pode ter marcado à mão)
+      if (idsVinculados.has(String(chk.value))) chk.checked = true;
+    });
+  }
+  window.admAutoMarcarLojasCliente = admAutoMarcarLojasCliente;
 
   async function admSalvarUsuario(id) {
     const nome = (document.getElementById('admNome')||{}).value.trim();
