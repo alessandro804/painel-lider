@@ -35991,7 +35991,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.190-home-fixes-cache';
+  const _DIAG_VERSAO_PAINEL = 'v33k.192-precalc-webhook';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37039,7 +37039,14 @@ Responda APENAS com JSON válido (sem markdown), formato:
       if (lojas.length) params.set('lojaIds', lojas.join(','));
       if (_homeCustom && _homeCustom.desde && _homeCustom.ate) { params.set('desde', _homeCustom.desde); params.set('ate', _homeCustom.ate); }
       else params.set('dias', String(_homeDias));
-      const r = await fetch(BACKEND_URL + '/api/ads/dashboard?' + params.toString(), { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      // TIMEOUT: nunca deixa a Home presa em "Carregando". Se passar de 25s,
+      // aborta e mostra erro com botão de tentar de novo.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25000);
+      let r;
+      try {
+        r = await fetch(BACKEND_URL + '/api/ads/dashboard?' + params.toString(), { headers: { 'x-api-token': getApiToken() }, signal: ctrl.signal }).then(x => x.json());
+      } finally { clearTimeout(timer); }
       if (meu !== _homeDashToken) return; // resposta antiga
       if (!r || !r.ok || r.vazio) {
         grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--lc-muted);padding:30px">Sem dados de vendas no período' + (r && r.vazio ? ' (selecione uma loja Shopee).' : '.') + '</div>';
@@ -37052,9 +37059,14 @@ Responda APENAS com JSON válido (sem markdown), formato:
       homeDesenharTopLojas(r.topLojas || []);
       lcWhenChartReady(() => { if (meu === _homeDashToken) homeDesenharEvolucao(r.serie); });
     } catch (e) {
-      if (meu === _homeDashToken) grid.innerHTML = '<div style="grid-column:1/-1;color:var(--lc-danger);padding:20px">Erro: ' + e.message + '</div>';
+      if (meu !== _homeDashToken) return;
+      const demorou = (e.name === 'AbortError');
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:24px;color:var(--lc-muted)">' +
+        (demorou ? 'As métricas demoraram demais pra carregar com muitas lojas.' : 'Não consegui carregar as métricas agora.') +
+        '<br><button onclick="homeCarregarDashboard()" style="margin-top:10px;border:1px solid var(--lc-border);background:var(--lc-surface);border-radius:8px;padding:7px 16px;font-size:13px;cursor:pointer;color:var(--lc-ink-2);font-weight:600">Tentar de novo</button></div>';
     }
   }
+  window.homeCarregarDashboard = homeCarregarDashboard;
 
   function homeDesenharMetricas(t, ant) {
     const grid = document.getElementById('homeMetricas');
