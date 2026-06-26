@@ -3536,6 +3536,8 @@
   .motor-rel-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
   .motor-rel-titulo { display: flex; align-items: center; gap: 8px; font-size: var(--lc-fs-xl); font-weight: 800; color: var(--lc-ink); }
   .motor-rel-sub { font-size: var(--lc-fs-sm); color: var(--lc-muted); margin-top: 2px; }
+  .motor-rel-lojas-barra { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; padding: 12px 14px; background: var(--lc-surface-2); border: 1px solid var(--lc-border); border-radius: var(--lc-radius); }
+  .motor-rel-lojas-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--lc-ink-2); white-space: nowrap; }
   .motor-rel-config {
     display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
     background: var(--lc-surface); border: 1px solid var(--lc-border);
@@ -32941,6 +32943,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           </div>
         </div>
 
+        <!-- Seletor de lojas próprio (só Shopee — flash sale é exclusivo Shopee) -->
+        <div class="motor-rel-lojas-barra">
+          <span class="motor-rel-lojas-label"><span class="lc-ic" data-size="sm" data-lucide="store"></span> Lojas Shopee</span>
+          <div id="motorLojasSel" style="flex:1;min-width:240px"></div>
+        </div>
+
         <div class="motor-rel-config">
           <div class="motor-rel-campo">
             <label>Desconto</label>
@@ -33005,8 +33013,44 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         <div id="motorResultado"></div>
       </div>`;
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(painel); } catch(e){} }
+    montarSeletorLojasMotor();
   }
   window.abrirMotorRelampago = abrirMotorRelampago;
+
+  // seletor de lojas próprio do Motor (só Shopee). Não mexe na seleção global —
+  // tem sua própria seleção, pra você escolher exatamente em quais lojas rodar.
+  let _motorLojasSelComp = null;
+  let _motorCacheLojasShopee = [];
+  let _motorLojasSelecionadas = [];   // ids selecionados no motor
+  function montarSeletorLojasMotor() {
+    const host = document.getElementById('motorLojasSel');
+    if (!host || typeof LcAcctSel === 'undefined') return;
+    const montar = (lojas) => {
+      _motorLojasSelComp = LcAcctSel.montar(host, lojas, {
+        selecionados: _motorLojasSelecionadas.length ? _motorLojasSelecionadas : lojas.map(l => l.id),
+        placeholder: 'Selecione as lojas Shopee',
+        salvarLabel: 'Aplicar',
+        aoMudar: () => { _motorLojasSelecionadas = _motorLojasSelComp.getSelecionados(); },
+      });
+      // default: todas marcadas na 1ª montagem
+      if (!_motorLojasSelecionadas.length) _motorLojasSelecionadas = lojas.map(l => l.id);
+    };
+    montar(_motorCacheLojasShopee);
+    // carrega/atualiza a lista (só Shopee)
+    fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: { 'x-api-token': getApiToken() } })
+      .then(r => r.json())
+      .then(data => {
+        const todas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
+        _motorCacheLojasShopee = todas.filter(l => String(l.marketplace || '').toLowerCase().includes('shopee'));
+        montar(_motorCacheLojasShopee);
+      })
+      .catch(() => {});
+  }
+  // lojas selecionadas no motor (fallback: todas as Shopee do cache)
+  function getLojasMotor() {
+    if (_motorLojasSelecionadas && _motorLojasSelecionadas.length) return _motorLojasSelecionadas;
+    return _motorCacheLojasShopee.map(l => l.id);
+  }
 
   function fecharMotorRelampago() {
     const painel = document.getElementById('motorRelampagoPanel');
@@ -33033,8 +33077,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (regra.desconto <= 0) { showToast('Informe o desconto', true); return; }
     if (regra.quantidade <= 0) { showToast('Informe quantos produtos', true); return; }
 
-    // lojas selecionadas (seleção global do painel): se houver, roda só nelas
-    const lojaIds = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || [];
+    // lojas selecionadas no seletor próprio do Motor (só Shopee)
+    const lojaIds = getLojasMotor();
+    if (!lojaIds.length) { showToast('Selecione ao menos uma loja Shopee', true); out.innerHTML = ''; return; }
 
     out.innerHTML = '<div style="text-align:center;color:var(--lc-muted);padding:30px"><span class="lc-ic" data-lucide="loader"></span> Analisando produtos com dados reais…</div>';
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(out); } catch(e){} }
@@ -33083,7 +33128,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const diasCampanha = parseInt((document.getElementById('motorDiasCampanha') || {}).value, 10) || 10;
 
     if (!lojas.length) {
-      out.innerHTML = '<div class="motor-rel-vazio">Nenhuma loja com produtos para ofertar no período. Verifique a seleção de lojas e o período de análise.</div>';
+      out.innerHTML = '<div class="motor-rel-vazio">Nenhuma loja com produtos para ofertar no período.<br><br>' +
+        'Possíveis motivos: as lojas selecionadas não tiveram vendas pagas no período de análise, ou os produtos não têm preço cadastrado. ' +
+        'Tente aumentar o período de análise (ex: 60 ou 90 dias) ou confira a seleção de lojas Shopee acima.</div>';
       return;
     }
 
@@ -33157,16 +33204,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function motorAplicar() {
     if (!_motorUltimaSimulacao) { showToast('Simule primeiro', true); return; }
     const sim = _motorUltimaSimulacao;
-    const lojaIds = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || [];
+    const lojaIds = getLojasMotor();
     const lojas = sim.lojas || [];
     const lojasComProduto = lojas.filter(l => (l.selecionados || []).length).length;
     const totalSel = lojas.reduce((s, l) => s + (l.selecionados || []).length, 0);
     const diasCampanha = parseInt(document.getElementById('motorDiasCampanha').value, 10) || 10;
     if (!totalSel) { showToast('Nada para aplicar', true); return; }
-    const escopoTxt = lojaIds.length ? lojaIds.length + ' loja(s) selecionada(s)' : 'TODAS as suas lojas';
-    if (!lojaIds.length) {
-      if (!confirm('Nenhuma loja selecionada — isso vai criar ofertas em TODAS as suas lojas Shopee.\n\nRecomendo selecionar as lojas primeiro (no seletor de lojas do painel). Deseja continuar mesmo assim?')) return;
-    }
+    if (!lojaIds.length) { showToast('Selecione ao menos uma loja Shopee', true); return; }
     const totalCampanhas = lojasComProduto * diasCampanha;
     if (!confirm('Criar as ofertas-relâmpago na Shopee agora?\n\n• ' + lojasComProduto + ' loja(s) com produtos\n• ' + totalSel + ' produtos no total (os melhores de cada loja)\n• ' + diasCampanha + ' campanhas por loja (D+1 a D+' + diasCampanha + ')\n• ' + totalCampanhas + ' campanhas no total\n\nIsto cria campanhas e altera preços reais na Shopee. Confirmar?')) return;
 
@@ -36695,7 +36739,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.212-motor-por-loja-dplus10';
+  const _DIAG_VERSAO_PAINEL = 'v33k.213-motor-seletor-lojas-ordem';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
