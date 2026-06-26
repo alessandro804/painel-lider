@@ -8278,10 +8278,8 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         </div>
       </div>
       <div class="promo-acoes-v2">
-        <!-- Filtro por loja -->
-        <select id="promoFiltroLoja" class="form-input lc-btn--sm" style="max-width:180px;font-size:13px" onchange="filtrarPromocoesLoja(this.value)">
-          <option value="todas">Todas as lojas</option>
-        </select>
+        <!-- Filtro por loja (componente padrão com busca + checkboxes) -->
+        <div id="promoFiltroLojaHost" style="min-width:180px"></div>
         <button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="atualizarPromocoesMkt()" title="Rebuscar promoções dos marketplaces agora">
           <span class="lc-ic" data-size="sm" data-lucide="refresh-cw" id="promoRefreshIc"></span> Atualizar
         </button>
@@ -9379,6 +9377,25 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
               <input type="text" class="form-input" id="settingCargo">
             </div>
             <button class="primary-btn" onclick="saveProfile()">Salvar perfil</button>
+          </div>
+
+          <div class="settings-card" style="margin-top:16px">
+            <div class="settings-card-title" style="margin-bottom:6px">Segurança</div>
+            <div class="settings-card-subtitle" style="margin-bottom:14px">Troque a senha do seu acesso ao painel.</div>
+            <div class="form-group">
+              <label class="form-label">Senha atual</label>
+              <input type="password" class="form-input" id="senhaAtual" autocomplete="current-password" placeholder="Sua senha de hoje">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Nova senha</label>
+              <input type="password" class="form-input" id="senhaNova" autocomplete="new-password" placeholder="Mínimo 6 caracteres">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Confirmar nova senha</label>
+              <input type="password" class="form-input" id="senhaNovaConfirma" autocomplete="new-password" placeholder="Repita a nova senha">
+            </div>
+            <button class="primary-btn" id="btnTrocarSenha" onclick="trocarMinhaSenha()">Trocar senha</button>
+            <div id="trocarSenhaMsg" style="margin-top:10px;font-size:13px"></div>
           </div>
 
           <div class="settings-card" style="margin-top:16px">
@@ -32903,26 +32920,34 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   function atualizarPromocoesMkt() { carregarFlashSalesShopee(true); }
   window.atualizarPromocoesMkt = atualizarPromocoesMkt;
 
-  // preenche o seletor de lojas com as lojas que têm promoção (local + marketplace)
+  // monta o seletor de lojas padrão (LcAcctSel) com as lojas que têm promoção
+  let _promoLojasSelComp = null;
   function popularFiltroLojas() {
-    const sel = document.getElementById('promoFiltroLoja');
-    if (!sel) return;
-    const lojas = new Map(); // id → nome
-    // lojas das promoções de marketplace
-    _flashSalesShopee.forEach(f => lojas.set(String(f.lojaId), f.lojaNome));
-    _promocoesMkt.forEach(p => lojas.set(String(p.lojaId), p.lojaNome));
-    // lojas das promoções locais
+    const host = document.getElementById('promoFiltroLojaHost');
+    if (!host || typeof LcAcctSel === 'undefined') return;
+    // junta as lojas (de promoções locais + marketplace) com marketplace pra exibir
+    const mapa = new Map(); // id → {id, nome, marketplace}
+    _flashSalesShopee.forEach(f => { if (!mapa.has(String(f.lojaId))) mapa.set(String(f.lojaId), { id: f.lojaId, nome: f.lojaNome, marketplace: 'shopee' }); });
+    _promocoesMkt.forEach(p => { if (!mapa.has(String(p.lojaId))) mapa.set(String(p.lojaId), { id: p.lojaId, nome: p.lojaNome, marketplace: p.marketplace }); });
     promocoesErp.filter(promoEhValida).forEach(p => {
       const l = lojasErp.find(x => String(x.id) === String(p.lojaId));
-      if (l) lojas.set(String(l.id), l.nome);
+      if (l && !mapa.has(String(l.id))) mapa.set(String(l.id), { id: l.id, nome: l.nome, marketplace: l.marketplace || '' });
     });
-    const atual = sel.value || 'todas';
-    let html = '<option value="todas">Todas as lojas</option>';
-    [...lojas.entries()].sort((a, b) => a[1].localeCompare(b[1])).forEach(([id, nome]) => {
-      html += '<option value="' + id + '">' + escapeHtml(nome) + '</option>';
+    const lojas = [...mapa.values()].sort((a, b) => String(a.nome).localeCompare(String(b.nome)));
+    if (!lojas.length) { host.innerHTML = ''; return; }
+    // seleção atual: se 'todas', marca todas; senão mantém o array
+    const selecionados = (_filtroLoja === 'todas') ? lojas.map(l => l.id) : _filtroLoja;
+    _promoLojasSelComp = LcAcctSel.montar(host, lojas, {
+      selecionados,
+      placeholder: 'Filtrar por loja',
+      salvarLabel: 'Aplicar',
+      aoMudar: () => {
+        const sel = _promoLojasSelComp.getSelecionados();
+        // se selecionou todas (ou nenhuma), trata como 'todas'
+        _filtroLoja = (!sel.length || sel.length === lojas.length) ? 'todas' : sel.map(String);
+        renderPromocoesStats(); renderPromoAtivasHero(); renderPromocoes();
+      },
     });
-    sel.innerHTML = html;
-    sel.value = [...lojas.keys()].includes(atual) || atual === 'todas' ? atual : 'todas';
   }
 
   function filtrarPromocoesLoja(lojaId) {
@@ -32930,6 +32955,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     renderPromocoesStats(); renderPromoAtivasHero(); renderPromocoes();
   }
   window.filtrarPromocoesLoja = filtrarPromocoesLoja;
+
+  // true se a loja passa no filtro atual ('todas' ou array de ids)
+  function _promoPassaLoja(lojaId) {
+    if (_filtroLoja === 'todas') return true;
+    if (Array.isArray(_filtroLoja)) return _filtroLoja.map(String).includes(String(lojaId));
+    return String(lojaId) === String(_filtroLoja);
+  }
 
   // contadores combinados: promoções locais + flash sales + promoções de marketplace
   function contarAtivasGeral() {
@@ -32967,7 +32999,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // FILTRO 1 (tipo/marketplace) + FILTRO 2 (status), combinados
     let filtradas = reais.filter(p => {
       // filtro de loja
-      if (_filtroLoja !== 'todas' && String(p.lojaId) !== String(_filtroLoja)) return false;
+      if (!_promoPassaLoja(p.lojaId)) return false;
       // tipo/marketplace
       let passaTipo = true;
       if (_filtroPromo === 'relampago') passaTipo = (p.tipo === 'relampago');
@@ -33065,7 +33097,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // respeitando os filtros ativos (tipo + status)
   function montarCardsFlashSale() {
     const cards = [];
-    const passaLoja = (lojaId) => _filtroLoja === 'todas' || String(lojaId) === String(_filtroLoja);
+    const passaLoja = _promoPassaLoja;
     const fmtData = (epoch) => {
       if (!epoch) return '?';
       const d = new Date(epoch * 1000 - 3 * 3600 * 1000); // BR
@@ -33173,7 +33205,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const host = document.getElementById('promoAtivasHero');
     if (!host) return;
     // aplica filtro de loja
-    const passaLoja = (lojaId) => _filtroLoja === 'todas' || String(lojaId) === String(_filtroLoja);
+    const passaLoja = _promoPassaLoja;
     const validas = promocoesErp.filter(promoEhValida).filter(p => passaLoja(p.lojaId));
     const ativas = validas.filter(p => promoStatusReal(p) === 'ativa');
     const agendadas = validas.filter(p => promoStatusReal(p) === 'agendada');
@@ -37371,7 +37403,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.226-promocoes-cache-filtro-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.227-seletor-loja-troca-senha';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -46230,6 +46262,42 @@ ${JSON.stringify(metricas, null, 2)}`
     if (homeH1) { homeH1.innerHTML = `<span class="lc-ic" data-size="xl" data-lucide="hand"></span> Olá, ${nome}`; try { window.lucide && window.lucide.createIcons(); } catch(e){} }
     showToast('Perfil atualizado');
   }
+
+  // Troca a senha do próprio usuário logado (qualquer papel).
+  async function trocarMinhaSenha() {
+    const msg = document.getElementById('trocarSenhaMsg');
+    const btn = document.getElementById('btnTrocarSenha');
+    const setMsg = (txt, cor) => { if (msg) { msg.textContent = txt; msg.style.color = cor || 'var(--cinza-texto)'; } };
+
+    const senhaAtual = (document.getElementById('senhaAtual') || {}).value || '';
+    const novaSenha = (document.getElementById('senhaNova') || {}).value || '';
+    const confirma = (document.getElementById('senhaNovaConfirma') || {}).value || '';
+
+    if (!senhaAtual || !novaSenha || !confirma) { setMsg('Preencha os três campos.', '#b91c1c'); return; }
+    if (novaSenha.length < 6) { setMsg('A nova senha precisa ter ao menos 6 caracteres.', '#b91c1c'); return; }
+    if (novaSenha !== confirma) { setMsg('A confirmação não bate com a nova senha.', '#b91c1c'); return; }
+    if (novaSenha === senhaAtual) { setMsg('A nova senha não pode ser igual à atual.', '#b91c1c'); return; }
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Trocando…'; }
+    setMsg('Trocando a senha…', 'var(--cinza-texto)');
+    try {
+      const token = localStorage.getItem('lider_token_login') || '';
+      const r = await fetch(BACKEND_URL + '/api/auth/trocar-senha', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'x-api-token': (typeof getApiToken === 'function' ? getApiToken() : ''), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ senhaAtual, novaSenha }),
+      }).then(x => x.json());
+      if (!r.ok) { setMsg(r.erro || 'Não consegui trocar a senha.', '#b91c1c'); return; }
+      setMsg('✓ Senha alterada com sucesso!', '#15803d');
+      ['senhaAtual', 'senhaNova', 'senhaNovaConfirma'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+      showToast('Senha alterada com sucesso');
+    } catch (e) {
+      setMsg('Erro de conexão. Tente novamente.', '#b91c1c');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Trocar senha'; }
+    }
+  }
+  window.trocarMinhaSenha = trocarMinhaSenha;
 
   function zerarLancamentos() {
     if (!confirm('⚠ Apagar TODOS os lançamentos financeiros e cobranças?\n\nMantém: categorias, contas, despesas modelo, configurações.\n\nEssa ação não pode ser desfeita.')) return;
