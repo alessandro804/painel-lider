@@ -33179,16 +33179,18 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     return cards;
   }
 
-  // CLIQUE no card → abre o gerenciador completo da campanha
+  // CLIQUE no card → abre o MODAL da campanha específica (não a lista geral)
   function abrirGerenciadorCard(tipo, lojaId, id, estado, nome) {
     if (tipo === 'flash') {
-      // abre a tela de flash sale e foca nesta loja
-      abrirFlashSaleShopee();
+      // modal direto da oferta-relâmpago
+      const f = _flashSalesShopee.find(x => String(x.flashSaleId) === String(id) && String(x.lojaId) === String(lojaId));
+      abrirModalFlashSale(lojaId, f ? f.lojaNome : '', id, estado);
     } else if (tipo === 'shopee') {
-      // abre a tela de promoções Shopee (lista as campanhas com gerenciar)
-      abrirPromocoesShopee();
+      // modal direto da promoção de desconto Shopee
+      const p = _promocoesMkt.find(x => String(x.id) === String(id) && String(x.lojaId) === String(lojaId));
+      abrirModalCampanhaShopee(lojaId, p ? p.lojaNome : '', id, nome || (p ? p.nome : ''), estado);
     } else if (tipo === 'ml') {
-      // abre direto o gerenciador de produtos da campanha ML
+      // ML: abre o gerenciador de produtos da campanha
       gerenciarCampanhaML(id, nome || '', '', '', estado === 'ativa' ? 'started' : (estado === 'agendada' ? 'pending' : 'finished'));
     }
   }
@@ -37511,7 +37513,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.228-cards-acoes-diretas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.229-card-abre-modal-direto';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -46870,6 +46872,33 @@ ${JSON.stringify(metricas, null, 2)}`
   async function abrirDetalhePromo(idx) {
     const it = _promoShopeeCache[idx];
     if (!it) return;
+    return _abrirModalDetalhePromo(it);
+  }
+  window.abrirDetalhePromo = abrirDetalhePromo;
+
+  // abre o modal direto a partir de um card (sem depender do cache da tela Shopee)
+  async function abrirModalCampanhaShopee(lojaId, lojaNome, discountId, nome, estado) {
+    const statusMap = { ativa: 'ongoing', agendada: 'upcoming', encerrada: 'expired' };
+    // popula o cache com as promoções Shopee que já temos (pra detecção de espelho
+    // funcionar mesmo abrindo pelo card, não só pela tela de lista)
+    if (!_promoShopeeCache.length) {
+      _promoShopeeCache = _promocoesMkt
+        .filter(p => p.marketplace === 'shopee')
+        .map(p => ({
+          loja: { idBanco: p.lojaId, nome: p.lojaNome },
+          campanha: { discountId: p.id, nome: p.nome, status: statusMap[p.estado] || 'ongoing', startTime: p.startTime, endTime: p.endTime },
+        }));
+    }
+    const it = {
+      loja: { idBanco: lojaId, nome: lojaNome || ('Loja ' + lojaId) },
+      campanha: { discountId: discountId, nome: nome || 'Promoção', status: statusMap[estado] || 'ongoing' },
+    };
+    return _abrirModalDetalhePromo(it);
+  }
+  window.abrirModalCampanhaShopee = abrirModalCampanhaShopee;
+
+  // miolo compartilhado: monta o modal e carrega os itens da campanha
+  async function _abrirModalDetalhePromo(it) {
     const c = it.campanha;
     const existente = document.getElementById('promoDetalheModal');
     if (existente) existente.remove();
@@ -46917,7 +46946,6 @@ ${JSON.stringify(metricas, null, 2)}`
       if (body) body.innerHTML = `<div style="color:#991b1b;text-align:center;padding:20px">Erro de rede: ${escapeHtml(e.message)}</div>`;
     }
   }
-  window.abrirDetalhePromo = abrirDetalhePromo;
 
   function renderEditorPromo(somenteLeitura) {
     const body = document.getElementById('promoDetalheBody');
@@ -48010,6 +48038,20 @@ ${JSON.stringify(metricas, null, 2)}`
   async function flashAbrirDetalhe(idx) {
     const it = _flashCache[idx];
     if (!it) return;
+    return _flashAbrirModalDetalhe(it);
+  }
+
+  // abre o modal de flash sale direto a partir de um card
+  async function abrirModalFlashSale(lojaId, lojaNome, flashSaleId, estado) {
+    const it = {
+      loja: { idBanco: lojaId, nome: lojaNome || ('Loja ' + lojaId) },
+      flash: { flashSaleId: flashSaleId, status: 1, tipo: estado === 'ativa' ? 2 : 1, startTime: null, endTime: null },
+    };
+    return _flashAbrirModalDetalhe(it);
+  }
+  window.abrirModalFlashSale = abrirModalFlashSale;
+
+  async function _flashAbrirModalDetalhe(it) {
     const f = it.flash;
     const existente = document.getElementById('flashDetalheModal');
     if (existente) existente.remove();
