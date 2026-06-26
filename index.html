@@ -35991,7 +35991,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.201-webhook-vendas-tempo-real';
+  const _DIAG_VERSAO_PAINEL = 'v33k.204-crons-reconciliacao-ui';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -44190,6 +44190,11 @@ ${JSON.stringify(metricas, null, 2)}`
       const lojaTag = a.precisaLoja
         ? '<span style="font-size:10px;background:#eef2ff;color:#4f46e5;padding:2px 7px;border-radius:7px;margin-left:6px;font-weight:600">precisa de loja</span>'
         : '';
+      // selo "tempo real" pros crons cujo dado já chega por webhook (o cron vira
+      // só reconciliação periódica — rede de segurança contra push perdido).
+      const tempoRealTag = a.coberturaWebhook
+        ? '<span title="Os dados chegam em tempo real pelo webhook. Este cron roda 1x/dia só como reconciliação (segurança)." style="font-size:10px;background:#ecfdf5;color:#047857;padding:2px 7px;border-radius:7px;margin-left:6px;font-weight:600">tempo real ativo</span>'
+        : '';
       // horário da próxima execução + frequência
       let agendaTxt = '';
       if (on && a.proximaExecucao) {
@@ -44208,7 +44213,7 @@ ${JSON.stringify(metricas, null, 2)}`
       return `<div style="padding:12px 0;border-bottom:1px solid #f3f4f6">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
           <div style="flex:1;min-width:0">
-            <div style="font-weight:700;color:#1e2a47;font-size:14px">${escapeHtml(a.nome)}${lojaTag}</div>
+            <div style="font-weight:700;color:#1e2a47;font-size:14px">${escapeHtml(a.nome)}${lojaTag}${tempoRealTag}</div>
             <div style="font-size:12px;color:#6b7280;margin-top:2px">${escapeHtml(a.descricao)}</div>
             ${agendaTxt}
           </div>
@@ -51266,6 +51271,13 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         <em style="color:#9ca3af;font-size:13px">Carregando saúde do sistema...</em>
       </div>
       <div id="admTarefasErroBox" style="display:none;margin-top:14px;border-top:1px solid #e5e7eb;padding-top:14px"></div>
+      <div id="admWebhooksBox" style="margin-top:14px;border-top:1px solid #e5e7eb;padding-top:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <div style="font-weight:700;color:#1e2a47;font-size:14px">Webhooks Shopee — pushes recebidos (24h)</div>
+          <button class="toolbar-btn" style="font-size:11px" onclick="renderAdmWebhooks()">↻ Atualizar</button>
+        </div>
+        <div id="admWebhooksConteudo"><em style="color:#9ca3af;font-size:13px">Carregando...</em></div>
+      </div>
     </div>
 
     <div class="transactions-card" style="margin-bottom:14px">
@@ -51399,9 +51411,61 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       // se a caixa de detalhe está aberta, mantém atualizada
       const box = document.getElementById('admTarefasErroBox');
       if (box && box.style.display !== 'none' && c.tarefasComErro === 0) { box.style.display = 'none'; box.innerHTML = ''; }
+      // atualiza também o painel de verificação de webhooks
+      if (typeof renderAdmWebhooks === 'function') renderAdmWebhooks();
     } catch(e) { grid.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
   }
   window.renderAdmSaude = renderAdmSaude;
+
+  // Verificação de webhooks: confirma (dentro do painel) que os pushes da Shopee
+  // estão chegando e processando — pré-requisito pra confiar no tempo real antes
+  // de reduzir os crons. Lê GET /api/saude/webhooks.
+  async function renderAdmWebhooks() {
+    const cont = document.getElementById('admWebhooksConteudo');
+    if (!cont) return;
+    if (papelAtual() !== 'superadmin') return;
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/saude/webhooks', { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
+      if (!r.ok) { cont.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro ao carregar webhooks</span>'; return; }
+      if (r.tabelaAusente) {
+        cont.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:10px 12px;border-radius:8px;font-size:12px">' + escapeHtml(r.aviso || 'Tabela de eventos de webhook ausente.') + '</div>';
+        return;
+      }
+      const ROTULO = { venda:'Vendas', tracking:'Tracking', estoque:'Estoque', preco:'Preço', promocao:'Promoção', saude:'Saúde da loja' };
+      const COR = { venda:'#16a34a', tracking:'#2563eb', estoque:'#7c3aed', preco:'#d97706', promocao:'#db2777', saude:'#dc2626' };
+      const pt = r.porTipo || {};
+      const chips = Object.keys(ROTULO).map(k => {
+        const n = pt[k] || 0;
+        const ativo = n > 0;
+        return '<div style="background:' + (ativo?'#f0fdf4':'#f9fafb') + ';border:1px solid ' + (ativo?'#bbf7d0':'#e5e7eb') + ';border-radius:10px;padding:8px 12px;min-width:90px">'
+          + '<div style="font-size:18px;font-weight:800;color:' + (ativo?COR[k]:'#9ca3af') + '">' + n + '</div>'
+          + '<div style="font-size:11px;color:#374151;font-weight:600">' + ROTULO[k] + '</div></div>';
+      }).join('');
+      // tempo desde o último evento (sinal de vida)
+      let vida = '';
+      if (r.ultimoEventoEm) {
+        const seg = Math.floor((Date.now() - new Date(r.ultimoEventoEm).getTime())/1000);
+        const txt = seg < 60 ? seg+'s atrás' : (seg < 3600 ? Math.floor(seg/60)+'min atrás' : Math.floor(seg/3600)+'h atrás');
+        const recente = seg < 6*3600;
+        vida = '<div style="font-size:12px;color:' + (recente?'#047857':'#d97706') + ';margin:8px 0;font-weight:600">Último push: ' + txt + (recente?' ✓':' (faz tempo — confira se os pushes estão ativos no Console)') + '</div>';
+      } else {
+        vida = '<div style="font-size:12px;color:#dc2626;margin:8px 0;font-weight:600">Nenhum push recebido nas últimas 24h. Verifique se as URLs estão ativas no Shopee Open Platform.</div>';
+      }
+      const totalTxt = '<div style="font-size:12px;color:#6b7280;margin-bottom:8px">Total: <b>' + r.total + '</b> evento(s)' + (r.truncado?'+ (mostrando os 500 mais recentes)':'') + ' nas últimas ' + r.janelaHoras + 'h</div>';
+      // últimos eventos
+      const ult = (r.ultimos||[]).slice(0,8).map(e => {
+        const hora = new Date(e.em).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+        return '<div style="display:flex;gap:8px;align-items:center;font-size:11px;padding:3px 0;border-bottom:1px solid #f3f4f6">'
+          + '<span style="color:' + (COR[e.tipo]||'#6b7280') + ';font-weight:700;min-width:70px">' + (ROTULO[e.tipo]||e.tipo) + '</span>'
+          + '<span style="color:#374151;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(e.referencia||'') + (e.detalhe?(' · '+escapeHtml(e.detalhe)):'') + '</span>'
+          + '<span style="color:#9ca3af">' + hora + '</span></div>';
+      }).join('');
+      cont.innerHTML = totalTxt + vida
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + chips + '</div>'
+        + (ult ? ('<div style="margin-top:6px"><div style="font-size:11px;color:#9ca3af;font-weight:600;margin-bottom:4px">Últimos eventos</div>' + ult + '</div>') : '');
+    } catch(e) { cont.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
+  }
+  window.renderAdmWebhooks = renderAdmWebhooks;
 
   function admSaudeToggleAuto() {
     const on = document.getElementById('admSaudeAuto') && document.getElementById('admSaudeAuto').checked;
