@@ -3575,6 +3575,16 @@
   .motor-rel-loja-meta { font-size: 12px; color: var(--lc-muted); font-weight: 600; }
   /* resultado por loja na aplicação */
   .motor-rel-aplicado-lojas { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
+  /* barra de progresso do job */
+  .motor-rel-progresso { padding: 4px 2px; }
+  .motor-rel-progresso-top { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--lc-ink); font-size: var(--lc-fs-sm); }
+  .motor-rel-progresso-txt { font-size: var(--lc-fs-sm); }
+  .motor-rel-progresso-bar { margin: 8px 0 6px; height: 10px; border-radius: 6px; background: var(--lc-surface-3, #e5e7eb); overflow: hidden; }
+  .motor-rel-progresso-fill { height: 100%; background: linear-gradient(90deg, #16a34a, #22c55e); border-radius: 6px; transition: width .4s ease; }
+  .motor-rel-progresso-etapa { font-size: 12px; color: var(--lc-muted); }
+  .motor-rel-progresso-aviso { font-size: 11px; color: var(--lc-muted-2, #9ca3af); margin-top: 4px; }
+  .motor-rel-spin { animation: motorRelSpin 1s linear infinite; display: inline-block; }
+  @keyframes motorRelSpin { to { transform: rotate(360deg); } }
   .motor-rel-aplicado-loja { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 7px 11px; border-radius: 8px; }
   .motor-rel-aplicado-loja.ok { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
   .motor-rel-aplicado-loja.falha { background: var(--lc-warning-soft); color: #92400e; border: 1px solid #fcd34d; }
@@ -33199,8 +33209,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(out); } catch(e){} }
   }
 
-  // APLICA DE VERDADE na Shopee (Fase 2). Re-simula no servidor (fonte da verdade)
-  // e cria a flash sale. Pede confirmação clara — vai mexer em preço real.
+  // APLICA DE VERDADE na Shopee (Fase 2) — agora ASSÍNCRONO com barra de progresso.
+  // O backend inicia o job e responde na hora; o front acompanha via polling.
+  let _motorPollTimer = null;
   async function motorAplicar() {
     if (!_motorUltimaSimulacao) { showToast('Simule primeiro', true); return; }
     const sim = _motorUltimaSimulacao;
@@ -33216,8 +33227,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
     const out = document.getElementById('motorResultado');
     const barra = out ? out.querySelector('.motor-rel-aplicar-barra') : null;
-    if (barra) barra.innerHTML = '<div class="motor-rel-aplicar-info"><span class="lc-ic" data-lucide="loader"></span> Criando as campanhas na Shopee… isso pode levar um tempo (são várias campanhas).</div>';
-    if (window.lcHydrateIcons && barra) { try { window.lcHydrateIcons(barra); } catch(e){} }
+    renderMotorProgresso(barra, { progresso: { lojasFeitas: 0, lojasTotal: lojaIds.length, campanhasFeitas: 0, campanhasTotal: totalCampanhas, etapaAtual: 'iniciando' }, estado: 'rodando' });
 
     // remonta a regra atual da tela (mesma da simulação)
     const proteger = document.getElementById('motorProtegerMargem').checked;
@@ -33231,24 +33241,72 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     };
     const dias = parseInt(document.getElementById('motorDias').value, 10) || 30;
 
+    let jobId = null;
     try {
       const r = await fetch(BACKEND_URL + '/api/motor-relampago/aplicar', {
         method: 'POST',
         headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dias, regra, lojaIds, diasCampanha }),
       }).then(x => x.json());
-      if (!r.ok) { if (barra) barra.innerHTML = '<div class="motor-rel-erro">Não consegui aplicar: ' + escapeHtml(r.erro || 'erro') + '</div>'; return; }
-      renderMotorAplicado(r, barra);
+      if (!r.ok) { renderMotorErro(barra, r.erro || 'erro ao iniciar'); return; }
+      jobId = r.jobId;
     } catch (e) {
-      if (barra) barra.innerHTML = '<div class="motor-rel-erro">Erro: ' + escapeHtml(e.message) + '</div>';
+      renderMotorErro(barra, e.message); return;
     }
+
+    // POLLING do progresso a cada 2s
+    if (_motorPollTimer) clearInterval(_motorPollTimer);
+    const consultar = async () => {
+      try {
+        const s = await fetch(BACKEND_URL + '/api/motor-relampago/aplicar-status?jobId=' + encodeURIComponent(jobId), {
+          headers: { 'x-api-token': getApiToken() },
+        }).then(x => x.json());
+        const job = s && s.job;
+        if (!job) return;
+        if (job.estado === 'rodando') {
+          renderMotorProgresso(barra, job);
+        } else {
+          clearInterval(_motorPollTimer); _motorPollTimer = null;
+          if (job.estado === 'erro') renderMotorErro(barra, job.erro || 'erro no processamento');
+          else renderMotorAplicado(job, barra);
+        }
+      } catch (e) { /* tolera falha de polling; tenta de novo no próximo tick */ }
+    };
+    _motorPollTimer = setInterval(consultar, 2000);
+    consultar(); // primeira consulta imediata
   }
   window.motorAplicar = motorAplicar;
+
+  function renderMotorErro(barra, msg) {
+    if (!barra) return;
+    barra.innerHTML = '<div class="motor-rel-erro">Não consegui aplicar: ' + escapeHtml(msg || 'erro') + '</div>';
+  }
+
+  // barra de progresso enquanto o job roda
+  function renderMotorProgresso(barra, job) {
+    if (!barra) return;
+    const p = job.progresso || {};
+    const feitas = p.campanhasFeitas || 0;
+    const total = p.campanhasTotal || 0;
+    const pct = total > 0 ? Math.min(100, Math.round((feitas / total) * 100)) : 0;
+    const etapa = p.etapaAtual || 'processando';
+    barra.innerHTML =
+      '<div class="motor-rel-progresso">' +
+        '<div class="motor-rel-progresso-top">' +
+          '<span class="lc-ic" data-lucide="loader" class="motor-rel-spin"></span> ' +
+          '<span class="motor-rel-progresso-txt">Criando campanhas na Shopee… ' + feitas + ' de ' + total + ' (' + pct + '%)</span>' +
+        '</div>' +
+        '<div class="motor-rel-progresso-bar"><div class="motor-rel-progresso-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="motor-rel-progresso-etapa">' + escapeHtml(etapa) + ' · ' + (p.lojasFeitas || 0) + '/' + (p.lojasTotal || 0) + ' loja(s)</div>' +
+        '<div class="motor-rel-progresso-aviso">Pode fechar esta tela — o processo continua no servidor.</div>' +
+      '</div>';
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(barra); } catch(e){} }
+  }
 
   function renderMotorAplicado(r, barra) {
     if (!barra) return;
     if (!r.aplicado) {
-      barra.innerHTML = '<div class="motor-rel-erro">' + escapeHtml(r.msg || 'Nada foi aplicado.') + '</div>';
+      barra.innerHTML = '<div class="motor-rel-erro">' + escapeHtml(r.msg || 'Nenhuma campanha foi criada. Confira as lojas e tente de novo.') + '</div>';
       return;
     }
     let html = '<div class="motor-rel-aplicado-ok"><span class="lc-ic" data-size="sm" data-lucide="circle-check-big" style="color:#16a34a"></span> ' +
@@ -33259,7 +33317,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const ok = l.ok;
       const nome = escapeHtml(l.lojaNome || ('Loja ' + l.lojaId));
       if (ok) {
-        html += '<div class="motor-rel-aplicado-loja ok"><span class="lc-ic" data-size="sm" data-lucide="check"></span> ' + nome + ': ' + (l.campanhasOk || 0) + '/' + (l.campanhasTotal || 0) + ' campanhas · ' + (l.itensPreparados || 0) + ' produtos</div>';
+        // mostra se algum dia ficou parcial (menos itens que o esperado)
+        const parciais = (l.campanhas || []).filter(c => c.aviso).length;
+        const avisoParcial = parciais ? ' · ' + parciais + ' dia(s) com itens parciais' : '';
+        html += '<div class="motor-rel-aplicado-loja ok"><span class="lc-ic" data-size="sm" data-lucide="check"></span> ' + nome + ': ' + (l.campanhasOk || 0) + '/' + (l.campanhasTotal || 0) + ' campanhas · ' + (l.itensPreparados || 0) + ' produtos' + avisoParcial + '</div>';
       } else {
         html += '<div class="motor-rel-aplicado-loja falha"><span class="lc-ic" data-size="sm" data-lucide="x"></span> ' + nome + ': ' + escapeHtml(l.erro || 'falhou') + '</div>';
       }
@@ -36739,7 +36800,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.217-motor-fix-coluna-usuario-id';
+  const _DIAG_VERSAO_PAINEL = 'v33k.218-motor-async-progresso';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
