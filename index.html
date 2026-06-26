@@ -8298,8 +8298,8 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         <button class="lc-btn lc-btn--sm" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff" onclick="abrirMotorRelampago()">
           <span class="lc-ic" data-size="sm" data-lucide="zap"></span> Motor Relâmpago
         </button>
-        <button class="lc-btn lc-btn--sm" style="border:1px solid #16a34a;color:#15803d" onclick="abrirMotorAutomacao()">
-          <span class="lc-ic" data-size="sm" data-lucide="repeat"></span> Automação
+        <button class="lc-btn lc-btn--sm" style="background:#ecfdf5;border:1px solid #16a34a;color:#15803d;font-weight:700" onclick="abrirMotorAutomacao()">
+          <span class="lc-ic" data-size="sm" data-lucide="repeat" style="color:#16a34a"></span> Automação
         </button>
       </div>
     </div>
@@ -32850,6 +32850,46 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.configCronDisputas = configCronDisputas;
 
+  // Flash sales REAIS da Shopee (puxadas do backend) — contam nas métricas e cards.
+  let _flashSalesShopee = [];
+  let _promocoesMkt = [];   // promoções normais reais (Shopee desconto + ML campanhas)
+  let _flashSalesCarregando = false;
+  async function carregarFlashSalesShopee() {
+    if (_flashSalesCarregando) return;
+    _flashSalesCarregando = true;
+    try {
+      // busca em paralelo: flash sales + promoções normais dos marketplaces
+      const [fsR, pmR] = await Promise.all([
+        fetch(BACKEND_URL + '/api/motor-relampago/flash-sales-ativas', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()).catch(() => null),
+        fetch(BACKEND_URL + '/api/motor-relampago/promocoes-marketplaces', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()).catch(() => null),
+      ]);
+      _flashSalesShopee = (fsR && fsR.ok && Array.isArray(fsR.flashSales)) ? fsR.flashSales : [];
+      _promocoesMkt = (pmR && pmR.ok && Array.isArray(pmR.promocoes)) ? pmR.promocoes : [];
+    } catch (e) {
+      _flashSalesShopee = []; _promocoesMkt = [];
+    } finally {
+      _flashSalesCarregando = false;
+      renderPromocoesStats();
+      renderPromoAtivasHero();
+      renderPromocoes();
+    }
+  }
+  window.carregarFlashSalesShopee = carregarFlashSalesShopee;
+
+  // contadores combinados: promoções locais + flash sales + promoções de marketplace
+  function contarAtivasGeral() {
+    const locais = promocoesErp.filter(promoEhValida).filter(p => promoStatusReal(p) === 'ativa').length;
+    const fs = _flashSalesShopee.filter(f => f.estado === 'ativa').length;
+    const mkt = _promocoesMkt.filter(p => p.estado === 'ativa').length;
+    return locais + fs + mkt;
+  }
+  function contarAgendadasGeral() {
+    const locais = promocoesErp.filter(promoEhValida).filter(p => promoStatusReal(p) === 'agendada').length;
+    const fs = _flashSalesShopee.filter(f => f.estado === 'agendada').length;
+    const mkt = _promocoesMkt.filter(p => p.estado === 'agendada').length;
+    return locais + fs + mkt;
+  }
+
   function renderPromocoes() {
     renderPromocoesStats();
     renderPromoAtivasHero();
@@ -32889,7 +32929,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       resumo.textContent = filtradas.length + ' promoção(ões) neste filtro · ' + ativas + ' ativa(s) no total';
     }
 
-    if (filtradas.length === 0) {
+    // CARDS das flash sales REAIS da Shopee (respeitando os filtros tipo+status)
+    const fsCards = montarCardsFlashSale();
+
+    if (filtradas.length === 0 && !fsCards.length) {
       const msgFiltro = _filtroStatus === 'ativa'
         ? 'Nenhuma promoção ativa neste filtro. Experimente "Agendadas" ou "Todas".'
         : 'Nenhuma promoção neste filtro.';
@@ -32911,7 +32954,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const ordemStatus = { ativa: 0, agendada: 1, encerrada: 2 };
     filtradas = filtradas.slice().sort((a, b) => (ordemStatus[promoStatusReal(a)] ?? 3) - (ordemStatus[promoStatusReal(b)] ?? 3));
 
-    lista.innerHTML = '<div class="promo-grid-v2">' + filtradas.map(p => {
+    // flash sales reais aparecem PRIMEIRO (são o que está de fato rodando)
+    lista.innerHTML = '<div class="promo-grid-v2">' + fsCards.join('') + filtradas.map(p => {
       const loja = lojasErp.find(l => String(l.id) === String(p.lojaId));
       const isPct = p.descTipo === 'percentual';
       const descVal = isPct ? (parseFloat(p.desconto) || 0) : (parseFloat(p.desconto) || 0).toFixed(2);
@@ -32960,6 +33004,82 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.promoMarketplace = promoMarketplace;
 
+  // monta os cards das flash sales E promoções normais REAIS dos marketplaces,
+  // respeitando os filtros ativos (tipo + status)
+  function montarCardsFlashSale() {
+    const cards = [];
+    const fmtData = (epoch) => {
+      if (!epoch) return '?';
+      const d = new Date(epoch * 1000 - 3 * 3600 * 1000); // BR
+      return d.toISOString().slice(0, 10);
+    };
+
+    // 1) FLASH SALES (relâmpago Shopee) — somem em ML/cupom
+    if (_filtroPromo !== 'mercadolivre' && _filtroPromo !== 'cupom') {
+      _flashSalesShopee
+        .filter(f => _filtroStatus === 'todos' || f.estado === _filtroStatus)
+        .forEach(f => {
+          const stClass = f.estado === 'ativa' ? 's-ativa' : 's-agendada';
+          const stDot = f.estado === 'ativa' ? '<span class="promo-hero-pulse" style="width:7px;height:7px"></span>' : '';
+          const stLabel = f.estado === 'ativa' ? 'Ativa' : 'Agendada';
+          const periodo = fmtData(f.startTime) + ' → ' + fmtData(f.endTime);
+          cards.push('<div class="promo-card-v2 mkt-relampago" style="cursor:default">' +
+            '<div class="promo-card-faixa">' +
+              '<span class="promo-card-tipo-tag"><span class="lc-ic" data-size="sm" data-lucide="zap"></span> Relâmpago</span>' +
+              '<span class="promo-card-status ' + stClass + '">' + stDot + stLabel + '</span>' +
+            '</div>' +
+            '<div class="promo-card-body">' +
+              '<div class="promo-card-nome">Oferta Relâmpago Shopee</div>' +
+              '<div class="promo-card-periodo"><span class="lc-ic" data-size="sm" data-lucide="calendar"></span>' + periodo + ' · ' + escapeHtml(f.lojaNome) + '</div>' +
+              '<div class="promo-card-rodape">' +
+                '<div style="display:flex;align-items:baseline;gap:6px">' +
+                  '<span class="promo-card-desconto">' + (f.itens || 0) + '</span>' +
+                  '<span class="promo-card-desconto-unit">PRODUTOS</span>' +
+                '</div>' +
+                '<span class="promo-card-mkt mkt-tag-shopee">Shopee</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>');
+        });
+    }
+
+    // 2) PROMOÇÕES NORMAIS dos marketplaces (Shopee desconto + ML campanhas)
+    _promocoesMkt
+      .filter(p => {
+        // filtro de tipo/marketplace
+        if (_filtroPromo === 'shopee') return p.marketplace === 'shopee';
+        if (_filtroPromo === 'mercadolivre') return p.marketplace === 'mercadolivre';
+        if (_filtroPromo === 'relampago' || _filtroPromo === 'cupom') return false;
+        return true; // 'todos'
+      })
+      .filter(p => _filtroStatus === 'todos' || p.estado === _filtroStatus)
+      .forEach(p => {
+        const ehShopee = p.marketplace === 'shopee';
+        const corClasse = ehShopee ? 'mkt-shopee' : 'mkt-ml';
+        const stClass = p.estado === 'ativa' ? 's-ativa' : (p.estado === 'agendada' ? 's-agendada' : 's-encerrada');
+        const stDot = p.estado === 'ativa' ? '<span class="promo-hero-pulse" style="width:7px;height:7px"></span>' : '';
+        const stLabel = p.estado === 'ativa' ? 'Ativa' : (p.estado === 'agendada' ? 'Agendada' : 'Encerrada');
+        const periodo = ehShopee ? (fmtData(p.startTime) + ' → ' + fmtData(p.endTime)) : ((p.inicio || '?') + ' → ' + (p.fim || '?'));
+        const mktTag = ehShopee ? '<span class="promo-card-mkt mkt-tag-shopee">Shopee</span>' : '<span class="promo-card-mkt mkt-tag-ml">Mercado Livre</span>';
+        cards.push('<div class="promo-card-v2 ' + corClasse + '" style="cursor:default">' +
+          '<div class="promo-card-faixa">' +
+            '<span class="promo-card-tipo-tag"><span class="lc-ic" data-size="sm" data-lucide="tag"></span> Promoção</span>' +
+            '<span class="promo-card-status ' + stClass + '">' + stDot + stLabel + '</span>' +
+          '</div>' +
+          '<div class="promo-card-body">' +
+            '<div class="promo-card-nome">' + escapeHtml(p.nome) + '</div>' +
+            '<div class="promo-card-periodo"><span class="lc-ic" data-size="sm" data-lucide="calendar"></span>' + periodo + ' · ' + escapeHtml(p.lojaNome) + '</div>' +
+            '<div class="promo-card-rodape">' +
+              '<div></div>' +
+              mktTag +
+            '</div>' +
+          '</div>' +
+        '</div>');
+      });
+
+    return cards;
+  }
+
   // HERO: promoções rodando ao vivo agora (destaque operacional)
   // STATUS REAL (corrige "promoções fantasma"): o campo p.status é estático e não
   // reflete a data. Recalcula pela data BR de hoje. Uma promoção com data de fim no
@@ -32995,6 +33115,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const validas = promocoesErp.filter(promoEhValida);
     const ativas = validas.filter(p => promoStatusReal(p) === 'ativa');
     const agendadas = validas.filter(p => promoStatusReal(p) === 'agendada');
+    // inclui as ofertas-relâmpago E as promoções normais REAIS dos marketplaces
+    const fsAtivas = _flashSalesShopee.filter(f => f.estado === 'ativa').length;
+    const fsAgendadas = _flashSalesShopee.filter(f => f.estado === 'agendada').length;
+    const mktAtivas = _promocoesMkt.filter(p => p.estado === 'ativa').length;
+    const mktAgendadas = _promocoesMkt.filter(p => p.estado === 'agendada').length;
+    const totalAtivas = ativas.length + fsAtivas + mktAtivas;
+    const totalAgendadas = agendadas.length + fsAgendadas + mktAgendadas;
     // próxima a encerrar (entre as ativas com data de fim)
     const hoje = (typeof _isoHojeBR === 'function') ? _isoHojeBR() : new Date().toISOString().slice(0,10);
     const ativasComFim = ativas.filter(p => p.fim).sort((a, b) => String(a.fim).localeCompare(String(b.fim)));
@@ -33012,13 +33139,27 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         (sub ? '<div class="promo-metrica-sub">' + sub + '</div>' : '') +
       '</div>';
 
+    // próxima a encerrar: considera flash sales ativas da Shopee com endTime
+    let proximaTxt = proxima ? (diasRestantes === 0 ? 'hoje' : diasRestantes + 'd') : '—';
+    let proximaSub = proxima ? escapeHtml(proxima.nome) : 'nenhuma com prazo';
+    const fsAtivasComFim = _flashSalesShopee.filter(f => f.estado === 'ativa' && f.endTime).sort((a, b) => Number(a.endTime) - Number(b.endTime));
+    if (fsAtivasComFim.length) {
+      const fim = Number(fsAtivasComFim[0].endTime);
+      const dRest = Math.max(0, Math.round((fim * 1000 - Date.now()) / 86400000));
+      // usa a flash sale se ela encerra antes da promoção local (ou se não há local)
+      if (!proxima || dRest < diasRestantes) {
+        proximaTxt = dRest === 0 ? 'hoje' : dRest + 'd';
+        proximaSub = 'Oferta relâmpago · ' + escapeHtml(fsAtivasComFim[0].lojaNome);
+      }
+    }
+
     host.innerHTML = '<div class="promo-metricas-v2">' +
       '<div class="promo-metricas-head"><span class="promo-hero-pulse"></span> Visão geral das promoções</div>' +
       '<div class="promo-metricas-grid">' +
-        metrica(String(ativas.length), 'Ativas agora', 'rodando ao vivo') +
-        metrica(String(agendadas.length), 'Agendadas', 'vão começar') +
+        metrica(String(totalAtivas), 'Ativas agora', (fsAtivas + mktAtivas) > 0 ? ((fsAtivas + mktAtivas) + ' nos marketplaces') : 'rodando ao vivo') +
+        metrica(String(totalAgendadas), 'Agendadas', (fsAgendadas + mktAgendadas) > 0 ? ((fsAgendadas + mktAgendadas) + ' nos marketplaces') : 'vão começar') +
         metrica(descMedio != null ? descMedio + '%' : '—', 'Desconto médio', 'nas ativas') +
-        metrica(proxima ? (diasRestantes === 0 ? 'hoje' : diasRestantes + 'd') : '—', 'Próxima a encerrar', proxima ? escapeHtml(proxima.nome) : 'nenhuma com prazo') +
+        metrica(proximaTxt, 'Próxima a encerrar', proximaSub) +
       '</div>' +
     '</div>';
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(host); } catch(e){} }
@@ -37168,7 +37309,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.223-promocoes-limpar-encerradas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.225-promocoes-mkt-completo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -37709,7 +37850,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       }
     }
     if (screenId === 'estoqueScreen') abrirTelaEstoque();
-    if (screenId === 'promocoesScreen') renderPromocoes();
+    if (screenId === 'promocoesScreen') { renderPromocoes(); carregarFlashSalesShopee(); }
     if (screenId === 'reconciliacaoScreen') renderReconciliacao();
     if (screenId === 'catalogoProdutosScreen') renderCatalogoProdutos();
     if (screenId === 'lojasConexoesScreen') renderLojasConexoes();
