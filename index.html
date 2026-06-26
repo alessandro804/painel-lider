@@ -3585,6 +3585,28 @@
   .motor-rel-progresso-aviso { font-size: 11px; color: var(--lc-muted-2, #9ca3af); margin-top: 4px; }
   .motor-rel-spin { animation: motorRelSpin 1s linear infinite; display: inline-block; }
   @keyframes motorRelSpin { to { transform: rotate(360deg); } }
+  /* cards de produto expansíveis com variações */
+  .motor-rel-prods { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .motor-rel-prod-card { border: 1px solid var(--lc-border); border-radius: 10px; overflow: hidden; background: var(--lc-surface); }
+  .motor-rel-prod-head { display: flex; align-items: center; gap: 11px; padding: 10px 12px; cursor: pointer; transition: background .15s; }
+  .motor-rel-prod-head:hover { background: var(--lc-surface-2); }
+  .motor-rel-prod-foto { width: 42px; height: 42px; border-radius: 8px; overflow: hidden; background: var(--lc-surface-3, #f1f5f9); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .motor-rel-prod-foto img { width: 100%; height: 100%; object-fit: cover; }
+  .motor-rel-prod-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .motor-rel-prod-nome { font-weight: 700; color: var(--lc-ink); font-size: var(--lc-fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .motor-rel-prod-sub { font-size: 11px; color: var(--lc-muted); }
+  .motor-rel-prod-badge { font-size: 11px; font-weight: 700; color: #166534; background: #dcfce7; border: 1px solid #bbf7d0; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+  .motor-rel-prod-chevron { color: var(--lc-muted); transition: transform .2s; }
+  .motor-rel-prod-vars { border-top: 1px solid var(--lc-border); padding: 4px 0; background: var(--lc-surface-2); }
+  .motor-rel-var-linha { display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; gap: 12px; padding: 7px 14px 7px 52px; font-size: 12px; border-bottom: 1px solid var(--lc-border-soft, #f1f5f9); }
+  .motor-rel-var-linha:last-child { border-bottom: none; }
+  .motor-rel-var-nome { font-weight: 600; color: var(--lc-ink-2); }
+  .motor-rel-var-de { color: var(--lc-muted); text-decoration: line-through; }
+  .motor-rel-var-por { font-weight: 800; color: #16a34a; }
+  .motor-rel-var-est { color: var(--lc-muted); font-size: 11px; }
+  .motor-rel-var-linha.esgotada { opacity: .6; }
+  .motor-rel-var-tag-fora { font-size: 10px; font-weight: 700; color: #b45309; background: #fef3c7; border-radius: 6px; padding: 2px 7px; }
+  .motor-rel-var-erro { padding: 8px 14px 8px 52px; font-size: 12px; color: #b45309; }
   .motor-rel-aplicado-loja { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 7px 11px; border-radius: 8px; }
   .motor-rel-aplicado-loja.ok { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
   .motor-rel-aplicado-loja.falha { background: var(--lc-warning-soft); color: #92400e; border: 1px solid #fcd34d; }
@@ -33092,23 +33114,59 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const lojaIds = getLojasMotor();
     if (!lojaIds.length) { showToast('Selecione ao menos uma loja Shopee', true); out.innerHTML = ''; return; }
 
-    out.innerHTML = '<div style="text-align:center;color:var(--lc-muted);padding:30px"><span class="lc-ic" data-lucide="loader"></span> Analisando produtos com dados reais…</div>';
-    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(out); } catch(e){} }
+    renderMotorSimProgresso(out, { progresso: { lojasFeitas: 0, lojasTotal: lojaIds.length, produtosFeitos: 0, produtosTotal: 0, etapaAtual: 'iniciando' } });
 
+    let jobId = null;
     try {
       const r = await fetch(BACKEND_URL + '/api/motor-relampago/simular', {
         method: 'POST',
         headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dias, regra, lojaIds }),
       }).then(x => x.json());
+      // compat: se vier resultado síncrono (sem loja), mostra direto
+      if (r.sincrono) { _motorUltimaSimulacao = r; renderMotorResultado(r); return; }
       if (!r.ok) { out.innerHTML = '<div class="motor-rel-erro">Não consegui simular: ' + escapeHtml(r.erro || 'erro') + '</div>'; return; }
-      _motorUltimaSimulacao = r;
-      renderMotorResultado(r);
+      jobId = r.jobId;
     } catch (e) {
-      out.innerHTML = '<div class="motor-rel-erro">Erro: ' + escapeHtml(e.message) + '</div>';
+      out.innerHTML = '<div class="motor-rel-erro">Erro: ' + escapeHtml(e.message) + '</div>'; return;
     }
+
+    // POLLING do progresso
+    if (_motorSimPollTimer) clearInterval(_motorSimPollTimer);
+    const consultar = async () => {
+      try {
+        const s = await fetch(BACKEND_URL + '/api/motor-relampago/simular-status?jobId=' + encodeURIComponent(jobId), { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+        const job = s && s.job;
+        if (!job) return;
+        if (job.estado === 'rodando') { renderMotorSimProgresso(out, job); }
+        else {
+          clearInterval(_motorSimPollTimer); _motorSimPollTimer = null;
+          if (job.estado === 'erro') out.innerHTML = '<div class="motor-rel-erro">Erro na simulação: ' + escapeHtml(job.erro || '') + '</div>';
+          else { _motorUltimaSimulacao = job; renderMotorResultado(job); }
+        }
+      } catch (e) { /* tolera; tenta no próximo tick */ }
+    };
+    _motorSimPollTimer = setInterval(consultar, 2000);
+    consultar();
   }
   window.motorSimular = motorSimular;
+  let _motorSimPollTimer = null;
+
+  // barra de progresso da simulação (busca de variações)
+  function renderMotorSimProgresso(out, job) {
+    if (!out) return;
+    const p = job.progresso || {};
+    const feitos = p.produtosFeitos || 0, total = p.produtosTotal || 0;
+    const pct = total > 0 ? Math.min(100, Math.round((feitos / total) * 100)) : 0;
+    out.innerHTML =
+      '<div class="motor-rel-progresso" style="margin-top:16px">' +
+        '<div class="motor-rel-progresso-top"><span class="lc-ic motor-rel-spin" data-lucide="loader"></span> ' +
+          '<span class="motor-rel-progresso-txt">Analisando produtos e variações… ' + (total ? feitos + ' de ' + total : '') + (total ? ' (' + pct + '%)' : '') + '</span></div>' +
+        (total ? '<div class="motor-rel-progresso-bar"><div class="motor-rel-progresso-fill" style="width:' + pct + '%"></div></div>' : '') +
+        '<div class="motor-rel-progresso-etapa">' + escapeHtml(p.etapaAtual || '') + ' · ' + (p.lojasFeitas || 0) + '/' + (p.lojasTotal || 0) + ' loja(s)</div>' +
+      '</div>';
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(out); } catch(e){} }
+  }
 
   // liga/desliga a proteção de margem na UI (desligada por padrão)
   function motorToggleMargem() {
@@ -33130,6 +33188,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     }
   }
   window.motorToggleMargem = motorToggleMargem;
+
+  // expande/colapsa a lista de variações de um produto na simulação
+  function motorToggleProd(idCard) {
+    const corpo = document.getElementById(idCard);
+    const chev = document.getElementById(idCard + '_chev');
+    if (!corpo) return;
+    const aberto = corpo.style.display !== 'none';
+    corpo.style.display = aberto ? 'none' : '';
+    if (chev) chev.style.transform = aberto ? 'rotate(-90deg)' : '';
+  }
+  window.motorToggleProd = motorToggleProd;
 
   function renderMotorResultado(r) {
     const out = document.getElementById('motorResultado');
@@ -33170,18 +33239,51 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (!sel.length) {
         html += '<div class="motor-rel-vazio" style="margin-top:8px">Nenhum produto desta loja passou nas regras.</div>';
       } else {
-        html += '<div class="motor-rel-tabela">';
-        html += '<div class="motor-rel-linha motor-rel-cab"><span>Produto</span><span>Score</span><span>De</span><span>Por</span><span>Margem</span><span>Estoque</span></div>';
-        sel.forEach(p => {
-          const margemTxt = p.margem != null ? p.margem + '%' : '<span style="color:var(--lc-muted-2);font-size:11px" title="Custo não cadastrado">sem custo</span>';
-          html += '<div class="motor-rel-linha">' +
-            '<span class="motor-rel-prod">' + (p.foto ? '<img src="' + escapeHtml(p.foto) + '" onerror="this.style.display=\'none\'">' : '') + '<span>' + escapeHtml(p.nome) + '</span></span>' +
-            '<span><span class="motor-rel-score">' + (p.score != null ? p.score.toFixed(2) : '—') + '</span></span>' +
-            '<span style="color:var(--lc-muted);text-decoration:line-through">' + fmtBRL(p.precoOriginal) + '</span>' +
-            '<span style="font-weight:800;color:#16a34a">' + fmtBRL(p.precoFinal) + '</span>' +
-            '<span>' + margemTxt + '</span>' +
-            '<span>' + p.estoqueAplicado + '</span>' +
+        html += '<div class="motor-rel-prods">';
+        sel.forEach((p, idx) => {
+          const margemTxt = p.margem != null ? p.margem + '%' : 'sem custo';
+          const vars = p.variacoes || [];
+          const totVar = p.totalVariacoes != null ? p.totalVariacoes : vars.length;
+          const naOferta = p.variacoesNaOferta != null ? p.variacoesNaOferta : vars.filter(v => !v.esgotada).length;
+          const puladas = p.variacoesPuladas || 0;
+          const idCard = 'mrp_' + loja.lojaId + '_' + idx;
+          // cabeçalho do produto (clicável pra expandir)
+          html += '<div class="motor-rel-prod-card">';
+          html += '<div class="motor-rel-prod-head" onclick="motorToggleProd(\'' + idCard + '\')">' +
+            '<span class="motor-rel-prod-foto">' + (p.foto ? '<img src="' + escapeHtml(p.foto) + '" onerror="this.style.display=\'none\'">' : '') + '</span>' +
+            '<span class="motor-rel-prod-info">' +
+              '<span class="motor-rel-prod-nome">' + escapeHtml(p.nome) + '</span>' +
+              '<span class="motor-rel-prod-sub">' + totVar + ' variaç' + (totVar === 1 ? 'ão' : 'ões') + (puladas ? ' · ' + puladas + ' esgotada(s) fora' : '') + ' · score ' + (p.score != null ? p.score.toFixed(2) : '—') + ' · margem ' + margemTxt + '</span>' +
+            '</span>' +
+            '<span class="motor-rel-prod-badge">' + naOferta + ' na oferta</span>' +
+            '<span class="lc-ic motor-rel-prod-chevron" data-size="sm" data-lucide="chevron-down" id="' + idCard + '_chev"></span>' +
           '</div>';
+          // corpo: variações (começa expandido pra você conferir)
+          html += '<div class="motor-rel-prod-vars" id="' + idCard + '">';
+          if (p.erroVariacoes) {
+            html += '<div class="motor-rel-var-erro">Não consegui carregar as variações: ' + escapeHtml(p.erroVariacoes) + '</div>';
+          } else if (!vars.length) {
+            html += '<div class="motor-rel-var-linha"><span>Produto</span><span style="text-decoration:line-through;color:var(--lc-muted)">' + fmtBRL(p.precoOriginal) + '</span><span style="font-weight:800;color:#16a34a">' + fmtBRL(p.precoFinal) + '</span><span>est. ' + p.estoqueAplicado + '</span></div>';
+          } else {
+            vars.forEach(v => {
+              if (v.esgotada) {
+                html += '<div class="motor-rel-var-linha esgotada">' +
+                  '<span class="motor-rel-var-nome">' + escapeHtml(v.nome) + '</span>' +
+                  '<span class="motor-rel-var-de">' + fmtBRL(v.precoOriginal) + '</span>' +
+                  '<span class="motor-rel-var-tag-fora">esgotada — fora</span>' +
+                  '<span></span>' +
+                '</div>';
+              } else {
+                html += '<div class="motor-rel-var-linha">' +
+                  '<span class="motor-rel-var-nome">' + escapeHtml(v.nome) + '</span>' +
+                  '<span class="motor-rel-var-de">' + fmtBRL(v.precoOriginal) + '</span>' +
+                  '<span class="motor-rel-var-por">' + fmtBRL(v.precoFinal) + '</span>' +
+                  '<span class="motor-rel-var-est">est. ' + v.estoqueNaOferta + (v.estoqueReal != null ? ' / ' + v.estoqueReal : '') + '</span>' +
+                '</div>';
+              }
+            });
+          }
+          html += '</div></div>';
         });
         html += '</div>';
       }
@@ -36802,7 +36904,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.219-motor-preco-estoque-var-persist';
+  const _DIAG_VERSAO_PAINEL = 'v33k.220-motor-simular-variacoes';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
