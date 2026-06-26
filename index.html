@@ -2007,20 +2007,6 @@
   }
   .dropdown-massa-menu button:hover { background: #f3f4f6; }
   .dropdown-massa-menu hr { margin: 4px 0; border: none; border-top: 1px solid #e5e7eb; }
-  /* CORREÇÃO (texto branco no branco, item 6): o dropdown fica DENTRO da barra
-     escura .estoque-massa, cuja regra ".estoque-massa .toolbar-btn{color:#f1f5f9}"
-     tem mais especificidade e pintava o texto do menu de branco sobre fundo branco.
-     Estas regras (mesma cadeia de especificidade) restauram o texto escuro. */
-  .estoque-massa .dropdown-massa-menu button,
-  .dropdown-massa .dropdown-massa-menu button {
-    color: #374151 !important;
-    background: none;
-  }
-  .estoque-massa .dropdown-massa-menu button:hover,
-  .dropdown-massa .dropdown-massa-menu button:hover {
-    background: #f3f4f6 !important;
-    color: #111827 !important;
-  }
   .prod-resumo {
     font-size: 12px; color: var(--cinza-texto);
     margin-bottom: 12px;
@@ -2105,7 +2091,7 @@
     background: #fffbeb; border: 1.5px solid #fde68a;
     border-radius: 12px; padding: 10px 14px; margin-bottom: 12px;
   }
-  .estoque-massa span { font-size: 13px; font-weight: 700; color: #92400e; }
+  .estoque-massa > span { font-size: 13px; font-weight: 700; color: #92400e; }
   .estoque-prod {
     background: white; border: 1.5px solid var(--cinza-borda);
     border-radius: 12px; padding: 12px; margin-bottom: 10px;
@@ -3795,10 +3781,23 @@
     flex-wrap: wrap;
     box-shadow: 0 4px 14px rgba(15,23,42,0.18);
   }
-  .estoque-massa span {
+  .estoque-massa > span {
     font-size: 13px;
     font-weight: 700;
     color: #ffffff;
+  }
+  /* CORREÇÃO item 6 (causa raiz): a regra acima usava ".estoque-massa span" e
+     pintava de BRANCO qualquer <span> dentro da barra — inclusive os <span> que
+     o lcReplaceEmojis cria ao trocar emoji por ícone DENTRO dos botões do menu
+     dropdown (fundo branco). Restringindo o branco ao <span> direto da barra
+     (o contador "X selecionados") e forçando texto escuro no menu. */
+  .estoque-massa .dropdown-massa-menu,
+  .estoque-massa .dropdown-massa-menu * {
+    color: #374151 !important;
+  }
+  .estoque-massa .dropdown-massa-menu button:hover,
+  .estoque-massa .dropdown-massa-menu button:hover * {
+    color: #111827 !important;
   }
   .estoque-massa .toolbar-btn {
     background: rgba(255,255,255,0.10);
@@ -36061,7 +36060,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.205-correcoes-ui-cliente-pedidos-emoji';
+  const _DIAG_VERSAO_PAINEL = 'v33k.206-fix-calendario-dropdown';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41965,7 +41964,7 @@ ${JSON.stringify(metricas, null, 2)}`
       _onAplicar = typeof opts.onAplicar === 'function' ? opts.onAplicar : function(){};
       _de = opts.desde || null;
       _ate = opts.ate || null;
-      _mes = _de ? new Date(_de + 'T12:00:00-03:00') : new Date();
+      _mes = _de ? new Date(_de + 'T12:00:00-03:00') : (typeof _isoHojeBR === 'function' ? new Date(_isoHojeBR() + 'T12:00:00-03:00') : new Date());
 
       const pop = document.createElement('div');
       pop.id = 'lcDateRangePop';
@@ -42155,10 +42154,12 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // calendário de período personalizado (popover com inputs de data nativos)
   function lucroAbrirCalendario(btn) {
-    const isoDesde = (_lucroPeriodoCustom && _lucroPeriodoCustom.desde) || _isoMaisDiasBR(-7);
-    const isoAte = (_lucroPeriodoCustom && _lucroPeriodoCustom.ate) || _isoHojeBR();
+    const intv = (typeof getPeriodoIntervalo === 'function')
+      ? getPeriodoIntervalo()
+      : { desde: _isoMaisDiasBR(-6), ate: _isoHojeBR() };
     LcDateRange.abrir(btn, {
-      desde: isoDesde, ate: isoAte,
+      desde: (_lucroPeriodoCustom && _lucroPeriodoCustom.desde) || intv.desde,
+      ate: (_lucroPeriodoCustom && _lucroPeriodoCustom.ate) || intv.ate,
       onAplicar: (de, ate) => {
         _lucroPeriodoCustom = { desde: de, ate: ate };
         setPeriodoGlobal(null, { desde: de, ate: ate }); // compartilha range com Pedidos/Ads
@@ -42847,10 +42848,16 @@ ${JSON.stringify(metricas, null, 2)}`
   }
 
   function pedAbrirCalendario(btn) {
-    const isoDesde = (_pedPeriodoCustom && _pedPeriodoCustom.desde) || _isoMaisDiasBR(-7);
-    const isoAte = (_pedPeriodoCustom && _pedPeriodoCustom.ate) || _isoHojeBR();
+    // usa a MESMA fonte de verdade que a Home/relatórios (getPeriodoIntervalo),
+    // que já está no fuso BR e respeita o período ativo (7/15/30 ou custom).
+    // Antes usava um default fixo com off-by-one (mostrava 8 dias e ignorava
+    // o botão de período selecionado).
+    const intv = (typeof getPeriodoIntervalo === 'function')
+      ? getPeriodoIntervalo()
+      : { desde: _isoMaisDiasBR(-6), ate: _isoHojeBR() };
     LcDateRange.abrir(btn, {
-      desde: isoDesde, ate: isoAte,
+      desde: (_pedPeriodoCustom && _pedPeriodoCustom.desde) || intv.desde,
+      ate: (_pedPeriodoCustom && _pedPeriodoCustom.ate) || intv.ate,
       onAplicar: (de, ate) => {
         _pedPeriodoCustom = { desde: de, ate: ate };
         setPeriodoGlobal(null, { desde: de, ate: ate }); // compartilha range com Ads/Financeiro
