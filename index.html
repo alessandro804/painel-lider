@@ -8278,20 +8278,13 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         </div>
       </div>
       <div class="promo-acoes-v2">
-        <!-- Hub de marketplaces (agrupa as 4 ações que eram botões soltos) -->
-        <div class="promo-hub-wrap" style="position:relative;display:inline-block">
-          <button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="promoToggleHub(event)">
-            <span class="lc-ic" data-size="sm" data-lucide="store"></span> Marketplaces
-            <span class="lc-ic" data-size="sm" data-lucide="chevron-down"></span>
-          </button>
-          <div id="promoHubMenu" class="promo-hub-menu" style="display:none">
-            <button onclick="promoFecharHub();abrirPromocoesShopee()"><span class="promo-hub-dot" style="background:#ee4d2d"></span> Promoções Shopee</button>
-            <button onclick="promoFecharHub();abrirPromocoesML()"><span class="promo-hub-dot" style="background:#ffe600;border:1px solid #e5d400"></span> Promoções Mercado Livre</button>
-            <button onclick="promoFecharHub();abrirFlashSaleShopee()"><span class="lc-ic" data-size="sm" data-lucide="zap" style="color:#dc2626"></span> Flash Sale Shopee</button>
-            <hr>
-            <button onclick="promoFecharHub();configSyncDescontosPromo()"><span class="lc-ic" data-size="sm" data-lucide="refresh-cw" style="color:#0891b2"></span> Atualizar descontos</button>
-          </div>
-        </div>
+        <!-- Filtro por loja -->
+        <select id="promoFiltroLoja" class="form-input lc-btn--sm" style="max-width:180px;font-size:13px" onchange="filtrarPromocoesLoja(this.value)">
+          <option value="todas">Todas as lojas</option>
+        </select>
+        <button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="atualizarPromocoesMkt()" title="Rebuscar promoções dos marketplaces agora">
+          <span class="lc-ic" data-size="sm" data-lucide="refresh-cw" id="promoRefreshIc"></span> Atualizar
+        </button>
         <button class="lc-btn lc-btn--primary lc-btn--sm" onclick="abrirNovaPromocao()">
           <span class="lc-ic" data-size="sm" data-lucide="plus"></span> Nova promoção
         </button>
@@ -8301,6 +8294,19 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         <button class="lc-btn lc-btn--sm" style="background:#ecfdf5;border:1px solid #16a34a;color:#15803d;font-weight:700" onclick="abrirMotorAutomacao()">
           <span class="lc-ic" data-size="sm" data-lucide="repeat" style="color:#16a34a"></span> Automação
         </button>
+        <!-- ações dos marketplaces num menu compacto (gerenciamento avançado) -->
+        <div class="promo-hub-wrap" style="position:relative;display:inline-block">
+          <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="promoToggleHub(event)" title="Gerenciar promoções nos marketplaces">
+            <span class="lc-ic" data-size="sm" data-lucide="settings-2"></span>
+          </button>
+          <div id="promoHubMenu" class="promo-hub-menu" style="display:none">
+            <button onclick="promoFecharHub();abrirPromocoesShopee()"><span class="promo-hub-dot" style="background:#ee4d2d"></span> Gerenciar Shopee</button>
+            <button onclick="promoFecharHub();abrirPromocoesML()"><span class="promo-hub-dot" style="background:#ffe600;border:1px solid #e5d400"></span> Gerenciar Mercado Livre</button>
+            <button onclick="promoFecharHub();abrirFlashSaleShopee()"><span class="lc-ic" data-size="sm" data-lucide="zap" style="color:#dc2626"></span> Flash Sale Shopee</button>
+            <hr>
+            <button onclick="promoFecharHub();configSyncDescontosPromo()"><span class="lc-ic" data-size="sm" data-lucide="refresh-cw" style="color:#0891b2"></span> Atualizar descontos</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -32850,31 +32856,80 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.configCronDisputas = configCronDisputas;
 
-  // Flash sales REAIS da Shopee (puxadas do backend) — contam nas métricas e cards.
+  // Flash sales + promoções REAIS dos marketplaces, com cache local de 5min
+  // (stale-while-revalidate: mostra o cache na hora, revalida por trás se vencido).
   let _flashSalesShopee = [];
-  let _promocoesMkt = [];   // promoções normais reais (Shopee desconto + ML campanhas)
+  let _promocoesMkt = [];
+  let _mktCacheTs = 0;              // quando carregou (ms)
+  let _filtroLoja = 'todas';       // filtro por loja
+  const _MKT_CACHE_MS = 5 * 60 * 1000; // 5 min
   let _flashSalesCarregando = false;
-  async function carregarFlashSalesShopee() {
+
+  async function carregarFlashSalesShopee(force) {
+    const agora = Date.now();
+    const cacheValido = (_flashSalesShopee.length || _promocoesMkt.length) && (agora - _mktCacheTs) < _MKT_CACHE_MS;
+    // se o cache local é válido e não é refresh forçado: usa na hora, sem rebuscar
+    if (cacheValido && !force) {
+      popularFiltroLojas();
+      renderPromocoesStats(); renderPromoAtivasHero(); renderPromocoes();
+      return;
+    }
     if (_flashSalesCarregando) return;
     _flashSalesCarregando = true;
+    // indicador girando no botão atualizar
+    const refreshIc = document.getElementById('promoRefreshIc');
+    if (refreshIc) refreshIc.classList.add('motor-rel-spin');
     try {
-      // busca em paralelo: flash sales + promoções normais dos marketplaces
+      const q = force ? '?force=1' : '';
       const [fsR, pmR] = await Promise.all([
-        fetch(BACKEND_URL + '/api/motor-relampago/flash-sales-ativas', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()).catch(() => null),
-        fetch(BACKEND_URL + '/api/motor-relampago/promocoes-marketplaces', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()).catch(() => null),
+        fetch(BACKEND_URL + '/api/motor-relampago/flash-sales-ativas' + q, { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()).catch(() => null),
+        fetch(BACKEND_URL + '/api/motor-relampago/promocoes-marketplaces' + q, { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()).catch(() => null),
       ]);
       _flashSalesShopee = (fsR && fsR.ok && Array.isArray(fsR.flashSales)) ? fsR.flashSales : [];
       _promocoesMkt = (pmR && pmR.ok && Array.isArray(pmR.promocoes)) ? pmR.promocoes : [];
+      _mktCacheTs = Date.now();
     } catch (e) {
-      _flashSalesShopee = []; _promocoesMkt = [];
+      // mantém o que tinha
     } finally {
       _flashSalesCarregando = false;
-      renderPromocoesStats();
-      renderPromoAtivasHero();
-      renderPromocoes();
+      if (refreshIc) refreshIc.classList.remove('motor-rel-spin');
+      popularFiltroLojas();
+      renderPromocoesStats(); renderPromoAtivasHero(); renderPromocoes();
     }
   }
   window.carregarFlashSalesShopee = carregarFlashSalesShopee;
+
+  // botão "Atualizar": força rebuscar dos marketplaces (ignora cache)
+  function atualizarPromocoesMkt() { carregarFlashSalesShopee(true); }
+  window.atualizarPromocoesMkt = atualizarPromocoesMkt;
+
+  // preenche o seletor de lojas com as lojas que têm promoção (local + marketplace)
+  function popularFiltroLojas() {
+    const sel = document.getElementById('promoFiltroLoja');
+    if (!sel) return;
+    const lojas = new Map(); // id → nome
+    // lojas das promoções de marketplace
+    _flashSalesShopee.forEach(f => lojas.set(String(f.lojaId), f.lojaNome));
+    _promocoesMkt.forEach(p => lojas.set(String(p.lojaId), p.lojaNome));
+    // lojas das promoções locais
+    promocoesErp.filter(promoEhValida).forEach(p => {
+      const l = lojasErp.find(x => String(x.id) === String(p.lojaId));
+      if (l) lojas.set(String(l.id), l.nome);
+    });
+    const atual = sel.value || 'todas';
+    let html = '<option value="todas">Todas as lojas</option>';
+    [...lojas.entries()].sort((a, b) => a[1].localeCompare(b[1])).forEach(([id, nome]) => {
+      html += '<option value="' + id + '">' + escapeHtml(nome) + '</option>';
+    });
+    sel.innerHTML = html;
+    sel.value = [...lojas.keys()].includes(atual) || atual === 'todas' ? atual : 'todas';
+  }
+
+  function filtrarPromocoesLoja(lojaId) {
+    _filtroLoja = lojaId;
+    renderPromocoesStats(); renderPromoAtivasHero(); renderPromocoes();
+  }
+  window.filtrarPromocoesLoja = filtrarPromocoesLoja;
 
   // contadores combinados: promoções locais + flash sales + promoções de marketplace
   function contarAtivasGeral() {
@@ -32911,6 +32966,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
     // FILTRO 1 (tipo/marketplace) + FILTRO 2 (status), combinados
     let filtradas = reais.filter(p => {
+      // filtro de loja
+      if (_filtroLoja !== 'todas' && String(p.lojaId) !== String(_filtroLoja)) return false;
       // tipo/marketplace
       let passaTipo = true;
       if (_filtroPromo === 'relampago') passaTipo = (p.tipo === 'relampago');
@@ -33008,6 +33065,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // respeitando os filtros ativos (tipo + status)
   function montarCardsFlashSale() {
     const cards = [];
+    const passaLoja = (lojaId) => _filtroLoja === 'todas' || String(lojaId) === String(_filtroLoja);
     const fmtData = (epoch) => {
       if (!epoch) return '?';
       const d = new Date(epoch * 1000 - 3 * 3600 * 1000); // BR
@@ -33017,6 +33075,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // 1) FLASH SALES (relâmpago Shopee) — somem em ML/cupom
     if (_filtroPromo !== 'mercadolivre' && _filtroPromo !== 'cupom') {
       _flashSalesShopee
+        .filter(f => passaLoja(f.lojaId))
         .filter(f => _filtroStatus === 'todos' || f.estado === _filtroStatus)
         .forEach(f => {
           const stClass = f.estado === 'ativa' ? 's-ativa' : 's-agendada';
@@ -33045,6 +33104,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
     // 2) PROMOÇÕES NORMAIS dos marketplaces (Shopee desconto + ML campanhas)
     _promocoesMkt
+      .filter(p => passaLoja(p.lojaId))
       .filter(p => {
         // filtro de tipo/marketplace
         if (_filtroPromo === 'shopee') return p.marketplace === 'shopee';
@@ -33112,14 +33172,16 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   function renderPromoAtivasHero() {
     const host = document.getElementById('promoAtivasHero');
     if (!host) return;
-    const validas = promocoesErp.filter(promoEhValida);
+    // aplica filtro de loja
+    const passaLoja = (lojaId) => _filtroLoja === 'todas' || String(lojaId) === String(_filtroLoja);
+    const validas = promocoesErp.filter(promoEhValida).filter(p => passaLoja(p.lojaId));
     const ativas = validas.filter(p => promoStatusReal(p) === 'ativa');
     const agendadas = validas.filter(p => promoStatusReal(p) === 'agendada');
     // inclui as ofertas-relâmpago E as promoções normais REAIS dos marketplaces
-    const fsAtivas = _flashSalesShopee.filter(f => f.estado === 'ativa').length;
-    const fsAgendadas = _flashSalesShopee.filter(f => f.estado === 'agendada').length;
-    const mktAtivas = _promocoesMkt.filter(p => p.estado === 'ativa').length;
-    const mktAgendadas = _promocoesMkt.filter(p => p.estado === 'agendada').length;
+    const fsAtivas = _flashSalesShopee.filter(f => f.estado === 'ativa' && passaLoja(f.lojaId)).length;
+    const fsAgendadas = _flashSalesShopee.filter(f => f.estado === 'agendada' && passaLoja(f.lojaId)).length;
+    const mktAtivas = _promocoesMkt.filter(p => p.estado === 'ativa' && passaLoja(p.lojaId)).length;
+    const mktAgendadas = _promocoesMkt.filter(p => p.estado === 'agendada' && passaLoja(p.lojaId)).length;
     const totalAtivas = ativas.length + fsAtivas + mktAtivas;
     const totalAgendadas = agendadas.length + fsAgendadas + mktAgendadas;
     // próxima a encerrar (entre as ativas com data de fim)
@@ -37309,7 +37371,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.225-promocoes-mkt-completo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.226-promocoes-cache-filtro-loja';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
