@@ -11056,35 +11056,57 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   async function executarFluxoDemanda(demandaId) {
     const d = demandas.find(x => String(x.id) === String(demandaId));
     if (!d) { showToast('Demanda não encontrada (id=' + demandaId + ')', true); return; }
-    // v33k.241: o fluxo SEMPRE tem que corresponder ao marketplace das contas da
-    // demanda. Antes, se a demanda já tinha um d.fluxoId gravado (ex.: de ML de
-    // uma criação antiga), ele era usado mesmo que as contas fossem da Shopee —
-    // resultado: rodava o fluxo de ML, mas o passo "publicar" tentava exportar
-    // pra loja Shopee e dava "Categoria da Shopee não definida". Agora resolvemos
-    // pelo marketplace das contas e SÓ aceitamos um fluxoId antigo se ele bater.
-    const lojaIdDem = (d.contas && d.contas[0]) || d.lojaDestinoId || null;
-    const lojaDem = lojasErp.find(l => String(l.id) === String(lojaIdDem));
-    const mktDem = lojaDem ? lojaDem.marketplace : (d.marketplace || null);
-    const mktNorm = (mktDem === 'mercado_livre') ? 'mercadolivre' : mktDem;
 
+    // Fluxo gravado na demanda (comportamento histórico — é a base de tudo).
     let fluxo = d.fluxoId ? fluxosDemanda.find(f => String(f.id) === String(d.fluxoId)) : null;
-    // Se o fluxo gravado NÃO corresponde ao marketplace das contas, descarta e re-resolve.
-    if (fluxo && mktNorm && typeof _inferirMktFluxo === 'function') {
+
+    // v33k.242: tenta descobrir o marketplace das contas da demanda pra detectar
+    // divergência (fluxo de ML numa demanda de loja Shopee, p.ex.). Mas isto é só
+    // um AJUSTE OPCIONAL: se não der pra resolver o marketplace, mantemos o fluxo
+    // gravado (não quebramos como na v33k.241).
+    let mktNorm = null;
+    try {
+      const lojaIdDem = (d.contas && d.contas[0]) || d.lojaDestinoId || null;
+      const lojaDem = lojaIdDem ? lojasErp.find(l => String(l.id) === String(lojaIdDem)) : null;
+      const mktDem = lojaDem ? lojaDem.marketplace : (d.marketplace || null);
+      mktNorm = (mktDem === 'mercado_livre') ? 'mercadolivre' : (mktDem || null);
+    } catch(_) { mktNorm = null; }
+
+    // Se CONSEGUIMOS saber o marketplace E o fluxo gravado diverge dele, re-resolve.
+    if (mktNorm && fluxo && typeof _inferirMktFluxo === 'function') {
       const mktDoFluxo = _inferirMktFluxo(fluxo);
       if (mktDoFluxo && mktDoFluxo !== mktNorm) {
-        console.warn('[executarFluxoDemanda] fluxo gravado (' + mktDoFluxo + ') diverge do marketplace das contas (' + mktNorm + ') — re-resolvendo');
-        fluxo = null;
-      }
-    }
-    if (!fluxo) {
-      if (mktNorm && typeof resolverFluxoAutomatico === 'function') {
-        fluxo = resolverFluxoAutomatico(mktNorm);
-        if (fluxo) {
-          d.fluxoId = fluxo.id; // grava pra próximas execuções
+        console.warn('[executarFluxoDemanda] fluxo gravado (' + mktDoFluxo + ') diverge do marketplace (' + mktNorm + ') — re-resolvendo');
+        const reResolvido = (typeof resolverFluxoAutomatico === 'function') ? resolverFluxoAutomatico(mktNorm) : null;
+        if (reResolvido) {
+          fluxo = reResolvido;
+          d.fluxoId = fluxo.id;
           try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
         }
+        // se não conseguiu re-resolver, mantém o fluxo gravado (não quebra)
       }
     }
+
+    // Se ainda NÃO temos fluxo (demanda sem fluxoId), tenta resolver pelo marketplace.
+    if (!fluxo && mktNorm && typeof resolverFluxoAutomatico === 'function') {
+      fluxo = resolverFluxoAutomatico(mktNorm);
+      if (fluxo) {
+        d.fluxoId = fluxo.id;
+        try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
+      }
+    }
+
+    // Último recurso: sem fluxo e sem marketplace resolvível — tenta QUALQUER fluxo
+    // de anuncio_novo já existente (antes de desistir), pra não travar o usuário.
+    if (!fluxo) {
+      fluxo = (fluxosDemanda || []).find(f => f.tipoDemanda === 'anuncio_novo' && f.passos && f.passos.length);
+      if (fluxo) {
+        console.warn('[executarFluxoDemanda] usando fluxo anuncio_novo genérico como último recurso:', fluxo.id);
+        d.fluxoId = fluxo.id;
+        try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
+      }
+    }
+
     if (!fluxo) {
       showToast('Não consegui preparar o fluxo automaticamente. Verifique se a demanda tem uma loja (Shopee ou ML) selecionada.', true);
       return;
@@ -37770,7 +37792,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.241-fix-fluxo-mkt-categoria-inteligente';
+  const _DIAG_VERSAO_PAINEL = 'v33k.242-fluxo-robusto-fallback';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
