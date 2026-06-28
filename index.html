@@ -13075,6 +13075,26 @@ Retorne JSON: {"ID": "valor", ...}`;
   async function acaoExportar(d) {
     const p = _produtoDaDemanda(d);
     if (!p.idBanco) throw new Error('Produto sem idBanco — passo "Salvar" não rodou?');
+
+    // v33k.255 FIX DEFINITIVO DO PREÇO: força o preço de d.precoBase no produto E
+    // em TODAS as variações, AQUI, no momento do export, antes de qualquer validação.
+    // O bug: variações criadas pela geração de SKUs (cor×tamanho) podiam nascer SEM
+    // preço (ou com 0/0.01), e a ressincronização anterior não cobria toda variação
+    // recém-gerada. Resultado: a validação via precoVarMax=0 e barrava ("Preço
+    // inválido"). Aqui garantimos que cada variação (branco 38, branco 39, ...) tenha
+    // o preço base. Só sobrescreve variação cujo preço está ausente/<=0.01 — não
+    // mexe em variação que já tem preço próprio válido (ex.: preço por tamanho).
+    try {
+      const _precoBase = (typeof _parsePrecoBR === 'function')
+        ? _parsePrecoBR(d.precoBase)
+        : (parseFloat(d.precoBase) || 0);
+      if (_precoBase > 0.01) {
+        if (!(parseFloat(p.preco) > 0.01)) p.preco = _precoBase;
+        (p.variacoes || []).forEach(v => {
+          if (!(parseFloat(v.preco) > 0.01)) v.preco = _precoBase;
+        });
+      }
+    } catch (ePB) { console.warn('[acaoExportar] força preço base falhou:', ePB.message); }
     
     // v32j.10 FIX ARQUITETURAL: usa as CONTAS MARCADAS na demanda (d.contas),
     // não a p.lojaId (que pode estar stale de uma demanda anterior).
@@ -38074,7 +38094,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.254-fix-executa-demanda-certa-nao-orfa';
+  const _DIAG_VERSAO_PAINEL = 'v33k.255-preco-ml-nas-variacoes-user-product';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
