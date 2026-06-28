@@ -11550,19 +11550,46 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   
   // Pega ou cria o produto-rascunho associado à demanda
   function _produtoDaDemanda(d) {
-    // v33k.243: se o produto foi cacheado SEM fotos num passo anterior (ex.: as
-    // fotos ainda estavam subindo pro Storage), mas a demanda JÁ tem fotos por cor
-    // agora, invalida o cache pra reconstruir com as fotos. Evita o "Produto sem
-    // fotos" no export mesmo tendo 7 fotos por cor.
+    // v33k.247 FIX CRÍTICO: o _produtoTemp é o ACUMULADOR de estado do fluxo —
+    // cada passo grava nele (categoria ML/Shopee, SKUs, EANs, idBanco, nome da IA,
+    // preço...). A v33k.243 INVALIDAVA o cache quando "faltava foto", recriando o
+    // produto do ZERO e jogando fora tudo que os passos anteriores fizeram (causa
+    // do "Categoria da Shopee não definida" e "preço 0.01" no meio do fluxo).
+    // Agora NUNCA recriamos: se faltam fotos no cache mas a demanda tem fotos por
+    // cor, apenas COMPLETAMOS as fotos no cache existente, preservando todo o resto.
     if (d._produtoTemp) {
       const cacheTemFoto = ((d._produtoTemp.cores || []).some(c => (c.fotos || []).length > 0))
         || ((d._produtoTemp.fotos || []).length > 0);
-      const demandaTemFoto = Object.values(d.fotosPorCor || window._demandaFotosPorCor || {})
+      const fonteFotos = d.fotosPorCor || window._demandaFotosPorCor || {};
+      const demandaTemFoto = Object.values(fonteFotos)
         .some(arr => (arr || []).some(f => typeof f === 'string' && f.startsWith('http')))
         || ((d.imagens || []).length > 0);
       if (!cacheTemFoto && demandaTemFoto) {
-        console.warn('[_produtoDaDemanda] cache sem fotos mas demanda tem fotos — reconstruindo produto');
-        d._produtoTemp = null;
+        console.warn('[_produtoDaDemanda] completando fotos no cache (sem recriar o produto)');
+        const _norm = (s) => String(s || '').toLowerCase().trim();
+        const _mapaNorm = {};
+        Object.entries(fonteFotos).forEach(([k, v]) => {
+          const arr = (v || []).filter(f => typeof f === 'string' && f.startsWith('http'));
+          if (arr.length) _mapaNorm[_norm(k)] = arr;
+        });
+        // completa fotos em cada cor existente do cache (casando por nome normalizado)
+        (d._produtoTemp.cores || []).forEach(c => {
+          if ((!c.fotos || c.fotos.length === 0) && _mapaNorm[_norm(c.nome)]) {
+            c.fotos = _mapaNorm[_norm(c.nome)].slice();
+          }
+        });
+        // se ainda não há cores no cache mas há fotos, cria as cores a partir do coresInput
+        if ((!d._produtoTemp.cores || d._produtoTemp.cores.length === 0)) {
+          const coresIn = (d.coresInput || '').split(',').map(s => s.trim()).filter(Boolean);
+          d._produtoTemp.cores = coresIn.map(nome => ({
+            id: _slugCor(nome), nome, fotos: (_mapaNorm[_norm(nome)] || []).slice()
+          }));
+        }
+        // garante capa no nível do produto (1ª foto da 1ª cor que tiver)
+        if ((!d._produtoTemp.fotos || d._produtoTemp.fotos.length === 0)) {
+          const primeira = (d._produtoTemp.cores || []).find(c => (c.fotos || []).length > 0);
+          if (primeira) d._produtoTemp.fotos = [primeira.fotos[0]];
+        }
       }
     }
     if (!d._produtoTemp) {
@@ -12691,6 +12718,15 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
   
   async function acaoSalvarProduto(d) {
     const p = _produtoDaDemanda(d);
+
+    // v33k.247: garante que o preço do produto reflita o precoBase da demanda.
+    // Se o _produtoTemp foi montado num momento em que d.precoBase ainda não
+    // estava setado, ele ficou com o fallback 0.01. Aqui ressincronizamos.
+    const precoDemanda = parseFloat(d.precoBase) || 0;
+    if (precoDemanda > 0.01) {
+      if (!(parseFloat(p.preco) > 0.01)) p.preco = precoDemanda;
+      (p.variacoes || []).forEach(v => { if (!(parseFloat(v.preco) > 0.01)) v.preco = precoDemanda; });
+    }
 
     // ─── AUTO-RESOLUÇÃO (100% automático, sem pedir nada ao humano) ───
     // 1) Loja: se não veio, tenta as contas marcadas, depois a seleção global,
@@ -37881,7 +37917,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.246-fix-preco-foto-por-cor-export';
+  const _DIAG_VERSAO_PAINEL = 'v33k.247-fix-cache-produto-nao-destrutivo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
