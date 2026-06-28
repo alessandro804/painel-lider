@@ -11174,6 +11174,20 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       showToast('Esta demanda já está em execução', true);
       return;
     }
+
+    // v33k.253: limpa execuções ÓRFÃS (erro/concluídas/finalizadas) que ficaram
+    // presas em window._execucoes. Elas acumulavam pra sempre (não havia delete),
+    // poluindo a UI "Em execução" e confundindo qualquer lógica que iterasse as
+    // execuções (a 1ª da lista podia ser uma demanda velha de tipo diferente).
+    try {
+      Object.keys(window._execucoes).forEach(eid => {
+        const est = window._execucoes[eid];
+        const ehAtual = String(eid) === String(d.id);
+        if (!ehAtual && est && est.status !== 'rodando' && est.status !== 'pausado') {
+          delete window._execucoes[eid];
+        }
+      });
+    } catch(_){}
     
     // Estado da execução (em memória + persiste no localStorage com log curto)
     const execState = {
@@ -11598,6 +11612,19 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     // Agora NUNCA recriamos: se faltam fotos no cache mas a demanda tem fotos por
     // cor, apenas COMPLETAMOS as fotos no cache existente, preservando todo o resto.
     if (d._produtoTemp) {
+      // v33k.253 FIX RAIZ DO PREÇO 0.01: o _produtoTemp pode ter nascido ANTES de
+      // d.precoBase estar setado (timing no boot do fluxo), ficando com o fallback
+      // 0.01. Como a v33k.247 não recria mais o cache, esse 0.01 ficava preso e ia
+      // pro banco (Shopee rejeitava "price between 1.00"). Aqui RESSINCRONIZAMOS o
+      // preço de d.precoBase TODA VEZ que o cache é acessado: se a demanda tem um
+      // preço real (>0.01) e o cache está no fallback, corrige raiz e variações.
+      const _precoReal = (typeof _parsePrecoBR === 'function' ? _parsePrecoBR(d.precoBase) : (parseFloat(d.precoBase) || 0));
+      if (_precoReal > 0.01) {
+        if (!(parseFloat(d._produtoTemp.preco) > 0.01)) d._produtoTemp.preco = _precoReal;
+        (d._produtoTemp.variacoes || []).forEach(v => {
+          if (!(parseFloat(v.preco) > 0.01)) v.preco = _precoReal;
+        });
+      }
       const cacheTemFoto = ((d._produtoTemp.cores || []).some(c => (c.fotos || []).length > 0))
         || ((d._produtoTemp.fotos || []).length > 0);
       const fonteFotos = d.fotosPorCor || window._demandaFotosPorCor || {};
@@ -38033,7 +38060,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.252-anti-perda-vinculo-3-camadas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.253-limpa-execucoes-orfas-preco-sempre';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
