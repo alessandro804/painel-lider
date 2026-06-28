@@ -10817,9 +10817,21 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   // marketplace; se não existir ainda (ex.: colaborador novo), semeia na hora.
   function _inferirMktFluxo(f) {
     if (!f) return null;
-    const tipos = (f.passos || []).map(p => p.tipo || '').join(' ');
-    if (/catshopee|shopee/i.test(tipos)) return 'shopee';
-    if (/catml|mercadolivre|\bml\b/i.test(tipos)) return 'mercadolivre';
+    const passos = f.passos || [];
+    const tipos = passos.map(p => p.tipo || '');
+    // Critério forte: o passo de CATEGORIA define o marketplace do fluxo.
+    const temCatMl = tipos.includes('catml');
+    const temCatShopee = tipos.includes('catshopee');
+    if (temCatMl && !temCatShopee) return 'mercadolivre';
+    if (temCatShopee && !temCatMl) return 'shopee';
+    // Fluxo com AMBOS (ou nenhum) os passos de categoria: cai pro nome como desempate.
+    const nome = String(f.nome || '').toLowerCase();
+    if (/\bml\b|mercado livre|mercadolivre/.test(nome)) return 'mercadolivre';
+    if (/shopee/.test(nome)) return 'shopee';
+    // Último critério (fraco): qualquer menção nos tipos.
+    const blob = tipos.join(' ');
+    if (/catshopee|shopee/i.test(blob)) return 'shopee';
+    if (/catml|mercadolivre/i.test(blob)) return 'mercadolivre';
     return null;
   }
   function resolverFluxoAutomatico(marketplace) {
@@ -11186,25 +11198,22 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
           break;
         }
       } else if (passo.tipo === 'decisao') {
-        // Decisão: pausa e pede ação humana via painel/modal
-        execState.decisaoPendente = passo;
-        execState.status = 'aguardando_decisao';
-        atualizarUIExec(execState);
-        renderPainelExecucoes();
-        
-        const escolha = await aguardarDecisao(execState);
-        if (escolha === '_cancel') break;
-        
-        execState.status = 'rodando';
-        execState.decisaoPendente = null;
-        const labelEscolhido = escolha ? 'Sim' : 'Não';
-        execLog2(execState, `  ↳ Decisão: ${labelEscolhido}`, 'ok');
+        // v33k.243: AUTOMAÇÃO TOTAL — não pausa mais pra decisão humana. Auto-aprova
+        // o caminho "Sim" (publicar). O QA automático anterior já barra o que tem
+        // problema crítico; aqui seguimos direto pra publicação.
+        execLog2(execState, `  ↳ Decisão automática: Sim (fluxo 100% automático)`, 'ok');
         d.passosConcluidos.push(passo.id);
         execState.feitos++;
         const conexao = conexoes.find(c => 
-          c.de === passo.id && (c.label || '').toLowerCase().startsWith(labelEscolhido.toLowerCase())
+          c.de === passo.id && (c.label || '').toLowerCase().startsWith('sim')
         ) || conexoes.find(c => c.de === passo.id);
         proximoId = conexao ? conexao.para : null;
+      } else if (passo.quem === 'gestor' || passo.tipo === 'revisao') {
+        // v33k.243: passos de revisão do gestor agora são automáticos — não pausa.
+        execLog2(execState, `  ↳ Revisão automática (sem parada humana)`, 'ok');
+        d.passosConcluidos.push(passo.id);
+        execState.feitos++;
+        proximoId = proximoPasso(fluxo, passo.id);
       } else {
         // Passo MANUAL — pausa
         execLog2(execState, `  ⏸ Aguardando ação humana: ${passo.quem === 'operador' ? '👤 Operador' : passo.quem === 'gestor' ? '👩‍💼 Gestor' : '👤 Humano'}`);
@@ -11537,6 +11546,21 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   
   // Pega ou cria o produto-rascunho associado à demanda
   function _produtoDaDemanda(d) {
+    // v33k.243: se o produto foi cacheado SEM fotos num passo anterior (ex.: as
+    // fotos ainda estavam subindo pro Storage), mas a demanda JÁ tem fotos por cor
+    // agora, invalida o cache pra reconstruir com as fotos. Evita o "Produto sem
+    // fotos" no export mesmo tendo 7 fotos por cor.
+    if (d._produtoTemp) {
+      const cacheTemFoto = ((d._produtoTemp.cores || []).some(c => (c.fotos || []).length > 0))
+        || ((d._produtoTemp.fotos || []).length > 0);
+      const demandaTemFoto = Object.values(d.fotosPorCor || window._demandaFotosPorCor || {})
+        .some(arr => (arr || []).some(f => typeof f === 'string' && f.startsWith('http')))
+        || ((d.imagens || []).length > 0);
+      if (!cacheTemFoto && demandaTemFoto) {
+        console.warn('[_produtoDaDemanda] cache sem fotos mas demanda tem fotos — reconstruindo produto');
+        d._produtoTemp = null;
+      }
+    }
     if (!d._produtoTemp) {
       const precoOk = parseFloat(d.precoBase) || 0.01;
       
@@ -11544,17 +11568,43 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       // (espelha a criação manual). Cada cor: { id, nome, fotos: [...] }.
       const fotosPorCor = d.fotosPorCor || window._demandaFotosPorCor || {};
       const coresInput = (d.coresInput || '').split(',').map(s => s.trim()).filter(Boolean);
+      // v33k.243: lookup TOLERANTE de fotos por cor. O nome digitado em coresInput
+      // (ex.: "Branco") pode não bater exatamente com a chave salva em fotosPorCor
+      // (ex.: "branco", " Branco ") — antes isso fazia a cor sair SEM fotos e o
+      // export acusava "Produto sem fotos" mesmo com 7 fotos por cor. Agora
+      // normalizamos (minúsculas + trim) pra casar as chaves.
+      const _normCor = (s) => String(s || '').toLowerCase().trim();
+      const _mapaFotosNorm = {};
+      Object.entries(fotosPorCor || {}).forEach(([k, v]) => {
+        const arr = (v || []).filter(f => typeof f === 'string' && f.startsWith('http'));
+        if (arr.length) _mapaFotosNorm[_normCor(k)] = arr;
+      });
       const cores = [];
       coresInput.forEach(nomeCor => {
-        // v32g.5: aceita só URLs prontas (strings que começam com http);
-        // ignora objetos placeholder de upload em andamento.
-        const fotosOk = (fotosPorCor[nomeCor] || []).filter(f => typeof f === 'string' && f.startsWith('http'));
+        // tenta a chave exata; se vazio, tenta a normalizada (case/space-insensitive)
+        let fotosOk = (fotosPorCor[nomeCor] || []).filter(f => typeof f === 'string' && f.startsWith('http'));
+        if (fotosOk.length === 0 && _mapaFotosNorm[_normCor(nomeCor)]) {
+          fotosOk = _mapaFotosNorm[_normCor(nomeCor)];
+        }
         cores.push({
           id: _slugCor(nomeCor),
           nome: nomeCor,
           fotos: fotosOk,
         });
       });
+      // Se sobrou alguma chave de fotos que não casou com nenhuma cor digitada
+      // (ex.: cor digitada depois de subir a foto, com grafia diferente), associa
+      // essas fotos órfãs às cores que ficaram sem nenhuma — não perde foto.
+      const _coresSemFoto = cores.filter(c => !c.fotos || c.fotos.length === 0);
+      if (_coresSemFoto.length) {
+        const _usadas = new Set(cores.flatMap(c => c.fotos || []));
+        const _orfas = Object.values(_mapaFotosNorm).flat().filter(u => !_usadas.has(u));
+        // distribui as órfãs em ordem pras cores sem foto (1 lote por cor)
+        const _chavesOrfas = Object.entries(_mapaFotosNorm).filter(([k, arr]) => arr.some(u => !_usadas.has(u)));
+        _coresSemFoto.forEach((c, i) => {
+          if (_chavesOrfas[i]) c.fotos = _chavesOrfas[i][1].slice();
+        });
+      }
       // Se não há cores mas há fotos globais, cria 1 cor Padrão
       const fotosGlobais = (d.imagens || []).map(im => im.url || im.dataUrl || im);
       if (cores.length === 0 && fotosGlobais.length > 0) {
@@ -12485,12 +12535,25 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     
     const respCat = await chamarIA({ prompt: promptCat, system: 'Responde só JSON válido.', maxTokens: 200 });
     let raw = String(respCat || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-    let catEscolhida;
-    try { catEscolhida = JSON.parse(raw); } catch(e) { throw new Error('IA não retornou JSON de categoria: ' + raw.slice(0,60)); }
-    
-    // Valida que o id existe (anti-alucinação)
-    const catValida = cats.find(c => String(c.category_id) === String(catEscolhida.id));
-    if (!catValida) throw new Error('IA sugeriu categoria Shopee inexistente: ' + catEscolhida.id);
+    let catEscolhida = null;
+    try { catEscolhida = JSON.parse(raw); } catch(e) {
+      // tenta extrair um id numérico de qualquer texto que a IA tenha mandado
+      const m = raw.match(/"?id"?\s*[:=]\s*"?(\d{3,})/i) || raw.match(/\b(\d{6,})\b/);
+      if (m) catEscolhida = { id: m[1] };
+    }
+
+    // v33k.244: se a IA disse que NÃO há categoria adequada (id null/ausente) ou
+    // mandou algo inválido, NÃO quebra o fluxo — usa a melhor candidata do filtro
+    // (a 1ª, mais bem pontuada pra esse produto). Evita "IA não retornou JSON".
+    let catValida = catEscolhida ? cats.find(c => String(c.category_id) === String(catEscolhida.id)) : null;
+    if (!catValida) {
+      const melhorCandidata = (catsCandidatas && catsCandidatas[0]) || cats.find(c => c.has_children === false) || null;
+      if (melhorCandidata) {
+        catValida = melhorCandidata;
+        console.warn('[acaoCategoriaShopee] IA não escolheu categoria válida (resp: ' + raw.slice(0,80) + ') — usando melhor candidata: ' + (catValida.display_category_name || catValida.original_category_name || catValida.category_id));
+      }
+    }
+    if (!catValida) throw new Error('Não há categoria Shopee adequada pra este produto. Verifique se a loja tem categorias de calçado/moda.');
     
     p.categoryIdShopee = String(catValida.category_id);
     const nomeCategoriaSp = catValida.display_category_name || catValida.original_category_name;
@@ -37792,7 +37855,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.242-fluxo-robusto-fallback';
+  const _DIAG_VERSAO_PAINEL = 'v33k.244-categoria-shopee-robusta-inferir-mkt';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
