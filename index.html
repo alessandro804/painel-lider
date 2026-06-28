@@ -7087,7 +7087,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       <div class="form-group" style="display:flex;gap:8px">
         <div style="flex:1">
           <label class="form-label">Preço base (R$)</label>
-          <input type="number" step="0.01" class="form-input" id="demandaPrecoBase" placeholder="199.90">
+          <input type="text" inputmode="decimal" class="form-input" id="demandaPrecoBase" placeholder="199,90">
         </div>
         <div style="flex:1">
           <label class="form-label">Estoque por variação</label>
@@ -10553,6 +10553,34 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     return Date.now() * 1000 + _idCounter;
   }
   
+  // v33k.251: parser de preço tolerante ao formato brasileiro. O bug do "preço
+  // 0.01": o campo era type=number e, ao digitar "89,90" (vírgula), o browser
+  // invalidava e .value voltava VAZIO → preço 0 → fallback 0.01 → Shopee rejeitava.
+  // Aqui aceitamos vírgula OU ponto, e separador de milhar (1.299,90 / 1,299.90).
+  function _parsePrecoBR(raw) {
+    if (raw == null) return 0;
+    if (typeof raw === 'number') return isNaN(raw) ? 0 : raw;
+    let s = String(raw).trim();
+    if (!s) return 0;
+    s = s.replace(/[^\d.,]/g, ''); // remove "R$", espaços, etc.
+    if (!s) return 0;
+    const temVirgula = s.includes(',');
+    const temPonto = s.includes('.');
+    if (temVirgula && temPonto) {
+      // o último separador é o decimal; o outro é milhar
+      if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
+        s = s.replace(/\./g, '').replace(',', '.'); // 1.299,90 -> 1299.90
+      } else {
+        s = s.replace(/,/g, ''); // 1,299.90 -> 1299.90
+      }
+    } else if (temVirgula) {
+      s = s.replace(',', '.'); // 89,90 -> 89.90
+    }
+    const n = parseFloat(s);
+    return isNaN(n) ? 0 : n;
+  }
+  window._parsePrecoBR = _parsePrecoBR;
+  
   // Escapa HTML para uso seguro em templates
   function escapeHtml(s) {
     if (s == null) return '';
@@ -11593,7 +11621,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       }
     }
     if (!d._produtoTemp) {
-      const precoOk = parseFloat(d.precoBase) || 0.01;
+      const precoOk = _parsePrecoBR(d.precoBase) || 0.01;
       
       // v32g.4: Monta produto.cores[] a partir das fotos por cor da demanda
       // (espelha a criação manual). Cada cor: { id, nome, fotos: [...] }.
@@ -11970,7 +11998,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     const cores = (d.coresInput || '').split(',').map(s => s.trim()).filter(Boolean);
     const tamanhos = (d.tamanhosInput || '').split(',').map(s => s.trim()).filter(Boolean);
     const estoqueDefault = parseInt(d.estoqueDefault) || 5;
-    const precoVar = parseFloat(d.precoBase) || 0.01; // garante minimo
+    const precoVar = _parsePrecoBR(d.precoBase) || 0.01; // garante minimo
     
     const vars = [];
     if (cores.length > 0 && tamanhos.length > 0) {
@@ -12053,7 +12081,15 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     // ========================================================
     // PASS 1: CONTEÚDO (título, descrição, marca, modelo, etc.)
     // ========================================================
-    const contextoFotos = (p.fotos[0] ? 'ANALISE A IMAGEM ANEXADA para extrair: marca visível, modelo, materiais aparentes, cor predominante, tipo de fechamento, design.\n' : '');
+    const contextoFotos = (p.fotos[0] ? 'ANALISE A IMAGEM ANEXADA para extrair DETALHES: marca visível, materiais aparentes, cor predominante, tipo de fechamento, design.\n' : '');
+    // v33k.251: se o usuário informou o produto, o TIPO dele manda. A IA não pode
+    // trocar "Chuteira Society" por "Tênis Futsal" — usa a foto só pra detalhes.
+    const _produtoInformado = (d.produto || '').trim();
+    const regraProdutoInformado = _produtoInformado
+      ? ('IMPORTANTÍSSIMO: o lojista informou que o produto é "' + _produtoInformado + '". ' +
+         'RESPEITE esse tipo de produto no título e na categoria — NÃO troque por outro tipo (ex.: se é "Chuteira Society", NÃO escreva "Tênis Futsal" nem "Chuteira de Futsal"). ' +
+         'Use a imagem apenas pra detalhes (cor, material, marca), nunca pra mudar o tipo do produto.\n')
+      : '';
     
     const promptConteudo = `Você é especialista em criar anúncios para Mercado Livre que vendem muito.
 Crie um anúncio COMPLETO para este produto.
@@ -12064,7 +12100,7 @@ DADOS DISPONÍVEIS:
 - Categoria ML: ${p.categoryIdMl || '(não definida)'}
 - Variações: ${variacoesTxt}
 - Preço: R$ ${p.preco}
-${contextoFotos}
+${regraProdutoInformado}${contextoFotos}
 
 REGRAS DO TÍTULO (serve pra ML e Shopee):
 - Tamanho: entre 80 e 100 caracteres. IMPORTANTE: o título é cortado em 60 pro Mercado Livre,
@@ -12307,12 +12343,15 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     const cores = (p.cores || []).map(c => c.nome).filter(Boolean).join(', ');
     const fotoBase = (p.fotos && p.fotos[0]) || ((p.cores || []).find(c => (c.fotos || []).length > 0) || {}).fotos?.[0] || null;
 
-    // Se há texto suficiente no campo produto, usa direto (rápido, sem chamar IA).
-    if (campoProduto.length >= 8 && !fotoBase) {
+    // v33k.251: o que o usuário DIGITOU no campo "Produto" tem PRIORIDADE sobre a
+    // IA. Se ele escreveu "Chuteira Society", o título-base é isso — a IA NÃO deve
+    // reinterpretar pra "Tênis Futsal". Usa o campo direto (foto ou não). A IA só
+    // entra pra gerar o título quando o campo está vazio/curto demais.
+    if (campoProduto.length >= 4) {
       return [campoProduto, cores].filter(Boolean).join(' ').slice(0, 80);
     }
 
-    // Caso contrário, pede um título curto pra IA (usa a foto como apoio).
+    // Campo vazio → pede um título curto pra IA (usa a foto como apoio).
     try {
       const prompt = 'Gere um TÍTULO CURTO de produto (máx 8 palavras) pra um anúncio de e-commerce.\n' +
         (campoProduto ? ('Informação do produto: ' + campoProduto + '\n') : '') +
@@ -12783,7 +12822,7 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     // v33k.247: garante que o preço do produto reflita o precoBase da demanda.
     // Se o _produtoTemp foi montado num momento em que d.precoBase ainda não
     // estava setado, ele ficou com o fallback 0.01. Aqui ressincronizamos.
-    const precoDemanda = parseFloat(d.precoBase) || 0;
+    const precoDemanda = _parsePrecoBR(d.precoBase) || 0;
     if (precoDemanda > 0.01) {
       if (!(parseFloat(p.preco) > 0.01)) p.preco = precoDemanda;
       (p.variacoes || []).forEach(v => { if (!(parseFloat(v.preco) > 0.01)) v.preco = precoDemanda; });
@@ -37982,7 +38021,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.250-categoria-por-titulo-base';
+  const _DIAG_VERSAO_PAINEL = 'v33k.251-preco-virgula-e-respeita-produto';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -51453,7 +51492,7 @@ ${JSON.stringify(metricas, null, 2)}`
       .toUpperCase().replace(/[^A-Z0-9\-\/]/g, '');
     const coresInput = (document.getElementById('demandaCoresInput') || {}).value || '';
     const tamanhosInput = (document.getElementById('demandaTamanhosInput') || {}).value || '';
-    const precoBase = parseFloat((document.getElementById('demandaPrecoBase') || {}).value) || 0;
+    const precoBase = _parsePrecoBR((document.getElementById('demandaPrecoBase') || {}).value);
     const estoqueDefault = parseInt((document.getElementById('demandaEstoqueDefault') || {}).value) || 5;
     
     if (editingDemanda) {
@@ -51674,8 +51713,8 @@ ${JSON.stringify(metricas, null, 2)}`
     const tamanhos = (document.getElementById('demandaTamanhosInput').value || '').trim();
     if (!tamanhos) erros.push('• Informe pelo menos um tamanho');
     
-    const precoBase = parseFloat(document.getElementById('demandaPrecoBase').value);
-    if (!precoBase || precoBase < 0.01) erros.push('• Informe um preço base válido (mínimo R$ 0,01)');
+    const precoBase = _parsePrecoBR(document.getElementById('demandaPrecoBase').value);
+    if (!precoBase || precoBase < 0.01) erros.push('• Informe um preço base válido (ex: 199,90)');
     
     // v33k.248: o campo de estoque mostra "10" como padrão. Se o usuário não
     // digitou nada (campo vazio mas placeholder 10 visível), assume 10 em vez de
