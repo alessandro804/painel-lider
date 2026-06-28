@@ -9459,7 +9459,9 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     <input type="text" id="fluxoNome" placeholder="Nome do fluxo (ex: Criar anúncio Mercado Livre)">
     <select id="fluxoTipoDemanda" class="fluxo-tb-btn" style="cursor:pointer">
       <option value="">Tipo: qualquer</option>
-      <option value="anuncio_novo">📝 Anúncio novo</option>
+      <option value="anuncio_novo_ml">📝 Anúncio novo — Mercado Livre</option>
+      <option value="anuncio_novo_shopee">🛒 Anúncio novo — Shopee</option>
+      <option value="anuncio_novo">📝 Anúncio novo (genérico/antigo)</option>
       <option value="edicao_imagem">🎨 Edição de imagem</option>
       <option value="otimizacao">📈 Otimização</option>
       <option value="atualizar_estoque">📦 Atualizar estoque</option>
@@ -10809,6 +10811,26 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   }
   
   // ============================================================
+  // TIPOS DE ANÚNCIO NOVO POR MARKETPLACE (v33k.245)
+  // ============================================================
+  // Antes existia um único tipo 'anuncio_novo' e o sistema TENTAVA adivinhar o
+  // marketplace pela loja — fonte de vários bugs (rodava fluxo errado). Agora há
+  // dois tipos explícitos: 'anuncio_novo_ml' e 'anuncio_novo_shopee'. O tipo
+  // FIXA o marketplace (sem adivinhação) e o fluxo correspondente. O tipo antigo
+  // 'anuncio_novo' continua reconhecido (compat com demandas já criadas).
+  function ehTipoAnuncioNovo(tipo) {
+    return tipo === 'anuncio_novo' || tipo === 'anuncio_novo_ml' || tipo === 'anuncio_novo_shopee';
+  }
+  // Marketplace FIXO do tipo (null se for o genérico antigo, que não fixa).
+  function marketplaceDoTipo(tipo) {
+    if (tipo === 'anuncio_novo_ml') return 'mercadolivre';
+    if (tipo === 'anuncio_novo_shopee') return 'shopee';
+    return null;
+  }
+  window.ehTipoAnuncioNovo = ehTipoAnuncioNovo;
+  window.marketplaceDoTipo = marketplaceDoTipo;
+  
+  // ============================================================
   // RESOLUÇÃO AUTOMÁTICA DE FLUXO (v33k.239)
   // ============================================================
   // O usuário NÃO precisa mais "vincular fluxo" manualmente ao criar/exportar
@@ -10836,9 +10858,11 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   }
   function resolverFluxoAutomatico(marketplace) {
     const mkt = (marketplace === 'mercado_livre') ? 'mercadolivre' : marketplace;
-    const achar = () => (fluxosDemanda || []).find(f =>
-      f.tipoDemanda === 'anuncio_novo' && _inferirMktFluxo(f) === mkt
-    );
+    const tipoEsperado = mkt === 'shopee' ? 'anuncio_novo_shopee' : 'anuncio_novo_ml';
+    // v33k.245: acha PRIMEIRO pelo tipoDemanda específico (confiável). Só cai pra
+    // inferência por passos/nome como compat com fluxos antigos (anuncio_novo).
+    const achar = () => (fluxosDemanda || []).find(f => f.tipoDemanda === tipoEsperado)
+      || (fluxosDemanda || []).find(f => f.tipoDemanda === 'anuncio_novo' && _inferirMktFluxo(f) === mkt);
     let fluxo = achar();
     if (!fluxo) {
       // Não existe ainda → semeia o template do marketplace (silencioso) e tenta de novo.
@@ -10862,10 +10886,8 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   // e a revisao do gestor antes de publicar.
   function criarTemplateAnuncioNovoML(opts) {
     const silencioso = !!(opts && opts.silencioso);
-    // Evita duplicar
-    const jaExiste = fluxosDemanda.find(f => 
-      f.tipoDemanda === 'anuncio_novo' && (f.nome || '').includes('Template')
-    );
+    // Evita duplicar (v33k.245: checa o tipo específico)
+    const jaExiste = fluxosDemanda.find(f => f.tipoDemanda === 'anuncio_novo_ml');
     if (jaExiste && !silencioso) {
       if (!confirm('Já existe um template "Anúncio Novo ML". Criar outro mesmo assim?')) return;
     }
@@ -10900,7 +10922,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     const fluxo = {
       id: idFluxo,
       nome: '🧙 Template — Criar Anúncio Novo no ML',
-      tipoDemanda: 'anuncio_novo',
+      tipoDemanda: 'anuncio_novo_ml',
       versao: 1,
       criadoEm: new Date().toISOString(),
       passos: [
@@ -10991,9 +11013,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
 
   function criarTemplateAnuncioNovoShopee(opts) {
     const silencioso = !!(opts && opts.silencioso);
-    const jaExiste = fluxosDemanda.find(f => 
-      f.tipoDemanda === 'anuncio_novo' && (f.nome || '').includes('Shopee')
-    );
+    const jaExiste = fluxosDemanda.find(f => f.tipoDemanda === 'anuncio_novo_shopee');
     if (jaExiste && !silencioso) {
       if (!confirm('Já existe um template "Anúncio Novo Shopee". Criar outro mesmo assim?')) return;
     }
@@ -11014,7 +11034,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     const fluxo = {
       id: idFluxo,
       nome: '🛒 Template — Criar Anúncio Novo na Shopee',
-      tipoDemanda: 'anuncio_novo',
+      tipoDemanda: 'anuncio_novo_shopee',
       versao: 1,
       criadoEm: new Date().toISOString(),
       passos: [
@@ -11069,58 +11089,42 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     const d = demandas.find(x => String(x.id) === String(demandaId));
     if (!d) { showToast('Demanda não encontrada (id=' + demandaId + ')', true); return; }
 
-    // Fluxo gravado na demanda (comportamento histórico — é a base de tudo).
-    let fluxo = d.fluxoId ? fluxosDemanda.find(f => String(f.id) === String(d.fluxoId)) : null;
-
-    // v33k.242: tenta descobrir o marketplace das contas da demanda pra detectar
-    // divergência (fluxo de ML numa demanda de loja Shopee, p.ex.). Mas isto é só
-    // um AJUSTE OPCIONAL: se não der pra resolver o marketplace, mantemos o fluxo
-    // gravado (não quebramos como na v33k.241).
-    let mktNorm = null;
-    try {
-      const lojaIdDem = (d.contas && d.contas[0]) || d.lojaDestinoId || null;
-      const lojaDem = lojaIdDem ? lojasErp.find(l => String(l.id) === String(lojaIdDem)) : null;
-      const mktDem = lojaDem ? lojaDem.marketplace : (d.marketplace || null);
-      mktNorm = (mktDem === 'mercado_livre') ? 'mercadolivre' : (mktDem || null);
-    } catch(_) { mktNorm = null; }
-
-    // Se CONSEGUIMOS saber o marketplace E o fluxo gravado diverge dele, re-resolve.
-    if (mktNorm && fluxo && typeof _inferirMktFluxo === 'function') {
-      const mktDoFluxo = _inferirMktFluxo(fluxo);
-      if (mktDoFluxo && mktDoFluxo !== mktNorm) {
-        console.warn('[executarFluxoDemanda] fluxo gravado (' + mktDoFluxo + ') diverge do marketplace (' + mktNorm + ') — re-resolvendo');
-        const reResolvido = (typeof resolverFluxoAutomatico === 'function') ? resolverFluxoAutomatico(mktNorm) : null;
-        if (reResolvido) {
-          fluxo = reResolvido;
-          d.fluxoId = fluxo.id;
-          try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
-        }
-        // se não conseguiu re-resolver, mantém o fluxo gravado (não quebra)
-      }
+    // v33k.245: o marketplace agora vem do TIPO da demanda (anuncio_novo_ml /
+    // anuncio_novo_shopee) — explícito e à prova de erro. Acabou a adivinhação
+    // pela loja, que trocava fluxo errado. Pro tipo genérico antigo (sem mkt
+    // fixo), cai no fallback de inferir pela 1ª loja (compat).
+    let mktAlvo = (typeof marketplaceDoTipo === 'function') ? marketplaceDoTipo(d.tipo) : null;
+    if (!mktAlvo) {
+      try {
+        const lojaIdDem = (d.contas && d.contas[0]) || d.lojaDestinoId || null;
+        const lojaDem = lojaIdDem ? lojasErp.find(l => String(l.id) === String(lojaIdDem)) : null;
+        const mktDem = lojaDem ? lojaDem.marketplace : (d.marketplace || null);
+        mktAlvo = (mktDem === 'mercado_livre') ? 'mercadolivre' : (mktDem || null);
+      } catch(_) { mktAlvo = null; }
     }
 
-    // Se ainda NÃO temos fluxo (demanda sem fluxoId), tenta resolver pelo marketplace.
-    if (!fluxo && mktNorm && typeof resolverFluxoAutomatico === 'function') {
-      fluxo = resolverFluxoAutomatico(mktNorm);
-      if (fluxo) {
-        d.fluxoId = fluxo.id;
-        try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
-      }
-    }
+    // Resolve o fluxo SEMPRE pelo marketplace alvo (determinístico). Se já houver
+    // um fluxoId gravado que corresponde ao mkt, ele é reaproveitado por dentro
+    // de resolverFluxoAutomatico (que busca pelo tipoDemanda específico).
+    let fluxo = (mktAlvo && typeof resolverFluxoAutomatico === 'function')
+      ? resolverFluxoAutomatico(mktAlvo) : null;
 
-    // Último recurso: sem fluxo e sem marketplace resolvível — tenta QUALQUER fluxo
-    // de anuncio_novo já existente (antes de desistir), pra não travar o usuário.
+    // Fallback: usa o fluxo gravado na demanda, se existir.
+    if (!fluxo && d.fluxoId) {
+      fluxo = fluxosDemanda.find(f => String(f.id) === String(d.fluxoId)) || null;
+    }
+    // Último recurso: qualquer fluxo de anúncio novo existente.
     if (!fluxo) {
-      fluxo = (fluxosDemanda || []).find(f => f.tipoDemanda === 'anuncio_novo' && f.passos && f.passos.length);
-      if (fluxo) {
-        console.warn('[executarFluxoDemanda] usando fluxo anuncio_novo genérico como último recurso:', fluxo.id);
-        d.fluxoId = fluxo.id;
-        try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
-      }
+      fluxo = (fluxosDemanda || []).find(f => (typeof ehTipoAnuncioNovo === 'function' ? ehTipoAnuncioNovo(f.tipoDemanda) : f.tipoDemanda === 'anuncio_novo') && f.passos && f.passos.length) || null;
+    }
+
+    if (fluxo && String(d.fluxoId) !== String(fluxo.id)) {
+      d.fluxoId = fluxo.id; // grava o fluxo correto
+      try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
     }
 
     if (!fluxo) {
-      showToast('Não consegui preparar o fluxo automaticamente. Verifique se a demanda tem uma loja (Shopee ou ML) selecionada.', true);
+      showToast('Não consegui preparar o fluxo. Verifique se a demanda tem o tipo (ML ou Shopee) e uma loja selecionada.', true);
       return;
     }
     if (!fluxo.passos || fluxo.passos.length === 0) { showToast('Fluxo sem passos', true); return; }
@@ -13309,7 +13313,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     marketplaces: {
       nome: '🛒 Marketplaces',
       tipos: [
-        { v: 'anuncio_novo',       l: '📝 Anúncio novo' },
+        { v: 'anuncio_novo_ml',     l: '📝 Anúncio novo — Mercado Livre' },
+        { v: 'anuncio_novo_shopee', l: '🛒 Anúncio novo — Shopee' },
         { v: 'atualizar_estoque',  l: '📦 Atualizar estoque' },
         { v: 'atualizar_fotos',    l: '📷 Atualizar fotos nos anúncios' },
         { v: 'correcao_sku',       l: '🏷️ Correção de SKU' },
@@ -36153,7 +36158,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const sel = document.getElementById('demandaFluxo');
     const tipo = document.getElementById('demandaTipo').value;
     // TIPOS ESPECIAIS que têm modal próprio (régua/exportação): só estes 2.
-    const ehAnuncioNovo = (tipo === 'anuncio_novo');
+    const ehAnuncioNovo = (typeof ehTipoAnuncioNovo === 'function' ? ehTipoAnuncioNovo(tipo) : tipo === 'anuncio_novo');
     const ehAjustePreco = (tipo === 'ajustar_preco');
     const ehEspecial = ehAnuncioNovo || ehAjustePreco;
 
@@ -36175,6 +36180,15 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (sel) {
       const fluxoMatch = (fluxosDemanda || []).find(f => f.tipoDemanda === tipo);
       sel.value = fluxoMatch ? fluxoMatch.id : '';
+    }
+
+    // v33k.245: ao escolher "Anúncio novo ML/Shopee", o marketplace fica fixo pelo
+    // tipo. Atualiza a UI de fotos (ML esconde galeria geral) e filtra as lojas
+    // pra só mostrar as do marketplace certo.
+    if (typeof marketplaceDoTipo === 'function' && marketplaceDoTipo(tipo)) {
+      if (typeof renderDemandaContas === 'function') { try { renderDemandaContas(); } catch(_){} }
+      if (typeof aplicarVisibilidadeFotosGerais === 'function') { try { aplicarVisibilidadeFotosGerais(); } catch(_){} }
+      if (typeof renderUploadFotosPorCor === 'function') { try { renderUploadFotosPorCor(); } catch(_){} }
     }
   }
   
@@ -36290,7 +36304,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const blocoExtra = document.getElementById('demandaAnuncioNovoExtra');
     const btnExec = document.getElementById('demandaExecutarBtn');
     const btnSalvarSimples = document.getElementById('demandaSalvarBtn');
-    const ehAnuncioNovo = (tipo === 'anuncio_novo');
+    const ehAnuncioNovo = (typeof ehTipoAnuncioNovo === 'function' ? ehTipoAnuncioNovo(tipo) : tipo === 'anuncio_novo');
     if (blocoExtra) blocoExtra.style.display = ehAnuncioNovo ? 'block' : 'none';
     if (btnExec) btnExec.style.display = ehAnuncioNovo ? 'block' : 'none';
     // v33k.175: pra anúncio novo, o "Quando rodar" (Agora/Agendar) + "Salvar +
@@ -37855,7 +37869,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.244-categoria-shopee-robusta-inferir-mkt';
+  const _DIAG_VERSAO_PAINEL = 'v33k.245-tipos-anuncio-ml-shopee-separados';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -50831,7 +50845,24 @@ ${JSON.stringify(metricas, null, 2)}`
     // em vez da lista densa de checkboxes que estava "pesada".
     const host = document.getElementById('demandaContasSelHost');
     if (!host) return;
-    const contas = lojasErp.filter(l => l.contaConectada);
+    let contas = lojasErp.filter(l => l.contaConectada);
+    // v33k.245: se o tipo é "Anúncio novo ML/Shopee", mostra SÓ as lojas do
+    // marketplace correspondente (a loja já vem travada no marketplace certo).
+    try {
+      const tipoSel = (document.getElementById('demandaTipo') || {}).value;
+      const mktTipo = (typeof marketplaceDoTipo === 'function') ? marketplaceDoTipo(tipoSel) : null;
+      if (mktTipo) {
+        const norm = (m) => (m === 'mercado_livre') ? 'mercadolivre' : m;
+        contas = contas.filter(l => norm(l.marketplace) === mktTipo);
+        // remove da seleção qualquer loja que não seja do marketplace do tipo
+        if (Array.isArray(_demandaContasSel)) {
+          _demandaContasSel = _demandaContasSel.filter(id => {
+            const l = lojasErp.find(x => String(x.id) === String(id));
+            return l && norm(l.marketplace) === mktTipo;
+          });
+        }
+      }
+    } catch(_) {}
     const lista = (contas.length > 0 ? contas : lojasErp).map(l => ({
       id: l.id, nome: l.nome, marketplace: l.marketplace,
     }));
@@ -51088,6 +51119,14 @@ ${JSON.stringify(metricas, null, 2)}`
   //   ML:    até 10 fotos por cor (sem bloco de fotos gerais)
   //   Se múltiplos marketplaces selecionados: usa o MAIS restritivo (Shopee).
   function marketplaceDestinoDemanda() {
+    // v33k.245: prioriza o TIPO da demanda (anuncio_novo_ml / _shopee) — é o que
+    // define o marketplace de forma explícita. Só usa as lojas como fallback
+    // (tipo genérico antigo ou outros tipos de demanda).
+    try {
+      const tipoSel = (document.getElementById('demandaTipo') || {}).value;
+      const mktTipo = (typeof marketplaceDoTipo === 'function') ? marketplaceDoTipo(tipoSel) : null;
+      if (mktTipo) return mktTipo;
+    } catch(_) {}
     const marcadas = _demandaContasSel.map(String);
     if (!marcadas.length) return null;
     const lojas = lojasErp.filter(l => marcadas.includes(String(l.id)));
@@ -51472,15 +51511,18 @@ ${JSON.stringify(metricas, null, 2)}`
   // Salva demanda e dispara o motor de execução do fluxo em seguida
   async function salvarEExecutarDemanda() {
     const tipo = document.getElementById('demandaTipo').value;
-    if (tipo !== 'anuncio_novo') {
+    if (!(typeof ehTipoAnuncioNovo === 'function' ? ehTipoAnuncioNovo(tipo) : tipo === 'anuncio_novo')) {
       showToast('Execução automática só disponível pra tipo "Anúncio novo"', true);
       return;
     }
-    // v33k.239: NÃO exige mais "vincular fluxo". Resolve automaticamente o fluxo
-    // do marketplace da loja destino (1 fluxo por marketplace, mesmo das duplicações).
-    const lojaDestinoIdParaFluxo = document.getElementById('demandaLojaDestino').value || (_demandaContasSel[0] || '');
-    const lojaParaFluxo = lojasErp.find(l => String(l.id) === String(lojaDestinoIdParaFluxo));
-    const mktParaFluxo = lojaParaFluxo ? lojaParaFluxo.marketplace : null;
+    // v33k.245: o marketplace vem do TIPO da demanda (ML ou Shopee) — explícito.
+    // Pro tipo genérico antigo, cai no fallback de inferir pela loja.
+    let mktParaFluxo = (typeof marketplaceDoTipo === 'function') ? marketplaceDoTipo(tipo) : null;
+    if (!mktParaFluxo) {
+      const lojaDestinoIdParaFluxo = document.getElementById('demandaLojaDestino').value || (_demandaContasSel[0] || '');
+      const lojaParaFluxo = lojasErp.find(l => String(l.id) === String(lojaDestinoIdParaFluxo));
+      mktParaFluxo = lojaParaFluxo ? lojaParaFluxo.marketplace : null;
+    }
     if (!mktParaFluxo) {
       showToast('Selecione ao menos uma loja em cima para definir o fluxo', true);
       return;
@@ -52969,23 +53011,35 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // fluxos não apareciam e ela não conseguia criar demanda de anúncio. Agora,
     // se faltar o fluxo de algum tipo, semeia automaticamente pra qualquer usuário.
     try {
-      // FIX v33k.238: o auto-seed só semeava UM fluxo de 'anuncio_novo'. Como
-      // ML e Shopee usam o MESMO tipoDemanda ('anuncio_novo'), depois de criar o
-      // Shopee a checagem temTipo('anuncio_novo') já dava true e o fluxo de ML
-      // NUNCA era semeado. Resultado: colaborador (ex.: Grazi) não tinha o fluxo
-      // de ML e, ao exportar pro Mercado Livre, o sistema pedia "vincular fluxo".
-      // Agora diferencia por MARKETPLACE (infere pelos passos: catml/catshopee).
+      // v33k.245 MIGRAÇÃO: fluxos antigos com tipoDemanda 'anuncio_novo' são
+      // convertidos pro tipo específico por marketplace (pelos passos catml/
+      // catshopee). Assim o vínculo automático pelo tipo passa a funcionar e não
+      // ficam fluxos órfãos com o tipo genérico.
+      let migrou = false;
+      (fluxosDemanda || []).forEach(f => {
+        if (f.tipoDemanda === 'anuncio_novo') {
+          const tipos = (f.passos || []).map(p => p.tipo || '').join(' ');
+          if (/catshopee/i.test(tipos)) { f.tipoDemanda = 'anuncio_novo_shopee'; migrou = true; }
+          else if (/catml/i.test(tipos)) { f.tipoDemanda = 'anuncio_novo_ml'; migrou = true; }
+        }
+      });
+      if (migrou) { try { localStorage.setItem('lider_fluxos_v1', JSON.stringify(fluxosDemanda)); } catch(_){} }
+
+      // v33k.245: agora cada template tem tipoDemanda PRÓPRIO (anuncio_novo_ml /
+      // anuncio_novo_shopee), então a checagem é direta — sem inferir por passos.
+      const temTipo = (t) => (fluxosDemanda || []).some(f => f.tipoDemanda === t);
+      // compat: reconhece também fluxos antigos 'anuncio_novo' por marketplace
       const inferMkt = (f) => {
         const tipos = (f.passos || []).map(p => p.tipo || '').join(' ');
-        if (/catshopee|shopee/i.test(tipos)) return 'shopee';
-        if (/catml|mercadolivre|\bml\b/i.test(tipos)) return 'mercadolivre';
+        if (/catshopee/i.test(tipos)) return 'shopee';
+        if (/catml/i.test(tipos)) return 'mercadolivre';
         return null;
       };
-      const temAnuncioMkt = (mkt) => (fluxosDemanda || []).some(f => f.tipoDemanda === 'anuncio_novo' && inferMkt(f) === mkt);
-      const temTipo = (t) => (fluxosDemanda || []).some(f => f.tipoDemanda === t);
+      const temAnuncioMkt = (mkt, tipoNovo) => temTipo(tipoNovo)
+        || (fluxosDemanda || []).some(f => f.tipoDemanda === 'anuncio_novo' && inferMkt(f) === mkt);
       let semeou = false;
-      if (!temAnuncioMkt('shopee') && typeof criarTemplateAnuncioNovoShopee === 'function') { criarTemplateAnuncioNovoShopee({ silencioso: true }); semeou = true; }
-      if (!temAnuncioMkt('mercadolivre') && typeof criarTemplateAnuncioNovoML === 'function') { criarTemplateAnuncioNovoML({ silencioso: true }); semeou = true; }
+      if (!temAnuncioMkt('shopee', 'anuncio_novo_shopee') && typeof criarTemplateAnuncioNovoShopee === 'function') { criarTemplateAnuncioNovoShopee({ silencioso: true }); semeou = true; }
+      if (!temAnuncioMkt('mercadolivre', 'anuncio_novo_ml') && typeof criarTemplateAnuncioNovoML === 'function') { criarTemplateAnuncioNovoML({ silencioso: true }); semeou = true; }
       if (!temTipo('ajustar_preco') && typeof criarTemplateAjustePreco === 'function') { criarTemplateAjustePreco({ silencioso: true }); semeou = true; }
       if (semeou) { try { localStorage.setItem('lider_fluxos_v1', JSON.stringify(fluxosDemanda)); } catch(_){} }
     } catch (eSeed) { console.warn('[fluxos] auto-seed:', eSeed && eSeed.message); }
