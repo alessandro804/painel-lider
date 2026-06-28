@@ -12293,6 +12293,43 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     return { _msg: `título="${p.nome.slice(0,30)}", desc=${p.descricao.length}ch, marca="${p.marca}", ${preenchidos} atrs (${obrigatorios.length} obrig)${aviso}${palavrasChaveMsg}` };
   }
   
+  // v33k.250: o passo de categoria roda ANTES da IA gerar o título final. Mas o
+  // título é a melhor pista do que é o produto. Esta helper gera um TÍTULO-BASE
+  // rápido (a partir do campo "Produto", cores e — se houver — da foto) pra ser a
+  // FONTE PRINCIPAL na escolha da categoria, com a foto como apoio. Não substitui
+  // o título final (que o passo de IA gera completo depois).
+  async function _gerarTituloBaseParaCategoria(p, d) {
+    // Se já existe um nome no produto, ele é a fonte principal — não precisa gerar.
+    const nomeExistente = (p.nome || '').trim();
+    if (nomeExistente.length >= 8) return nomeExistente;
+
+    const campoProduto = (d && d.produto ? String(d.produto) : '').trim();
+    const cores = (p.cores || []).map(c => c.nome).filter(Boolean).join(', ');
+    const fotoBase = (p.fotos && p.fotos[0]) || ((p.cores || []).find(c => (c.fotos || []).length > 0) || {}).fotos?.[0] || null;
+
+    // Se há texto suficiente no campo produto, usa direto (rápido, sem chamar IA).
+    if (campoProduto.length >= 8 && !fotoBase) {
+      return [campoProduto, cores].filter(Boolean).join(' ').slice(0, 80);
+    }
+
+    // Caso contrário, pede um título curto pra IA (usa a foto como apoio).
+    try {
+      const prompt = 'Gere um TÍTULO CURTO de produto (máx 8 palavras) pra um anúncio de e-commerce.\n' +
+        (campoProduto ? ('Informação do produto: ' + campoProduto + '\n') : '') +
+        (cores ? ('Cores: ' + cores + '\n') : '') +
+        (fotoBase ? 'ANALISE A IMAGEM ANEXADA pra identificar o tipo de produto (ex.: chuteira, tênis, sandália, camiseta).\n' : '') +
+        '\nResponda APENAS o título, sem aspas, sem explicação. Ex.: "Chuteira Society Masculina Preta".';
+      const opcoes = { prompt, system: 'Responde só o título, texto puro.', maxTokens: 40 };
+      if (fotoBase) opcoes.imagens = [fotoBase];
+      const resp = await chamarIA(opcoes);
+      const titulo = String(resp || '').trim().replace(/^["']|["']$/g, '').replace(/\n.*$/s, '').trim();
+      if (titulo.length >= 4) return titulo.slice(0, 80);
+    } catch (e) { console.warn('[tituloBase] falhou:', e && e.message); }
+
+    // Fallback: o que tiver (campo produto + cores, ou nome existente).
+    return [campoProduto, cores].filter(Boolean).join(' ').slice(0, 80) || nomeExistente || '';
+  }
+
   async function acaoCategoriaML(d) {
     const p = _produtoDaDemanda(d);
     // 1. Tenta De↔Para se ja tem categoria interna
@@ -12307,8 +12344,12 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
       }
     }
     
-    // 2. Predictor — monta texto a partir de tudo que conhecemos
+    // 2. Predictor — monta texto a partir de tudo que conhecemos.
+    // v33k.250: gera um TÍTULO-BASE como FONTE PRINCIPAL (o título é a melhor
+    // pista do produto e o passo de categoria roda antes do título final existir).
+    const _tituloBaseML = await _gerarTituloBaseParaCategoria(p, d);
     const partesTitulo = [
+      _tituloBaseML,
       p.nome,
       d.produto,
       d.descricao,
@@ -12550,12 +12591,27 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     const cats = await carregarCategoriasShopee(lojaIdBanco);
     if (!cats || !cats.length) throw new Error('Não foi possível carregar categorias Shopee');
     
-    const contexto = [p.nome, d.produto, p.descricao, p.categoria].filter(Boolean).join(' ').slice(0, 300);
+    // v33k.250: gera um TÍTULO-BASE como FONTE PRINCIPAL pra escolher a categoria
+    // (o título é a melhor pista do produto). A foto entra como apoio.
+    const _tituloBase = await _gerarTituloBaseParaCategoria(p, d);
+    const _tipoDetectado = (typeof _detectarTipoProduto === 'function')
+      ? _detectarTipoProduto([_tituloBase, p.nome, d.produto, p.descricao, p.categoria, (p.cores||[]).map(c=>c.nome).join(' ')].filter(Boolean).join(' '))
+      : null;
+    const contexto = [
+      _tituloBase ? ('Título: ' + _tituloBase) : '',
+      p.descricao, p.categoria,
+      _tipoDetectado ? ('Tipo de produto: ' + _tipoDetectado.canonico) : '',
+      (p.cores||[]).length ? ('Cores: ' + (p.cores||[]).map(c=>c.nome).join(', ')) : '',
+    ].filter(Boolean).join(' ').slice(0, 300);
+    // foto pra IA enxergar o produto (apoio) (1ª geral ou 1ª de cor)
+    const _fotoCategoria = (p.fotos && p.fotos[0]) || ((p.cores||[]).find(c=>(c.fotos||[]).length>0) || {}).fotos?.[0] || null;
     
     // Filtra categorias-folha candidatas e pede pra IA escolher
     let catsCandidatas = [];
     if (typeof filtrarCategoriasShopeeParaIA === 'function') {
-      catsCandidatas = filtrarCategoriasShopeeParaIA(p.nome || d.produto || '', p.descricao || '', p.categoria || '', cats);
+      // usa o título-base + tipo detectado, pra o filtro achar a família certa
+      const nomeParaFiltro = [_tituloBase, p.nome, d.produto, _tipoDetectado ? _tipoDetectado.canonico : ''].filter(Boolean).join(' ');
+      catsCandidatas = filtrarCategoriasShopeeParaIA(nomeParaFiltro, p.descricao || '', p.categoria || '', cats);
     }
     if (!catsCandidatas.length) catsCandidatas = cats.filter(c => c.has_children === false).slice(0, 40);
     
@@ -12564,11 +12620,16 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
     ).join('\n');
     
     const promptCat = 'Escolha a categoria Shopee mais adequada pra este produto.\n\n' +
-      'PRODUTO: ' + contexto + '\n\n' +
-      'CATEGORIAS DISPONÍVEIS:\n' + listaTxt + '\n\n' +
+      'PRODUTO: ' + (contexto || '(use a imagem)') + '\n' +
+      'Baseie-se PRINCIPALMENTE no Título do produto pra decidir a categoria.\n' +
+      (_tipoDetectado ? ('IMPORTANTE: este produto é do tipo "' + _tipoDetectado.canonico + '" — escolha uma categoria coerente com isso (calçado/vestuário, NÃO outra coisa).\n') : '') +
+      (_fotoCategoria ? 'Se o título não bastar, use a IMAGEM ANEXADA como apoio pra confirmar o tipo de produto.\n' : '') +
+      '\nCATEGORIAS DISPONÍVEIS:\n' + listaTxt + '\n\n' +
       'Responda APENAS um JSON: { "id": <id_numerico>, "nome": "<nome>" }. Use um id EXATO da lista.';
     
-    const respCat = await chamarIA({ prompt: promptCat, system: 'Responde só JSON válido.', maxTokens: 200 });
+    const _opcoesCat = { prompt: promptCat, system: 'Responde só JSON válido.', maxTokens: 200 };
+    if (_fotoCategoria) _opcoesCat.imagens = [_fotoCategoria];
+    const respCat = await chamarIA(_opcoesCat);
     let raw = String(respCat || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
     let catEscolhida = null;
     try { catEscolhida = JSON.parse(raw); } catch(e) {
@@ -35760,12 +35821,16 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const selTipo = document.getElementById('demandaTipo');
     if (!selTipo) return;
     const valorAtual = tipoSelecionado || selTipo.value;
-    selTipo.innerHTML = opcoesArr
+    // v33k.248: opção vazia no topo pra NENHUM tipo vir selecionado por padrão.
+    const optVazia = '<option value="">— Selecione o tipo —</option>';
+    selTipo.innerHTML = optVazia + opcoesArr
       .map(o => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`)
       .join('');
-    // tenta preservar/selecionar o valor
+    // só seleciona um tipo se ele foi explicitamente pedido/preservado; senão fica vazio
     if (valorAtual && [...selTipo.options].some(o => o.value === valorAtual)) {
       selTipo.value = valorAtual;
+    } else {
+      selTipo.value = ''; // nenhum selecionado
     }
   }
   
@@ -37917,7 +37982,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.247-fix-cache-produto-nao-destrutivo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.250-categoria-por-titulo-base';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -50845,7 +50910,7 @@ ${JSON.stringify(metricas, null, 2)}`
         const tIn = document.getElementById('demandaTamanhosInput'); if (tIn) tIn.value = d.tamanhosInput || '';
         const skIn = document.getElementById('demandaSkuPai'); if (skIn) skIn.value = d.skuPai || '';
         const pbIn = document.getElementById('demandaPrecoBase'); if (pbIn) pbIn.value = d.precoBase || '';
-        const edIn = document.getElementById('demandaEstoqueDefault'); if (edIn) edIn.value = d.estoqueDefault || '';
+        const edIn = document.getElementById('demandaEstoqueDefault'); if (edIn) edIn.value = d.estoqueDefault || '10';
         window._demandaFotosPorCor = d.fotosPorCor ? JSON.parse(JSON.stringify(d.fotosPorCor)) : {};
         renderUploadFotosPorCor();
         // v32j.3: restaura opções de duplicação automática
@@ -51398,7 +51463,11 @@ ${JSON.stringify(metricas, null, 2)}`
         d.setor = setor;
         d.contas = contas; d.marketplace = marketplace; d.descricao = descricao;
         d.prioridade = _demandaPrio; d.avisarCliente = avisarCliente;
-        d._agendarExportarEm = _demAgendamento || d._agendarExportarEm || null;
+        // v33k.249: determinístico. Antes mantinha valor residual
+        // (|| d._agendarExportarEm) que fazia "Agora" virar "exportação agendada"
+        // mesmo sem o usuário agendar. Agora: SÓ agenda se houver uma data válida
+        // futura no campo (_demAgendamento). Sem data = exporta agora.
+        d._agendarExportarEm = _demAgendamento || null;
         d.lojaDestinoId = lojaDestinoId;
         d.skuPai = skuPaiDemanda;
         d.coresInput = coresInput;
@@ -51608,8 +51677,16 @@ ${JSON.stringify(metricas, null, 2)}`
     const precoBase = parseFloat(document.getElementById('demandaPrecoBase').value);
     if (!precoBase || precoBase < 0.01) erros.push('• Informe um preço base válido (mínimo R$ 0,01)');
     
-    const estoque = parseInt(document.getElementById('demandaEstoqueDefault').value);
+    // v33k.248: o campo de estoque mostra "10" como padrão. Se o usuário não
+    // digitou nada (campo vazio mas placeholder 10 visível), assume 10 em vez de
+    // barrar — evita o "Informe o estoque" indevido. Só reclama se digitou algo < 1.
+    const estoqueRaw = (document.getElementById('demandaEstoqueDefault') || {}).value;
+    const estoque = estoqueRaw && estoqueRaw.trim() !== '' ? parseInt(estoqueRaw) : 10;
     if (!estoque || estoque < 1) erros.push('• Informe o estoque por variação (mínimo 1)');
+    // reflete o default no campo pra ficar consistente no resto do fluxo
+    if ((!estoqueRaw || estoqueRaw.trim() === '') && document.getElementById('demandaEstoqueDefault')) {
+      document.getElementById('demandaEstoqueDefault').value = String(estoque);
+    }
     
     // Pega imagens da sessao (variavel correta: _imagensDemandaSessao)
     const imgsBase64 = (typeof _imagensDemandaSessao !== 'undefined' && Array.isArray(_imagensDemandaSessao)) 
