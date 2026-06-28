@@ -10194,6 +10194,11 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     enabled: false,
     syncing: false,
     lastError: null,
+    // v33k.252: trava anti-perda de vínculos. Fica false até o pull inicial
+    // trazer as lojas do servidor. Enquanto false, push de 'lojas' é bloqueado
+    // (senão um push prematuro no boot apaga clienteVinculado no banco — bug que
+    // sempre voltava após deploy).
+    _pullInicialCompleto: false,
     
     // Configuração salva localmente (URL e key são "públicas" por design)
     getConfig() {
@@ -10475,11 +10480,18 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
 
       // ── BLINDAGEM DO ARRAY DE LOJAS (vínculo cliente↔loja sumindo) ──
       // Nunca deixa um push stale/vazio apagar os vínculos no Supabase:
+      // 0) v33k.252: ANTES do pull inicial completar, NUNCA faz push de lojas.
+      //    Este era o buraco: no boot/deploy, lojasErp ainda não tinha os vínculos
+      //    do servidor e um push prematuro apagava clienteVinculado no banco.
       // 1) array vazio de lojas → recusa (sessão zerada, push em corrida, etc).
       // 2) regressão de vínculos → se o que vamos enviar tem MENOS lojas com
       //    clienteVinculado do que o que está salvo localmente, recusa.
       if (chave === 'lojas') {
         try {
+          if (this.enabled && !this._pullInicialCompleto) {
+            console.warn('[pushAppData] bloqueado: pull inicial ainda não completou — não arrisco apagar vínculos');
+            return false;
+          }
           if (!Array.isArray(valor) || valor.length === 0) {
             console.warn('[pushAppData] bloqueado: tentativa de gravar lojas vazio');
             return false;
@@ -38021,7 +38033,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.251-preco-virgula-e-respeita-produto';
+  const _DIAG_VERSAO_PAINEL = 'v33k.252-anti-perda-vinculo-3-camadas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -53219,6 +53231,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         lojasErp = mesclarLojasNuvem(cloudData.appData.lojas);
         localStorage.setItem('lider_lojas_v1', JSON.stringify(lojasErp));
       }
+      // v33k.252: a partir daqui as lojas do servidor já foram carregadas/mescladas
+      // — push de 'lojas' passa a ser seguro (libera a trava anti-perda de vínculos).
+      try { if (window.LiderSync) LiderSync._pullInicialCompleto = true; } catch(_){}
       if (cloudData.appData.settings) {
         settings = { ...settings, ...cloudData.appData.settings };
         localStorage.setItem('lider_settings_v1', JSON.stringify(settings));
@@ -53303,6 +53318,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         localStorage.setItem('lider_skus_shein_v1', JSON.stringify(skusUsadosShein));
       }
     }
+    // v33k.252: pull inicial concluído (com ou sem lojas) — libera a trava de
+    // push de lojas. Cobre também contas novas que ainda não têm lojas na nuvem.
+    try { if (window.LiderSync) LiderSync._pullInicialCompleto = true; } catch(_){}
     // Garante IDs íntegros após baixar da nuvem
     migrarIdsDecimais();
     renderAll();
