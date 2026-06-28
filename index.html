@@ -11981,7 +11981,11 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   //   2) Atributos da categoria ML (TODOS — obrigatórios + opcionais)
   async function acaoIAPreencher(d) {
     const p = _produtoDaDemanda(d);
-    if ((p.fotos || []).length === 0 && !p.nome && !d.produto) {
+    // v33k.246: pro ML as fotos ficam em p.cores[].fotos (galeria geral vazia por
+    // design). Conta as duas fontes pra não acusar "sem foto" indevidamente.
+    const temFotoGeral = (p.fotos || []).length > 0;
+    const temFotoPorCor = (p.cores || []).some(c => (c.fotos || []).length > 0);
+    if (!temFotoGeral && !temFotoPorCor && !p.nome && !d.produto) {
       throw new Error('Sem foto E sem nome — IA precisa de pelo menos um');
     }
     
@@ -12948,8 +12952,16 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (!p.nome || p.nome.length < 10) {
         erros.push('Título muito curto ou vazio (mínimo 10 caracteres)');
       }
-      if (!p.preco || parseFloat(p.preco) <= 0) {
+      // v33k.246: preço válido pode estar na RAIZ (p.preco) ou nas VARIAÇÕES
+      // (p.variacoes[].preco). Produto com variações às vezes tem p.preco raiz
+      // vazio mas variações com preço correto — não deve barrar.
+      const precoRaiz = parseFloat(p.preco) || 0;
+      const precoVarMax = Math.max(0, ...((p.variacoes || []).map(v => parseFloat(v.preco) || 0)));
+      if (precoRaiz <= 0 && precoVarMax <= 0) {
         erros.push('Preço inválido (deve ser maior que zero)');
+      } else if (precoRaiz <= 0 && precoVarMax > 0) {
+        // normaliza: copia o preço da variação pro nível raiz pro export usar
+        p.preco = precoVarMax;
       }
       if (!p.fotos || p.fotos.length === 0) {
         const temFotosEmCores = (p.cores || []).some(c => (c.fotos||[]).length > 0);
@@ -37869,7 +37881,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.245-tipos-anuncio-ml-shopee-separados';
+  const _DIAG_VERSAO_PAINEL = 'v33k.246-fix-preco-foto-por-cor-export';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
