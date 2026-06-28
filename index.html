@@ -11056,16 +11056,29 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   async function executarFluxoDemanda(demandaId) {
     const d = demandas.find(x => String(x.id) === String(demandaId));
     if (!d) { showToast('Demanda não encontrada (id=' + demandaId + ')', true); return; }
-    // v33k.239: não exige mais fluxo vinculado. Se faltar (ou o fluxo não existir
-    // mais), resolve automaticamente pelo marketplace da demanda (1 fluxo por mkt).
+    // v33k.241: o fluxo SEMPRE tem que corresponder ao marketplace das contas da
+    // demanda. Antes, se a demanda já tinha um d.fluxoId gravado (ex.: de ML de
+    // uma criação antiga), ele era usado mesmo que as contas fossem da Shopee —
+    // resultado: rodava o fluxo de ML, mas o passo "publicar" tentava exportar
+    // pra loja Shopee e dava "Categoria da Shopee não definida". Agora resolvemos
+    // pelo marketplace das contas e SÓ aceitamos um fluxoId antigo se ele bater.
+    const lojaIdDem = (d.contas && d.contas[0]) || d.lojaDestinoId || null;
+    const lojaDem = lojasErp.find(l => String(l.id) === String(lojaIdDem));
+    const mktDem = lojaDem ? lojaDem.marketplace : (d.marketplace || null);
+    const mktNorm = (mktDem === 'mercado_livre') ? 'mercadolivre' : mktDem;
+
     let fluxo = d.fluxoId ? fluxosDemanda.find(f => String(f.id) === String(d.fluxoId)) : null;
+    // Se o fluxo gravado NÃO corresponde ao marketplace das contas, descarta e re-resolve.
+    if (fluxo && mktNorm && typeof _inferirMktFluxo === 'function') {
+      const mktDoFluxo = _inferirMktFluxo(fluxo);
+      if (mktDoFluxo && mktDoFluxo !== mktNorm) {
+        console.warn('[executarFluxoDemanda] fluxo gravado (' + mktDoFluxo + ') diverge do marketplace das contas (' + mktNorm + ') — re-resolvendo');
+        fluxo = null;
+      }
+    }
     if (!fluxo) {
-      // descobre o marketplace pela 1ª loja da demanda
-      const lojaIdDem = (d.contas && d.contas[0]) || d.lojaDestinoId || null;
-      const lojaDem = lojasErp.find(l => String(l.id) === String(lojaIdDem));
-      const mktDem = lojaDem ? lojaDem.marketplace : (d.marketplace || null);
-      if (mktDem && typeof resolverFluxoAutomatico === 'function') {
-        fluxo = resolverFluxoAutomatico(mktDem);
+      if (mktNorm && typeof resolverFluxoAutomatico === 'function') {
+        fluxo = resolverFluxoAutomatico(mktNorm);
         if (fluxo) {
           d.fluxoId = fluxo.id; // grava pra próximas execuções
           try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
@@ -11962,12 +11975,18 @@ REGRAS DO TÍTULO (serve pra ML e Shopee):
 - Peso: estime em KG conforme o tipo de produto (ex.: calçados ~0.4-1.2kg; ajuste pro nicho)
 - skuPai: maiúsculas, sem espaço (curto e legível, ex: TEN001)
 
-PROIBIDO: emojis (✅ ✔ 🌟 etc), markdown (**negrito**, # títulos), "BLOCO N", aspas no início/fim.
+PÚBLICO-ALVO E IDADE (MUITO IMPORTANTE):
+- NÃO invente público/idade. Só use "Infantil", "Bebê", "Juvenil", "Adulto", "Masculino" ou "Feminino" se houver EVIDÊNCIA CLARA na foto ou no nome/referência do produto.
+- Tamanhos/numeração adulta (ex.: 33 a 44) indicam produto ADULTO — não classifique como infantil só pela cor ou pela marca.
+- Na dúvida sobre idade, NÃO inclua "infantil" no título nem na categoria — descreva o produto pelo tipo (ex.: "Chuteira Society") sem faixa etária.
+- Se for claramente esportivo (chuteira, society, futsal), trate como calçado esportivo ADULTO salvo evidência explícita do contrário.
+
+PROIBIDO: emojis (✅ ✔ 🌟 etc), markdown (**negrito**, # títulos), "BLOCO N", aspas no início/fim. A descrição deve ser texto puro, SEM emojis e SEM bullets com símbolos especiais (use hífens simples se precisar listar).
 
 RETORNE APENAS JSON nesse formato exato (sem \`\`\`json):
 {
   "nome": "título 80-100 chars (essencial nos primeiros 60)",
-  "descricao": "descrição completa multilinha com emojis e bullets",
+  "descricao": "descrição completa multilinha, texto puro sem emojis",
   "marca": "nome da marca",
   "modelo": "modelo específico",
   "peso": 0.5,
@@ -12207,8 +12226,30 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
       headers: { 'x-api-token': getApiToken() }
     });
     const data = await resp.json();
-    if (data.ok && data.sugestoes && data.sugestoes[0]) {
-      p.categoryIdMl = data.sugestoes[0].categoryId;
+    if (data.ok && data.sugestoes && data.sugestoes.length > 0) {
+      // v33k.241: NÃO aceita cegamente a 1ª sugestão. O predictor do ML às vezes
+      // erra feio (ex.: "Tênis Voxel" caiu em "Brinquedos de Pegadinhas"). Quando
+      // o título indica claramente um TIPO de produto (calçado, chuteira, roupa…),
+      // escolhe a sugestão com DOMÍNIO coerente; se nenhuma bater, refaz a busca
+      // com um termo normalizado do tipo detectado.
+      let sugestaoEscolhida = _escolherSugestaoPorTipo(partesTitulo, data.sugestoes);
+      if (!sugestaoEscolhida) {
+        // tenta uma 2ª predição com termo canônico do tipo (ex.: "chuteira society")
+        const termoCanonico = _termoCanonicoDoTipo(partesTitulo);
+        if (termoCanonico) {
+          try {
+            const r2 = await fetch(BACKEND_URL + '/api/marketplaces/categoria/predizer?titulo=' + encodeURIComponent(termoCanonico), { headers: { 'x-api-token': getApiToken() } });
+            const d2 = await r2.json();
+            if (d2.ok && d2.sugestoes && d2.sugestoes.length) {
+              sugestaoEscolhida = _escolherSugestaoPorTipo(partesTitulo, d2.sugestoes) || d2.sugestoes[0];
+              console.log('[acaoCategoriaML] re-predição com termo canônico "' + termoCanonico + '" → ' + sugestaoEscolhida.categoryId + ' (' + (sugestaoEscolhida.nome||'?') + ')');
+            }
+          } catch(e2) { console.warn('[acaoCategoriaML] re-predição falhou:', e2.message); }
+        }
+      }
+      if (!sugestaoEscolhida) sugestaoEscolhida = data.sugestoes[0]; // último recurso: a 1ª original
+
+      p.categoryIdMl = sugestaoEscolhida.categoryId;
       // Se não tem categoria interna, tenta achar uma vinculada
       if (!p.categoria) {
         const mapaInv = categoriasMapErp.find(c => 
@@ -12223,9 +12264,46 @@ RETORNE APENAS JSON com {"ID_ATRIBUTO": "valor"}. INCLUA TODOS os IDs listados a
         const r = await garantirCategoriaInterna(p, 'mercadolivre', p.categoryIdMl, partesTitulo);
         if (r && r._msg) msgCatInt = ' · ' + r._msg;
       } catch(e) { console.warn('[acaoCategoriaML] garantirCategoriaInterna:', e.message); }
-      return { _msg: 'via predictor: ' + p.categoryIdMl + ' (' + (data.sugestoes[0].nome||'?') + ')' + msgCatInt };
+      return { _msg: 'via predictor: ' + p.categoryIdMl + ' (' + (sugestaoEscolhida.nome||'?') + ')' + msgCatInt };
     }
     throw new Error('Predictor ML não retornou sugestão pra "' + partesTitulo.slice(0,40) + '..."');
+  }
+
+  // ── Detecção de tipo de produto pelo texto + coerência de domínio ML ──────
+  // Mapeia palavras do título → "tipo" → domínios ML aceitáveis. Usado pra
+  // rejeitar sugestões absurdas do predictor (ex.: calçado caindo em brinquedo).
+  const _TIPOS_PRODUTO = [
+    { tipo: 'chuteira', termos: ['chuteira', 'society', 'futsal', 'campo', 'trava'], canonico: 'chuteira', dominios: ['FOOTBALL_SHOES'] },
+    { tipo: 'tenis', termos: ['tênis', 'tenis', 'sneaker'], canonico: 'tênis', dominios: ['SNEAKERS', 'SPORT_SHOES'] },
+    { tipo: 'sandalia', termos: ['sandália', 'sandalia', 'rasteira', 'rasteirinha'], canonico: 'sandália', dominios: ['SANDALS_AND_CLOGS', 'SANDALS'] },
+    { tipo: 'chinelo', termos: ['chinelo', 'chinela'], canonico: 'chinelo', dominios: ['FLIP_FLOPS', 'SLIDES_AND_FLIP_FLOPS'] },
+    { tipo: 'bota', termos: ['bota', 'botina', 'coturno'], canonico: 'bota', dominios: ['BOOTS_AND_BOOTIES', 'BOOTS'] },
+    { tipo: 'sapatilha', termos: ['sapatilha'], canonico: 'sapatilha', dominios: ['BALLET_FLATS', 'SHOES'] },
+    { tipo: 'sapato', termos: ['sapato', 'mocassim', 'oxford', 'social'], canonico: 'sapato', dominios: ['SHOES', 'LOAFERS_AND_MOCCASINS'] },
+    { tipo: 'calcado', termos: ['calçado', 'calcado'], canonico: 'calçado', dominios: ['SNEAKERS', 'SHOES', 'SANDALS_AND_CLOGS', 'FOOTBALL_SHOES', 'BOOTS_AND_BOOTIES'] },
+    { tipo: 'camiseta', termos: ['camiseta', 'camisa', 'blusa', 'regata'], canonico: 'camiseta', dominios: ['T_SHIRTS', 'SHIRTS'] },
+    { tipo: 'calca', termos: ['calça', 'calca', 'bermuda', 'short', 'shorts'], canonico: 'calça', dominios: ['PANTS', 'SHORTS_AND_BERMUDAS'] },
+    { tipo: 'vestido', termos: ['vestido'], canonico: 'vestido', dominios: ['DRESSES'] },
+  ];
+  function _detectarTipoProduto(texto) {
+    const t = ' ' + String(texto || '').toLowerCase() + ' ';
+    for (const def of _TIPOS_PRODUTO) {
+      if (def.termos.some(term => t.includes(term))) return def;
+    }
+    return null;
+  }
+  function _termoCanonicoDoTipo(texto) {
+    const def = _detectarTipoProduto(texto);
+    return def ? def.canonico : null;
+  }
+  // Escolhe a sugestão cujo domínio bate com o tipo detectado. Se o tipo não foi
+  // detectado, devolve null (deixa o chamador usar a 1ª original). Se foi detectado
+  // mas nenhuma sugestão bate, devolve null (chamador faz re-predição).
+  function _escolherSugestaoPorTipo(texto, sugestoes) {
+    const def = _detectarTipoProduto(texto);
+    if (!def) return sugestoes[0] || null; // sem tipo claro: confia no predictor
+    const bate = (sugestoes || []).find(s => s.dominio && def.dominios.includes(String(s.dominio).replace(/^MLB-/, '')));
+    return bate || null;
   }
   
   // v32g.1: Define categoria + atributos Shopee pro produto da demanda (headless).
@@ -12736,6 +12814,29 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (lojasDestino.length === 0) {
       throw new Error('Contas marcadas não foram encontradas no sistema');
     }
+
+    // v33k.241: o fluxo prepara a categoria de UM marketplace só (ML ou Shopee).
+    // Se a demanda tiver contas de marketplaces diferentes (não deveria, pela trava
+    // de seleção), exporta só pras lojas do marketplace cuja categoria já está
+    // pronta no produto — evita o erro "Categoria da Shopee não definida" quando o
+    // fluxo era de ML (e vice-versa). As demais são puladas com aviso claro.
+    const temCatMl = !!p.categoryIdMl;
+    const temCatShopee = !!(p.categoryIdShopee || p.categoriaShopee);
+    let lojasParaExportar = lojasDestino;
+    const mktsNaDemanda = Array.from(new Set(lojasDestino.map(l => l.marketplace === 'mercado_livre' ? 'mercadolivre' : l.marketplace)));
+    if (mktsNaDemanda.length > 1) {
+      // marketplace "pronto" = o que tem categoria resolvida
+      const mktPronto = temCatMl && !temCatShopee ? 'mercadolivre'
+                      : temCatShopee && !temCatMl ? 'shopee'
+                      : null;
+      if (mktPronto) {
+        const puladas = lojasDestino.filter(l => (l.marketplace === 'mercado_livre' ? 'mercadolivre' : l.marketplace) !== mktPronto);
+        lojasParaExportar = lojasDestino.filter(l => (l.marketplace === 'mercado_livre' ? 'mercadolivre' : l.marketplace) === mktPronto);
+        if (puladas.length) {
+          console.warn('[acaoExportar] demanda com marketplaces mistos — exportando só ' + mktPronto + '; puladas: ' + puladas.map(l=>l.nome).join(', '));
+        }
+      }
+    }
     
     const resultados = [];
     let okCount = 0, erroCount = 0;
@@ -12744,8 +12845,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     const _ativarAdsPosExport = (typeof window._ativarAdsPosExport === 'boolean') ? window._ativarAdsPosExport : true;
     const adsParaAtivar = {}; // { lojaIdBanco: { nome, itemIds: [] } }
     
-    for (const loja of lojasDestino) {
-      const sufixoLog = lojasDestino.length > 1 ? `[${loja.nome} - ${loja.marketplace}] ` : '';
+    for (const loja of lojasParaExportar) {
+      const sufixoLog = lojasParaExportar.length > 1 ? `[${loja.nome} - ${loja.marketplace}] ` : '';
       
       // Valida campos críticos POR MARKETPLACE (a categoria certa)
       const erros = [];
@@ -37669,7 +37770,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.239-fluxo-auto-trava-mkt-export-agora';
+  const _DIAG_VERSAO_PAINEL = 'v33k.241-fix-fluxo-mkt-categoria-inteligente';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -51091,7 +51192,7 @@ ${JSON.stringify(metricas, null, 2)}`
     
     const contas = [..._demandaContasSel];
     // mantém marketplace (compatibilidade) = a primeira conta, se houver
-    const primeiraConta = contas.length > 0 ? lojasErp.find(l => l.id === contas[0]) : null;
+    const primeiraConta = contas.length > 0 ? lojasErp.find(l => String(l.id) === String(contas[0])) : null;
     const marketplace = primeiraConta ? primeiraConta.marketplace : '';
     const descricao = document.getElementById('demandaDescricao').value.trim();
     const avisarCliente = document.getElementById('demandaAvisarCliente').checked;
@@ -51339,7 +51440,18 @@ ${JSON.stringify(metricas, null, 2)}`
     const imgsBase64 = (typeof _imagensDemandaSessao !== 'undefined' && Array.isArray(_imagensDemandaSessao)) 
       ? _imagensDemandaSessao.map(im => im.dataUrl || im.url || im).filter(Boolean)
       : [];
-    if (imgsBase64.length === 0) erros.push('• Sobe pelo menos 1 foto do produto (IA precisa pra analisar)');
+    // v33k.240 FIX: pro ML as fotos ficam POR COR (galeria geral fica vazia por
+    // design). A validação antiga só olhava as fotos gerais e acusava "sem foto"
+    // mesmo com fotos por cor preenchidas. Agora conta as duas fontes.
+    const totalFotosPorCor = (function() {
+      const m = (typeof window !== 'undefined' && window._demandaFotosPorCor) ? window._demandaFotosPorCor : {};
+      let n = 0;
+      Object.values(m || {}).forEach(arr => {
+        (arr || []).forEach(f => { if (typeof f === 'string' && f.startsWith('http')) n++; else if (f && typeof f === 'object' && (f._dataUrl || f.url)) n++; });
+      });
+      return n;
+    })();
+    if (imgsBase64.length === 0 && totalFotosPorCor === 0) erros.push('• Sobe pelo menos 1 foto do produto (geral ou por cor — a IA precisa pra analisar)');
     
     if (erros.length > 0) {
       alert('⚠ Pré-requisitos faltando pra executar o fluxo:\n\n' + erros.join('\n') + '\n\nPreencha tudo e tente de novo.');
@@ -51359,10 +51471,14 @@ ${JSON.stringify(metricas, null, 2)}`
       return;
     }
     
-    // PEGA O GUIA DE TAMANHOS — da sessao OU da biblioteca da loja destino
+    // PEGA O GUIA DE TAMANHOS — da sessao OU da biblioteca da loja destino.
+    // v33k.240: o guia NÃO é mais obrigatório (alinhado à v33k.238). Tentamos
+    // aproveitar um guia próprio/da biblioteca quando existir (melhor, pode ter
+    // comprimentos medidos), mas se não houver, NÃO bloqueamos: o backend cria o
+    // guia automaticamente a partir dos tamanhos das variações nas categorias que
+    // precisam (moda/calçado) e ignora nas que não precisam. Vale pra Shopee e ML.
     let guiaParaUsar = _guiaDemandaSessao;
     if (!guiaParaUsar || !guiaParaUsar.linhas || guiaParaUsar.linhas.length === 0) {
-      // Tenta achar um guia da loja destino na biblioteca
       try {
         const guiasLoja = (typeof guiasDaLoja === 'function') ? guiasDaLoja(lojaDestino) : [];
         if (guiasLoja.length > 0) {
@@ -51371,10 +51487,7 @@ ${JSON.stringify(metricas, null, 2)}`
         }
       } catch(_) {}
     }
-    if (!guiaParaUsar || !guiaParaUsar.linhas || guiaParaUsar.linhas.length === 0) {
-      alert('⚠ Faltando guia de tamanhos\n\nEsta demanda não tem guia, e a loja destino não tem nenhum guia na biblioteca.\n\nAdicione um guia clicando em "✏️ Criar / editar guia" ANTES de executar.');
-      return;
-    }
+    // sem guia? segue normalmente — backend resolve na exportação.
     
     // Guarda se é edição (pra achar a demanda certa depois)
     const idEditando = editingDemanda;
