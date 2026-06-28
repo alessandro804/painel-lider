@@ -10809,6 +10809,39 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   }
   
   // ============================================================
+  // RESOLUÇÃO AUTOMÁTICA DE FLUXO (v33k.239)
+  // ============================================================
+  // O usuário NÃO precisa mais "vincular fluxo" manualmente ao criar/exportar
+  // anúncio. Mantemos UM fluxo de 'anuncio_novo' por marketplace (1 Shopee +
+  // 1 ML) — o mesmo usado nas duplicações. Esta função acha o fluxo do
+  // marketplace; se não existir ainda (ex.: colaborador novo), semeia na hora.
+  function _inferirMktFluxo(f) {
+    if (!f) return null;
+    const tipos = (f.passos || []).map(p => p.tipo || '').join(' ');
+    if (/catshopee|shopee/i.test(tipos)) return 'shopee';
+    if (/catml|mercadolivre|\bml\b/i.test(tipos)) return 'mercadolivre';
+    return null;
+  }
+  function resolverFluxoAutomatico(marketplace) {
+    const mkt = (marketplace === 'mercado_livre') ? 'mercadolivre' : marketplace;
+    const achar = () => (fluxosDemanda || []).find(f =>
+      f.tipoDemanda === 'anuncio_novo' && _inferirMktFluxo(f) === mkt
+    );
+    let fluxo = achar();
+    if (!fluxo) {
+      // Não existe ainda → semeia o template do marketplace (silencioso) e tenta de novo.
+      try {
+        if (mkt === 'shopee' && typeof criarTemplateAnuncioNovoShopee === 'function') criarTemplateAnuncioNovoShopee({ silencioso: true });
+        else if (mkt === 'mercadolivre' && typeof criarTemplateAnuncioNovoML === 'function') criarTemplateAnuncioNovoML({ silencioso: true });
+        try { localStorage.setItem('lider_fluxos_v1', JSON.stringify(fluxosDemanda)); } catch(_){}
+      } catch (e) { console.warn('[resolverFluxoAutomatico] seed falhou:', e && e.message); }
+      fluxo = achar();
+    }
+    return fluxo || null;
+  }
+  window.resolverFluxoAutomatico = resolverFluxoAutomatico;
+  
+  // ============================================================
   // TEMPLATE: Fluxo "Criar Anúncio Novo no ML"
   // ============================================================
   // Os pre-requisitos (fotos, variacoes, loja, preco) ja foram coletados
@@ -11023,13 +11056,25 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   async function executarFluxoDemanda(demandaId) {
     const d = demandas.find(x => String(x.id) === String(demandaId));
     if (!d) { showToast('Demanda não encontrada (id=' + demandaId + ')', true); return; }
-    if (!d.fluxoId) { showToast('Demanda sem fluxo vinculado (d.fluxoId vazio)', true); return; }
-    const fluxo = fluxosDemanda.find(f => String(f.id) === String(d.fluxoId));
-    if (!fluxo) { 
-      showToast('Fluxo não encontrado (fluxoId=' + d.fluxoId + '). Fluxos disponíveis: ' + fluxosDemanda.map(f => f.id).slice(0,3).join(', '), true); 
-      console.error('[executar] demanda:', d);
-      console.error('[executar] fluxos cadastrados:', fluxosDemanda);
-      return; 
+    // v33k.239: não exige mais fluxo vinculado. Se faltar (ou o fluxo não existir
+    // mais), resolve automaticamente pelo marketplace da demanda (1 fluxo por mkt).
+    let fluxo = d.fluxoId ? fluxosDemanda.find(f => String(f.id) === String(d.fluxoId)) : null;
+    if (!fluxo) {
+      // descobre o marketplace pela 1ª loja da demanda
+      const lojaIdDem = (d.contas && d.contas[0]) || d.lojaDestinoId || null;
+      const lojaDem = lojasErp.find(l => String(l.id) === String(lojaIdDem));
+      const mktDem = lojaDem ? lojaDem.marketplace : (d.marketplace || null);
+      if (mktDem && typeof resolverFluxoAutomatico === 'function') {
+        fluxo = resolverFluxoAutomatico(mktDem);
+        if (fluxo) {
+          d.fluxoId = fluxo.id; // grava pra próximas execuções
+          try { if (typeof saveDemandas === 'function') saveDemandas(); } catch(_){}
+        }
+      }
+    }
+    if (!fluxo) {
+      showToast('Não consegui preparar o fluxo automaticamente. Verifique se a demanda tem uma loja (Shopee ou ML) selecionada.', true);
+      return;
     }
     if (!fluxo.passos || fluxo.passos.length === 0) { showToast('Fluxo sem passos', true); return; }
     
@@ -23255,21 +23300,49 @@ REGRAS DURAS:
     const quandoVal = ehMassaAtual ? '' : (agEl ? agEl.value : '');
     const reguaCfgBranch = dupLerRegua();
     const temRegua = !!reguaCfgBranch;
-    // Sem data E sem régua → fluxo normal intacto.
-    if (!quandoVal && !temRegua) { return iniciarDuplicacao(); }
 
-    // Modo "manter preço atual" SEM data → exporta NA HORA (síncrono) e replica a
-    // promoção do pai via aplicar_preco_promocional (cobre ML e Shopee). Não passa
-    // pela tarefa agendada/backend (que usa entrar_promocao, só Shopee).
-    if (!quandoVal && temRegua && reguaCfgBranch.modo === 'manter') {
-      return iniciarDuplicacao();
+    // v33k.239 FIX: "Agora" (sem data) SEMPRE exporta na hora — mesmo com régua.
+    // Antes, régua com desconto imediato forçava criar uma tarefa agendada pra
+    // "daqui 2s", o que tirava o usuário da tela de status e não aparecia no
+    // calendário de Demandas (era tarefa de backend, não demanda). Agora a régua
+    // é resolvida no front e aplicada com o itemId real logo após a exportação.
+    if (!quandoVal) {
+      let reguaResolvida = null;
+      if (temRegua) {
+        // resolve a régua usando o preço do produto de referência como base
+        const pRef = produtosErp.find(x => String(x.id) === String(_dupProdutoId));
+        const precoBase = pRef ? (Number(pRef.preco) || Number((pRef.variacoes && pRef.variacoes[0] && pRef.variacoes[0].preco)) || 0) : 0;
+        const promoPai = (reguaCfgBranch.modo === 'manter' && pRef && typeof precoPromoParaReplicar === 'function')
+          ? precoPromoParaReplicar(pRef) : undefined;
+        reguaResolvida = ReguaUI.resolver(reguaCfgBranch, precoBase, 'dup', promoPai);
+      }
+      // Modo "manter" sem desconto explícito → deixa o fluxo padrão replicar a
+      // promoção do pai (não passa régua resolvida pra não duplicar a lógica).
+      if (reguaResolvida && reguaCfgBranch.modo === 'manter' && (reguaResolvida.imediato == null)) {
+        return iniciarDuplicacao();
+      }
+      if (!reguaResolvida) {
+        return iniciarDuplicacao();
+      }
+      // Exporta na hora e aplica a régua resolvida com o itemId real
+      return iniciarDuplicacao({
+        produtoId: _dupProdutoId,
+        qtd: parseInt(document.getElementById('dupQuantidade').value) || 0,
+        lojaDestinoId: document.getElementById('dupLojaDestino').value,
+        opts: {
+          variarTitulo: document.getElementById('dupVariarTitulo').checked,
+          variarDescricao: document.getElementById('dupVariarDescricao').checked,
+          rotacionarFotos: document.getElementById('dupRotacionarFotos').checked,
+          variarPreco: document.getElementById('dupVariarPreco').checked,
+          exportar: true, marcarRascunho: false,
+          _reguaResolvida: reguaResolvida,
+        }
+      });
     }
 
-    // Demais modos de régua (±R$, ±%, fixo, degraus) sem data → roteia pela tarefa
-    // (exporta "agora" via backend, que orquestra a régua com o itemId real).
-
-    const quando = quandoVal ? new Date(quandoVal) : new Date(Date.now() + 2000); // sem data mas com régua → daqui 2s
-    if (isNaN(quando.getTime()) || (quandoVal && quando.getTime() < Date.now())) { showToast('Data/hora de agendamento inválida ou no passado', true); return; }
+    // A PARTIR DAQUI: há DATA futura escolhida → agenda de fato (rascunho + tarefa).
+    const quando = new Date(quandoVal);
+    if (isNaN(quando.getTime()) || quando.getTime() < Date.now()) { showToast('Data/hora de agendamento inválida ou no passado', true); return; }
 
     const produtoId = _dupProdutoId;
     const qtd = parseInt(document.getElementById('dupQuantidade').value) || 0;
@@ -23366,6 +23439,7 @@ REGRAS DURAS:
       exportar: params.opts.exportar !== false, // default true; massa pode passar false (só rascunho)
       marcarRascunho: !!params.opts.marcarRascunho,
       _coletarParaAgendar: params.opts._coletarParaAgendar || null,
+      _reguaResolvida: params.opts._reguaResolvida || null,
       lojaDestino,
     } : {
       variarTitulo: document.getElementById('dupVariarTitulo').checked,
@@ -23680,25 +23754,56 @@ REGRAS DURAS:
                 console.warn('[dup vínculos] persist falhou:', ePersist.message);
               }
 
-              // PROMOÇÃO AUTOMÁTICA (duplicação imediata, sem régua manual):
-              // se a cópia herdou _promo do pai, coloca o anúncio recém-criado
-              // em promoção com o MESMO valor em R$ do pai. Usa a guarda de
-              // segurança (promoParaReplicar pula se promo >= preço cheio da cópia).
-              // Quando há régua no modo "manter", o fluxo passa pela tarefa
-              // agendada (backend orquestra), então este bloco não dispara.
+              // PROMOÇÃO AUTOMÁTICA (duplicação imediata):
+              // 1) Se veio uma RÉGUA resolvida nos opts (modo "Agora" com desconto
+              //    imediato e/ou degraus), aplica AGORA com o itemId real recém-criado.
+              //    v33k.239: antes, régua com desconto imediato forçava o fluxo a
+              //    agendar uma tarefa (sumia da tela). Agora exporta na hora e aplica.
+              // 2) Senão, se a cópia herdou _promo do pai, replica essa promoção.
               try {
-                const promoCopia = (typeof precoPromoParaReplicar === 'function')
-                  ? precoPromoParaReplicar(novo) : null;
-                if (promoCopia != null && itemId && itemId !== '?') {
-                  await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
-                    tipo:'aplicar_preco_promocional',
-                    descricao:'Promoção automática (cópia, R$ '+promoCopia.toFixed(2)+') item '+itemId,
-                    rodar_em:new Date(Date.now()-1000).toISOString(),
-                    params:{ lojaIdBanco: lojaIdBanco, marketplace: lojaDestino.marketplace, itens:[{ itemId, preco: promoCopia }] }
-                  }) });
-                  dupLogStep(`  💰 Promoção do pai replicada (R$ ${promoCopia.toFixed(2)})`, 'ok');
+                const reguaResolvida = opts._reguaResolvida || null;
+                if (reguaResolvida && itemId && itemId !== '?') {
+                  const itensPromo = [];
+                  if (reguaResolvida.imediato != null && reguaResolvida.imediato > 0) {
+                    itensPromo.push({ itemId, preco: Number(reguaResolvida.imediato) });
+                  }
+                  if (itensPromo.length > 0) {
+                    await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+                      tipo:'aplicar_preco_promocional',
+                      descricao:'Promoção imediata (régua, cópia) item '+itemId,
+                      rodar_em:new Date(Date.now()-1000).toISOString(),
+                      params:{ lojaIdBanco: lojaIdBanco, marketplace: lojaDestino.marketplace, itens: itensPromo }
+                    }) });
+                    dupLogStep(`  💰 Desconto imediato da régua aplicado (R$ ${Number(reguaResolvida.imediato).toFixed(2)})`, 'ok');
+                  }
+                  // Degraus futuros (mudanças de preço programadas): cria UMA tarefa
+                  // por degrau, na data correspondente (hoje + dias).
+                  if (Array.isArray(reguaResolvida.degraus) && reguaResolvida.degraus.length) {
+                    for (const deg of reguaResolvida.degraus) {
+                      const rodarEm = new Date(Date.now() + (Number(deg.dias)||0) * 86400 * 1000);
+                      await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+                        tipo:'aplicar_preco_promocional',
+                        descricao:'Degrau de preço (cópia) item '+itemId+' em '+deg.dias+'d',
+                        rodar_em: rodarEm.toISOString(),
+                        params:{ lojaIdBanco: lojaIdBanco, marketplace: lojaDestino.marketplace, itens:[{ itemId, preco: Number(deg.preco) }] }
+                      }) });
+                    }
+                    dupLogStep(`  📅 ${reguaResolvida.degraus.length} degrau(s) de preço programado(s)`, 'ok');
+                  }
+                } else {
+                  const promoCopia = (typeof precoPromoParaReplicar === 'function')
+                    ? precoPromoParaReplicar(novo) : null;
+                  if (promoCopia != null && itemId && itemId !== '?') {
+                    await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+                      tipo:'aplicar_preco_promocional',
+                      descricao:'Promoção automática (cópia, R$ '+promoCopia.toFixed(2)+') item '+itemId,
+                      rodar_em:new Date(Date.now()-1000).toISOString(),
+                      params:{ lojaIdBanco: lojaIdBanco, marketplace: lojaDestino.marketplace, itens:[{ itemId, preco: promoCopia }] }
+                    }) });
+                    dupLogStep(`  💰 Promoção do pai replicada (R$ ${promoCopia.toFixed(2)})`, 'ok');
+                  }
                 }
-              } catch(ePromo) { console.warn('[dup promo auto]', ePromo); dupLogStep('  ⚠ Falha ao replicar promoção: '+ePromo.message, 'err'); }
+              } catch(ePromo) { console.warn('[dup promo auto]', ePromo); dupLogStep('  ⚠ Falha ao aplicar preço/promoção: '+ePromo.message, 'err'); }
             }
           } else {
             // Mostra detalhes do erro
@@ -37564,7 +37669,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.238-ml-guia-opcional-fluxo-dup-categoria';
+  const _DIAG_VERSAO_PAINEL = 'v33k.239-fluxo-auto-trava-mkt-export-agora';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -43339,7 +43444,7 @@ ${JSON.stringify(metricas, null, 2)}`
           const validos = idsValidos();
           return [...selecionados].filter(id => validos.has(id));
         },
-        setSelecionados: (ids) => { selecionados = new Set((ids || []).map(String)); atualizarLabel(); },
+        setSelecionados: (ids) => { selecionados = new Set((ids || []).map(String)); atualizarLabel(); if (host.classList.contains('open')) renderLista(); },
         // atualiza quais lojas sobem pro topo (ex.: as do cliente recém-selecionado)
         setPrioritarios: (ids) => { prioritarios = new Set((ids || []).map(String)); if (host.classList.contains('open')) renderLista(); },
         abrir: () => trigger.click(),
@@ -50573,10 +50678,28 @@ ${JSON.stringify(metricas, null, 2)}`
       placeholder: 'Selecione as contas',
       salvarLabel: 'Aplicar contas',
       aoMudar: () => {
-        _demandaContasSel = _demandaContasComp.getSelecionados();
+        let sel = _demandaContasComp.getSelecionados();
+        // v33k.239 TRAVA DE MARKETPLACE: numa criação de anúncio não se mistura
+        // Shopee + ML. O 1º marketplace marcado define o grupo; as próximas só
+        // podem ser do mesmo. Se ficar vazio, libera qualquer marketplace de novo.
+        const mktDe = (id) => { const l = lojasErp.find(x => String(x.id) === String(id)); return l ? l.marketplace : null; };
+        const mkts = Array.from(new Set(sel.map(mktDe).filter(Boolean)));
+        if (mkts.length > 1) {
+          // mantém só as do marketplace da PRIMEIRA loja selecionada
+          const mktBase = mktDe(sel[0]) || mkts[0];
+          const filtrado = sel.filter(id => mktDe(id) === mktBase);
+          const nomeMkt = mktBase === 'shopee' ? 'Shopee' : 'Mercado Livre';
+          showToast('Numa criação de anúncio não dá pra misturar marketplaces. Mantive só as lojas ' + nomeMkt + '. Desmarque tudo pra trocar de marketplace.', true);
+          if (_demandaContasComp.setSelecionados) _demandaContasComp.setSelecionados(filtrado.map(String));
+          sel = filtrado;
+        }
+        _demandaContasSel = sel;
         // re-popula produtos e fluxos filtrados pelas contas
         if (typeof onDemandaContasChange === 'function') onDemandaContasChange();
         else if (typeof popularDropdownFluxos === 'function') popularDropdownFluxos();
+        // atualiza a UI de fotos conforme o marketplace selecionado (até 10/var ML, 9 gerais + 1/var Shopee)
+        if (typeof aplicarVisibilidadeFotosGerais === 'function') aplicarVisibilidadeFotosGerais();
+        if (typeof renderUploadFotosPorCor === 'function') { try { renderUploadFotosPorCor(); } catch(_){} }
       },
     });
   }
@@ -51167,17 +51290,32 @@ ${JSON.stringify(metricas, null, 2)}`
       showToast('Execução automática só disponível pra tipo "Anúncio novo"', true);
       return;
     }
-    const fluxoId = document.getElementById('demandaFluxo').value;
-    if (!fluxoId) {
-      showToast('Selecione o fluxo antes de executar', true);
+    // v33k.239: NÃO exige mais "vincular fluxo". Resolve automaticamente o fluxo
+    // do marketplace da loja destino (1 fluxo por marketplace, mesmo das duplicações).
+    const lojaDestinoIdParaFluxo = document.getElementById('demandaLojaDestino').value || (_demandaContasSel[0] || '');
+    const lojaParaFluxo = lojasErp.find(l => String(l.id) === String(lojaDestinoIdParaFluxo));
+    const mktParaFluxo = lojaParaFluxo ? lojaParaFluxo.marketplace : null;
+    if (!mktParaFluxo) {
+      showToast('Selecione ao menos uma loja em cima para definir o fluxo', true);
       return;
     }
-    // Confirma que o fluxo existe MESMO no array
-    const fluxoExiste = fluxosDemanda.find(f => String(f.id) === String(fluxoId));
-    if (!fluxoExiste) {
-      showToast('Fluxo selecionado não existe mais. Recarregue a página.', true);
+    const fluxoAuto = resolverFluxoAutomatico(mktParaFluxo);
+    if (!fluxoAuto) {
+      showToast('Não consegui preparar o fluxo de ' + (mktParaFluxo === 'shopee' ? 'Shopee' : 'Mercado Livre') + '. Recarregue a página.', true);
       return;
     }
+    // Reflete no select (compat com o resto do código que lê demandaFluxo)
+    const selFluxoEl = document.getElementById('demandaFluxo');
+    if (selFluxoEl) {
+      if (!Array.from(selFluxoEl.options).some(o => String(o.value) === String(fluxoAuto.id))) {
+        const opt = document.createElement('option');
+        opt.value = fluxoAuto.id; opt.textContent = fluxoAuto.nome || 'Fluxo';
+        selFluxoEl.appendChild(opt);
+      }
+      selFluxoEl.value = fluxoAuto.id;
+    }
+    const fluxoId = fluxoAuto.id;
+    const fluxoExiste = fluxoAuto;
     
     // VALIDAÇÃO RIGOROSA dos pré-requisitos (todos OBRIGATÓRIOS)
     const erros = [];
@@ -51256,9 +51394,14 @@ ${JSON.stringify(metricas, null, 2)}`
       d = demandas[0];
     }
     if (!d) { showToast('Erro ao localizar demanda criada', true); return; }
-    if (!d.fluxoId) { 
-      showToast('Demanda criada mas sem fluxoId — verifique se o select de fluxo estava preenchido', true); 
-      return; 
+    if (!d.fluxoId) {
+      // v33k.239: último recurso — resolve o fluxo automaticamente pelo marketplace
+      // (não deve cair aqui normalmente, pois já resolvemos no início).
+      const _lojaFx = lojasErp.find(l => String(l.id) === String(lojaDestino));
+      const _mktFx = _lojaFx ? _lojaFx.marketplace : (d.marketplace || null);
+      const _fx = (_mktFx && typeof resolverFluxoAutomatico === 'function') ? resolverFluxoAutomatico(_mktFx) : null;
+      if (_fx) { d.fluxoId = _fx.id; }
+      else { showToast('Não consegui preparar o fluxo automaticamente — verifique se há uma loja selecionada', true); return; }
     }
     
     // Anexa as URLs (não base64!) à demanda + o guia
