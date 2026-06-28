@@ -11183,9 +11183,19 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       Object.keys(window._execucoes).forEach(eid => {
         const est = window._execucoes[eid];
         const ehAtual = String(eid) === String(d.id);
-        if (!ehAtual && est && est.status !== 'rodando' && est.status !== 'pausado') {
-          delete window._execucoes[eid];
+        if (ehAtual) return;
+        // remove se o estado em _execucoes já terminou
+        let remover = (!est || (est.status !== 'rodando' && est.status !== 'pausado'));
+        // v33k.254: remove TAMBÉM se a demanda subjacente sumiu ou terminou em
+        // erro/concluído (cobre órfã presa em 'rodando' no _execucoes mas 'erro'
+        // na demanda — era o caso da órfã que voltava e era executada no lugar
+        // da demanda nova).
+        if (!remover) {
+          const dd = (demandas || []).find(x => String(x.id) === String(eid));
+          if (!dd) remover = true;
+          else if (dd.execucao && (dd.execucao.status === 'erro' || dd.execucao.status === 'concluido' || dd.execucao.status === 'cancelado')) remover = true;
         }
+        if (remover) delete window._execucoes[eid];
       });
     } catch(_){}
     
@@ -38060,7 +38070,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.253-limpa-execucoes-orfas-preco-sempre';
+  const _DIAG_VERSAO_PAINEL = 'v33k.254-fix-executa-demanda-certa-nao-orfa';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -51823,19 +51833,30 @@ ${JSON.stringify(metricas, null, 2)}`
     const idEditando = editingDemanda;
     
     // Salva os campos — v32g.6: para se falhar (preserva o que está na tela)
-    const okSalvou = salvarDemanda();
-    if (okSalvou === false) {
-      console.warn('[exec] salvarDemanda falhou — abortando execução');
+    // v33k.254 FIX CRÍTICO: salvarDemanda() retorna `undefined` (não `false`) quando
+    // falha numa validação (ex.: cliente obrigatório não preenchido). A checagem
+    // antiga `=== false` deixava passar o undefined, e o código seguia executando
+    // demandas[0] — que podia ser uma demanda ANTIGA/ÓRFÃ (causa do "rodou ML numa
+    // demanda Shopee" + "cadastre o cliente mas rodou a demanda"). Agora exige
+    // retorno TRULY positivo: qualquer coisa que não seja true aborta.
+    const okSalvou = await salvarDemanda();
+    if (okSalvou !== true) {
+      console.warn('[exec] salvarDemanda não confirmou criação (retorno=' + okSalvou + ') — abortando execução');
       return;
     }
     
-    // Acha a demanda certa: se era edição, busca por id; senão pega a primeira (unshift)
+    // Acha a demanda certa: se era edição, busca por id; senão usa o id da demanda
+    // recém-criada (_demandaIdAtual, setado dentro de salvarDemanda no unshift).
+    // v33k.254: NÃO usa mais demandas[0] às cegas — se houvesse uma órfã no topo,
+    // o sistema executava a órfã em vez da demanda nova.
     let d;
     if (idEditando) {
       d = demandas.find(x => String(x.id) === String(idEditando));
-    } else {
-      d = demandas[0];
+    } else if (typeof _demandaIdAtual !== 'undefined' && _demandaIdAtual != null) {
+      d = demandas.find(x => String(x.id) === String(_demandaIdAtual));
     }
+    // fallback defensivo: só se não achou pelo id, tenta a primeira (unshift)
+    if (!d && !idEditando) d = demandas[0];
     if (!d) { showToast('Erro ao localizar demanda criada', true); return; }
     if (!d.fluxoId) {
       // v33k.239: último recurso — resolve o fluxo automaticamente pelo marketplace
