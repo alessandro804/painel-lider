@@ -10507,6 +10507,35 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         return false;
       }
     },
+
+    // v33k.275: UPSERT não-destrutivo (anti-perda). Diferente do pushTable, NÃO
+    // apaga do banco os registros que faltam no array local — só insere/atualiza
+    // por id. Exclusões reais vão em `idsExcluidos` (delete explícito no backend).
+    // Usado por `demandas` pra corrigir o "demandas somem ao atualizar": um device
+    // com lista incompleta deixava de apagar o que os outros tinham.
+    async upsertTable(tableName, rows, mapper, idsExcluidos) {
+      let _papel = 'admin';
+      try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u) _papel = u.papel || 'admin'; } catch(e) {}
+      if (_papel === 'demo' || _papel === 'superadmin' || _papel === 'cliente') return false;
+      try {
+        const mapped = (rows || []).map(mapper);
+        const backend = (typeof getBackendUrl === 'function') ? getBackendUrl() : '';
+        const token = localStorage.getItem('lider_token_login') || '';
+        const resp = await fetch(backend + '/api/dados/upsert-tabela', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'x-api-token': (typeof getApiToken==='function'?getApiToken():''), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tabela: tableName, rows: mapped, idsExcluidos: idsExcluidos || [] }),
+        });
+        const data = await resp.json();
+        if (!data.ok) throw new Error(data.erro || 'falha no upsert');
+        // sucesso: limpa a lista de ids excluídos que acabaram de ser propagados
+        return true;
+      } catch(e) {
+        console.error(`Erro upsertTable ${tableName}:`, e);
+        this.lastError = e.message;
+        return false;
+      }
+    },
     
     async pushAppData(chave, valor) {
       let _papel = 'admin';
@@ -10839,6 +10868,27 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     demandas = [];
     localStorage.setItem('lider_demandas_v1', JSON.stringify(demandas));
   }
+
+  // v33k.275: "tombstones" — ids de demandas excluídas que ainda precisam ser
+  // deletadas do banco. Persistem em localStorage pra sobreviver a reload até o
+  // upsert confirmar o delete. Sem isso, o merge não-destrutivo do pull poderia
+  // RESSUSCITAR uma demanda excluída (ela ainda está no banco de outro device).
+  const _DEMANDAS_EXCL_KEY = 'lider_demandas_excluidas_v1';
+  function _demandasExcluidasPendentes() {
+    try { return JSON.parse(localStorage.getItem(_DEMANDAS_EXCL_KEY) || '[]'); }
+    catch(e) { return []; }
+  }
+  function _marcarDemandaExcluida(id) {
+    const set = new Set(_demandasExcluidasPendentes().map(String));
+    set.add(String(id));
+    try { localStorage.setItem(_DEMANDAS_EXCL_KEY, JSON.stringify([...set])); } catch(e) {}
+  }
+  function _limparDemandasExcluidasPendentes(idsConfirmados) {
+    const confirmados = new Set((idsConfirmados || []).map(String));
+    const restantes = _demandasExcluidasPendentes().filter(id => !confirmados.has(String(id)));
+    try { localStorage.setItem(_DEMANDAS_EXCL_KEY, JSON.stringify(restantes)); } catch(e) {}
+  }
+
   function saveDemandas() {
     // v32g.5: Proteção contra QuotaExceededError. Antes o salvar morria
     // silenciosamente quando alguma demanda tinha base64 grande no fotosPorCor.
@@ -10855,7 +10905,14 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         }
       });
       localStorage.setItem('lider_demandas_v1', JSON.stringify(demandas));
-      LiderSync.schedulePush('demandas', () => LiderSync.pushTable('demandas', demandas, LiderSync._toDbDemanda.bind(LiderSync)));
+      // v33k.275: UPSERT não-destrutivo (não apaga do banco o que falta localmente).
+      // Manda junto os ids que o usuário excluiu (pra delete explícito no backend).
+      const _excl = _demandasExcluidasPendentes();
+      LiderSync.schedulePush('demandas', async () => {
+        const ok = await LiderSync.upsertTable('demandas', demandas, LiderSync._toDbDemanda.bind(LiderSync), _excl);
+        if (ok && _excl.length) _limparDemandasExcluidasPendentes(_excl);
+        return ok;
+      });
     } catch(e) {
       console.error('[saveDemandas] FALHOU:', e.message);
       if (e.name === 'QuotaExceededError' || /quota/i.test(e.message)) {
@@ -36598,7 +36655,9 @@ Responda APENAS com JSON válido (sem markdown), formato:
       };
       if (typeof demandas !== 'undefined') demandas.unshift(demIA);
       try {
-        if (window.LiderSync && LiderSync._toDbDemanda) await LiderSync.pushTable('demandas', [demIA], LiderSync._toDbDemanda.bind(LiderSync));
+        // v33k.275: upsert NÃO-destrutivo (antes pushTable com [demIA] apagava TODAS
+        // as outras demandas do dono e reinseria só esta — causa de perda em massa).
+        if (window.LiderSync && LiderSync._toDbDemanda) await LiderSync.upsertTable('demandas', [demIA], LiderSync._toDbDemanda.bind(LiderSync));
       } catch(e) { console.warn('[ap push]', e); }
       try {
         await fetch(BACKEND_URL + '/api/tarefas', {
@@ -38598,7 +38657,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.274-brand-model';
+  const _DIAG_VERSAO_PAINEL = 'v33k.276-demandas-reconc';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -52744,6 +52803,9 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!confirm('Excluir esta demanda? Esta ação não pode ser desfeita.')) return;
     const idExcluir = editingDemanda;
     demandas = demandas.filter(d => d.id !== idExcluir);
+    // v33k.275: registra o tombstone ANTES de salvar — o upsert leva esse id pro
+    // backend deletar explicitamente, e o merge do pull não ressuscita a demanda.
+    _marcarDemandaExcluida(idExcluir);
     saveDemandas();
     // deleta da TABELA também, senão a recarga traz de volta ao atualizar
     try {
@@ -53791,7 +53853,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // Demandas (tabela pode não existir ainda — tolera erro)
     let r7 = true;
     try {
-      r7 = await LiderSync.pushTable('demandas', demandas, LiderSync._toDbDemanda.bind(LiderSync));
+      // v33k.275: upsert NÃO-destrutivo (não apaga do banco o que falta local).
+      const _excl = _demandasExcluidasPendentes();
+      r7 = await LiderSync.upsertTable('demandas', demandas, LiderSync._toDbDemanda.bind(LiderSync), _excl);
+      if (r7 && _excl.length) _limparDemandasExcluidasPendentes(_excl);
     } catch(e) { console.warn('Demandas não enviadas (tabela não existe?):', e.message); }
     
     // Envia históricos dos chats das IAs
@@ -53885,13 +53950,69 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       marketingCriativos = cloudData.marketingCriativos;
       localStorage.setItem('lider_criativos_v1', JSON.stringify(marketingCriativos));
     }
-    // IMPORTANTE: só sobrescreve com a nuvem se a nuvem TIVER dados.
-    // Se a nuvem vier vazia (ex: tabela recém-criada) mas houver dados locais,
-    // mantém os locais — eles sobem no próximo save. Senão, a nuvem vazia
-    // apagaria os dados locais a cada reload (causa do "fluxos sumindo").
-    if (Array.isArray(cloudData.demandas) && (cloudData.demandas.length > 0 || demandas.length === 0)) {
-      demandas = cloudData.demandas;
+    // v33k.275: MERGE NÃO-DESTRUTIVO de demandas (corrige "demandas somem ao
+    // atualizar"). Antes substituía o array local pelo da nuvem — então uma demanda
+    // criada localmente que ainda não tinha subido era DESCARTADA pelo pull. Agora
+    // unimos local + nuvem por id, mantendo a versão mais recente (atualizadoEm), e
+    // removemos as que o usuário excluiu (tombstones).
+    //
+    // PRIMEIRO BOOT (flag _RECONC ausente): o banco é a VERDADE. Não trazemos de
+    // volta locais que não estão no banco — eles podem ser exclusões ANTIGAS feitas
+    // antes deste fix (sem tombstone), que o merge ressuscitaria. Após esse primeiro
+    // alinhamento marcamos a flag e, dali em diante, o merge é bidirecional (locais
+    // órfãos passam a ser tratados como "ainda não subiram" e são preservados+enviados).
+    if (Array.isArray(cloudData.demandas)) {
+      const _RECONC_KEY = 'lider_demandas_reconciliado_v1';
+      const primeiraReconc = !localStorage.getItem(_RECONC_KEY);
+      const excluidas = new Set(_demandasExcluidasPendentes().map(String));
+      const porId = new Map();
+      const _ts = (d) => {
+        const t = Date.parse(d && (d.atualizadoEm || d.criadoEm) || '');
+        return isNaN(t) ? 0 : t;
+      };
+      const idsNuvem = new Set((cloudData.demandas || []).map(d => d && d.id != null ? String(d.id) : null).filter(Boolean));
+
+      if (primeiraReconc) {
+        // banco é a verdade: parte SÓ da nuvem (descarta locais órfãos = exclusões
+        // antigas sem tombstone). Não ressuscita nada que você já tinha removido.
+        (cloudData.demandas || []).forEach(d => { if (d && d.id != null) porId.set(String(d.id), d); });
+        console.log('[demandas] primeira reconciliação: banco é a verdade (' + porId.size + ' demandas, locais órfãos descartados)');
+      } else {
+        // merge bidirecional normal: começa pelo local, funde a nuvem por recência
+        (demandas || []).forEach(d => { if (d && d.id != null) porId.set(String(d.id), d); });
+        (cloudData.demandas || []).forEach(d => {
+          if (!d || d.id == null) return;
+          const id = String(d.id);
+          const atual = porId.get(id);
+          if (!atual || _ts(d) >= _ts(atual)) porId.set(id, d);
+        });
+      }
+
+      // aplica tombstones: nada excluído pelo usuário sobrevive ao merge
+      excluidas.forEach(id => porId.delete(id));
+      demandas = [...porId.values()];
       localStorage.setItem('lider_demandas_v1', JSON.stringify(demandas));
+
+      if (primeiraReconc) {
+        // a partir de agora o merge é bidirecional
+        try { localStorage.setItem(_RECONC_KEY, new Date().toISOString()); } catch(_) {}
+      } else {
+        // RECONCILIA: sobe pro banco (upsert não-destrutivo) o que ficou só local —
+        // assim demandas criadas offline/em outro device entram no banco sem apagar
+        // nada. Processa também os deletes pendentes. Silencioso (não bloqueia o boot).
+        // Só roda quando há local órfão ou exclusão pendente (evita upsert à toa).
+        const temOrfaoLocal = demandas.some(d => d && d.id != null && !idsNuvem.has(String(d.id)));
+        const _excl = _demandasExcluidasPendentes();
+        if (temOrfaoLocal || _excl.length) {
+          try {
+            if (window.LiderSync && typeof LiderSync.upsertTable === 'function') {
+              LiderSync.upsertTable('demandas', demandas, LiderSync._toDbDemanda.bind(LiderSync), _excl)
+                .then(ok => { if (ok && _excl.length) _limparDemandasExcluidasPendentes(_excl); })
+                .catch(() => {});
+            }
+          } catch(eRec) { console.warn('[demandas] reconciliar pós-merge:', eRec && eRec.message); }
+        }
+      }
     }
     if (Array.isArray(cloudData.marketplaceVinculos) && (cloudData.marketplaceVinculos.length > 0 || marketplaceVinculos.length === 0)) {
       marketplaceVinculos = cloudData.marketplaceVinculos;
