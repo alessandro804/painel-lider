@@ -28080,21 +28080,45 @@ REGRAS DURAS:
   }
   
   // Monta attribute_combinations do ML a partir da variação
-  // Ex: "Preto 40" → [{id:'COLOR',value_name:'Preto'},{id:'SIZE',value_name:'40'}]
+  // Ex: cor="Preto" tamanho="40" → [{id:'COLOR',value_name:'Preto'},{id:'SIZE',value_name:'40'}]
+  //
+  // v33k.256 FIX CRÍTICO: ANTES splitava variacao.nome por espaço e tratava CADA
+  // palavra como cor/tamanho. Bug real: cor composta "Preto / Branco" (ou "Preto/Branco")
+  // virava 3 COLOR ("Preto", "/", "Branco"), corrompendo o attribute_combinations —
+  // o ML rejeitava o item INTEIRO e reportava enganosamente como "SIZE_GRID_ID is not
+  // valid". Uma variação ML aceita UM ÚNICO COLOR e UM ÚNICO SIZE. Agora usamos os
+  // campos ESTRUTURADOS (variacao.cor, variacao.tamanho) — preserva cor composta como
+  // um valor só e nunca gera atributos-lixo. Fallback pro nome só se os campos faltarem.
   function montarAttrCombinations(variacao) {
+    const combinations = [];
+    const cor = (variacao.cor || '').trim();
+    const tamanho = (variacao.tamanho != null ? String(variacao.tamanho) : '').trim();
+
+    if (cor || tamanho) {
+      // caminho normal: campos estruturados (1 COLOR + 1 SIZE no máximo)
+      if (cor) combinations.push({ id: 'COLOR', value_name: cor });
+      if (tamanho) combinations.push({ id: 'SIZE', value_name: tamanho });
+      return combinations;
+    }
+
+    // FALLBACK (variação sem cor/tamanho estruturados): tenta o nome, mas de forma
+    // segura — separa só o ÚLTIMO token se for tamanho; o resto inteiro é a cor
+    // (não quebra "Preto / Branco" em pedaços).
     const nome = (variacao.nome || '').trim();
     if (!nome) return [];
-    // Tenta separar cor e tamanho (formato comum: "Cor Tamanho")
-    const partes = nome.split(/\s+/);
-    const combinations = [];
-    partes.forEach(parte => {
-      // se for número, é tamanho
-      if (/^\d+$/.test(parte) || /^(PP|P|M|G|GG|XG)$/i.test(parte)) {
-        combinations.push({ id: 'SIZE', value_name: parte });
-      } else {
-        combinations.push({ id: 'COLOR', value_name: parte });
-      }
-    });
+    const tokens = nome.split(/\s+/);
+    const ultimo = tokens[tokens.length - 1];
+    const ehTamanho = /^\d+$/.test(ultimo) || /^(PP|P|M|G|GG|XG)$/i.test(ultimo);
+    if (ehTamanho && tokens.length > 1) {
+      const corNome = tokens.slice(0, -1).join(' ').trim();
+      if (corNome) combinations.push({ id: 'COLOR', value_name: corNome });
+      combinations.push({ id: 'SIZE', value_name: ultimo });
+    } else if (ehTamanho) {
+      combinations.push({ id: 'SIZE', value_name: ultimo });
+    } else {
+      // sem tamanho reconhecível: o nome inteiro é a cor (um COLOR só)
+      combinations.push({ id: 'COLOR', value_name: nome });
+    }
     return combinations;
   }
   
@@ -38250,7 +38274,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.256-ml-atributos-value-id-saneamento';
+  const _DIAG_VERSAO_PAINEL = 'v33k.257-fix-cor-composta-attribute-combinations';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
