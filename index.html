@@ -24396,6 +24396,29 @@ REGRAS DURAS:
     }
 
     if (mkt === 'mercadolivre' && novo.categoryIdMl) {
+      // v33k.256: GUIA DE TAMANHOS. Se o produto vem da Shopee, não tem guia ML.
+      // Pra categorias COM chart oficial (SNEAKERS) o backend cria sozinho, mas pra
+      // categorias SEM chart oficial (BOOTS/bota, sandália…) o backend precisa do
+      // guia pra montar o chart custom — senão dá "Attribute [SIZE_GRID_ID] is
+      // missing". Então geramos o guia por IA aqui (a partir dos tamanhos das
+      // variações) quando o produto tem variações com tamanho e ainda não tem guia.
+      const temGuia = novo.guiaTamanhos && (
+        novo.guiaTamanhos.imagemUrl ||
+        (Array.isArray(novo.guiaTamanhos.linhas) && novo.guiaTamanhos.linhas.length > 0)
+      );
+      const temTamanhos = (novo.variacoes || []).some(v => String(v.tamanho || '').trim());
+      if (!temGuia && temTamanhos) {
+        try {
+          const guia = await gerarGuiaTamanhosParaObjeto(novo);
+          if (guia && Array.isArray(guia.linhas) && guia.linhas.length) {
+            novo.guiaTamanhos = guia;
+            log('  ✓ Guia de tamanhos gerado por IA (' + guia.linhas.length + ' linhas' + (guia.nicho ? ', nicho: ' + guia.nicho : '') + ')', 'ok');
+          } else {
+            log('  ⚠ Não consegui gerar o guia de tamanhos — categorias sem chart oficial podem falhar no SIZE_GRID.', 'err');
+          }
+        } catch (eGuia) { log('  ⚠ Geração do guia de tamanhos falhou: ' + eGuia.message, 'err'); }
+      }
+
       try {
         const atributosCat = await carregarAtributosCategoria(novo.categoryIdMl);
         if (Array.isArray(atributosCat) && atributosCat.length) {
@@ -27458,13 +27481,23 @@ REGRAS DURAS:
   function _converterAtributosMlParaArray(p) {
     const result = [];
     const jaInclusos = new Set();
-    
+
+    // v33k.256: só envia atributos cuja CHAVE é um ID válido do ML (MAIÚSCULAS/
+    // números/underscore, ex.: ITEM_CONDITION, HEEL_HEIGHT_CM). Produtos vindos da
+    // Shopee (ou preenchidos com nomes internos) traziam chaves PT/snake_case como
+    // "condicao_produto", "peso_kg", "altura_cano_cm", "tipoFechamento" — o ML não
+    // reconhece, descarta com warning e polui o log. Filtrar na origem evita isso.
+    // Universais conhecidos passam mesmo fora do padrão por segurança.
+    const _UNIVERSAIS = new Set(['SELLER_SKU','GTIN','EMPTY_GTIN_REASON','SIZE_GRID_ID','SIZE_GRID_ROW_ID','MANUFACTURER_SIZE','BRAND','MODEL','ALPHANUMERIC_MODEL','MAIN_COLOR','COLOR','SIZE']);
+    const _chaveMlValida = (id) => /^[A-Z0-9_]+$/.test(String(id || '')) || _UNIVERSAIS.has(id);
+
     // Formato novo: objeto {ID: valor}
     const obj = p.atributosMl;
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
       Object.entries(obj).forEach(([id, valor]) => {
         if (valor === null || valor === undefined || valor === '') return;
         if (jaInclusos.has(id)) return;
+        if (!_chaveMlValida(id)) { console.warn('[montarPayloadExport] ignorando atributo com chave interna "' + id + '" (não é ID do ML)'); return; }
         const item = { id };
         if (typeof valor === 'boolean') {
           item.value_name = valor ? 'Sim' : 'Não';
@@ -27478,17 +27511,18 @@ REGRAS DURAS:
         jaInclusos.add(id);
       });
     }
-    
+
     // Formato legado: array p.atributosML
     if (Array.isArray(p.atributosML)) {
       p.atributosML.forEach(a => {
         if (!a || !a.id) return;
         if (jaInclusos.has(a.id)) return;
+        if (!_chaveMlValida(a.id)) { console.warn('[montarPayloadExport] ignorando atributo legado com chave interna "' + a.id + '"'); return; }
         result.push(a);
         jaInclusos.add(a.id);
       });
     }
-    
+
     return result;
   }
   
@@ -28503,6 +28537,80 @@ Use medidas coerentes com o tipo de produto identificado.`;
     }
   }
   
+  // v33k.256: gera guia de tamanhos por IA a partir de um OBJETO produto (não do DOM).
+  // Reusa o mesmo prompt/parsing de gerarGuiaTamanhosIADemanda. Extrai os tamanhos das
+  // variações + nome do produto e devolve { nome, colunas, linhas, criadoPorIA, nicho }
+  // no formato que montarPayloadExport (size_guide) e o backend (_resolverSizeGrid)
+  // esperam. Usada na duplicação Shopee→ML pra QUALQUER categoria — inclusive as sem
+  // chart oficial mapeado (bota, sandália), onde o backend precisa do guia pra criar o
+  // chart custom (senão dá "Attribute [SIZE_GRID_ID] is missing").
+  async function gerarGuiaTamanhosParaObjeto(prod) {
+    try {
+      const tamanhos = [...new Set((prod.variacoes || [])
+        .map(v => String(v.tamanho || '').trim())
+        .filter(Boolean))];
+      if (tamanhos.length === 0) return null; // sem tamanhos não há o que medir
+
+      const contexto = [prod.nome, prod.descricao].filter(Boolean).join(' — ').slice(0, 250);
+      if (!contexto.trim()) return null;
+
+      const prompt = 'Você é um especialista em e-commerce e tabelas de medidas de produtos. ' +
+        'Primeiro IDENTIFIQUE o tipo/nicho do produto pelo nome e descrição, depois gere um guia de tamanhos ' +
+        'em CENTÍMETROS adequado a esse tipo.\n\n' +
+        'PRODUTO: ' + contexto + '\n' +
+        'TAMANHOS/NUMERAÇÃO QUE TEM: ' + tamanhos.join(', ') + '\n\n' +
+        'Escolha as MEDIDAS certas pro nicho. Exemplos (não se limite a eles):\n' +
+        '- Calçado: comprimento do pé (cm) e largura (cm).\n' +
+        '- Bota: comprimento do pé (cm), largura (cm) e, se fizer sentido, altura do cano (cm).\n' +
+        '- Roupa: as medidas que fizerem sentido — ex. busto/peito, cintura, quadril, comprimento.\n' +
+        '- Anel/joia: diâmetro interno ou aro.\n\n' +
+        'Pode estimar por alto com base em padrões da indústria brasileira. Valores podem ter casas decimais.\n\n' +
+        'Responda APENAS um JSON neste formato (as CHAVES de medida você define conforme o nicho):\n' +
+        '{ "nicho": "calçado|bota|roupa|joia|outro", ' +
+        '"colunas": ["Tamanho", "<Medida 1>", "<Medida 2>"], ' +
+        '"linhas": [ { "Tamanho": "34", "<Medida 1>": 22.5, "<Medida 2>": 8.5 }, ... ] }\n\n' +
+        'A primeira coluna é SEMPRE "Tamanho". Use exatamente os tamanhos que listei. ' +
+        'Sem markdown, sem texto fora do JSON.';
+
+      const resp = await chamarIA({ prompt, system: 'Você responde só com JSON válido.', maxTokens: 800 });
+      let raw = String(resp || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      const dados = JSON.parse(raw);
+      if (!Array.isArray(dados.linhas) || !dados.linhas.length) return null;
+
+      // Colunas vêm da IA; fallback deriva das chaves. (mesma normalização da demanda)
+      let colunas = Array.isArray(dados.colunas) && dados.colunas.length
+        ? dados.colunas.slice()
+        : Object.keys(dados.linhas[0] || { Tamanho: '' });
+      colunas = colunas.filter(Boolean);
+      if (!colunas.length) colunas = ['Tamanho'];
+      const idxTam = colunas.findIndex(c => /tamanho|numera|size/i.test(c));
+      if (idxTam > 0) { const [t] = colunas.splice(idxTam, 1); colunas.unshift(t); }
+      else if (idxTam === -1) colunas.unshift('Tamanho');
+
+      const linhas = dados.linhas.map(l => {
+        const linha = {};
+        colunas.forEach(col => {
+          let val = l[col];
+          if (val == null && /tamanho|numera|size/i.test(col)) {
+            val = l.tamanho ?? l.Tamanho ?? l.numeracao ?? '';
+          }
+          linha[col] = (val == null ? '' : String(val));
+        });
+        return linha;
+      }).filter(l => String(l[colunas[0]] || '').trim());
+      if (!linhas.length) return null;
+
+      const nicho = dados.nicho ? String(dados.nicho) : '';
+      return {
+        nome: nicho ? ('Guia (' + nicho + ') gerado por IA') : 'Guia gerado por IA',
+        colunas, linhas, criadoPorIA: true, nicho,
+      };
+    } catch (e) {
+      console.warn('[gerarGuiaTamanhosParaObjeto] falhou:', e.message);
+      return null;
+    }
+  }
+
   // Biblioteca de guias na criação de demanda
   function abrirBibliotecaGuiasDemanda() {
     // usa a loja vinculada à demanda, se houver
