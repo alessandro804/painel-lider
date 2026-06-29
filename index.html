@@ -24347,6 +24347,54 @@ REGRAS DURAS:
 
     // ---- 3. Atributos da categoria (só os VAZIOS) ----
     // ML: precisa da categoryIdMl (herdada do pai). Pede pra IA só os que faltam.
+
+    // v33k.256 FIX: duplicação Shopee→ML. Se o destino é ML mas o produto NÃO tem
+    // categoryIdMl (caso clássico: o pai só existia na Shopee, então o clone não
+    // herdou categoria ML nenhuma), RESOLVE a categoria ML agora — senão o
+    // montarPayloadExport monta sem category_id e o backend rejeita com "Categoria
+    // do Mercado Livre não configurada". Reusa exatamente a lógica de acaoCategoriaML:
+    // De↔Para primeiro, depois predictor com validação por tipo + re-predição canônica.
+    if (mkt === 'mercadolivre' && !novo.categoryIdMl) {
+      try {
+        const partesTitulo = String(novo.nome || novo.categoria || '').trim();
+        // 1) De↔Para interno (categoria interna já vinculada ao ML)
+        if (novo.categoria && Array.isArray(categoriasMapErp)) {
+          const mapa = categoriasMapErp.find(c => c.categoriaInterna === novo.categoria);
+          const vincMl = mapa && mapa.vinculos && mapa.vinculos.mercadolivre;
+          if (vincMl) {
+            novo.categoryIdMl = typeof vincMl === 'string' ? vincMl : (vincMl.categoryId || vincMl.id);
+            if (novo.categoryIdMl) log('  ✓ Categoria ML via De↔Para: ' + novo.categoryIdMl, 'ok');
+          }
+        }
+        // 2) Predictor (se ainda não resolveu e há texto)
+        if (!novo.categoryIdMl && partesTitulo) {
+          const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/predizer?titulo=' + encodeURIComponent(partesTitulo), { headers: { 'x-api-token': getApiToken() } });
+          const data = await resp.json();
+          if (data.ok && Array.isArray(data.sugestoes) && data.sugestoes.length) {
+            let escolhida = (typeof _escolherSugestaoPorTipo === 'function') ? _escolherSugestaoPorTipo(partesTitulo, data.sugestoes) : null;
+            if (!escolhida && typeof _termoCanonicoDoTipo === 'function') {
+              const termoCanonico = _termoCanonicoDoTipo(partesTitulo);
+              if (termoCanonico) {
+                try {
+                  const r2 = await fetch(BACKEND_URL + '/api/marketplaces/categoria/predizer?titulo=' + encodeURIComponent(termoCanonico), { headers: { 'x-api-token': getApiToken() } });
+                  const d2 = await r2.json();
+                  if (d2.ok && d2.sugestoes && d2.sugestoes.length) escolhida = (_escolherSugestaoPorTipo(partesTitulo, d2.sugestoes) || d2.sugestoes[0]);
+                } catch(_) {}
+              }
+            }
+            if (!escolhida) escolhida = data.sugestoes[0];
+            novo.categoryIdMl = escolhida.categoryId;
+            log('  ✓ Categoria ML via predictor: ' + novo.categoryIdMl + ' (' + (escolhida.nome || '?') + ')', 'ok');
+          }
+        }
+        // 3) Garante categoria interna vinculada (reusa similar ou cria nova)
+        if (novo.categoryIdMl && typeof garantirCategoriaInterna === 'function') {
+          try { await garantirCategoriaInterna(novo, 'mercadolivre', novo.categoryIdMl, partesTitulo); } catch(_) {}
+        }
+        if (!novo.categoryIdMl) log('  ⚠ Não consegui resolver a categoria ML — o export pode falhar. Defina a categoria ML no produto.', 'err');
+      } catch (eCat) { log('  ⚠ Resolução de categoria ML falhou: ' + eCat.message, 'err'); }
+    }
+
     if (mkt === 'mercadolivre' && novo.categoryIdMl) {
       try {
         const atributosCat = await carregarAtributosCategoria(novo.categoryIdMl);
