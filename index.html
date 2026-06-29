@@ -10542,6 +10542,30 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       try { const u = JSON.parse(localStorage.getItem('lider_usuario')||'null'); if (u) _papel = u.papel || 'admin'; } catch(e) {}
       if (_papel === 'demo' || _papel === 'superadmin' || _papel === 'cliente') return false;
 
+      // ── BLINDAGEM DO CADASTRO DE CLIENTES (clientesAsaas sumindo) ──
+      // v33k.276: o clientesAsaas é um OBJETO {nome→dados} gravado inteiro. Um device
+      // com versão local desatualizada apagava clientes do banco (ex.: "ANDRÉ" sumiu).
+      // Aqui recusamos push que REGREDIRIA o cadastro: se o que vamos enviar tem MENOS
+      // clientes que o salvo localmente, é sinal de versão stale — não envia.
+      if (chave === 'clientesAsaas') {
+        try {
+          if (this.enabled && !this._pullInicialCompleto) {
+            console.warn('[pushAppData] bloqueado: pull inicial incompleto — não arrisco apagar clientes');
+            return false;
+          }
+          const qtdNoPush = (valor && typeof valor === 'object') ? Object.keys(valor).length : 0;
+          let qtdLocal = 0;
+          try {
+            const localCli = JSON.parse(localStorage.getItem('lider_clientes_asaas') || '{}');
+            if (localCli && typeof localCli === 'object') qtdLocal = Object.keys(localCli).length;
+          } catch (_) {}
+          if (qtdLocal > 0 && qtdNoPush < qtdLocal) {
+            console.warn('[pushAppData] bloqueado: push regrediria clientes (' + qtdNoPush + ' < ' + qtdLocal + ')');
+            return false;
+          }
+        } catch (_) { /* na dúvida, deixa passar */ }
+      }
+
       // ── BLINDAGEM DO ARRAY DE LOJAS (vínculo cliente↔loja sumindo) ──
       // Nunca deixa um push stale/vazio apagar os vínculos no Supabase:
       // 0) v33k.252: ANTES do pull inicial completar, NUNCA faz push de lojas.
@@ -38657,7 +38681,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.276-demandas-reconc';
+  const _DIAG_VERSAO_PAINEL = 'v33k.277-clientes-merge';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41710,6 +41734,18 @@ REGRAS DE OURO:
     (listarClientesUnicos() || []).forEach(c => {
       mapa[c.nome] = { nome: c.nome, telefone: c.telefone || '', doc: '', contaId: '', ativo: true, origem: 'carteira' };
     });
+    // v33k.276: inclui clientes que estão VINCULADOS A LOJAS mas podem não ter
+    // billing nem cadastro (ex.: "ANDRÉ" sumiu do clientesAsaas mas vinculava 6 lojas).
+    // Sem isso, um cliente que só existe como vínculo de loja não aparece na lista —
+    // e fica impossível selecioná-lo numa demanda. Rede de segurança contra sumiço.
+    try {
+      (typeof lojasErp !== 'undefined' ? lojasErp : []).forEach(l => {
+        const nome = l && l.clienteVinculado;
+        if (nome && !mapa[nome]) {
+          mapa[nome] = { nome, telefone: '', doc: '', contaId: '', ativo: true, origem: 'loja' };
+        }
+      });
+    } catch (_) {}
     Object.keys(_clientesAsaas || {}).forEach(nome => {
       const d = _clientesAsaas[nome] || {};
       if (!mapa[nome]) mapa[nome] = { nome, telefone: '', doc: '', contaId: '', ativo: true, origem: 'manual' };
@@ -54144,7 +54180,19 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         localStorage.setItem('lider_cenarios_cobranca', JSON.stringify(cenariosCobranca));
       }
       if (cloudData.appData.clientesAsaas && typeof cloudData.appData.clientesAsaas === 'object') {
-        _clientesAsaas = cloudData.appData.clientesAsaas;
+        // v33k.276: MERGE por união (antes substituía o objeto inteiro pelo do banco —
+        // se o banco viesse sem um cliente manual, o local perdia também). Une banco +
+        // local por nome; em conflito, mantém os campos preenchidos. Assim um cliente
+        // que só existe de um lado NÃO some. Mesma família do "demandas somem".
+        const doBanco = cloudData.appData.clientesAsaas || {};
+        const local = (typeof _clientesAsaas === 'object' && _clientesAsaas) ? _clientesAsaas : {};
+        const merged = {};
+        // começa com o local, depois funde o banco sem apagar chaves locais
+        Object.keys(local).forEach(nome => { merged[nome] = { ...local[nome] }; });
+        Object.keys(doBanco).forEach(nome => {
+          merged[nome] = { ...(merged[nome] || {}), ...doBanco[nome] };
+        });
+        _clientesAsaas = merged;
         localStorage.setItem('lider_clientes_asaas', JSON.stringify(_clientesAsaas));
       }
       if (cloudData.appData.nfConfig && typeof cloudData.appData.nfConfig === 'object') {
