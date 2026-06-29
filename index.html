@@ -24094,6 +24094,24 @@ REGRAS DURAS:
           // v33k.127: completa SKU/EAN/atributos vazios (igual criação) antes de montar payload
           try { await dupCompletarCamposObjeto(novo, lojaDestino); } catch(_){}
 
+          // v33k.258: SPLIT de cor ML (cores compostas que colidem na lista fechada).
+          // Aplica as cores OFICIAIS ao produto principal (novo) e separa os extras
+          // (1 anúncio por cor que colidiu). Os extras são processados logo após o
+          // export do principal, reusando dupExportarExtra (salva+exporta+vincula).
+          let _splitExtras = [];
+          try {
+            const _split = await dupAplicarSplitCorML(novo, lojaDestino);
+            if (Array.isArray(_split) && _split.length > 1) {
+              _splitExtras = _split.slice(1); // [0] é o próprio "novo" (principal)
+              // o principal teve variações removidas (cores extras) — re-salva no banco
+              // pra refletir só as variações que ficaram, e regenera SKUs se preciso.
+              try {
+                await salvarProdutoNoBackend(novo);
+                dupLogStep('  ✓ Principal atualizado (' + (novo.variacoes||[]).length + ' variação(ões) após split)', 'ok');
+              } catch (eRS) { dupLogStep('  ⚠ não consegui re-salvar o principal pós-split: ' + eRS.message, 'err'); }
+            }
+          } catch (eSplit) { dupLogStep('  ⚠ split de cor falhou: ' + eSplit.message + ' — seguindo sem split', 'err'); }
+
           // CRITICO: precisa MONTAR o payload no formato do marketplace 
           // (com title, category_id, price, listing_type_id etc.) — senao
           // ML rejeita com "body.required_fields".
@@ -24113,6 +24131,16 @@ REGRAS DURAS:
             const itemId = data.itemId || (data.dados && data.dados.itemId) || (data.dados && data.dados.id) || '?';
             dupLogStep(`  ✓ Exportado para ${lojaDestino.marketplace} (anuncio ${itemId})`, 'ok');
             okCopias++;
+
+            // v33k.258: processa os anúncios EXTRAS do split de cor (1 por cor que
+            // colidiu na lista fechada do ML). Cada extra salva+exporta+vincula sozinho.
+            if (Array.isArray(_splitExtras) && _splitExtras.length > 0) {
+              dupLogStep(`  ↳ Processando ${_splitExtras.length} anúncio(s) extra(s) do split de cor...`, 'ok');
+              for (const extra of _splitExtras) {
+                const okExtra = await dupExportarExtra(extra, lojaDestino, lojaIdBanco);
+                if (okExtra) okCopias++; else errCopias++;
+              }
+            }
 
             // Cria vínculos (Catalog vs Legado) — portado do fluxo de massa (Fase 2a).
             // Sem isso, o produto exporta mas não fica vinculado ao anúncio (quebra
@@ -24297,6 +24325,222 @@ REGRAS DURAS:
   // Tudo é best-effort: qualquer falha de IA/rede é engolida (a cópia segue
   // com o que herdou do pai), pra não quebrar o fluxo de duplicação.
   // ============================================================
+  // v33k.258: SPLIT de cor para Mercado Livre.
+  // O ML tem COLOR como LISTA FECHADA. Cores compostas ("Preto/Branco", "Preto/Azul")
+  // casam pra mesma cor oficial ("Preto") → não podem coexistir no mesmo anúncio
+  // (ML rejeita COLOR repetida, com erro enganoso "SIZE_GRID_ID is not valid").
+  // Solução: consulta o backend pra obter o plano de casamento + colisões e, se houver
+  // colisão, divide o produto em:
+  //   - PRINCIPAL: 1ª cor de cada grupo + cores sem colisão
+  //   - EXTRAS: 1 produto por cor colidida adicional (nome=cor oficial, SKU=skuPai+cor)
+  // Retorna SEMPRE um array de produtos a exportar (1 se não precisar split).
+  // Cada produto já tem as cores das variações ajustadas pra cor OFICIAL do ML.
+  async function dupAplicarSplitCorML(novo, lojaDestino) {
+    const mkt = lojaDestino && lojaDestino.marketplace;
+    if (mkt !== 'mercadolivre') return [novo];
+    if (!Array.isArray(novo.variacoes) || novo.variacoes.length === 0) return [novo];
+    const catId = novo.categoryIdMl;
+    if (!catId) return [novo]; // sem categoria ML, não dá pra consultar lista de cores
+
+    // cores distintas (preserva ordem de 1ª aparição)
+    const coresOrdenadas = [];
+    const vistas = new Set();
+    novo.variacoes.forEach(v => {
+      const c = String(v.cor || '').trim();
+      if (c && !vistas.has(c.toLowerCase())) { vistas.add(c.toLowerCase()); coresOrdenadas.push(c); }
+    });
+    if (coresOrdenadas.length === 0) return [novo];
+
+    // consulta o plano no backend
+    let plano;
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/categoria/' + encodeURIComponent(catId) + '/plano-cores', {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cores: coresOrdenadas }),
+      });
+      plano = await resp.json();
+    } catch (e) {
+      dupLogStep('  ⚠ não consegui consultar lista de cores do ML: ' + e.message + ' — exportando sem split', 'err');
+      return [novo];
+    }
+    if (!plano || !plano.ok) return [novo];
+
+    // mapa cor original (lower) → cor oficial casada
+    const oficialDe = new Map();
+    (plano.plano || []).forEach(p => { oficialDe.set(String(p.original).toLowerCase(), p.oficialNome || p.original); });
+
+    // aplica a cor OFICIAL em todas as variações (mesmo sem split, melhora o casamento)
+    const aplicarOficial = (prod) => {
+      (prod.variacoes || []).forEach(v => {
+        const off = oficialDe.get(String(v.cor || '').toLowerCase());
+        if (off && off !== v.cor) {
+          if (!v.corOriginal) v.corOriginal = v.cor; // preserva a composta pro SKU/histórico
+          v.cor = off;
+        }
+      });
+    };
+
+    if (!plano.precisaSplit) {
+      aplicarOficial(novo);
+      return [novo];
+    }
+
+    // ---- precisa split: monta grupos por cor oficial ----
+    // para cada grupo de colisão, a 1ª cor original (na ordem) é a "principal",
+    // as demais são "extras".
+    const colisoes = plano.colisoes || [];
+    const corExtra = new Set();   // cores originais (lower) que vão pra anúncio extra
+    colisoes.forEach(grupo => {
+      // ordena as cores do grupo pela ordem em que aparecem em coresOrdenadas
+      const ordenadas = grupo.cores.slice().sort((a, b) =>
+        coresOrdenadas.findIndex(c => c.toLowerCase() === a.toLowerCase()) -
+        coresOrdenadas.findIndex(c => c.toLowerCase() === b.toLowerCase()));
+      ordenadas.slice(1).forEach(c => corExtra.add(c.toLowerCase()));
+    });
+
+    const totalExtras = corExtra.size;
+    dupLogStep('  ⚠ Limitação do Mercado Livre: cor repetida não é permitida no mesmo anúncio.', 'err');
+    dupLogStep('  → Criando 1 anúncio principal + ' + totalExtras + ' anúncio(s) extra(s) (1 por cor).', 'ok');
+
+    // PRINCIPAL: remove as variações de cores extras (ficam só principal + não-colididas)
+    const principal = novo; // já está salvo/clonado
+    principal.variacoes = (novo.variacoes || []).filter(v => !corExtra.has(String(v.cor || '').toLowerCase()));
+    aplicarOficial(principal);
+
+    const produtos = [principal];
+
+    // EXTRAS: 1 produto por cor extra original
+    for (const corLower of corExtra) {
+      const corOrig = coresOrdenadas.find(c => c.toLowerCase() === corLower) || corLower;
+      const oficial = oficialDe.get(corLower) || corOrig;
+      // clona o produto base
+      const extra = JSON.parse(JSON.stringify(novo));
+      delete extra.idBanco;          // será salvo como novo
+      delete extra.id;               // novo id local
+      extra.id = gerarId();
+      extra.duplicadoDeId = novo.duplicadoDeId || novo.id; // herda o MESMO pai (agrupa)
+      extra.duplicadoDeIdBanco = novo.duplicadoDeIdBanco || novo.idBanco || null;
+      // só as variações daquela cor
+      extra.variacoes = (novo.variacoes || []).filter(v => String(v.cor || '').toLowerCase() === corLower)
+        .map(v => { const nv = JSON.parse(JSON.stringify(v)); if (!nv.corOriginal) nv.corOriginal = nv.cor; nv.cor = oficial; return nv; });
+      if (extra.variacoes.length === 0) continue;
+      // nome = cor oficial; mantém o título base + cor pra leitura
+      const baseNome = String(novo.nome || '').trim();
+      extra.nome = baseNome ? (baseNome + ' ' + oficial) : oficial;
+      // SKU pai derivado: skuPai original + cor (normalizada)
+      const corSku = String(corOrig).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '') || 'COR';
+      extra.skuPai = (novo.skuPai || 'P') + '-' + corSku;
+      // zera SKUs/EANs das variações pra serem regerados no contexto do novo skuPai
+      (extra.variacoes || []).forEach(v => { v.sku = ''; v.ean = ''; });
+      // limpa vínculos/exportações herdados do clone
+      delete extra.marketplaces;
+      (extra.variacoes || []).forEach(v => { delete v.vinculos; });
+      extra._splitCorExtra = true; // marca pra log
+      extra._splitCorNome = oficial;
+      produtos.push(extra);
+    }
+
+    dupLogStep('  ✓ Split preparado: ' + produtos.length + ' anúncio(s) no total.', 'ok');
+    return produtos;
+  }
+
+  // v33k.258: salva + exporta + vincula UM produto extra do split de cor.
+  // Isolado pra não tocar no fluxo do principal. Tem rollback próprio.
+  // Retorna true se exportou com sucesso, false caso contrário.
+  async function dupExportarExtra(extra, lojaDestino, lojaIdBanco) {
+    const nomeCor = extra._splitCorNome || extra.nome || 'extra';
+    dupLogStep('  ┌─ Anúncio extra (cor ' + nomeCor + ')', 'ok');
+    try {
+      // completa SKU/EAN/atributos do extra (gera SKUs no contexto do novo skuPai)
+      try { await dupCompletarCamposObjeto(extra, lojaDestino); } catch(_) {}
+
+      // salva no banco
+      produtosErp.push(extra);
+      const salvoResp = await salvarProdutoNoBackend(extra);
+      if (salvoResp && (salvoResp.id || salvoResp.idBanco)) {
+        extra.idBanco = salvoResp.idBanco || salvoResp.id;
+        dupLogStep('  │ ✓ Produto extra salvo (idBanco=' + extra.idBanco + ')', 'ok');
+      } else {
+        dupLogStep('  │ ✗ Extra sem idBanco — não exporta', 'err');
+        return false;
+      }
+
+      // garante fotos públicas
+      try {
+        if (typeof garantirFotosUrlsPublicas === 'function') await garantirFotosUrlsPublicas(extra);
+      } catch(_) {}
+
+      // monta payload e exporta
+      const payloadExtra = montarPayloadExport(extra, lojaDestino.marketplace);
+      const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + extra.idBanco;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload: payloadExtra }),
+      });
+      const data = await resp.json();
+
+      if (data.ok || data.success) {
+        const itemId = data.itemId || (data.dados && data.dados.itemId) || (data.dados && data.dados.id) || '?';
+        dupLogStep('  │ ✓ Exportado (anúncio ' + itemId + ')', 'ok');
+        // vínculos (mesma lógica do principal: Catalog vs Legado)
+        if (itemId && itemId !== '?') {
+          if (!extra.marketplaces) extra.marketplaces = {};
+          extra.marketplaces[lojaDestino.marketplace] = { exportado: true, exportadoEm: new Date().toISOString(), itemId, payload: payloadExtra };
+          const eCatalog = !!(data.dados && data.dados.eCatalog);
+          const criadosCatalog = (data.dados && Array.isArray(data.dados.criados)) ? data.dados.criados : [];
+          const norm = s => String(s || '').trim().toLowerCase();
+          if (eCatalog && criadosCatalog.length > 0) {
+            criadosCatalog.forEach(c => {
+              const varInterna = (extra.variacoes || []).find(v => norm(v.cor) === norm(c.cor) && norm(v.tamanho) === norm(c.tamanho));
+              if (!varInterna) return;
+              if (!varInterna.vinculos) varInterna.vinculos = [];
+              if (!varInterna.vinculos.some(vi => String(vi.anuncioId) === String(c.itemId))) {
+                varInterna.vinculos.push({ id: gerarId(), anuncioId: c.itemId, marketplace: lojaDestino.marketplace, lojaId: lojaIdBanco, lojaIdBanco: lojaIdBanco, titulo: extra.nome, skuExterno: varInterna.sku || '', skuSuspeito: false, criadoPor: 'duplicacao-split-catalog', criadoEm: new Date().toISOString() });
+              }
+            });
+          } else {
+            // Legado: 1 vínculo no produto (item pai)
+            (extra.variacoes || []).forEach(v => {
+              if (!v.vinculos) v.vinculos = [];
+              if (!v.vinculos.some(vi => String(vi.anuncioId) === String(itemId))) {
+                v.vinculos.push({ id: gerarId(), anuncioId: itemId, marketplace: lojaDestino.marketplace, lojaId: lojaIdBanco, lojaIdBanco: lojaIdBanco, titulo: extra.nome, skuExterno: v.sku || '', skuSuspeito: false, criadoPor: 'duplicacao-split-legado', criadoEm: new Date().toISOString() });
+              }
+            });
+          }
+          try { if (typeof v31_persistirProduto === 'function') await v31_persistirProduto(extra); else saveProdutos(); } catch(_) {}
+        }
+        return true;
+      } else {
+        const erroMsg = data.erro || JSON.stringify(data).slice(0, 200);
+        dupLogStep('  │ ✗ Erro exportar extra: ' + erroMsg, 'err');
+        if (data.detalhes) data.detalhes.slice(0, 3).forEach(d => dupLogStep('  │   • ' + d, 'err'));
+        if (typeof adicionarPendencia === 'function') {
+          adicionarPendencia('export_falhou', 'Anúncio extra não exportado: ' + (extra.nome || 'produto'), 'Falha: ' + erroMsg, { skuPai: extra.skuPai });
+        }
+        // rollback do extra
+        dupLogStep('  │ ↶ Rollback do extra...', 'err');
+        try {
+          if (extra.idBanco) await fetch(BACKEND_URL + '/api/produtos/' + extra.idBanco, { method: 'DELETE', headers: { 'x-api-token': getApiToken() } });
+          const idx = produtosErp.findIndex(x => String(x.id) === String(extra.id));
+          if (idx >= 0) produtosErp.splice(idx, 1);
+          dupLogStep('  └ ✓ Rollback extra OK', 'ok');
+        } catch(eR) { dupLogStep('  └ ⚠ Rollback extra falhou: ' + eR.message, 'err'); }
+        return false;
+      }
+    } catch (e) {
+      dupLogStep('  │ ✗ Erro de rede no extra: ' + e.message, 'err');
+      try {
+        if (extra.idBanco) await fetch(BACKEND_URL + '/api/produtos/' + extra.idBanco, { method: 'DELETE', headers: { 'x-api-token': getApiToken() } });
+        const idx = produtosErp.findIndex(x => String(x.id) === String(extra.id));
+        if (idx >= 0) produtosErp.splice(idx, 1);
+      } catch(_) {}
+      return false;
+    }
+  }
+
   async function dupCompletarCamposObjeto(novo, lojaDestino) {
     const mkt = lojaDestino && lojaDestino.marketplace;
     const log = (msg, tipo) => { try { dupLogStep(msg, tipo); } catch(_) {} };
@@ -38274,7 +38518,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.257-fix-cor-composta-attribute-combinations';
+  const _DIAG_VERSAO_PAINEL = 'v33k.258-split-cor-ml';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
