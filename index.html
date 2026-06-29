@@ -3789,6 +3789,19 @@
   .cron-admin-btn.salvar { border-color: #16a34a; color: #15803d; }
   .cron-admin-btn.perigo { border-color: #fecaca; color: #b91c1c; }
   .cron-admin-ocultar { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--lc-muted); margin-left: auto; cursor: pointer; }
+  /* linha do tempo das execuções de cron */
+  .cron-tl-filtro { padding: 6px 10px; border: 1px solid var(--lc-border); border-radius: 7px; font-size: 13px; font-weight: 600; background: #fff; color: var(--lc-ink); }
+  .cron-tl-resumo-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .cron-tl-resumo-chip { font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 8px; background: #f3f4f6; color: #374151; }
+  .cron-tl-avisos { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+  .cron-tl-aviso-item { font-size: 12px; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; padding: 6px 10px; border-radius: 7px; }
+  .cron-tl-item { background: var(--lc-surface); border-radius: 8px; padding: 9px 12px; margin-bottom: 7px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .cron-tl-item-top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .cron-tl-badge { font-size: 11px; font-weight: 700; color: #fff; padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
+  .cron-tl-nome { font-weight: 700; font-size: 13px; color: var(--lc-ink); }
+  .cron-tl-user { font-size: 11px; color: var(--lc-muted); background: #f3f4f6; padding: 2px 8px; border-radius: 6px; margin-left: auto; }
+  .cron-tl-item-meta { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--lc-muted); margin-top: 5px; }
+  .cron-tl-resultado { font-size: 11px; color: #6b7280; margin-top: 5px; font-family: ui-monospace, monospace; background: #f9fafb; padding: 4px 7px; border-radius: 5px; word-break: break-word; }
   .promo-chip-v2.chip-shopee.ativo { background: #ee4d2d; border-color: #ee4d2d; color: #fff; }
   .promo-chip-v2.chip-relampago.ativo { background: #dc2626; border-color: #dc2626; color: #fff; }
   .promo-chip-v2.chip-ml.ativo { background: #a68b00; border-color: #a68b00; color: #fff; }
@@ -9082,6 +9095,22 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             </div>
             <div id="cronsAdminLista">
               <div class="empty-state-v2"><div class="empty-icon-v2"></div><div class="empty-title-v2">Carregando crons…</div></div>
+            </div>
+
+            <!-- LINHA DO TEMPO das execuções -->
+            <div style="margin-top:22px;border-top:1px solid var(--lc-border, #e5e7eb);padding-top:16px">
+              <div class="settings-card-title" style="font-size:15px">🕒 Linha do tempo das execuções</div>
+              <div class="settings-card-subtitle" style="margin-bottom:10px">Acompanhe quando cada cron iniciou e terminou, a duração e se houve problemas. Útil pra monitorar a saúde do sistema conforme cresce o volume.</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+                <select id="cronTlFiltroTipo" class="cron-tl-filtro" onchange="carregarCronTimeline()" title="Filtrar por cron"><option value="">Todos os crons</option></select>
+                <select id="cronTlFiltroUser" class="cron-tl-filtro" onchange="carregarCronTimeline()" title="Filtrar por usuário"><option value="">Todos os usuários</option></select>
+                <select id="cronTlFiltroStatus" class="cron-tl-filtro" onchange="carregarCronTimeline()" title="Filtrar por status"><option value="">Todos os status</option><option value="ok">Só OK</option><option value="erro">Só erros</option><option value="rodando">Em execução</option></select>
+                <button class="toolbar-btn" onclick="carregarCronTimeline()">🔄 Atualizar</button>
+              </div>
+              <div id="cronTlResumo" style="margin-bottom:12px"></div>
+              <div id="cronTimeline">
+                <div class="empty-state-v2"><div class="empty-title-v2">Carregando linha do tempo…</div></div>
+              </div>
             </div>
           </div>
 
@@ -38533,7 +38562,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.263-gender-do-titulo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.264-cron-timeline-editor';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -46879,21 +46908,141 @@ ${JSON.stringify(metricas, null, 2)}`
       if (!r.ok) { lista.innerHTML = '<div class="empty-state-v2"><div class="empty-title-v2">Erro: ' + escapeHtml(r.erro || '') + '</div></div>'; return; }
       _cronsAdminCache = r.crons || [];
       renderCronsAdmin();
+      carregarCronTimeline();
     } catch (e) {
       lista.innerHTML = '<div class="empty-state-v2"><div class="empty-title-v2">Erro: ' + escapeHtml(e.message) + '</div></div>';
     }
   }
   window.carregarCronsAdmin = carregarCronsAdmin;
 
+  // ── LINHA DO TEMPO das execuções de cron ──────────────────────────
+  function _cronFmtDur(ms) {
+    if (ms == null) return '—';
+    if (ms < 1000) return ms + 'ms';
+    const s = ms / 1000;
+    if (s < 60) return s.toFixed(1) + 's';
+    const min = Math.floor(s / 60), resto = Math.round(s % 60);
+    return min + 'min' + (resto ? ' ' + resto + 's' : '');
+  }
+  function _cronFmtHora(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+    catch (e) { return iso; }
+  }
+  function _popularFiltrosCronTl() {
+    const selTipo = document.getElementById('cronTlFiltroTipo');
+    if (selTipo && _cronsAdminCache.length && selTipo.options.length <= 1) {
+      _cronsAdminCache.forEach(c => {
+        const o = document.createElement('option');
+        o.value = c.tipo; o.textContent = c.nome || c.tipo;
+        selTipo.appendChild(o);
+      });
+    }
+  }
+
+  async function carregarCronTimeline() {
+    const cont = document.getElementById('cronTimeline');
+    if (!cont) return;
+    if (typeof papelAtual === 'function' && papelAtual() !== 'superadmin') return;
+    _popularFiltrosCronTl();
+    const tipo = (document.getElementById('cronTlFiltroTipo') || {}).value || '';
+    const userId = (document.getElementById('cronTlFiltroUser') || {}).value || '';
+    const status = (document.getElementById('cronTlFiltroStatus') || {}).value || '';
+    const params = new URLSearchParams();
+    if (tipo) params.set('tipo', tipo);
+    if (userId) params.set('usuario_id', userId);
+    if (status) params.set('status', status);
+    params.set('limite', '120');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/crons-admin/execucoes?' + params.toString(), {
+        headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      if (!r.ok) { cont.innerHTML = '<div class="empty-state-v2"><div class="empty-title-v2">Erro: ' + escapeHtml(r.erro || '') + '</div></div>'; return; }
+      if (r.tabelaAusente) {
+        cont.innerHTML = '<div class="wa-aviso" style="background:#fffbeb;border-color:#fde68a"><b>Histórico ainda não ativado.</b> A tabela <code>cron_execucoes</code> precisa ser criada no banco. Assim que existir, as execuções começam a aparecer aqui automaticamente.</div>';
+        return;
+      }
+      const execs = r.execucoes || [];
+      const selUser = document.getElementById('cronTlFiltroUser');
+      if (selUser && selUser.options.length <= 1) {
+        const vistos = {};
+        execs.forEach(e => { if (e.usuario_id != null && !vistos[e.usuario_id]) { vistos[e.usuario_id] = e.nomeUsuario; } });
+        Object.keys(vistos).forEach(uid => {
+          const o = document.createElement('option');
+          o.value = uid; o.textContent = vistos[uid];
+          selUser.appendChild(o);
+        });
+      }
+      if (!execs.length) {
+        cont.innerHTML = '<div class="empty-state-v2"><div class="empty-title-v2">Nenhuma execução registrada ainda.</div><div style="color:var(--lc-muted);font-size:13px;margin-top:4px">As execuções aparecem aqui conforme os crons rodam.</div></div>';
+        _carregarCronResumo();
+        return;
+      }
+      cont.innerHTML = execs.map(e => {
+        const cor = e.status === 'ok' ? '#10b981' : (e.status === 'erro' ? '#ef4444' : (e.status === 'rodando' ? '#3b82f6' : '#9ca3af'));
+        const icone = e.status === 'ok' ? '✓' : (e.status === 'erro' ? '✗' : (e.status === 'rodando' ? '⟳' : '–'));
+        const statusTxt = e.status === 'ok' ? 'Concluído' : (e.status === 'erro' ? 'Erro' : (e.status === 'rodando' ? 'Em execução' : 'Pulado'));
+        const dur = e.status === 'rodando' ? 'em andamento…' : _cronFmtDur(e.duracao_ms);
+        const resultado = e.resultado ? escapeHtml(String(e.resultado).slice(0, 160)) : '';
+        return '<div class="cron-tl-item" style="border-left:3px solid ' + cor + '">' +
+          '<div class="cron-tl-item-top">' +
+            '<span class="cron-tl-badge" style="background:' + cor + '">' + icone + ' ' + statusTxt + '</span>' +
+            '<span class="cron-tl-nome">' + escapeHtml(e.nomeCron || e.tipo) + '</span>' +
+            '<span class="cron-tl-user">' + escapeHtml(e.nomeUsuario || '') + '</span>' +
+          '</div>' +
+          '<div class="cron-tl-item-meta">' +
+            '<span title="Início">▶ ' + _cronFmtHora(e.iniciado_em) + '</span>' +
+            (e.finalizado_em ? '<span title="Fim">■ ' + _cronFmtHora(e.finalizado_em) + '</span>' : '') +
+            '<span title="Duração">⏱ ' + dur + '</span>' +
+          '</div>' +
+          (resultado ? '<div class="cron-tl-resultado">' + resultado + '</div>' : '') +
+        '</div>';
+      }).join('');
+      _carregarCronResumo();
+    } catch (e) {
+      cont.innerHTML = '<div class="empty-state-v2"><div class="empty-title-v2">Erro: ' + escapeHtml(e.message) + '</div></div>';
+    }
+  }
+  window.carregarCronTimeline = carregarCronTimeline;
+
+  async function _carregarCronResumo() {
+    const cont = document.getElementById('cronTlResumo');
+    if (!cont) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/crons-admin/execucoes/resumo?horas=24', {
+        headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      if (!r.ok || r.tabelaAusente || !(r.resumo || []).length) { cont.innerHTML = ''; return; }
+      const comErro = r.resumo.filter(x => x.erro > 0);
+      const totalExec = r.resumo.reduce((s, x) => s + x.total, 0);
+      const totalErro = r.resumo.reduce((s, x) => s + x.erro, 0);
+      let html = '<div class="cron-tl-resumo-bar">' +
+        '<span class="cron-tl-resumo-chip">📊 ' + totalExec + ' execução(ões) / 24h</span>' +
+        (totalErro > 0
+          ? '<span class="cron-tl-resumo-chip" style="background:#fef2f2;color:#b91c1c">⚠ ' + totalErro + ' com erro</span>'
+          : '<span class="cron-tl-resumo-chip" style="background:#ecfdf5;color:#047857">✓ tudo saudável</span>') +
+        '</div>';
+      if (comErro.length) {
+        html += '<div class="cron-tl-avisos">';
+        comErro.forEach(x => {
+          html += '<div class="cron-tl-aviso-item">⚠ <b>' + escapeHtml(x.nomeCron) + '</b>: ' + x.erro + ' de ' + x.total + ' execução(ões) falharam nas últimas 24h</div>';
+        });
+        html += '</div>';
+      }
+      cont.innerHTML = html;
+    } catch (e) { cont.innerHTML = ''; }
+  }
+
   function renderCronsAdmin() {
     const lista = document.getElementById('cronsAdminLista');
     if (!lista) return;
     if (!_cronsAdminCache.length) { lista.innerHTML = '<div class="empty-state-v2"><div class="empty-title-v2">Nenhum cron no catálogo.</div></div>'; return; }
-    const horas = [];
-    for (let h = 0; h < 24; h++) horas.push(h);
     lista.innerHTML = _cronsAdminCache.map(c => {
       const diario = (c.intervaloMin || 0) >= 1440;
-      const opcoesHora = horas.map(h => '<option value="' + h + '"' + (h === c.horaBaseBr ? ' selected' : '') + '>' + String(h).padStart(2, '0') + ':00</option>').join('');
+      // horário atual no formato HH:MM (suporta minutos, ex.: 08:30)
+      const hh = String(c.horaBaseBr != null ? c.horaBaseBr : 5).padStart(2, '0');
+      const mm = String(c.minBaseBr != null ? c.minBaseBr : 0).padStart(2, '0');
+      const horaAtual = hh + ':' + mm;
       return '<div class="cron-admin-row" data-tipo="' + c.tipo + '">' +
         '<div class="cron-admin-head">' +
           '<div style="flex:1;min-width:0">' +
@@ -46901,7 +47050,7 @@ ${JSON.stringify(metricas, null, 2)}`
             '<div class="cron-admin-meta">' + escapeHtml(c.tipo) + ' · ' + (c.contas || 0) + ' conta(s) · ' + (c.ativas || 0) + ' ativa(s)' + (diario ? '' : ' · roda a cada ' + Math.round(c.intervaloMin / 60) + 'h') + '</div>' +
           '</div>' +
           (diario
-            ? '<div class="cron-admin-hora"><span>🕐</span><select data-tipo="' + c.tipo + '" class="cron-admin-hora-sel">' + opcoesHora + '</select></div>'
+            ? '<div class="cron-admin-hora"><span>🕐</span><input type="time" data-tipo="' + c.tipo + '" class="cron-admin-hora-sel" value="' + horaAtual + '" step="60" title="Horário diário (BR)"></div>'
             : '<div class="cron-admin-hora" style="color:var(--lc-muted);font-size:12px">intervalo fixo</div>') +
         '</div>' +
         '<input class="cron-admin-desc" value="' + escapeHtml(c.descricao) + '" data-tipo="' + c.tipo + '" placeholder="Descrição visível ao usuário">' +
@@ -46931,7 +47080,8 @@ ${JSON.stringify(metricas, null, 2)}`
     const descricao = (row.querySelector('.cron-admin-desc') || {}).value || '';
     const horaSel = row.querySelector('.cron-admin-hora-sel');
     const body = { nome, descricao };
-    if (horaSel) body.horaBaseBr = parseInt(horaSel.value, 10);
+    // input time devolve "HH:MM" — o backend aceita e extrai hora+minuto
+    if (horaSel && horaSel.value) body.horaBaseBr = horaSel.value;
     const r = await _cronAdminPost('/api/crons-admin/' + tipo, body);
     if (!r.ok) { showToast('Erro: ' + (r.erro || ''), true); return; }
     showToast('Cron salvo' + (r.tarefasAfetadas ? ' · ' + r.tarefasAfetadas + ' tarefa(s) reagendada(s)' : ''));
