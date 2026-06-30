@@ -38892,7 +38892,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.283-fix-vazamento-sessao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.284-fix-demandas-login';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -39276,9 +39276,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
         // Aguarda o pull ANTES do primeiro render real, pra a tela não aparecer
         // vazia e depois preencher (que dava a sensação de "só funciona com F5").
         (async () => {
+          let _cloudLogin = null;
           try {
             if (window.LiderSync && LiderSync.pullAll) {
               const cloudData = await LiderSync.pullAll();
+              _cloudLogin = cloudData;
               if (cloudData && typeof aplicarDadosDaNuvem === 'function') {
                 aplicarDadosDaNuvem(cloudData);
               }
@@ -39298,6 +39300,23 @@ Responda APENAS com JSON válido (sem markdown), formato:
             if (typeof carregarPaginaProdutos === 'function') carregarPaginaProdutos({ page: 1 });
             if (typeof renderAll === 'function') renderAll();
           } catch (e) { console.warn('[login] falha ao carregar produtos:', e); }
+          // v33k.284 BLINDAGEM demandas no login: o pull traz as demandas e
+          // aplicarDadosDaNuvem as popula, MAS um passo posterior do boot (carga de
+          // produtos / segundo render) podia rodar com a memória ainda não estabilizada,
+          // deixando a tela de Operações em 0 demandas até dar F5. Aqui, no FINAL de
+          // tudo, se o pull trouxe demandas mas a memória está vazia, RE-APLICA e
+          // re-renderiza a tela ativa. Idempotente e à prova de corrida.
+          try {
+            const _temNoCloud = _cloudLogin && Array.isArray(_cloudLogin.demandas) && _cloudLogin.demandas.length > 0;
+            const _vazioNaMemoria = (typeof demandas === 'undefined') || !demandas || demandas.length === 0;
+            if (_temNoCloud && _vazioNaMemoria && typeof aplicarDadosDaNuvem === 'function') {
+              console.warn('[login] demandas vieram no pull mas memória estava vazia — re-aplicando (blindagem v33k.284)');
+              aplicarDadosDaNuvem(_cloudLogin);
+              const _ativa = document.querySelector('.screen.active')?.id;
+              if (_ativa === 'operacaoScreen' && typeof renderOperacao === 'function') renderOperacao();
+              else if (typeof renderAll === 'function') renderAll();
+            }
+          } catch (e) { console.warn('[login] blindagem demandas falhou:', e); }
           if (typeof esconderOverlayCarregando === 'function') esconderOverlayCarregando();
         })();
       } else {
