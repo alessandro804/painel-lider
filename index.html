@@ -6943,7 +6943,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
 
     <!-- Cliente OBRIGATÓRIO: escolhe do painel ou cria novo na hora (nome + cel),
          que é salvo no Comercial. v33k.175 -->
-    <div class="form-group">
+    <div class="form-group" id="demandaClienteGroup">
       <label class="form-label">Cliente <span style="color:#ef4444">*</span></label>
       <select class="form-select" id="demandaClienteSelect" onchange="onDemandaClienteSelect()">
         <option value="">— Selecione o cliente —</option>
@@ -8887,13 +8887,13 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         </div>
         <!-- Tabs -->
         <div class="settings-tabs">
-          <button class="settings-tab active" onclick="setSettingsTab('financas', this)">💰 Finanças</button>
-          <button class="settings-tab" onclick="setSettingsTab('gerais', this)">⚙️ Config. Gerais</button>
-          <button class="settings-tab" onclick="setSettingsTab('cobrancas', this); renderCenarios(); if(typeof _preencherDefaultsNF==='function')_preencherDefaultsNF(); if(typeof carregarConfigRelatorioUI==='function')carregarConfigRelatorioUI()">📨 Cobranças</button>
-          <button class="settings-tab" onclick="setSettingsTab('prompts', this)">🤖 Prompts da IA</button>
-          <button class="settings-tab" onclick="setSettingsTab('logs', this)">📋 Logs</button>
-          <button class="settings-tab" onclick="setSettingsTab('backup', this)">💾 Backup</button>
-          <button class="settings-tab" onclick="setSettingsTab('profile', this)">👤 Perfil</button>
+          <button class="settings-tab active" data-tab="financas" data-agencia onclick="setSettingsTab('financas', this)">💰 Finanças</button>
+          <button class="settings-tab" data-tab="gerais" onclick="setSettingsTab('gerais', this)">⚙️ Config. Gerais</button>
+          <button class="settings-tab" data-tab="cobrancas" data-agencia onclick="setSettingsTab('cobrancas', this); renderCenarios(); if(typeof _preencherDefaultsNF==='function')_preencherDefaultsNF(); if(typeof carregarConfigRelatorioUI==='function')carregarConfigRelatorioUI()">📨 Cobranças</button>
+          <button class="settings-tab" data-tab="prompts" data-agencia onclick="setSettingsTab('prompts', this)">🤖 Prompts da IA</button>
+          <button class="settings-tab" data-tab="logs" onclick="setSettingsTab('logs', this)">📋 Logs</button>
+          <button class="settings-tab" data-tab="backup" data-agencia onclick="setSettingsTab('backup', this)">💾 Backup</button>
+          <button class="settings-tab" data-tab="profile" onclick="setSettingsTab('profile', this)">👤 Perfil</button>
         </div>
 
         <!-- Tab: Finanças (Categorias + Despesas modelo + Contas + Metas) -->
@@ -37248,6 +37248,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
   function popularClientesDemanda() {
     const sel = document.getElementById('demandaClienteSelect');
     if (!sel) return;
+    // Papel marketplace: não tem clientes. Esconde o grupo inteiro de cliente
+    // (a demanda fica vinculada só à loja). Sem cliente obrigatório.
+    try {
+      const grupo = document.getElementById('demandaClienteGroup');
+      if (typeof papelAtual === 'function' && papelAtual() === 'marketplace') {
+        if (grupo) grupo.style.display = 'none';
+        return; // não popula clientes
+      } else if (grupo) {
+        grupo.style.display = '';
+      }
+    } catch (e) {}
     // usa listarClientesCadastro (TODOS os clientes cadastrados, com doc/conta), não
     // só listarClientesUnicos (que só traz quem tem billing). Assim os clientes
     // cadastrados aparecem pra seleção na demanda.
@@ -38920,7 +38931,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.295-expedicao-impressos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.297-migrar-loja-superadmin';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -39163,6 +39174,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // cliente (dono de loja que loga pra acompanhar): Home (métricas da própria loja), Lucro e Pedidos.
     // NUNCA Configurações (settingsScreen) — escopo já filtra os dados por dono via resolverEscopo.
     cliente: ['homeScreen','lucroScreen','pedidosScreen','loginScreen'],
+    // marketplace: usuário padrão focado em OPERAR plataformas. Vê Home, todo o grupo
+    // Operações, Lojas & Conexões e Configurações. NÃO vê Financeiro, Comercial,
+    // Marketing (áreas de agência). Em Configurações, só Gerais/Logs/Perfil (gating
+    // interno em renderSettings) e sem disparos de WhatsApp.
+    marketplace: ['homeScreen','operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','adsScreen','lucroScreen','pedidosScreen','lojasConexoesScreen','settingsScreen','loginScreen'],
     demo: ['operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','homeScreen','settingsScreen','loginScreen'],
   };
   // Catálogo de telas que um colaborador PODE receber permissão (checklist granular).
@@ -47394,6 +47410,24 @@ ${JSON.stringify(metricas, null, 2)}`
   let pendingMigration = null; // {type, catKey, subName?, txCount}
 
   function renderSettings() {
+    // Papel marketplace: esconde abas de agência (Finanças, Cobranças, Prompts, Backup).
+    // Vê apenas Config. Gerais, Logs e Perfil.
+    try {
+      const ehMkt = (typeof papelAtual === 'function') && papelAtual() === 'marketplace';
+      const tabs = document.querySelectorAll('#settingsScreen .settings-tab');
+      let ativaEscondida = false;
+      tabs.forEach(t => {
+        const agencia = t.hasAttribute('data-agencia');
+        const esconder = ehMkt && agencia;
+        t.style.display = esconder ? 'none' : '';
+        if (esconder && t.classList.contains('active')) ativaEscondida = true;
+      });
+      // se a aba ativa foi escondida, cai pra "Config. Gerais"
+      if (ehMkt && ativaEscondida) {
+        const gerais = document.querySelector('#settingsScreen .settings-tab[data-tab="gerais"]');
+        if (gerais) setSettingsTab('gerais', gerais);
+      }
+    } catch (e) {}
     renderCategoriesList();
     renderAccountsListSettings();
     renderDespesasModeloList();
@@ -47571,6 +47605,17 @@ ${JSON.stringify(metricas, null, 2)}`
     try {
       const data = await _automacoesFetch('', { method: 'GET' });
       _automacoesCache = data.automacoes || [];
+      // Papel marketplace: automações de disparo de WhatsApp não existem pra ele.
+      // Removidas da lista (e nunca ligadas — o backend também não as semeia).
+      try {
+        if (typeof papelAtual === 'function' && papelAtual() === 'marketplace') {
+          _automacoesCache = _automacoesCache.filter(a => {
+            const t = String(a.tipo || '').toLowerCase();
+            const n = String(a.nome || '').toLowerCase();
+            return !/whats/.test(t) && !/whats/.test(n);
+          });
+        }
+      } catch (e) {}
       const aviso = document.getElementById('automacoesAviso');
       if (aviso) {
         if (data.semLojas) {
@@ -51884,7 +51929,7 @@ ${JSON.stringify(metricas, null, 2)}`
           </span>
           <span class="kanban-card-prio">${prioIcon}</span>
         </div>
-        <div class="kanban-card-cliente">${(function(){ try { const r = _resolverClienteDaDemanda(d); return r.clienteNome || d.cliente || 'Sem cliente'; } catch(e) { return d.cliente || 'Sem cliente'; } })()}</div>
+        <div class="kanban-card-cliente">${(function(){ try { if (typeof papelAtual==='function' && papelAtual()==='marketplace') { return _resolverLojaDaDemanda(d); } const r = _resolverClienteDaDemanda(d); return r.clienteNome || d.cliente || 'Sem cliente'; } catch(e) { return d.cliente || 'Sem cliente'; } })()}</div>
         <div class="kanban-card-produto">${d.produto || d.descricao || '—'}</div>
         <div class="kanban-card-footer">
           <span class="kanban-card-mkt ${d.marketplace || 'outro'}">${mktLabel}</span>
@@ -52786,16 +52831,18 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   
   async function salvarDemanda() {
+    // Papel marketplace: demandas não têm cliente (só loja). Pula tudo de cliente.
+    const _ehMktDemanda = (typeof papelAtual === 'function') && papelAtual() === 'marketplace';
     // CLIENTE OBRIGATÓRIO (v33k.175) pra todas as demandas. Se for cliente novo,
     // salva no cadastro do Comercial (nome + telefone) antes de prosseguir.
-    if (!editingDemanda) {
+    if (!editingDemanda && !_ehMktDemanda) {
       const nomeNovo = await salvarClienteNovoDemanda();
       if (nomeNovo && typeof nomeNovo === 'string') {
         const h = document.getElementById('demandaCliente'); if (h) h.value = nomeNovo;
       }
     }
     const cliente = (document.getElementById('demandaCliente')||{}).value || '';
-    if (!editingDemanda && (!cliente || !cliente.trim())) {
+    if (!editingDemanda && !_ehMktDemanda && (!cliente || !cliente.trim())) {
       showToast('Selecione ou cadastre o cliente — é obrigatório', true);
       return;
     }
@@ -53244,6 +53291,19 @@ ${JSON.stringify(metricas, null, 2)}`
       if (b) telefone = (b.telefone || '').replace(/\D/g, '');
     }
     return { clienteNome, telefone };
+  }
+
+  // Resolve o NOME da loja de uma demanda (pela loja direta ou pelas contas).
+  // Usado no card de Demandas para o papel marketplace, que não tem clientes.
+  function _resolverLojaDaDemanda(demanda) {
+    let lojaObj = lojasErp.find(x => x.nome === demanda.loja);
+    if (!lojaObj && Array.isArray(demanda.contas) && demanda.contas.length) {
+      lojaObj = lojasErp.find(l => String(l.id) === String(demanda.contas[0]));
+    }
+    if (!lojaObj && demanda.lojaDestinoId) {
+      lojaObj = lojasErp.find(l => String(l.id) === String(demanda.lojaDestinoId));
+    }
+    return (lojaObj && lojaObj.nome) || demanda.loja || 'Sem loja';
   }
 
   // Monta o input técnico pra IA (loja - cliente - plataforma - demanda)
@@ -55281,8 +55341,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 <script>
   // ═══ GESTÃO DE USUÁRIOS (ADM) ═══
   let _admUsuarios = [];
-  const ADM_PAPEL_LABEL = { superadmin:'Super Admin', admin:'Administrador', colaborador:'Colaborador', cliente:'Cliente', demo:'Demonstração' };
-  const ADM_PAPEL_COR = { superadmin:'#7c3aed', admin:'#16a34a', colaborador:'#2563eb', cliente:'#0891b2', demo:'#9ca3af' };
+  const ADM_PAPEL_LABEL = { superadmin:'Super Admin', admin:'Administrador', colaborador:'Colaborador', cliente:'Cliente', marketplace:'Marketplace', demo:'Demonstração' };
+  const ADM_PAPEL_COR = { superadmin:'#7c3aed', admin:'#16a34a', colaborador:'#2563eb', cliente:'#0891b2', marketplace:'#0d9488', demo:'#9ca3af' };
 
   async function renderAdmUsuarios() {
     const cont = document.getElementById('admUsuariosLista');
@@ -55314,6 +55374,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         <span style="background:${cor};color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700">${ADM_PAPEL_LABEL[u.papel]||u.papel}</span>
         <div style="display:flex;gap:6px">
           <button class="toolbar-btn" style="font-size:11px;background:#b45309;color:white" onclick="impersonarUsuario(${u.id})">👁 Entrar como</button>
+          ${papelAtual()==='superadmin' && (u.papel==='admin'||u.papel==='marketplace'||u.papel==='cliente') ? `<button class="toolbar-btn" style="font-size:11px;background:#7c3aed;color:white" onclick="abrirMigrarLojaModal(${u.id})">↗ Migrar loja</button>` : ''}
           <button class="toolbar-btn" style="font-size:11px" onclick="abrirAdmUsuarioModal(${u.id})">✏️ Editar</button>
           <button class="toolbar-btn" style="font-size:11px;color:#dc2626" onclick="admRemoverUsuario(${u.id})">🗑</button>
         </div>
@@ -55557,6 +55618,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <label class="form-label" style="font-size:12px">Papel</label>
       <select class="form-input" id="admPapel" style="margin-bottom:10px" onchange="admToggleDono()">
         <option value="colaborador" ${(!u||u.papel==='colaborador')?'selected':''}>Colaborador (acessos definidos abaixo)</option>
+        <option value="marketplace" ${u&&u.papel==='marketplace'?'selected':''}>Marketplace (opera plataformas — sem agência)</option>
         <option value="cliente" ${u&&u.papel==='cliente'?'selected':''}>Cliente (dono de loja — vê só Lucro das lojas dele)</option>
         ${papelAtual()==='superadmin' ? `
         <option value="admin" ${u&&u.papel==='admin'?'selected':''}>Administrador (empresa — tudo)</option>
@@ -55732,6 +55794,88 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } catch(e) { showToast('Erro: '+e.message, true); }
   }
   window.impersonarUsuario = impersonarUsuario;
+
+  // ═══ MIGRAÇÃO DE LOJA entre usuários (SUPERADMIN) ═══
+  async function abrirMigrarLojaModal(origemId) {
+    const origem = _admUsuarios.find(x => x.id === origemId);
+    if (!origem) return;
+    const old = document.getElementById('migrarLojaOverlay'); if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'migrarLojaOverlay';
+    ov.className = 'modal-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
+    // destinos possíveis: todos os donos de loja (admin/marketplace/cliente), menos a origem
+    const destinos = _admUsuarios.filter(u => u.id !== origemId && (u.papel === 'admin' || u.papel === 'marketplace' || u.papel === 'cliente') && u.ativo !== false);
+    ov.innerHTML = `
+      <div style="background:#fff;border-radius:14px;max-width:460px;width:100%;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+        <div style="font-size:17px;font-weight:800;color:#1e2a47;margin-bottom:4px">Migrar loja</div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:16px">De <b>${escapeHtml(origem.nome)}</b> para outro usuário. A loja e todos os dados dela (vendas, anúncios, pedidos, tokens) vão junto.</div>
+
+        <label class="form-label">Loja a migrar</label>
+        <select class="form-input" id="migrarLojaSel" style="margin-bottom:12px"><option value="">Carregando lojas…</option></select>
+
+        <label class="form-label">Usuário destino</label>
+        <select class="form-input" id="migrarDestinoSel" style="margin-bottom:16px">
+          <option value="">— Selecione o destino —</option>
+          ${destinos.map(d => `<option value="${d.id}">${escapeHtml(d.nome)} (${ADM_PAPEL_LABEL[d.papel]||d.papel})</option>`).join('')}
+        </select>
+
+        <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:9px;padding:10px 12px;font-size:12px;color:#92400e;margin-bottom:16px">
+          <b>Atenção:</b> o catálogo de produtos do dono atual não é movido (pode ser compartilhado entre lojas). Apenas a loja e seus dados operacionais migram.
+        </div>
+
+        <div style="display:flex;gap:8px">
+          <button class="toolbar-btn" style="flex:1" onclick="document.getElementById('migrarLojaOverlay').remove()">Cancelar</button>
+          <button class="toolbar-btn" id="migrarLojaConfirmBtn" style="flex:1;background:#7c3aed;color:#fff" onclick="confirmarMigrarLoja(${origemId})">Migrar loja</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+
+    // carrega as lojas reais do usuário origem
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/lojas-do-usuario/' + origemId, { headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken() } })).json();
+      const sel = document.getElementById('migrarLojaSel');
+      if (!sel) return;
+      if (r.ok && r.lojas && r.lojas.length) {
+        sel.innerHTML = '<option value="">— Selecione a loja —</option>' +
+          r.lojas.map(l => `<option value="${l.id}">${escapeHtml(l.nome)} · ${escapeHtml(l.marketplace || '')}</option>`).join('');
+      } else {
+        sel.innerHTML = '<option value="">Este usuário não tem lojas</option>';
+      }
+    } catch (e) {
+      const sel = document.getElementById('migrarLojaSel');
+      if (sel) sel.innerHTML = '<option value="">Erro ao carregar lojas</option>';
+    }
+  }
+  window.abrirMigrarLojaModal = abrirMigrarLojaModal;
+
+  async function confirmarMigrarLoja(origemId) {
+    const lojaId = (document.getElementById('migrarLojaSel') || {}).value;
+    const destinoId = (document.getElementById('migrarDestinoSel') || {}).value;
+    if (!lojaId) { showToast('Selecione a loja a migrar', true); return; }
+    if (!destinoId) { showToast('Selecione o usuário destino', true); return; }
+    const origem = _admUsuarios.find(x => x.id === origemId);
+    const destino = _admUsuarios.find(x => String(x.id) === String(destinoId));
+    const lojaNome = ((document.getElementById('migrarLojaSel') || {}).selectedOptions || [{}])[0].textContent || 'esta loja';
+    if (!confirm(`Migrar "${lojaNome}"\nde ${origem ? origem.nome : '?'} para ${destino ? destino.nome : '?'}?\n\nA loja e todos os dados dela vão junto. Esta ação muda a posse no sistema.`)) return;
+    const btn = document.getElementById('migrarLojaConfirmBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Migrando…'; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/migrar-loja', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ loja_id: parseInt(lojaId, 10), destino_id: parseInt(destinoId, 10) }),
+      })).json();
+      if (!r.ok) { showToast('Erro: ' + (r.erro || 'falha na migração'), true); if (btn) { btn.disabled = false; btn.textContent = 'Migrar loja'; } return; }
+      showToast('✅ ' + (r.msg || 'Loja migrada'));
+      const ov = document.getElementById('migrarLojaOverlay'); if (ov) ov.remove();
+      renderAdmUsuarios();
+    } catch (e) {
+      showToast('Erro: ' + e.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = 'Migrar loja'; }
+    }
+  }
+  window.confirmarMigrarLoja = confirmarMigrarLoja;
 
   function mostrarBarraImpersonacao(nome) {
     const bar = document.getElementById('impersonarBar');
