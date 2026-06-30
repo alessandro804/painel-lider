@@ -15120,6 +15120,12 @@ Retorne JSON: {"ID": "valor", ...}`;
             aoMudar: () => { setLojasSelGlobal(_adsSelComp.getSelecionados()); adsSyncHiddenSelect(); renderAdsSubaba(); },
           });
           adsSyncHiddenSelect();
+          // v33k.282: quando as lojas chegam do backend, RE-RENDERIZA a subaba.
+          // Antes, no boot _adsCacheLojas vinha vazio → o hidden select não tinha a
+          // loja selecionada → o filtro (Resumo/Anúncios) não aplicava até dar vários
+          // F5 (quando o cache já estava quente). Re-renderizar aqui faz o filtro
+          // pegar assim que as lojas carregam, sem precisar atualizar a página.
+          try { renderAdsSubaba(); } catch(e) {}
         })
         .catch(() => {});
     } else if (_adsSelComp) {
@@ -16620,6 +16626,16 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (meuToken != null && meuToken !== _adsRenderToken) return; // outro render assumiu
     if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
     if (!r.lojas || r.lojas.length === 0) { cont.innerHTML = blocoVazio('Nenhuma loja com dados.', ''); return; }
+
+    // v33k.282 FIX: o Resumo por loja IGNORAVA o filtro de loja (mostrava sempre
+    // todas), enquanto a aba Anúncios filtrava. Agora respeita: se há loja
+    // selecionada no filtro, mostra SÓ ela; sem filtro, mostra todas.
+    const lojaFiltro = document.getElementById('adsLojaFiltro')?.value || '';
+    if (lojaFiltro) {
+      const _filtradas = r.lojas.filter(l => String(l.lojaId) === String(lojaFiltro));
+      if (!_filtradas.length) { cont.innerHTML = blocoVazio('A loja selecionada não tem dados de Ads nesse período.', lojaFiltro); return; }
+      r.lojas = _filtradas;
+    }
 
     // ordenação (maior → menor) conforme escolha do usuário
     const cmp = {
@@ -38876,7 +38892,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.280-ml-gender-split';
+  const _DIAG_VERSAO_PAINEL = 'v33k.282-fix-boot-vazio-filtro-ads';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -39250,11 +39266,12 @@ Responda APENAS com JSON válido (sem markdown), formato:
         aplicarPermissoesUI();
         if (typeof ajustarSettingsAoUsuario === 'function') ajustarSettingsAoUsuario();
         if (typeof aplicarIdentidadeUsuario === 'function') aplicarIdentidadeUsuario();
-        goTo(papelHomeInicial());
-        // Mostra um overlay de "carregando" enquanto puxa os dados, em vez de
-        // renderizar a tela VAZIA (causa da tela branca antes do F5). Só renderiza
-        // de verdade DEPOIS que os dados chegam.
+        // v33k.282: overlay PRIMEIRO (antes do goTo), senão o goTo renderiza a tela
+        // com dados zerados (acabamos de limpar o usuário anterior) e ela PISCA vazia
+        // antes do overlay cobrir. Cobrindo antes, o usuário só vê o spinner até o
+        // pull terminar e o render real acontecer.
         if (typeof mostrarOverlayCarregando === 'function') mostrarOverlayCarregando('Carregando seus dados…');
+        goTo(papelHomeInicial());
         // PULL dos dados do novo usuário (lojas, financeiro, demandas, etc.)
         // Aguarda o pull ANTES do primeiro render real, pra a tela não aparecer
         // vazia e depois preencher (que dava a sensação de "só funciona com F5").
@@ -39313,6 +39330,14 @@ Responda APENAS com JSON válido (sem markdown), formato:
       'lider_nf_config', 'lider_rel_config', 'lider_prompt_reconciliacao_v1',
       'lider_pendencias_direcao_v1', 'lider_ia_diag_v1', 'lider_contas_apelido',
       'lc_anuncios_ignorados',
+      // v33k.282 FIX vazamento entre usuários: a FLAG de reconciliação e os
+      // TOMBSTONES de demandas são POR USUÁRIO. Se não forem limpos na troca de
+      // conta, ao logar o próximo usuário: (1) a flag presente faz o sistema pular
+      // o modo "banco é a verdade" e entrar no merge errado; (2) os tombstones do
+      // usuário ANTERIOR deletam demandas do novo que tenham id coincidente
+      // (excluidas.forEach(id => porId.delete(id))). Resultado: demandas somem no
+      // boot até dar F5. Limpar aqui garante que cada usuário parte do banco limpo.
+      'lider_demandas_reconciliado_v1', 'lider_demandas_excluidas_v1',
     ];
     chavesDados.forEach(k => { try { localStorage.removeItem(k); } catch(e){} });
     // históricos dos chats das IAs
