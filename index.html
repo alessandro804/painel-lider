@@ -38892,7 +38892,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.282-fix-boot-vazio-filtro-ads';
+  const _DIAG_VERSAO_PAINEL = 'v33k.283-fix-vazamento-sessao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -39284,6 +39284,13 @@ Responda APENAS com JSON válido (sem markdown), formato:
               }
             }
           } catch (e) { console.warn('[login] pull pós-login falhou:', e); }
+          // v33k.283: re-aplica identidade DEPOIS do pull. Antes, aplicarIdentidadeUsuario
+          // rodava só na 39268 (antes do pull), quando o `settings` ainda era o do
+          // usuário ANTERIOR — então o nome "Olá, X" mostrava o nome velho (ex.: "Olá,
+          // Gontijo" ao logar como Alessandro). Agora o settings do novo usuário já
+          // chegou e a identidade reflete a conta correta.
+          try { if (typeof ajustarSettingsAoUsuario === 'function') ajustarSettingsAoUsuario(); } catch(e){}
+          try { if (typeof aplicarIdentidadeUsuario === 'function') aplicarIdentidadeUsuario(); } catch(e){}
           try { if (typeof renderAll === 'function') renderAll(); } catch(e){}
           // carrega os produtos (paginado no backend) e re-renderiza ao terminar
           try {
@@ -39338,6 +39345,13 @@ Responda APENAS com JSON válido (sem markdown), formato:
       // (excluidas.forEach(id => porId.delete(id))). Resultado: demandas somem no
       // boot até dar F5. Limpar aqui garante que cada usuário parte do banco limpo.
       'lider_demandas_reconciliado_v1', 'lider_demandas_excluidas_v1',
+      // v33k.283 FIX vazamento de SELEÇÃO de lojas: 'lider10_lojas_sel' guarda as
+      // lojas escolhidas no filtro global (Home/Ads/Pedidos/Relatório). É POR
+      // USUÁRIO. Sem limpar, ao trocar de conta a seleção do usuário ANTERIOR
+      // persiste — ex.: o superadmin (que vê TODAS as lojas) selecionou as lojas
+      // 37,38,40,46,49 e, ao logar como Alessandro, o seletor carregava ESSAS lojas
+      // (que não são dele). Mostrava lojas de outros donos misturadas.
+      'lider10_lojas_sel',
     ];
     chavesDados.forEach(k => { try { localStorage.removeItem(k); } catch(e){} });
     // históricos dos chats das IAs
@@ -39375,6 +39389,15 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // configs por usuário voltam ao default
     try { if (typeof configAutomacao !== 'undefined') configAutomacao = {}; } catch(e){}
     try { if (typeof configIntegracoes !== 'undefined') configIntegracoes = {}; } catch(e){}
+    // v33k.283: zera a SELEÇÃO global de lojas em memória (além da chave no
+    // localStorage acima). Sem isso, os seletores já montados (Home/Ads/Pedidos)
+    // continuariam com as lojas do usuário anterior até um reload.
+    try { if (typeof _lojasSelGlobal !== 'undefined') _lojasSelGlobal = []; } catch(e){}
+    // v33k.283: zera a IDENTIDADE no settings em memória. ajustarSettingsAoUsuario
+    // só preenche settings.nomeUsuario se estiver VAZIO — se sobrar o nome do usuário
+    // ANTERIOR (ex.: "Gontijo"), o cabeçalho "Olá, X" mostra o nome velho ao trocar
+    // de conta. Limpar aqui faz o próximo usuário pegar o nome dele.
+    try { if (typeof settings !== 'undefined' && settings) { settings.nomeUsuario = ''; settings.cargoUsuario = ''; } } catch(e){}
   }
   window.limparDadosOperacionais = limparDadosOperacionais;
 
@@ -54754,6 +54777,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
                 const cloudData = await LiderSync.pullAll();
                 if (cloudData && typeof aplicarDadosDaNuvem === 'function') {
                   aplicarDadosDaNuvem(cloudData);
+                  // v33k.283: identidade/settings DEPOIS do pull (settings do usuário
+                  // correto já chegou) — evita nome stale no cabeçalho.
+                  try { if (typeof ajustarSettingsAoUsuario === 'function') ajustarSettingsAoUsuario(); } catch(e){}
+                  try { if (typeof aplicarIdentidadeUsuario === 'function') aplicarIdentidadeUsuario(); } catch(e){}
                   if (typeof renderAll === 'function') renderAll();
                 }
               }
