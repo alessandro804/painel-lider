@@ -6296,6 +6296,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         <div style="display:flex;gap:6px;border-bottom:1px solid #e5e7eb;margin-bottom:16px">
           <button class="ped-tab-btn" id="pedTabLista" onclick="pedTrocarAba('lista')" style="padding:10px 18px;border:none;background:none;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid #4a7c59;color:#1e293b">Pedidos</button>
           <button class="ped-tab-btn" id="pedTabConferencia" onclick="pedTrocarAba('conferencia')" style="padding:10px 18px;border:none;background:none;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid transparent;color:#6b7280">⚖️ Conferência Contábil</button>
+          <button class="ped-tab-btn" id="pedTabExpedicao" onclick="pedTrocarAba('expedicao')" style="padding:10px 18px;border:none;background:none;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid transparent;color:#6b7280">Expedição NF</button>
         </div>
 
         <!-- filtros -->
@@ -6340,6 +6341,27 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
           <div id="confLoading" style="display:none;text-align:center;padding:30px;color:#6b7280">Conferindo…</div>
           <div id="confResumo" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px"></div>
           <div id="confLista" style="display:flex;flex-direction:column;gap:8px"></div>
+        </div>
+
+        <!-- ABA EXPEDIÇÃO NF (Shopee) -->
+        <div id="pedAbaExpedicao" style="display:none">
+          <div style="background:var(--lc-primary-softer);border:1px solid var(--lc-primary-soft);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:var(--lc-ink-2)">
+            Acompanhe o fluxo de <b>Nota Fiscal + logística</b> dos pedidos Shopee em 3 etapas. O estado vem em tempo real do que a Shopee informa (NF emitida e status de coleta). <span style="color:var(--lc-muted)">A emissão automática de NF entra numa próxima etapa.</span>
+          </div>
+          <!-- 3 cards de etapa -->
+          <div id="expEtapas" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px"></div>
+          <!-- chips de sub-status da etapa selecionada -->
+          <div id="expChips" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px"></div>
+          <!-- barra de ações em massa -->
+          <div id="expAcoes" style="display:none;align-items:center;gap:10px;margin-bottom:12px;padding:10px 12px;background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:var(--lc-radius)">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--lc-ink-2);cursor:pointer"><input type="checkbox" id="expSelAll" onclick="expToggleTodos(this.checked)"> Selecionar todos</label>
+            <span id="expSelInfo" style="font-size:13px;color:var(--lc-muted)"></span>
+            <button class="lc-btn lc-btn--primary lc-btn--sm" id="expBtnMassa" onclick="expAcaoMassa()" disabled>Emitir selecionados</button>
+            <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expSemear()" title="Carrega os pedidos pendentes atuais para a fila (roda uma vez)">Sincronizar fila</button>
+          </div>
+          <div id="expLoading" style="display:none;text-align:center;padding:30px;color:var(--lc-muted)">Carregando…</div>
+          <div id="expErro" style="display:none;background:var(--lc-danger-soft);border:1px solid var(--lc-danger);color:var(--lc-danger);padding:12px;border-radius:8px;margin-bottom:12px"></div>
+          <div id="expLista" style="display:flex;flex-direction:column;gap:8px"></div>
         </div>
       </div>
     </main>
@@ -38898,7 +38920,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.293-blindagem-isolamento-lojas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.294-expedicao-nf-casca';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -45792,20 +45814,228 @@ ${JSON.stringify(metricas, null, 2)}`
     ['pedidosAtrasadosPanel', 'disputasPanel'].forEach(id => {
       const el = document.getElementById(id); if (el) el.style.display = 'none';
     });
-    const abaLista = document.getElementById('pedAbaLista');
-    const abaConf = document.getElementById('pedAbaConferencia');
-    const btnLista = document.getElementById('pedTabLista');
-    const btnConf = document.getElementById('pedTabConferencia');
-    const ativa = (b) => { b.style.borderBottom = '3px solid var(--lc-primary)'; b.style.color = 'var(--lc-ink)'; };
-    const inativa = (b) => { b.style.borderBottom = '3px solid transparent'; b.style.color = 'var(--lc-muted)'; };
-    if (aba === 'conferencia') {
-      abaLista.style.display = 'none'; abaConf.style.display = '';
-      ativa(btnConf); inativa(btnLista);
-      pedCarregarConferencia();
-    } else {
-      abaLista.style.display = ''; abaConf.style.display = 'none';
-      ativa(btnLista); inativa(btnConf);
-      pedCarregarLista();
+    const abas = {
+      lista:      { painel: 'pedAbaLista',       botao: 'pedTabLista' },
+      conferencia:{ painel: 'pedAbaConferencia', botao: 'pedTabConferencia' },
+      expedicao:  { painel: 'pedAbaExpedicao',   botao: 'pedTabExpedicao' },
+    };
+    const ativa = (b) => { if (b) { b.style.borderBottom = '3px solid var(--lc-primary)'; b.style.color = 'var(--lc-ink)'; } };
+    const inativa = (b) => { if (b) { b.style.borderBottom = '3px solid transparent'; b.style.color = 'var(--lc-muted)'; } };
+    const alvo = abas[aba] ? aba : 'lista';
+    Object.entries(abas).forEach(([nome, ref]) => {
+      const painel = document.getElementById(ref.painel);
+      const botao = document.getElementById(ref.botao);
+      if (painel) painel.style.display = (nome === alvo) ? '' : 'none';
+      if (nome === alvo) ativa(botao); else inativa(botao);
+    });
+    if (alvo === 'conferencia') pedCarregarConferencia();
+    else if (alvo === 'expedicao') expCarregar();
+    else pedCarregarLista();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // EXPEDIÇÃO NF (Shopee) — 3 etapas: Emitir / Programar / Imprimir
+  // Estado real vindo da Shopee (NF emitida + status logístico), via webhook.
+  // ═══════════════════════════════════════════════════════════════════
+  let _expEtapaSel = 1;                 // etapa ativa (1/2/3)
+  let _expEstadoSel = null;             // sub-status (estado_shopee) filtrado
+  let _expDados = null;                 // { etapas, rotulos, contagens, porEtapa }
+  let _expSel = new Set();              // order_sn selecionados
+
+  const EXP_ETAPA_ICONE = {
+    1: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>',
+    2: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><path d="M16 8h4l3 3v5h-7V8zM5.5 18.5a2.5 2.5 0 1 0 0 .01M18.5 18.5a2.5 2.5 0 1 0 0 .01"/></svg>',
+    3: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>',
+  };
+
+  function expLojasSelecionadas() { return pedLojasSelecionadas(); }
+
+  async function expCarregar() {
+    const loading = document.getElementById('expLoading');
+    const erro = document.getElementById('expErro');
+    const lista = document.getElementById('expLista');
+    if (erro) erro.style.display = 'none';
+
+    const lojas = expLojasSelecionadas();
+    if (!lojas.length) {
+      _expDados = null;
+      expRenderEtapas(); expRenderChips();
+      if (lista) lista.innerHTML = '<div style="text-align:center;padding:50px 20px;color:var(--lc-muted)">' +
+        '<div style="font-weight:600;color:var(--lc-ink-2)">Selecione uma ou mais contas Shopee</div>' +
+        '<div style="font-size:13px;margin-top:4px">Use o seletor de contas acima.</div></div>';
+      const ac = document.getElementById('expAcoes'); if (ac) ac.style.display = 'none';
+      return;
+    }
+    if (loading) loading.style.display = 'block';
+    try {
+      const params = new URLSearchParams({ lojaIds: lojas.join(',') });
+      const resp = await fetch(BACKEND_URL + '/api/expedicao/contadores?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.erro || 'Falha ao carregar');
+      _expDados = data;
+      expRenderEtapas();
+      // garante um sub-status selecionado válido na etapa atual
+      if (!_expEstadoSel || !(_expDados.etapas[_expEtapaSel].estados || []).includes(_expEstadoSel)) {
+        _expEstadoSel = (_expDados.etapas[_expEtapaSel].estados || [])[0] || null;
+      }
+      expRenderChips();
+      await expCarregarLista();
+    } catch (e) {
+      if (erro) { erro.textContent = e.message; erro.style.display = 'block'; }
+    } finally {
+      if (loading) loading.style.display = 'none';
+    }
+  }
+
+  function expRenderEtapas() {
+    const cont = document.getElementById('expEtapas');
+    if (!cont) return;
+    const porEtapa = (_expDados && _expDados.porEtapa) || { 1: 0, 2: 0, 3: 0 };
+    const nomes = { 1: 'Emitir', 2: 'Programar', 3: 'Imprimir' };
+    cont.innerHTML = [1, 2, 3].map(et => {
+      const ativa = et === _expEtapaSel;
+      const n = porEtapa[et] || 0;
+      return '<button onclick="expSelEtapa(' + et + ')" style="display:flex;align-items:center;gap:12px;text-align:left;padding:14px 16px;border-radius:var(--lc-radius);cursor:pointer;border:2px solid ' +
+        (ativa ? 'var(--lc-primary)' : 'var(--lc-border)') + ';background:' + (ativa ? 'var(--lc-primary-softer)' : 'var(--lc-surface)') + ';transition:all .15s">' +
+        '<div style="width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:' +
+          (ativa ? 'var(--lc-primary)' : 'var(--lc-surface-2)') + ';color:' + (ativa ? '#fff' : 'var(--lc-muted)') + '">' + (EXP_ETAPA_ICONE[et] || '') + '</div>' +
+        '<div style="min-width:0"><div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--lc-muted)">Etapa ' + et + '</div>' +
+        '<div style="font-size:15px;font-weight:700;color:var(--lc-ink)">' + nomes[et] + '</div>' +
+        '<div style="font-size:12px;color:var(--lc-muted-2)"><b style="color:' + (ativa ? 'var(--lc-primary)' : 'var(--lc-ink-2)') + '">' + n + '</b> pedido' + (n === 1 ? '' : 's') + '</div></div>' +
+        '</button>';
+    }).join('');
+  }
+
+  function expSelEtapa(et) {
+    _expEtapaSel = et;
+    _expEstadoSel = (_expDados && _expDados.etapas[et] && (_expDados.etapas[et].estados || [])[0]) || null;
+    _expSel.clear();
+    expRenderEtapas(); expRenderChips(); expCarregarLista();
+  }
+
+  function expRenderChips() {
+    const cont = document.getElementById('expChips');
+    if (!cont) return;
+    if (!_expDados) { cont.innerHTML = ''; return; }
+    const etapa = _expDados.etapas[_expEtapaSel] || { estados: [] };
+    const rotulos = _expDados.rotulos || {};
+    const cont3 = _expDados.contagens || {};
+    let html = '<span style="font-size:12px;color:var(--lc-muted);font-weight:600;margin-right:2px">Status:</span>';
+    (etapa.estados || []).forEach(e => {
+      const n = cont3[e] || 0;
+      const ativo = e === _expEstadoSel;
+      // sub-status de falha/processo internos: só mostra se houver pedidos (não polui)
+      const ehProcesso = /emitindo|subindo|programando|gerando|falha|erro|pre_envio/.test(e);
+      if (ehProcesso && !n && !ativo) return;
+      html += '<button onclick="expSelEstado(\'' + e + '\')" style="font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer;font-weight:600;border:1.5px solid ' +
+        (ativo ? 'var(--lc-primary)' : 'var(--lc-border-2)') + ';background:' + (ativo ? 'var(--lc-primary)' : 'var(--lc-surface)') + ';color:' + (ativo ? '#fff' : 'var(--lc-ink-2)') + '">' +
+        (rotulos[e] || e) + ' <span style="opacity:.75">(' + n + ')</span></button>';
+    });
+    cont.innerHTML = html;
+  }
+
+  function expSelEstado(e) {
+    _expEstadoSel = e;
+    _expSel.clear();
+    expRenderChips(); expCarregarLista();
+  }
+
+  async function expCarregarLista() {
+    const lista = document.getElementById('expLista');
+    const acoes = document.getElementById('expAcoes');
+    if (!lista) return;
+    const lojas = expLojasSelecionadas();
+    if (!lojas.length || !_expEstadoSel) { if (acoes) acoes.style.display = 'none'; return; }
+    lista.innerHTML = '<div style="text-align:center;padding:24px;color:var(--lc-muted)">Carregando pedidos…</div>';
+    try {
+      const params = new URLSearchParams({ lojaIds: lojas.join(','), estado: _expEstadoSel, limit: '400' });
+      const resp = await fetch(BACKEND_URL + '/api/expedicao/lista?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.erro || 'Falha');
+      const peds = data.pedidos || [];
+      if (acoes) acoes.style.display = peds.length ? 'flex' : 'none';
+      const selAll = document.getElementById('expSelAll'); if (selAll) selAll.checked = false;
+      if (!peds.length) {
+        lista.innerHTML = '<div style="text-align:center;padding:40px;color:var(--lc-muted)">Nenhum pedido neste status.<br><span style="font-size:12px">Se a fila estiver vazia, clique em <b>Sincronizar fila</b> para carregar os pedidos pendentes atuais.</span></div>';
+        expAtualizaSelInfo();
+        return;
+      }
+      lista.innerHTML = peds.map(p => expCardHtml(p)).join('');
+      expAtualizaSelInfo();
+    } catch (e) {
+      lista.innerHTML = '<div style="background:var(--lc-danger-soft);border:1px solid var(--lc-danger);color:var(--lc-danger);padding:12px;border-radius:8px">' + e.message + '</div>';
+    }
+  }
+
+  function expCardHtml(p) {
+    const sel = _expSel.has(p.orderSn);
+    const nfBadge = p.nfEmitida
+      ? '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-success-soft);color:var(--lc-success)">NF ' + (p.nfNumero || 'emitida') + '</span>'
+      : '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-surface-2);color:var(--lc-muted)">Sem NF</span>';
+    const cpfBadge = (p.emiteNf === false)
+      ? '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--lc-info-soft);color:var(--lc-info)">CPF</span>' : '';
+    const prazo = p.shipBy ? '<span style="font-size:12px;color:var(--lc-muted)">Enviar até ' + new Date(p.shipBy * 1000).toLocaleDateString('pt-BR') + '</span>' : '';
+    return '<div style="display:flex;align-items:center;gap:12px;background:var(--lc-surface);border:1px solid ' + (sel ? 'var(--lc-primary)' : 'var(--lc-border)') + ';border-radius:var(--lc-radius);padding:11px 14px">' +
+      '<input type="checkbox" ' + (sel ? 'checked' : '') + ' onclick="expToggleSel(\'' + p.orderSn + '\')" style="width:17px;height:17px;flex-shrink:0;cursor:pointer">' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-weight:700;color:var(--lc-ink);font-size:14px">' + p.orderSn + '</span>' + nfBadge + cpfBadge + '</div>' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:3px"><span style="font-size:12px;color:var(--lc-muted-2)">' + (p.loja || '') + '</span>' +
+          (p.transportadora ? '<span style="font-size:12px;color:var(--lc-muted)">' + p.transportadora + '</span>' : '') + prazo + '</div>' +
+      '</div>' +
+      '<span style="font-size:12px;font-weight:600;color:var(--lc-ink-2);background:var(--lc-surface-2);padding:4px 10px;border-radius:8px;white-space:nowrap">' + (p.estadoRotulo || p.estado) + '</span>' +
+      '</div>';
+  }
+
+  function expToggleSel(sn) {
+    if (_expSel.has(sn)) _expSel.delete(sn); else _expSel.add(sn);
+    expCarregarLista();
+  }
+  function expToggleTodos(marcar) {
+    const lojas = expLojasSelecionadas();
+    if (!marcar) { _expSel.clear(); expCarregarLista(); return; }
+    // re-busca a lista atual e marca todos os order_sn visíveis
+    const params = new URLSearchParams({ lojaIds: lojas.join(','), estado: _expEstadoSel, limit: '400' });
+    fetch(BACKEND_URL + '/api/expedicao/lista?' + params.toString(), { headers: { 'x-api-token': getApiToken() } })
+      .then(r => r.json()).then(d => {
+        (d.pedidos || []).forEach(p => _expSel.add(p.orderSn));
+        expCarregarLista();
+      });
+  }
+  function expAtualizaSelInfo() {
+    const info = document.getElementById('expSelInfo');
+    const btn = document.getElementById('expBtnMassa');
+    const n = _expSel.size;
+    if (info) info.textContent = n ? (n + ' selecionado' + (n === 1 ? '' : 's')) : '';
+    if (btn) {
+      btn.disabled = !n;
+      // rótulo do botão conforme a etapa
+      const lbl = _expEtapaSel === 1 ? 'Emitir' : _expEtapaSel === 2 ? 'Programar' : 'Gerar etiqueta';
+      btn.textContent = lbl + (n ? ' (' + n + ')' : '') + ' selecionados';
+    }
+  }
+
+  function expAcaoMassa() {
+    const n = _expSel.size;
+    if (!n) return;
+    // O MOTOR de NF (emissão/programação/etiqueta) entra na próxima etapa.
+    // Por ora, ação em massa fica preparada mas sem executar no SEFAZ.
+    const acao = _expEtapaSel === 1 ? 'emissão de NF' : _expEtapaSel === 2 ? 'programação de coleta' : 'geração de etiqueta';
+    showToast('A ' + acao + ' em massa entra na próxima etapa do projeto. ' + n + ' pedido(s) prontos na fila.');
+  }
+
+  async function expSemear() {
+    const lojas = expLojasSelecionadas();
+    if (!lojas.length) { showToast('Selecione uma conta Shopee primeiro.', true); return; }
+    showToast('Sincronizando fila de expedição…');
+    try {
+      const params = new URLSearchParams({ lojaIds: lojas.join(','), dias: '30' });
+      const resp = await fetch(BACKEND_URL + '/api/expedicao/semear?' + params.toString(), { method: 'POST', headers: { 'x-api-token': getApiToken() } });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.erro || 'Falha');
+      showToast('Fila atualizada: ' + (data.semeados || 0) + ' pedido(s) em ' + (data.lojas || 0) + ' loja(s).');
+      expCarregar();
+    } catch (e) {
+      showToast('Erro ao sincronizar fila: ' + e.message, true);
     }
   }
 
@@ -46382,6 +46612,12 @@ ${JSON.stringify(metricas, null, 2)}`
 
   window.renderPedidos = renderPedidos;
   window.pedTrocarAba = pedTrocarAba;
+  window.expSelEtapa = expSelEtapa;
+  window.expSelEstado = expSelEstado;
+  window.expToggleSel = expToggleSel;
+  window.expToggleTodos = expToggleTodos;
+  window.expAcaoMassa = expAcaoMassa;
+  window.expSemear = expSemear;
   window.pedSetPeriodo = pedSetPeriodo;
   window.pedAplicar = pedAplicar;
   window.pedAbrirModal = pedAbrirModal;
