@@ -38898,7 +38898,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.289-fix-webhook-raw-body';
+  const _DIAG_VERSAO_PAINEL = 'v33k.292-fix-cenarios-cobranca';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42348,14 +42348,31 @@ REGRAS DE OURO:
   function saveCenarios() {
     try {
       localStorage.setItem('lider_cenarios_cobranca', JSON.stringify(cenariosCobranca));
-      LiderSync.schedulePush('cenariosCobranca', () => LiderSync.pushAppData('cenariosCobranca', cenariosCobranca));
+      // v33k.292 FIX perda de dados: os cenários de cobrança usavam schedulePush
+      // (DEBOUNCED). Se a aba fechasse, trocasse de tela ou rodasse a limpeza antes
+      // do push adiado disparar, os cenários NUNCA chegavam ao banco — ficavam só no
+      // localStorage. A régua (que roda no backend lendo do banco) via 0 cenários e
+      // não disparava cobrança nenhuma. Mesmo defeito e mesma correção do
+      // clienteVinculado: push IMEDIATO. Este dado nunca pode usar escrita adiada.
+      if (window.LiderSync && LiderSync.pushAppData) {
+        LiderSync.pushAppData('cenariosCobranca', cenariosCobranca);
+      }
     } catch(e) { console.error('[cenarios]', e); }
   }
   const _CENARIO_LABEL = { antes:'Antes do vencimento', no_dia:'No dia do vencimento', apos:'Após o vencimento', criacao:'Na criação da cobrança' };
 
+  let _cenariosJaSincronizados = false;
   function renderCenarios() {
     const wrap = document.getElementById('cenariosLista');
     if (!wrap) return;
+    // v33k.292: push de GARANTIA (1x por sessão). Como o bug do schedulePush deixou
+    // cenários presos só no localStorage (banco vazio → régua não dispara), ao abrir
+    // a tela sincronizamos os cenários em memória com o banco. Sobe os que ficaram
+    // presos sem precisar o usuário editar nada. Imediato, não debounced.
+    if (!_cenariosJaSincronizados && cenariosCobranca.length && window.LiderSync && LiderSync.pushAppData) {
+      _cenariosJaSincronizados = true;
+      try { LiderSync.pushAppData('cenariosCobranca', cenariosCobranca); } catch(e) {}
+    }
     if (!cenariosCobranca.length) { wrap.innerHTML = '<div style="color:#9ca3af;padding:12px">Nenhum cenário. Adicione um acima.</div>'; return; }
     wrap.innerHTML = cenariosCobranca.map(c => {
       const temDias = (c.tipo === 'antes' || c.tipo === 'apos');
