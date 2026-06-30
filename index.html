@@ -10597,6 +10597,55 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         } catch (_) { /* na dúvida, deixa passar */ }
       }
 
+      // ── BLINDAGEM GENÉRICA ANTI-REGRESSÃO (v33k.277) ──
+      // Várias chaves do app_data são COLEÇÕES (array de itens ou objeto-mapa) gravadas
+      // INTEIRAS. O mesmo bug que sumiu demandas/clientes vale pra elas: um device com
+      // versão local incompleta sobrescreve o banco e apaga itens. Aqui, pra cada
+      // coleção conhecida, recusamos o push se ele REGREDIR a contagem (menos itens que
+      // o salvo localmente) — sinal de versão stale/corrida. Config singular (settings,
+      // wa_config, etc.) NÃO entra aqui: são objetos de config, substituir é o esperado.
+      // lojas/clientesAsaas já têm blindagem própria (mais fina) acima e são puladas.
+      const _COLECOES_APPDATA = {
+        promocoes: 'lider_promocoes_v1',
+        guias_tamanho: 'lider_guias_tamanho_v1',
+        catmap: 'lider_catmap_v1',
+        categorias: 'lider_cats_v1',
+        cenariosCobranca: 'lider_cenarios_cobranca',
+        fechamentos: 'lider_fechamentos_v1',
+        tipos_custom: 'lider_tipos_custom_v1',
+        skus_shein: 'lider_skus_shein_v1',
+      };
+      if (Object.prototype.hasOwnProperty.call(_COLECOES_APPDATA, chave)) {
+        try {
+          if (this.enabled && !this._pullInicialCompleto) {
+            console.warn('[pushAppData] bloqueado: pull inicial incompleto — não arrisco apagar "' + chave + '"');
+            return false;
+          }
+          const _conta = (v) => {
+            if (Array.isArray(v)) return v.length;
+            if (v && typeof v === 'object') {
+              // objeto-mapa: conta as chaves; se os valores forem arrays (ex.:
+              // tipos_custom = {setor: [tipos]}), soma os comprimentos pra detectar
+              // regressão de itens DENTRO dos grupos, não só de grupos.
+              const chaves = Object.keys(v);
+              const somaArrays = chaves.reduce((acc, k) => acc + (Array.isArray(v[k]) ? v[k].length : 0), 0);
+              return Math.max(chaves.length, somaArrays);
+            }
+            return 0;
+          };
+          const qtdNoPush = _conta(valor);
+          let qtdLocal = 0;
+          try {
+            const raw = localStorage.getItem(_COLECOES_APPDATA[chave]);
+            if (raw) qtdLocal = _conta(JSON.parse(raw));
+          } catch (_) {}
+          if (qtdLocal > 0 && qtdNoPush < qtdLocal) {
+            console.warn('[pushAppData] bloqueado: push regrediria "' + chave + '" (' + qtdNoPush + ' < ' + qtdLocal + ')');
+            return false;
+          }
+        } catch (_) { /* na dúvida, deixa passar */ }
+      }
+
       try {
         const backend = (typeof getBackendUrl === 'function') ? getBackendUrl() : '';
         const token = localStorage.getItem('lider_token_login') || '';
@@ -13258,6 +13307,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     const resultados = [];
     let okCount = 0, erroCount = 0;
+    // v33k.279: duplicações coletadas no loop, processadas sequencialmente DEPOIS
+    // (uma loja por vez), pra o progresso não sair intercalado entre lojas.
+    const _dupsPendentes = [];
     // Ads pós-export: coleta item_ids Shopee criados, ativa em lote no fim.
     // Flag vem do checkbox "Ativar nos Ads" (default marcado); fallback true.
     const _ativarAdsPosExport = (typeof window._ativarAdsPosExport === 'boolean') ? window._ativarAdsPosExport : true;
@@ -13334,30 +13386,76 @@ Retorne JSON: {"ID": "valor", ...}`;
           continue; // não exporta agora
         }
         const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + p.idBanco;
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ payload })
-        });
-        const data = await resp.json();
+
+        // v33k.280: ML aceita no máximo 30 variações por família Catalog. Se o produto
+        // tem mais (ex.: 4 cores × 11 tamanhos = 44), DIVIDE por cor em vários anúncios
+        // (2 cores cada ~ 22 var). Cada sub-anúncio é um POST separado. Só ML; Shopee
+        // não tem esse limite no mesmo formato.
+        const _ehML = /mercado/i.test(loja.marketplace || '');
+        const _baseExport = pLocal || p;
+        const _subProdutos = _ehML
+          ? _dividirProdutoPorCor(_baseExport, 30)
+          : [_baseExport];
+        if (_subProdutos.length > 1) {
+          resultados.push('  ↪ ' + sufixoLog + (_baseExport.variacoes||[]).length + ' variações → dividido em ' + _subProdutos.length + ' anúncios por cor');
+        }
+
+        let _okSub = 0, _falhaSub = 0, _ultimoErroSub = '';
+        const _idsCriadosSub = [];
+        for (let _si = 0; _si < _subProdutos.length; _si++) {
+          const _sub = _subProdutos[_si];
+          const _payloadSub = (_subProdutos.length > 1)
+            ? montarPayloadExport(_sub, loja.marketplace)
+            : payload;
+          const _sufixoSub = _subProdutos.length > 1
+            ? sufixoLog + '[parte ' + (_si + 1) + '/' + _subProdutos.length + (_sub._coresLote ? ' ' + _sub._coresLote.join('+') : '') + '] '
+            : sufixoLog;
+          try {
+            const respSub = await fetch(url, {
+              method: 'POST',
+              headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ payload: _payloadSub })
+            });
+            const dataSub = await respSub.json();
+            if (!dataSub.ok && !dataSub.success) {
+              const detSub = dataSub.detalhes ? ': ' + dataSub.detalhes.slice(0,3).join(' | ') : '';
+              _ultimoErroSub = (dataSub.erro || 'erro desconhecido') + detSub;
+              resultados.push('✗ ' + _sufixoSub + _ultimoErroSub);
+              _falhaSub++;
+              continue;
+            }
+            const idSub = dataSub.itemId || (dataSub.dados && dataSub.dados.id) || '?';
+            resultados.push('✓ ' + _sufixoSub + 'anúncio ' + idSub + ' (' + loja.marketplace + ')');
+            _okSub++;
+            const _itemIdRealSub = dataSub.itemId || (dataSub.dados && (dataSub.dados.itemId || dataSub.dados.item_id));
+            if (_itemIdRealSub) _idsCriadosSub.push(_itemIdRealSub);
+            // Ads/régua aplicam ao 1º sub-anúncio criado (representativo) — mantém
+            // comportamento de antes sem multiplicar tarefas por sub-anúncio.
+            if (_si === 0) {
+              if (_ativarAdsPosExport && _itemIdRealSub && /shopee/i.test(loja.marketplace || '')) {
+                if (!adsParaAtivar[lojaIdBanco]) adsParaAtivar[lojaIdBanco] = { nome: loja.nome, itemIds: [] };
+                adsParaAtivar[lojaIdBanco].itemIds.push(_itemIdRealSub);
+              }
+            }
+          } catch (eSub) {
+            _ultimoErroSub = eSub.message;
+            resultados.push('✗ ' + _sufixoSub + eSub.message);
+            _falhaSub++;
+          }
+        }
+
+        // resultado consolidado da loja: ok se ao menos 1 sub-anúncio criou
+        const data = _okSub > 0
+          ? { ok: true, itemId: _idsCriadosSub[0] || '?', _multiplos: _idsCriadosSub }
+          : { ok: false, erro: _ultimoErroSub || 'nenhum anúncio criado' };
         if (!data.ok && !data.success) {
-          const detalhes = data.detalhes ? ': ' + data.detalhes.slice(0,3).join(' | ') : '';
-          resultados.push('✗ ' + sufixoLog + (data.erro || 'erro desconhecido') + detalhes);
           erroCount++;
           continue;
         }
-        const anuncioId = data.itemId || (data.dados && data.dados.id) || '?';
-        resultados.push('✓ ' + sufixoLog + 'anúncio ' + anuncioId + ' (' + loja.marketplace + ')');
         okCount++;
 
         // Régua de preços (exportação imediata): anúncio já existe, cria as tarefas direto
-        const _itemIdReal = data.itemId || (data.dados && (data.dados.itemId || data.dados.item_id));
-
-        // Ativar nos Ads (Shopee): coleta os item_ids criados pra ativar em lote ao final
-        if (_ativarAdsPosExport && _itemIdReal && /shopee/i.test(loja.marketplace || '')) {
-          if (!adsParaAtivar[lojaIdBanco]) adsParaAtivar[lojaIdBanco] = { nome: loja.nome, itemIds: [] };
-          adsParaAtivar[lojaIdBanco].itemIds.push(_itemIdReal);
-        }
+        const _itemIdReal = data.itemId;
 
         if (d._regua && _itemIdReal) {
           try {
@@ -13392,16 +13490,34 @@ Retorne JSON: {"ID": "valor", ...}`;
           } catch(eR) { console.warn('[acaoExportar régua]', eR.message); }
         }
         
-        // v32j.3: dispara duplicação automática (uma vez por loja exportada)
+        // v33k.279: dispara duplicação automática SEQUENCIALMENTE (uma loja por vez).
+        // Antes era disparado sem await dentro do loop → as lojas duplicavam em
+        // paralelo e o log saía intercalado ("Cópia 1/9 ... Cópia 3/9 ... Cópia 2/9").
+        // Agora só COLETAMOS aqui; o processamento sequencial acontece após o loop.
         if (d && d.duplicacao && d.duplicacao.ativo) {
-          // dispara mas não espera (background)
-          _dispararDupDemanda(d, pLocal || p).catch(err => {
-            console.error('[acaoExportar→dup] falhou:', err);
-          });
+          _dupsPendentes.push({ loja, produto: pLocal || p });
         }
       } catch(err) {
         resultados.push('✗ ' + sufixoLog + err.message);
         erroCount++;
+      }
+    }
+    
+    // v33k.279: processa as duplicações UMA LOJA POR VEZ (sequencial). Cada loja
+    // termina suas N cópias antes da próxima começar — progresso limpo, sem
+    // intercalar. Falha numa loja não interrompe as demais.
+    if (_dupsPendentes.length) {
+      for (let i = 0; i < _dupsPendentes.length; i++) {
+        const { loja, produto } = _dupsPendentes[i];
+        if (_dupsPendentes.length > 1) {
+          dupLogStep(`\n═══ Loja ${i + 1}/${_dupsPendentes.length}: ${loja.nome} [${loja.marketplace}] ═══`);
+        }
+        try {
+          await _dispararDupDemanda(d, produto);
+        } catch (err) {
+          console.error('[acaoExportar→dup] falhou na loja ' + loja.nome + ':', err);
+          if (typeof dupLogStep === 'function') dupLogStep(`✗ duplicação falhou em ${loja.nome}: ${err.message}`, 'err');
+        }
       }
     }
     
@@ -23016,11 +23132,12 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   
-  async function gerarTituloVariadoIA(produtoOuTitulo, marketplaceDestino) {
+  async function gerarTituloVariadoIA(produtoOuTitulo, marketplaceDestino, titulosProibidos) {
     // Aceita produto inteiro (preferível) OU só título string (compat)
     const p = typeof produtoOuTitulo === 'string' 
       ? { nome: produtoOuTitulo } 
       : produtoOuTitulo;
+    const _proibidos = Array.isArray(titulosProibidos) ? titulosProibidos.filter(Boolean) : [];
     
     const nome = p.nome || '';
     const categoria = p.categoria || '';
@@ -23069,13 +23186,17 @@ Crie um NOVO título de no máximo ${limite} caracteres que:
 ✓ Tenha uma abordagem DIFERENTE do original — não seja simples reordenação nem repita os mesmos adjetivos
 ✓ Use linguagem natural, sem CAPS LOCK, sem emojis, sem aspas
 ✓ Pense em como um comprador buscaria esse produto${dicaSinonimos}${dicaGatilhos}${dicaShopee}
+${_proibidos.length ? '\n⛔ TÍTULOS JÁ USADOS (NÃO repita nenhum destes, nem algo quase igual — combine OUTRAS palavras-chave e OUTRA ordem):\n' + _proibidos.map((t, i) => (i + 1) + '. ' + t).join('\n') + '\n→ O seu título DEVE ser visivelmente diferente de todos os acima.' : ''}
 
 Responda APENAS o título novo. Nada mais.`;
     
     try {
-      const resp = await chamarIA({ prompt, maxTokens: 100 });
+      const resp = await chamarIA({ prompt, maxTokens: 100, temperatura: 0.9 });
       let novo = String(resp || '').trim().replace(/^["']|["']$/g, '').slice(0, limite);
-      if (novo.length < 10) novo = nome;
+      if (novo.length < 10) {
+        console.warn('[título IA] resposta vazia/curta — IA não variou (caiu no nome original). resp bruta:', JSON.stringify(resp));
+        novo = nome;
+      }
       
       // v32j.6: validação de gênero — se o original era masculino e a IA gerou feminino
       // (ou vice-versa), rejeita e mantém o original. Detecta por palavras-chave em PT-BR.
@@ -24022,6 +24143,11 @@ REGRAS DURAS:
     const isShopee = lojaDestino.marketplace === 'shopee';
     let okCopias = 0, errCopias = 0;
     
+    // v33k.279: acumula títulos já gerados nesta sessão de duplicação pra a IA NÃO
+    // repetir. Antes cada cópia mandava o MESMO produto pai e a IA devolvia quase
+    // sempre o mesmo título → 9 (ou 18) cópias com título idêntico. Passando os já
+    // usados como "proibidos", forçamos cada título a ser distinto.
+    const _titulosUsadosDup = [];
     for (let k = 1; k <= qtd; k++) {
       if (_dupCancelar) break;
       
@@ -24082,8 +24208,9 @@ REGRAS DURAS:
         if (opts.variarTitulo) {
           passoAtual++;
           dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: gerando título com IA...`);
-          novo.nome = await gerarTituloVariadoIA(p, lojaDestino.marketplace);
-          dupLogStep(`  ✓ Título: "${novo.nome.slice(0,50)}"`, 'ok');
+          novo.nome = await gerarTituloVariadoIA(p, lojaDestino.marketplace, _titulosUsadosDup);
+          _titulosUsadosDup.push(novo.nome);
+          dupLogStep(`  ✓ Título: "${novo.nome.slice(0,60)}"`, 'ok');
         }
         // Title Case no nome salvo da cópia (com ou sem IA — se não variou título,
         // herdou o do pai no clone e mesmo assim normaliza a capitalização).
@@ -27979,6 +28106,74 @@ REGRAS DURAS:
     return (parseFloat(v && v.preco) || parseFloat(p && p.preco) || 0);
   }
   window._precoNormalExport = _precoNormalExport;
+
+  // v33k.280: divide um produto em N sub-produtos quando o nº de variações passa
+  // do limite do ML (30 por família Catalog). Agrupa por COR e distribui as cores
+  // em lotes que caibam no limite. MESCLA cores entre anúncios pra não repetir a
+  // mesma combinação (ex.: 4 cores → anúncio1=[rosa,azul], anúncio2=[preto,verde]).
+  //
+  // Retorna SEMPRE um array: [produto] se não precisa dividir, ou [p1, p2, ...].
+  // Cada sub-produto tem seu subconjunto de p.cores e p.variacoes (filtrado pela cor),
+  // título levemente diferenciado pelas cores, e skuPai distinto (sufixo) pra não
+  // colidir no agrupamento. NÃO muta o produto original.
+  function _dividirProdutoPorCor(p, limiteVar) {
+    const limite = limiteVar || 30;
+    const variacoes = p.variacoes || [];
+    if (variacoes.length <= limite) return [p];
+
+    // agrupa variações por cor (normalizada). Variações sem cor ficam num grupo único.
+    const porCor = new Map(); // corNome → [variacoes]
+    variacoes.forEach(v => {
+      const cor = (v.cor || '').trim() || '__sem_cor__';
+      if (!porCor.has(cor)) porCor.set(cor, []);
+      porCor.get(cor).push(v);
+    });
+    const cores = Array.from(porCor.keys());
+
+    // sem cores distintas (ou 1 só) → não dá pra dividir por cor; devolve inteiro
+    // (o backend vai rejeitar com mensagem clara — não dá pra contornar sem cor).
+    if (cores.length <= 1) {
+      console.warn('[dividirPorCor] produto tem ' + variacoes.length + ' variações mas só ' + cores.length + ' cor(es) — não dá pra dividir por cor');
+      return [p];
+    }
+
+    // quantas cores cabem por anúncio? tamanhos por cor ~ iguais; usa a maior cor.
+    const maxTamPorCor = Math.max(...cores.map(c => porCor.get(c).length));
+    const coresPorAnuncio = Math.max(1, Math.floor(limite / Math.max(1, maxTamPorCor)));
+
+    // monta lotes de cores. Distribui em sequência (rosa,azul | preto,verde | ...).
+    const lotes = [];
+    for (let i = 0; i < cores.length; i += coresPorAnuncio) {
+      lotes.push(cores.slice(i, i + coresPorAnuncio));
+    }
+
+    console.log('[dividirPorCor] ' + variacoes.length + ' variações, ' + cores.length +
+      ' cores → ' + lotes.length + ' anúncio(s) de até ' + coresPorAnuncio + ' cor(es) cada');
+
+    // gera os sub-produtos
+    return lotes.map((loteCores, idx) => {
+      const setCores = new Set(loteCores);
+      const sub = JSON.parse(JSON.stringify(p));
+      sub.variacoes = (p.variacoes || []).filter(v => {
+        const cor = (v.cor || '').trim() || '__sem_cor__';
+        return setCores.has(cor);
+      });
+      sub.cores = (p.cores || []).filter(c => setCores.has((c.nome || '').trim()));
+      // skuPai distinto por lote (evita colisão de agrupamento entre os sub-anúncios)
+      if (sub.skuPai) sub.skuPai = sub.skuPai + '-C' + (idx + 1);
+      // título: acrescenta as cores do lote pra diferenciar (sem estourar limites;
+      // o montarPayloadExport/IA cuida do corte final)
+      const nomesCores = loteCores.filter(c => c !== '__sem_cor__');
+      if (nomesCores.length) {
+        sub._coresLote = nomesCores; // metadado p/ quem quiser usar
+      }
+      sub._divididoDe = p.id || null;
+      sub._loteIndex = idx + 1;
+      sub._loteTotal = lotes.length;
+      return sub;
+    });
+  }
+  window._dividirProdutoPorCor = _dividirProdutoPorCor;
 
   function montarPayloadExport(p, marketplace) {
     // garante 1 variação mínima (corrige export com estoque zerado p/ produto sem variação)
@@ -38681,7 +38876,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.277-clientes-merge';
+  const _DIAG_VERSAO_PAINEL = 'v33k.280-ml-gender-split';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41290,12 +41485,15 @@ REGRAS DE OURO:
     }
   }
 
-  async function chamarIA({ prompt, system, modelo, maxTokens, imagens, messages }) {
+  async function chamarIA({ prompt, system, modelo, maxTokens, imagens, messages, temperatura }) {
     const body = {
       system: system || '',
       modelo: modelo || getIaModel(),
       maxTokens: maxTokens || 1500
     };
+    // v33k.279: temperatura opcional (0-1). Usada na geração de títulos variados
+    // pra forçar diversidade entre cópias. Se ausente, backend usa o default dele.
+    if (typeof temperatura === 'number') body.temperatura = temperatura;
     // Aceita 2 modos:
     //   - messages: array de chat multi-turn ({role, content})
     //   - prompt: string única (modo simples)
