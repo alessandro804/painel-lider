@@ -39484,7 +39484,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.328-cursor-caret-blur';
+  const _DIAG_VERSAO_PAINEL = 'v33k.329-tempo-real-status-envio';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -40375,6 +40375,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (screenId === 'allTxScreen') renderAllTxScreen();
     if (screenId === 'financialScreen') renderFinancial();
     if (screenId === 'homeScreen') renderHome();
+    else if (typeof window._homeAutoRefreshParar === 'function') window._homeAutoRefreshParar();
     if (screenId === 'commercialScreen') renderCommercial();
     if (screenId === 'lucroScreen') renderLucro();
     if (screenId === 'pedidosScreen') renderPedidos();
@@ -40901,7 +40902,38 @@ Responda APENAS com JSON válido (sem markdown), formato:
         revelarAoRolar(blocos);
       }
     } catch(e){}
+
+    // TEMPO REAL (v33k.328): mantém o faturamento do dia atualizado sozinho
+    // enquanto a Home está aberta. Recarrega só o dashboard (leve — o backend
+    // soma hoje ao vivo e serve o resto do cache) a cada 90s.
+    _homeAutoRefreshIniciar();
   }
+
+  // ── AUTO-REFRESH DA HOME (tempo real do faturamento) ───────────────────
+  // Só roda com a Home visível e a aba em foco. Recarrega apenas o dashboard
+  // (homeCarregarDashboard) — não os blocos pesados de IA/WhatsApp.
+  let _homeAutoRefreshTimer = null;
+  const _HOME_REFRESH_MS = 90 * 1000;
+  function _homeAutoRefreshIniciar() {
+    _homeAutoRefreshParar();
+    _homeAutoRefreshTimer = setInterval(() => {
+      // pausa se a tela não é a Home ou a aba está em segundo plano
+      const homeVisivel = (document.getElementById('homeScreen') || {}).classList
+        && document.getElementById('homeScreen').classList.contains('active');
+      if (!homeVisivel || document.hidden) return;
+      try { homeCarregarDashboard(); } catch (e) {}
+    }, _HOME_REFRESH_MS);
+  }
+  function _homeAutoRefreshParar() {
+    if (_homeAutoRefreshTimer) { clearInterval(_homeAutoRefreshTimer); _homeAutoRefreshTimer = null; }
+  }
+  window._homeAutoRefreshParar = _homeAutoRefreshParar;
+  // ao voltar o foco pra aba com a Home aberta, atualiza na hora (sem esperar 90s)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    const home = document.getElementById('homeScreen');
+    if (home && home.classList.contains('active')) { try { homeCarregarDashboard(); } catch (e) {} }
+  });
 
   function homeSetPeriodo(dias, btn) {
     _homeDias = dias; _homeCustom = null;
@@ -40964,7 +40996,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       const params = new URLSearchParams();
       if (lojas.length) params.set('lojaIds', lojas.join(','));
       if (_homeCustom && _homeCustom.desde && _homeCustom.ate) { params.set('desde', _homeCustom.desde); params.set('ate', _homeCustom.ate); }
-      else params.set('dias', String(_homeDias));
+      else { params.set('dias', String(_homeDias)); params.set('incluirHoje', '1'); }
       // COMPARATIVO SOB DEMANDA (item 2): só pede o período anterior se o usuário
       // clicou em "Comparar". Por padrão a Home não calcula o comparativo (alivia o banco).
       if (_homeComparar) params.set('comparar', '1');
@@ -47093,6 +47125,7 @@ ${JSON.stringify(metricas, null, 2)}`
 
   const PED_STATUS_INFO = {
     a_enviar:  { label: 'Para enviar', cor: '#2563eb', soft: '#dbeafe' },
+    a_caminho: { label: 'A caminho',  cor: '#0891b2', soft: '#cffafe' },
     enviado:   { label: 'Enviado',    cor: '#0891b2', soft: '#cffafe' },
     concluido: { label: 'Concluído',  cor: 'var(--lc-success)', soft: 'var(--lc-success-soft)' },
     pago:      { label: 'Pago',      cor: 'var(--lc-success)', soft: 'var(--lc-success-soft)' },
@@ -47323,9 +47356,14 @@ ${JSON.stringify(metricas, null, 2)}`
     const sitBadge = (p.situacao && p.situacao !== 'pago' && sitInfo)
       ? '<span style="font-size:10px;background:' + sitInfo.soft + ';color:' + sitInfo.cor + ';padding:2px 8px;border-radius:6px;font-weight:700">' + sitInfo.label + '</span>'
       : '';
-    // badge de faceta de envio (a_enviar / enviado / concluido) — sem emoji
+    // badge de faceta de envio (a_enviar / a_caminho / enviado / concluido) — sem emoji
     let envBadge = '';
-    const facetaEnv = p.aEnviar ? 'a_enviar' : (p.enviado ? 'enviado' : (p.concluido ? 'concluido' : ''));
+    // "A caminho" (logística Shopee em trânsito) tem prioridade visual sobre
+    // "Enviado" genérico: é a informação que o webhook entrega em tempo real.
+    const facetaEnv = p.aEnviar ? 'a_enviar'
+      : (p.aCaminho ? 'a_caminho'
+      : (p.enviado ? 'enviado'
+      : (p.concluido ? 'concluido' : '')));
     if (facetaEnv && PED_STATUS_INFO[facetaEnv]) {
       const fi = PED_STATUS_INFO[facetaEnv];
       envBadge = '<span style="font-size:10px;background:' + fi.soft + ';color:' + fi.cor + ';padding:2px 8px;border-radius:6px;font-weight:700;white-space:nowrap">' + fi.label + '</span>';
