@@ -217,7 +217,7 @@
     display: flex; align-items: center; gap: 12px;
     padding: 12px 20px; cursor: pointer;
     color: rgba(255,255,255,0.7); font-size: 14px; font-weight: 500;
-    transition: all 0.15s; border-left: 3px solid transparent;
+    transition: background 0.15s, color 0.15s, padding-left 0.32s cubic-bezier(.22,.61,.36,1); border-left: 3px solid transparent;
   }
   .sidebar-item:hover { background: rgba(255,255,255,0.05); color: white; }
   .sidebar-item:active { transform: scale(.98); }
@@ -429,6 +429,10 @@
     100% { color: inherit; }
   }
   .lc-value-updated { animation: lcValuePulse .7s ease; }
+
+  /* — scroll-reveal: elemento começa escondido e sobe suave ao entrar na tela — */
+  .lc-reveal { opacity: 0; transform: translateY(24px); transition: opacity .6s cubic-bezier(.22,.61,.36,1), transform .6s cubic-bezier(.22,.61,.36,1); }
+  .lc-reveal.lc-revealed { opacity: 1; transform: translateY(0); }
 
   /* — acessibilidade: quem prefere menos movimento não é incomodado — */
   @media (prefers-reduced-motion: reduce) {
@@ -22108,10 +22112,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       precoMax: precoMax || undefined,
     };
     
-    // Mostra indicador de loading discreto
+    // Skeletons animados enquanto carrega (em vez de bloquear com "Carregando…")
     const lista = document.getElementById('prodLista');
     if (lista && !lista.querySelector('.prod-card')) {
-      lista.innerHTML = '<div style="text-align:center;padding:40px;color:var(--cinza-texto)">⏳ Carregando produtos...</div>';
+      lista.innerHTML = '<div class="prod-grid-v2">' + _prodSkeletons() + '</div>';
     }
     
     try {
@@ -22694,8 +22698,25 @@ Retorne JSON: {"ID": "valor", ...}`;
         </div>
       </div>`;
     }).join('') + '</div>';
+    // micro-interação: cards de produto entram em cascata
+    const gradeProd = lista.querySelector('.prod-grid-v2');
+    if (gradeProd && typeof animarCascata === 'function') animarCascata(gradeProd);
   }
-  
+
+  // Skeletons de card de produto (mostrados enquanto o backend responde).
+  function _prodSkeletons() {
+    let s = '';
+    for (let i = 0; i < 8; i++) {
+      s += '<div class="prod-card" style="pointer-events:none">'
+        + '<div class="lc-skeleton" style="width:100%;height:120px;border-radius:10px;margin-bottom:10px"></div>'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:80%"></div>'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:50%"></div>'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:65%;margin-top:10px"></div>'
+        + '</div>';
+    }
+    return s;
+  }
+
   // ========================================================================
   // SUITE DE TESTES AUTOMÁTICOS — chame window.testarFiltrosProdutos() no F12
   // ou pelo botão escondido (duplo-clique no título "Produtos")
@@ -39340,7 +39361,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.316-animacoes-home-pedidos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.318-animacoes-todas-telas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -40121,6 +40142,72 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   window.pulsarValor = pulsarValor;
 
+  // ── SCROLL-REVEAL: elementos aparecem quando entram na tela ao rolar ──
+  // Usa IntersectionObserver (nativo, performático — não calcula no scroll).
+  let _revealObserver = null;
+  function _initRevealObserver() {
+    if (_revealObserver || _reduzMovimento()) return;
+    _revealObserver = new IntersectionObserver((entries) => {
+      entries.forEach(en => {
+        if (en.isIntersecting) {
+          en.target.classList.add('lc-revealed');
+          // se o elemento pede pra disparar um callback ao revelar (ex.: desenhar gráfico)
+          const cb = en.target._onReveal;
+          if (typeof cb === 'function') { cb(); en.target._onReveal = null; }
+          _revealObserver.unobserve(en.target);
+        }
+      });
+    }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+  }
+
+  // marca os elementos de um container (ou lista) pra revelar ao rolar
+  function revelarAoRolar(elementos, onRevealCadaUm) {
+    if (_reduzMovimento()) return;
+    _initRevealObserver();
+    if (!_revealObserver) return;
+    const arr = (elementos instanceof NodeList || Array.isArray(elementos)) ? Array.from(elementos) : [elementos];
+    arr.forEach(el => {
+      if (!el) return;
+      el.classList.add('lc-reveal');
+      if (onRevealCadaUm) el._onReveal = () => onRevealCadaUm(el);
+      _revealObserver.observe(el);
+    });
+    // SALVAGUARDA: fallback que garante que nada fique invisível se o observer
+    // falhar (ex.: navegador antigo, timing). Após 1.2s, revela o que sobrou.
+    setTimeout(() => {
+      arr.forEach(el => {
+        if (el && el.classList.contains('lc-reveal') && !el.classList.contains('lc-revealed')) {
+          el.classList.add('lc-revealed');
+        }
+      });
+    }, 1200);
+  }
+  window.revelarAoRolar = revelarAoRolar;
+
+  // Aplica scroll-reveal aos blocos principais de uma tela (chamado no goTo).
+  // Cobre os tipos de card/bloco mais comuns do sistema. Seguro: se não achar
+  // nada, não faz nada; só mexe em opacity/transform.
+  function aplicarRevealNaTela(screenId) {
+    if (_reduzMovimento()) return;
+    const tela = document.getElementById(screenId);
+    if (!tela) return;
+    // Home e Pedidos já têm tratamento próprio — evita duplicar
+    if (screenId === 'homeScreen' || screenId === 'pedidosScreen') return;
+    const seletores = [
+      '.lc-block', '.lc-chart-card', '.stat-card', '.lc-kpi',
+      '.settings-card', '.lucro-card', '.ads-card', '.lc-card',
+      '.reconc-card', '.estoque-card', '.lojas-card'
+    ].join(',');
+    // pega só os blocos de primeiro nível relevantes (evita aninhados demais)
+    const blocos = tela.querySelectorAll(seletores);
+    if (blocos.length) {
+      // limita a um número razoável pra não pesar em telas com muitos itens
+      const alvo = Array.from(blocos).slice(0, 40);
+      revelarAoRolar(alvo);
+    }
+  }
+  window.aplicarRevealNaTela = aplicarRevealNaTela;
+
   function goTo(screenId) {
     // guarda de papel: se o usuário não pode acessar a tela, redireciona em SILÊNCIO
     // (sem toast, sem aviso — a área simplesmente não existe pra esse papel)
@@ -40186,6 +40273,12 @@ Responda APENAS com JSON válido (sem markdown), formato:
       if (window.lcHydrateIcons) window.lcHydrateIcons(_scr || document);
       if (window.lcHydrateIcons) window.lcHydrateIcons(document.getElementById('lcGlobalSidebar'));
       if (window.lcReplaceEmojis) window.lcReplaceEmojis(_scr || document.body);
+    } catch(e){}
+    // scroll-reveal dos blocos da tela (delay curto p/ conteúdo assíncrono existir)
+    try {
+      if (typeof aplicarRevealNaTela === 'function') {
+        setTimeout(() => aplicarRevealNaTela(screenId), 120);
+      }
     } catch(e){}
   }
 
@@ -40643,6 +40736,15 @@ Responda APENAS com JSON válido (sem markdown), formato:
     try { window.lcHydrateIcons && window.lcHydrateIcons(document.getElementById('homeScreen')); } catch(e){}
     const fab = document.getElementById('consultorFab');
     if (fab) fab.style.display = 'flex';
+
+    // scroll-reveal: blocos abaixo da dobra aparecem ao rolar até eles.
+    // O gráfico de evolução só é (re)animado quando entra na tela.
+    try {
+      if (typeof revelarAoRolar === 'function') {
+        const blocos = document.querySelectorAll('#homeScreen .lc-chart-hero, #homeScreen .lc-block');
+        revelarAoRolar(blocos);
+      }
+    } catch(e){}
   }
 
   function homeSetPeriodo(dias, btn) {
@@ -40889,6 +40991,12 @@ Responda APENAS com JSON válido (sem markdown), formato:
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
+        // barras crescem de baixo e a linha se desenha da esquerda p/ direita
+        animation: _reduzMovimento() ? false : {
+          duration: 1100,
+          easing: 'easeOutCubic',
+          delay: (ctx) => (ctx.type === 'data' && ctx.mode === 'default') ? ctx.dataIndex * 60 : 0,
+        },
         plugins: { legend: { display: false } },
         scales: {
           y: { position: 'left', beginAtZero: true, title: { display: true, text: 'Vendas (R$)' }, ticks: { callback: (v) => 'R$ ' + Number(v).toLocaleString('pt-BR') } },
