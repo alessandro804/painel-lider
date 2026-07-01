@@ -9728,6 +9728,23 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             <button class="primary-btn" onclick="saveProfile()">Salvar perfil</button>
           </div>
 
+          <!-- Dados fiscais: CPF/CNPJ (só marketplace). Preenchível 1x, depois travado. -->
+          <div class="settings-card" style="margin-top:16px" id="cardDadosFiscais" data-mkt-only>
+            <div class="settings-card-title" style="margin-bottom:6px">Dados fiscais</div>
+            <div class="settings-card-subtitle" style="margin-bottom:14px">
+              Usado para emissão de nota fiscal das suas assinaturas. Após salvo, não pode ser alterado — confira antes de confirmar.
+            </div>
+            <div class="form-group">
+              <label class="form-label">CPF ou CNPJ</label>
+              <input type="text" class="form-input" id="settingCpfCnpj" placeholder="Somente números">
+              <div id="cpfCnpjMsg" style="font-size:12px;margin-top:6px;display:none"></div>
+            </div>
+            <button class="primary-btn" id="btnSalvarCpfCnpj" onclick="salvarCpfCnpj()">Salvar CPF/CNPJ</button>
+            <div id="cpfCnpjTravado" style="display:none;font-size:13px;color:#16a34a;margin-top:10px;font-weight:600">
+              <span class="lc-ic" data-lucide="lock"></span> CPF/CNPJ confirmado e protegido.
+            </div>
+          </div>
+
           <div class="settings-card" style="margin-top:16px">
             <div class="settings-card-title" style="margin-bottom:6px">Segurança</div>
             <div class="settings-card-subtitle" style="margin-bottom:14px">Troque a senha do seu acesso ao painel.</div>
@@ -39193,7 +39210,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.307-assinaturas-fatia3';
+  const _DIAG_VERSAO_PAINEL = 'v33k.308-cpfcnpj-perfil';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47970,6 +47987,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (tab === 'gerais' && typeof carregarCronsAdmin === 'function') carregarCronsAdmin();
     if (tab === 'prompts' && typeof renderPromptsList === 'function') renderPromptsList();
     if (tab === 'logs' && typeof abrirLogsConfig === 'function') abrirLogsConfig();
+    if (tab === 'profile' && typeof carregarCpfCnpj === 'function') carregarCpfCnpj();
   }
   
   // ============================================================
@@ -49152,6 +49170,84 @@ ${JSON.stringify(metricas, null, 2)}`
     if (homeH1) { homeH1.innerHTML = `<span class="lc-ic" data-size="xl" data-lucide="hand"></span> Olá, ${nome}`; try { window.lucide && window.lucide.createIcons(); } catch(e){} }
     showToast('Perfil atualizado');
   }
+
+  // ── CPF/CNPJ do usuário (preenchível 1x, travado depois) ──
+  async function carregarCpfCnpj() {
+    const card = document.getElementById('cardDadosFiscais');
+    if (!card || papelAtual() !== 'marketplace') { if (card) card.style.display = 'none'; return; }
+    card.style.display = '';
+    const inp = document.getElementById('settingCpfCnpj');
+    const btn = document.getElementById('btnSalvarCpfCnpj');
+    const travado = document.getElementById('cpfCnpjTravado');
+    const msg = document.getElementById('cpfCnpjMsg');
+    if (msg) msg.style.display = 'none';
+    try {
+      const backend = getBackendUrl();
+      const r = await (await fetch(backend + '/api/auth/meu-cpf-cnpj', {
+        headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + getTokenLogin() },
+      })).json();
+      if (r.ok && r.cpfCnpj) {
+        // já preenchido → trava
+        inp.value = _fmtCpfCnpj(r.cpfCnpj);
+        inp.readOnly = true;
+        inp.style.background = '#f3f4f6';
+        inp.style.color = '#6b7280';
+        if (btn) btn.style.display = 'none';
+        if (travado) travado.style.display = '';
+        try { window.lucide && window.lucide.createIcons(); } catch(e){}
+      } else {
+        // vazio → editável
+        inp.value = '';
+        inp.readOnly = false;
+        inp.style.background = '';
+        inp.style.color = '';
+        if (btn) btn.style.display = '';
+        if (travado) travado.style.display = 'none';
+      }
+    } catch(e){}
+  }
+  window.carregarCpfCnpj = carregarCpfCnpj;
+
+  function _fmtCpfCnpj(d) {
+    d = String(d || '').replace(/\D/g, '');
+    if (d.length === 11) return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+    if (d.length === 14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
+    return d;
+  }
+
+  async function salvarCpfCnpj() {
+    const inp = document.getElementById('settingCpfCnpj');
+    const msg = document.getElementById('cpfCnpjMsg');
+    const btn = document.getElementById('btnSalvarCpfCnpj');
+    const cpfCnpj = (inp.value || '').replace(/\D/g, '');
+    const setMsg = (txt, cor) => { if (msg) { msg.textContent = txt; msg.style.color = cor; msg.style.display = 'block'; } };
+
+    if (cpfCnpj.length !== 11 && cpfCnpj.length !== 14) {
+      setMsg('Informe um CPF (11 dígitos) ou CNPJ (14 dígitos).', '#dc2626'); return;
+    }
+    if (!confirm('Confirmar o CPF/CNPJ ' + _fmtCpfCnpj(cpfCnpj) + '?\n\nEle NÃO poderá ser alterado depois de salvo.')) return;
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
+    try {
+      const backend = getBackendUrl();
+      const r = await (await fetch(backend + '/api/auth/meu-cpf-cnpj', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + getTokenLogin() },
+        body: JSON.stringify({ cpfCnpj }),
+      })).json();
+      if (r.ok) {
+        setMsg('CPF/CNPJ salvo e protegido.', '#16a34a');
+        carregarCpfCnpj();
+      } else {
+        setMsg(r.erro || 'Não foi possível salvar.', '#dc2626');
+      }
+    } catch(e) {
+      setMsg('Erro de conexão.', '#dc2626');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Salvar CPF/CNPJ'; }
+    }
+  }
+  window.salvarCpfCnpj = salvarCpfCnpj;
 
   // Troca a senha do próprio usuário logado (qualquer papel).
   async function trocarMinhaSenha() {
