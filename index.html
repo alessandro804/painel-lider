@@ -5366,6 +5366,13 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   <button onclick="voltarAoAdmin()" style="margin-left:12px;background:#fff;color:#b45309;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer">↩ Voltar ao admin</button>
 </div>
 
+<!-- Barra de bloqueio por inadimplência (Fatia 4) -->
+<div id="bloqueioBar" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99998;background:#dc2626;color:#fff;padding:10px 16px;font-size:13px;font-weight:600;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.25)">
+  <span class="lc-ic" data-lucide="alert-triangle" style="vertical-align:middle"></span>
+  <span id="bloqueioTexto">Sua assinatura está vencida. Regularize o pagamento para reativar seu acesso.</span>
+  <button onclick="irParaPlanos()" style="margin-left:12px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:5px 14px;font-weight:700;cursor:pointer">Ver planos</button>
+</div>
+
 
 <div class="toast" id="toast">
   <span id="toastIcon">✓</span>
@@ -39210,7 +39217,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.308-cpfcnpj-perfil';
+  const _DIAG_VERSAO_PAINEL = 'v33k.309-bloqueio-inadimplencia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -39481,6 +39488,23 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   window.statusPlano = statusPlano;
 
+  // Acesso BLOQUEADO: só marketplace, e só por INADIMPLÊNCIA — quando uma
+  // assinatura PAGA venceu e não renovou. Trial expirado NÃO bloqueia (vira
+  // Grátis limitado). Bloqueado = só acessa a tela de Planos pra regularizar.
+  function acessoBloqueado() {
+    if (papelAtual() !== 'marketplace') return false;
+    const u = _usuarioLogado || {};
+    const status = u.plano_status || 'trial';
+    if (status === 'inadimplente') return true;
+    // assinatura paga (não-grátis, não-trial) com data de expiração no passado
+    const plano = u.plano || 'gratis';
+    if (status === 'ativo' && plano !== 'gratis' && u.assinatura_expira_em) {
+      if (new Date(u.assinatura_expira_em).getTime() < Date.now()) return true;
+    }
+    return false;
+  }
+  window.acessoBloqueado = acessoBloqueado;
+
   function lojasDoUsuario() { return (_usuarioLogado && Array.isArray(_usuarioLogado.lojas)) ? _usuarioLogado.lojas : []; }
   // telas permitidas por papel
   const TELAS_POR_PAPEL = {
@@ -39525,6 +39549,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   function podeAcessarTela(screenId) {
     if (TELAS_SEMPRE_LIBERADAS.includes(screenId)) return true;
+    // BLOQUEIO POR INADIMPLÊNCIA (Fatia 4): marketplace com assinatura vencida
+    // só acessa Configurações (onde fica a tela de Planos pra regularizar).
+    if (typeof acessoBloqueado === 'function' && acessoBloqueado()) {
+      return screenId === 'settingsScreen';
+    }
     const papel = papelAtual();
     if (papel === 'colaborador') {
       // colaborador: só o que foi explicitamente liberado pelo admin dele
@@ -39537,6 +39566,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
   function papelHomeInicial() {
     const p = papelAtual();
     if (p === 'superadmin') return 'admScreen';
+    // marketplace inadimplente: manda direto pra Configurações (tela de Planos)
+    if (p === 'marketplace' && typeof acessoBloqueado === 'function' && acessoBloqueado()) return 'settingsScreen';
     if (p === 'cliente') return 'homeScreen';
     if (p === 'colaborador') {
       // primeira tela que o colaborador tem permissão; senão login
@@ -39581,6 +39612,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     });
     // menu do usuário (dropdown de plano/perfil no rodapé da sidebar)
     if (typeof montarMenuUsuario === 'function') montarMenuUsuario();
+    // barra de bloqueio por inadimplência (Fatia 4)
+    if (typeof atualizarBarraBloqueio === 'function') atualizarBarraBloqueio();
     // badge do papel no perfil (se existir)
     const badge = document.getElementById('papelBadge');
     if (badge) badge.textContent = p === 'superadmin' ? 'Super Admin' : (p === 'admin' ? 'Administrador' : (p === 'colaborador' ? 'Colaborador' : (p === 'cliente' ? 'Cliente' : 'Demonstração')));
@@ -39912,7 +39945,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (screenId === 'marketingScreen') renderMarketing();
     if (screenId === 'operacaoScreen') { renderOperacao(); iniciarVidaEscritorio(); }
     else { pararVidaEscritorio(); }
-    if (screenId === 'settingsScreen') { renderSettings(); if (typeof aplicarPermissoesUI==='function') aplicarPermissoesUI(); }
+    if (screenId === 'settingsScreen') {
+      renderSettings();
+      if (typeof aplicarPermissoesUI==='function') aplicarPermissoesUI();
+      // marketplace bloqueado: abre direto a aba de Planos pra regularizar
+      if (typeof acessoBloqueado === 'function' && acessoBloqueado()) {
+        setTimeout(() => {
+          const btn = document.querySelector('.settings-tab[data-tab="planos"]');
+          if (btn && typeof setSettingsTab === 'function') { setSettingsTab('planos', btn); if (typeof renderTelaPlanos==='function') renderTelaPlanos(); }
+        }, 40);
+      }
+    }
     if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); }
     else if (typeof window.admSaudePararAuto === 'function') { window.admSaudePararAuto(); }
     if (screenId === 'produtosScreen') {
@@ -56792,6 +56835,25 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // empurra o conteúdo pra baixo pra não ficar atrás da barra
     document.body.style.paddingTop = '40px';
   }
+
+  // Mostra/esconde a barra vermelha de bloqueio por inadimplência.
+  function atualizarBarraBloqueio() {
+    const bar = document.getElementById('bloqueioBar');
+    if (!bar) return;
+    const bloqueado = (typeof acessoBloqueado === 'function') && acessoBloqueado();
+    // não mostra durante impersonação (o admin está só olhando)
+    const impersonando = !!localStorage.getItem('lider_token_admin_real');
+    if (bloqueado && !impersonando) {
+      bar.style.display = 'block';
+      if (!document.body.style.paddingTop) document.body.style.paddingTop = '44px';
+      try { window.lucide && window.lucide.createIcons(); } catch(e){}
+    } else {
+      bar.style.display = 'none';
+      // só zera o padding se a barra de impersonação também não estiver ativa
+      if (!impersonando) document.body.style.paddingTop = '';
+    }
+  }
+  window.atualizarBarraBloqueio = atualizarBarraBloqueio;
 
   function voltarAoAdmin() {
     const tokenAdmin = localStorage.getItem('lider_token_admin_real');
