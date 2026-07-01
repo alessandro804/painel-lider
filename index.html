@@ -14647,10 +14647,44 @@ Retorne JSON: {"ID": "valor", ...}`;
       return;
     }
     
-    // Não vinculado → abre o modal de conexão com lojaId no link
+    // Não vinculado → antes de conectar, checa o limite de contas do plano (marketplace)
+    if (papelAtual() === 'marketplace') {
+      try {
+        const chk = await (await fetch(BACKEND_URL + '/api/assinaturas/pode-conectar', {
+          headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + getTokenLogin() },
+        })).json();
+        if (chk && chk.ok && chk.pode === false) {
+          mostrarConviteUpgrade(chk.limite);
+          return;
+        }
+      } catch (e) { /* fail-open: se a checagem falhar, deixa seguir */ }
+    }
+
+    // abre o modal de conexão com lojaId no link
     const linkConexao = BACKEND_URL + '/api/vincular/' + integ.id + '/iniciar?lojaId=' + lojaIdBanco;
     abrirModalConexao(integ, linkConexao);
   }
+
+  // Convite de upgrade quando o marketplace atinge o limite de conexões do plano.
+  function mostrarConviteUpgrade(limite) {
+    const old = document.getElementById('upgradeConviteOverlay'); if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'upgradeConviteOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;z-index:100002;padding:20px';
+    const lim = (limite != null) ? limite : 1;
+    ov.innerHTML = `
+      <div style="background:#fff;border-radius:16px;max-width:400px;width:100%;padding:26px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="font-size:40px;margin-bottom:8px">🔒</div>
+        <div style="font-size:18px;font-weight:800;color:#1e2a47;margin-bottom:8px">Limite de contas atingido</div>
+        <div style="font-size:14px;color:#6b7280;line-height:1.5;margin-bottom:20px">
+          Seu plano atual permite conectar ${lim} ${lim > 1 ? 'contas' : 'conta'}. Faça upgrade para conectar mais lojas e escalar suas vendas.
+        </div>
+        <button class="lc-pay-btn" style="margin-bottom:8px" onclick="document.getElementById('upgradeConviteOverlay').remove(); irParaPlanos()">Ver planos e fazer upgrade</button>
+        <button class="toolbar-btn" style="width:100%" onclick="document.getElementById('upgradeConviteOverlay').remove()">Agora não</button>
+      </div>`;
+    document.body.appendChild(ov);
+  }
+  window.mostrarConviteUpgrade = mostrarConviteUpgrade;
   
   // Modal de conexão de marketplace — permite abrir direto OU copiar o link
   function abrirModalConexao(integ, link) {
@@ -39217,7 +39251,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.309-bloqueio-inadimplencia';
+  const _DIAG_VERSAO_PAINEL = 'v33k.311-agencia-paga-timer';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -39456,12 +39490,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
     gratis:    { nome: 'Grátis',    preco: 0,      contas: 1,    ads: false, relampago: false, cor: '#6b7280' },
     prime:     { nome: 'Prime',     preco: 399.90, contas: 3,    ads: true,  relampago: true,  cor: '#2563eb' },
     prime_max: { nome: 'Prime Max', preco: 699.90, contas: null, ads: true,  relampago: true,  cor: '#7c3aed' },
-    agencia:   { nome: 'Agência',   preco: null,   contas: null, ads: true,  relampago: true,  cor: '#0d9488' },
+    agencia:   { nome: 'Agência',   preco: 1500,   contas: null, ads: true,  relampago: true,  cor: '#0d9488' },
   };
   const ORDEM_PLANOS = ['gratis', 'prime', 'prime_max', 'agencia'];
 
   // Só o papel marketplace usa o fluxo de assinatura na UI
-  function usaAssinatura() { return papelAtual() === 'marketplace'; }
+  // Papéis que usam o fluxo de assinatura na UI: marketplace e agência (admin).
+  // Colaboradores e clientes NUNCA veem telas de plano.
+  function usaAssinatura() {
+    const p = papelAtual();
+    return p === 'marketplace' || p === 'admin';
+  }
 
   // Status do plano do usuário logado: { plano, status, nome, diasRestantes, fimData, expirado }
   function statusPlano() {
@@ -39492,7 +39531,9 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // assinatura PAGA venceu e não renovou. Trial expirado NÃO bloqueia (vira
   // Grátis limitado). Bloqueado = só acessa a tela de Planos pra regularizar.
   function acessoBloqueado() {
-    if (papelAtual() !== 'marketplace') return false;
+    const p = papelAtual();
+    // só marketplace e agência (admin) podem ser bloqueados. Superadmin nunca.
+    if (p !== 'marketplace' && p !== 'admin') return false;
     const u = _usuarioLogado || {};
     const status = u.plano_status || 'trial';
     if (status === 'inadimplente') return true;
@@ -39606,9 +39647,10 @@ Responda APENAS com JSON válido (sem markdown), formato:
     document.querySelectorAll('[data-superadmin-only]').forEach(el => {
       el.style.display = (p === 'superadmin') ? '' : 'none';
     });
-    // elementos exclusivos de MARKETPLACE (aba de Planos, etc.)
+    // elementos das telas de plano: marketplace E agência (admin).
+    // Colaboradores e clientes nunca veem (usaAssinatura cobre a regra).
     document.querySelectorAll('[data-mkt-only]').forEach(el => {
-      el.style.display = (p === 'marketplace') ? '' : 'none';
+      el.style.display = (typeof usaAssinatura === 'function' && usaAssinatura()) ? '' : 'none';
     });
     // menu do usuário (dropdown de plano/perfil no rodapé da sidebar)
     if (typeof montarMenuUsuario === 'function') montarMenuUsuario();
@@ -39616,7 +39658,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (typeof atualizarBarraBloqueio === 'function') atualizarBarraBloqueio();
     // badge do papel no perfil (se existir)
     const badge = document.getElementById('papelBadge');
-    if (badge) badge.textContent = p === 'superadmin' ? 'Super Admin' : (p === 'admin' ? 'Administrador' : (p === 'colaborador' ? 'Colaborador' : (p === 'cliente' ? 'Cliente' : 'Demonstração')));
+    if (badge) badge.textContent = p === 'superadmin' ? 'Super Admin' : (p === 'admin' ? 'Agência' : (p === 'colaborador' ? 'Colaborador' : (p === 'cliente' ? 'Cliente' : 'Demonstração')));
   }
   window.aplicarPermissoesUI = aplicarPermissoesUI;
 
@@ -49020,12 +49062,17 @@ ${JSON.stringify(metricas, null, 2)}`
       ? '<button class="lc-plano-widget-btn secundario" onclick="irParaPlanos()">Gerenciar plano</button>'
       : '<button class="lc-plano-widget-btn" onclick="irParaPlanos()">Fazer upgrade</button>';
 
+    // selo "Agência" pra contas de agência (papel admin)
+    const seloAgencia = (papelAtual() === 'admin')
+      ? '<span class="lc-plano-widget-badge" style="background:#0d9488;margin-left:6px">Agência</span>'
+      : '';
+
     host.innerHTML = alerta
       + '<div class="lc-plano-widget">'
       + '<div class="lc-plano-widget-ico" style="background:' + corIco + '"><span class="lc-ic" data-lucide="crown"></span></div>'
       + '<div class="lc-plano-widget-main">'
       + '<div class="lc-plano-widget-top"><span class="lc-plano-widget-nome">Plano ' + _esc(st.nome) + '</span>'
-      + '<span class="lc-plano-widget-badge" style="background:' + cor + '">' + _rotuloStatusPlano(st) + '</span></div>'
+      + '<span class="lc-plano-widget-badge" style="background:' + cor + '">' + _rotuloStatusPlano(st) + '</span>' + seloAgencia + '</div>'
       + '<div class="lc-plano-widget-sub">' + sub + '</div>'
       + '</div>' + btn + '</div>';
     try { window.lucide && window.lucide.createIcons(); } catch(e){}
@@ -49038,8 +49085,11 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!host) return;
     const st = statusPlano();
     const planoAtual = st.plano;
+    const ehAgencia = (papelAtual() === 'admin');
+    // agência vê só o plano Agência; marketplace vê grátis/prime/prime_max (sem agência)
+    const planosVisiveis = ehAgencia ? ['agencia'] : ['gratis', 'prime', 'prime_max'];
     let html = '';
-    ORDEM_PLANOS.forEach(pid => {
+    planosVisiveis.forEach(pid => {
       const p = PLANOS_INFO[pid];
       const atual = (pid === planoAtual);
       const destaque = (pid === 'prime');
@@ -49052,14 +49102,15 @@ ${JSON.stringify(metricas, null, 2)}`
       recursos.push(p.relampago ? 'Ofertas relâmpago' : 'Sem ofertas relâmpago');
       if (pid === 'gratis') recursos.push('7 dias com tudo do Prime');
       if (pid !== 'gratis') recursos.push('Suporte prioritário');
+      if (pid === 'agencia') recursos.push('Gestão completa de clientes');
 
       let btn;
       if (atual) btn = '<button class="lc-plano-card-btn atual" disabled>Seu plano atual</button>';
-      else if (p.contato) btn = '<button class="lc-plano-card-btn contato" onclick="contatoAgencia()">Entrar em contato</button>';
       else btn = '<button class="lc-plano-card-btn" onclick="escolherPlano(\'' + pid + '\')">Escolher ' + _esc(p.nome) + '</button>';
 
       html += '<div class="lc-plano-card' + (destaque ? ' destaque' : '') + (atual ? ' atual' : '') + '">'
         + (destaque ? '<div class="lc-plano-card-tag">Mais popular</div>' : '')
+        + (pid === 'agencia' ? '<div class="lc-plano-card-tag" style="background:#0d9488">Selo Agência</div>' : '')
         + '<div class="lc-plano-card-nome">' + _esc(p.nome) + '</div>'
         + '<div class="lc-plano-card-preco">' + precoTxt + (p.preco > 0 ? '<span>/mês</span>' : '') + '</div>'
         + '<ul class="lc-plano-card-lista">'
@@ -49071,14 +49122,19 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.renderTelaPlanos = renderTelaPlanos;
 
-  // Escolha de plano — na Fatia 3 abrirá o pagamento Asaas. Por ora, informa.
-  // ── PAGAMENTO DE ASSINATURA (Fatia 3) ──
+  // ── PAGAMENTO DE ASSINATURA ──
   let _payPollTimer = null;
+  let _payTimerInterval = null;   // contador de 15 min
+  let _payPaymentId = null;       // cobrança atual (pra excluir se expirar)
+  let _payExpiraEm = null;        // timestamp do fim dos 15 min
+  let _payUltimoPlano = null;     // último plano escolhido (pra regenerar)
+  const PAY_LIMITE_MS = 15 * 60 * 1000; // 15 minutos
 
   async function escolherPlano(pid) {
     const p = PLANOS_INFO[pid];
     if (!p) return;
-    if (pid === 'gratis' || pid === 'agencia') return; // não passam por pagamento
+    if (pid === 'gratis') return; // grátis não passa por pagamento
+    _payUltimoPlano = pid;
 
     const overlay = document.getElementById('payOverlay');
     document.getElementById('payTitulo').textContent = 'Assinar ' + p.nome;
@@ -49098,9 +49154,10 @@ ${JSON.stringify(metricas, null, 2)}`
         document.getElementById('payCorpo').innerHTML = '<div class="lc-pay-status aguardando">' + _esc(r.erro || 'Não foi possível gerar a cobrança.') + '</div>';
         return;
       }
+      _payPaymentId = r.paymentId || null;
       renderPagamento(r);
-      // começa a checar se o pagamento foi confirmado
       iniciarPollPagamento();
+      iniciarTimerPagamento(); // contador de 15 min
     } catch (e) {
       document.getElementById('payCorpo').innerHTML = '<div class="lc-pay-status aguardando">Erro de conexão. Tente novamente.</div>';
     }
@@ -49136,6 +49193,7 @@ ${JSON.stringify(metricas, null, 2)}`
         + '</div>';
     }
 
+    html += '<div id="payTimer" style="text-align:center;font-size:13px;color:#6b7280;margin-top:12px">Tempo para pagamento: <b id="payTimerValor" style="color:#dc2626">15:00</b></div>';
     html += '<div class="lc-pay-status aguardando" id="payStatus">Aguardando pagamento…</div>';
     document.getElementById('payCorpo').innerHTML = html;
   }
@@ -49171,6 +49229,7 @@ ${JSON.stringify(metricas, null, 2)}`
         })).json();
         if (r.ok && r.plano_status === 'ativo') {
           pararPollPagamento();
+          pararTimerPagamento();
           const st = document.getElementById('payStatus');
           if (st) { st.className = 'lc-pay-status confirmado'; st.textContent = '✓ Pagamento confirmado! Plano ativado.'; }
           // atualiza o usuário local
@@ -49187,8 +49246,69 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   function pararPollPagamento() { if (_payPollTimer) { clearInterval(_payPollTimer); _payPollTimer = null; } }
 
+  // Contador visível de 15 min. Ao zerar, exclui a cobrança no Asaas.
+  function iniciarTimerPagamento() {
+    pararTimerPagamento();
+    _payExpiraEm = Date.now() + PAY_LIMITE_MS;
+    const tick = () => {
+      const restante = _payExpiraEm - Date.now();
+      const el = document.getElementById('payTimerValor');
+      if (restante <= 0) {
+        pararTimerPagamento();
+        expirarPagamento();
+        return;
+      }
+      if (el) {
+        const min = Math.floor(restante / 60000);
+        const seg = Math.floor((restante % 60000) / 1000);
+        el.textContent = min + ':' + String(seg).padStart(2, '0');
+      }
+    };
+    tick();
+    _payTimerInterval = setInterval(tick, 1000);
+  }
+  function pararTimerPagamento() { if (_payTimerInterval) { clearInterval(_payTimerInterval); _payTimerInterval = null; } }
+
+  // Expira: exclui a cobrança pendente no Asaas e avisa que pode gerar nova.
+  async function expirarPagamento() {
+    pararPollPagamento();
+    const corpo = document.getElementById('payCorpo');
+    if (!_payPaymentId) { if (corpo) corpo.innerHTML = '<div class="lc-pay-status aguardando">Tempo esgotado. Feche e tente de novo.</div>'; return; }
+    try {
+      const backend = getBackendUrl();
+      const r = await (await fetch(backend + '/api/assinaturas/cancelar-cobranca', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + getTokenLogin() },
+        body: JSON.stringify({ paymentId: _payPaymentId }),
+      })).json();
+      // se pagou bem na hora do limite, o backend avisa
+      if (r.ok && r.jaPago) {
+        const st = document.getElementById('payStatus');
+        if (st) { st.className = 'lc-pay-status confirmado'; st.textContent = '✓ Pagamento identificado! Ativando…'; }
+        return;
+      }
+    } catch(e){}
+    _payPaymentId = null;
+    if (corpo) {
+      corpo.innerHTML = '<div style="text-align:center;padding:20px 0">'
+        + '<div style="font-size:36px;margin-bottom:8px">⏰</div>'
+        + '<div style="font-weight:700;color:#1e2a47;margin-bottom:6px">Tempo esgotado</div>'
+        + '<div style="font-size:13px;color:#6b7280;margin-bottom:18px">A cobrança foi cancelada. Você pode gerar uma nova quando quiser.</div>'
+        + '<button class="lc-pay-btn" onclick="regenerarPagamento()">Gerar nova cobrança</button></div>';
+    }
+  }
+
+  // regenera a cobrança usando o último plano escolhido
+  function regenerarPagamento() {
+    if (_payUltimoPlano) escolherPlano(_payUltimoPlano);
+    else fecharPagamento();
+  }
+  window.regenerarPagamento = regenerarPagamento;
+
   function fecharPagamento() {
     pararPollPagamento();
+    pararTimerPagamento();
+    _payPaymentId = null;
     const ov = document.getElementById('payOverlay');
     if (ov) ov.classList.remove('aberto');
   }
@@ -56255,7 +56375,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 <script>
   // ═══ GESTÃO DE USUÁRIOS (ADM) ═══
   let _admUsuarios = [];
-  const ADM_PAPEL_LABEL = { superadmin:'Super Admin', admin:'Administrador', colaborador:'Colaborador', cliente:'Cliente', marketplace:'Marketplace', demo:'Demonstração' };
+  const ADM_PAPEL_LABEL = { superadmin:'Super Admin', admin:'Agência', colaborador:'Colaborador', cliente:'Cliente', marketplace:'Marketplace', demo:'Demonstração' };
   const ADM_PAPEL_COR = { superadmin:'#7c3aed', admin:'#16a34a', colaborador:'#2563eb', cliente:'#0891b2', marketplace:'#0d9488', demo:'#9ca3af' };
 
   async function renderAdmUsuarios() {
@@ -56288,6 +56408,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         <span style="background:${cor};color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700">${ADM_PAPEL_LABEL[u.papel]||u.papel}</span>
         <div style="display:flex;gap:6px">
           <button class="toolbar-btn" style="font-size:11px;background:#b45309;color:white" onclick="impersonarUsuario(${u.id})">👁 Entrar como</button>
+          ${papelAtual()==='superadmin' ? `<button class="toolbar-btn" style="font-size:11px;background:#0d9488;color:white" onclick="abrirEditarPlano(${u.id})">💳 Plano</button>` : ''}
           ${papelAtual()==='superadmin' && (u.papel==='admin'||u.papel==='marketplace'||u.papel==='cliente') ? `<button class="toolbar-btn" style="font-size:11px;background:#7c3aed;color:white" onclick="abrirMigrarLojaModal(${u.id})">↗ Migrar loja</button>` : ''}
           <button class="toolbar-btn" style="font-size:11px" onclick="abrirAdmUsuarioModal(${u.id})">✏️ Editar</button>
           <button class="toolbar-btn" style="font-size:11px;color:#dc2626" onclick="admRemoverUsuario(${u.id})">🗑</button>
@@ -56826,6 +56947,105 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     }
   }
   window.confirmarMigrarLoja = confirmarMigrarLoja;
+
+  // ── SUPER ADMIN: editar plano/vencimento/valor/limite de um usuário ──
+  async function abrirEditarPlano(id) {
+    const old = document.getElementById('editarPlanoOverlay'); if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'editarPlanoOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:100002;padding:16px';
+    ov.innerHTML = `
+      <div style="background:#fff;border-radius:14px;max-width:440px;width:100%;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+        <div style="font-size:17px;font-weight:800;color:#1e2a47;margin-bottom:4px">💳 Plano e assinatura</div>
+        <div id="editPlanoNome" style="font-size:13px;color:#6b7280;margin-bottom:16px">Carregando…</div>
+
+        <label class="form-label">Plano</label>
+        <select class="form-input" id="editPlanoSel" style="margin-bottom:12px">
+          <option value="gratis">Grátis</option>
+          <option value="prime">Prime</option>
+          <option value="prime_max">Prime Max</option>
+          <option value="agencia">Agência</option>
+        </select>
+
+        <label class="form-label">Situação</label>
+        <select class="form-input" id="editStatusSel" style="margin-bottom:12px">
+          <option value="trial">Em teste (trial)</option>
+          <option value="ativo">Ativo</option>
+          <option value="inadimplente">Inadimplente (bloqueado)</option>
+          <option value="expirado">Expirado</option>
+        </select>
+
+        <label class="form-label">Vence em</label>
+        <input type="date" class="form-input" id="editVencimento" style="margin-bottom:12px">
+
+        <label class="form-label">Valor mensal (R$) — vazio usa o padrão do plano</label>
+        <input type="number" step="0.01" min="0" class="form-input" id="editValor" placeholder="Ex: 1500.00" style="margin-bottom:12px">
+
+        <label class="form-label">Limite de contas — vazio/0 = ilimitado</label>
+        <input type="number" min="1" class="form-input" id="editLimite" placeholder="Ex: 3" style="margin-bottom:16px">
+
+        <div id="editPlanoMsg" style="font-size:12px;margin-bottom:12px;display:none"></div>
+
+        <div style="display:flex;gap:8px">
+          <button class="toolbar-btn" style="flex:1" onclick="document.getElementById('editarPlanoOverlay').remove()">Cancelar</button>
+          <button class="toolbar-btn" id="editPlanoSalvarBtn" style="flex:1;background:#0d9488;color:#fff" onclick="salvarEditarPlano(${id})">Salvar</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+
+    // carrega os dados atuais
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/admin/plano-usuario/' + id, { headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken() } })).json();
+      if (r.ok && r.usuario) {
+        const u = r.usuario;
+        document.getElementById('editPlanoNome').innerHTML = '<b>' + escapeHtml(u.nome) + '</b> · ' + (ADM_PAPEL_LABEL[u.papel] || u.papel);
+        document.getElementById('editPlanoSel').value = u.plano || 'gratis';
+        document.getElementById('editStatusSel').value = u.plano_status || 'trial';
+        const dt = u.assinatura_expira_em || u.trial_fim;
+        if (dt) document.getElementById('editVencimento').value = new Date(dt).toISOString().slice(0, 10);
+        if (u.valor_mensal_custom != null) document.getElementById('editValor').value = u.valor_mensal_custom;
+        if (u.contas_limite != null) document.getElementById('editLimite').value = u.contas_limite;
+      } else {
+        document.getElementById('editPlanoNome').textContent = 'Erro ao carregar dados.';
+      }
+    } catch (e) {
+      document.getElementById('editPlanoNome').textContent = 'Erro de conexão.';
+    }
+  }
+  window.abrirEditarPlano = abrirEditarPlano;
+
+  async function salvarEditarPlano(id) {
+    const msg = document.getElementById('editPlanoMsg');
+    const btn = document.getElementById('editPlanoSalvarBtn');
+    const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c; msg.style.display = 'block'; } };
+    const body = {
+      plano: document.getElementById('editPlanoSel').value,
+      plano_status: document.getElementById('editStatusSel').value,
+      assinatura_expira_em: document.getElementById('editVencimento').value || null,
+      valor_mensal_custom: document.getElementById('editValor').value || null,
+      contas_limite: document.getElementById('editLimite').value || null,
+    };
+    if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/admin/plano-usuario/' + id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken() },
+        body: JSON.stringify(body),
+      })).json();
+      if (r.ok) {
+        showToast('Plano atualizado.');
+        const ov = document.getElementById('editarPlanoOverlay'); if (ov) ov.remove();
+        if (typeof renderAdmUsuarios === 'function') renderAdmUsuarios();
+      } else {
+        setMsg(r.erro || 'Não foi possível salvar.', '#dc2626');
+        if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+      }
+    } catch (e) {
+      setMsg('Erro de conexão.', '#dc2626');
+      if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+    }
+  }
+  window.salvarEditarPlano = salvarEditarPlano;
 
   function mostrarBarraImpersonacao(nome) {
     const bar = document.getElementById('impersonarBar');
