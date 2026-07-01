@@ -39466,7 +39466,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.323-fixes-mobile';
+  const _DIAG_VERSAO_PAINEL = 'v33k.326-guard-posse-loja';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -53207,10 +53207,22 @@ ${JSON.stringify(metricas, null, 2)}`
     try {
       if (!force && Date.now() - _ultimaRecargaDemandas < 15000) return false;
       _ultimaRecargaDemandas = Date.now();
-      if (!window.LiderSync || !LiderSync.client || !LiderSync._fromDbDemanda) return false;
-      const dm = await LiderSync.client.from('demandas').select('*');
-      if (dm.error || !dm.data) return false;
-      const doBanco = dm.data.map(r => LiderSync._fromDbDemanda(r));
+      if (!window.LiderSync || !LiderSync._fromDbDemanda) return false;
+      // IMPORTANTE (v33k.324): buscar via BACKEND, que filtra por usuario_id
+      // do dono (resolverDono). ANTES isto usava LiderSync.client.from('demandas')
+      // .select('*') acessando o Supabase DIRETO, SEM filtro — o que trazia
+      // demandas de TODOS os usuários e as injetava na conta atual (vazamento
+      // multi-tenant que reaparecia a cada abertura da tela de Operações).
+      const backend = (typeof getBackendUrl === 'function') ? getBackendUrl() : '';
+      const token = localStorage.getItem('lider_token_login') || '';
+      if (!backend || !token) return false;
+      const resp = await fetch(backend + '/api/dados/demandas', {
+        headers: { 'Authorization': 'Bearer ' + token, 'x-api-token': (typeof getApiToken==='function'?getApiToken():'') }
+      });
+      if (!resp.ok) return false;
+      const json = await resp.json();
+      if (!json || !json.ok || !Array.isArray(json.demandas)) return false;
+      const doBanco = json.demandas.map(r => LiderSync._fromDbDemanda(r));
       let mudou = false;
       doBanco.forEach(db => {
         const idx = demandas.findIndex(d => String(d.id) === String(db.id));
@@ -53225,6 +53237,24 @@ ${JSON.stringify(metricas, null, 2)}`
           demandas.unshift(db); mudou = true;
         }
       });
+      // Remove da memória local as demandas que NÃO pertencem mais ao dono
+      // (ex.: reatribuídas a outro usuário, ou que vazaram antes). SALVAGUARDA:
+      // só remove demandas "antigas" (criadas há mais de 60s), pra nunca apagar
+      // um rascunho recém-criado que ainda está no meio da sincronização
+      // (saveDemandas usa push debounced — há uma janela até chegar no banco).
+      const idsDono = new Set(doBanco.map(db => String(db.id)));
+      const agora = Date.now();
+      const ehRecente = (dem) => {
+        const t = Date.parse(dem && dem.criadoEm ? dem.criadoEm : '');
+        return !isNaN(t) && (agora - t) < 60000;
+      };
+      for (let i = demandas.length - 1; i >= 0; i--) {
+        const dem = demandas[i];
+        if (dem && dem.id != null && !idsDono.has(String(dem.id)) && !ehRecente(dem)) {
+          demandas.splice(i, 1);
+          mudou = true;
+        }
+      }
       if (mudou && typeof saveDemandas === 'function') saveDemandas();
       return mudou;
     } catch(e) { console.warn('[recarregarDemandas]', e); return false; }
