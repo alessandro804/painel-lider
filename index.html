@@ -39484,7 +39484,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.333-motion-uma-vez';
+  const _DIAG_VERSAO_PAINEL = 'v33k.334-fechamento-auto';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -43545,8 +43545,84 @@ REGRAS DE OURO:
       if (ult && ult.percentual != null) document.getElementById('fechPercentual').value = ult.percentual;
     }
     _carregarAsaasDoCliente();
+    // PREENCHIMENTO AUTOMÁTICO: só quando é um NOVO fechamento (não em edição, pra
+    // não sobrescrever valores já salvos que o usuário abriu pra revisar).
+    if (_fechEditando == null && sel.value && sel.value !== '__novo__') {
+      _fechPreencherDoCliente(sel.value);
+    }
   }
   window.onFechClienteChange = onFechClienteChange;
+
+  // Dado o mês de referência do fechamento (YYYY-MM), devolve o mês ANTERIOR.
+  // O fechamento de Julho cobra sobre o faturamento de Junho, então preenchemos
+  // sempre com o mês anterior ao de referência.
+  function _fechMesAnterior(mesRef) {
+    let ref = (mesRef || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(ref)) ref = new Date().toISOString().slice(0,7);
+    const [a, m] = ref.split('-').map(Number);
+    const d = new Date(a, m - 2, 1); // m-1 = mês atual (0-based); m-2 = mês anterior
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  }
+
+  // Preenche automaticamente as plataformas (faturamento bruto por loja) e o campo
+  // de canceladas/devolvidas, com base nas lojas vinculadas ao cliente e no mês
+  // anterior ao de referência. Os valores ficam editáveis. Usa a MESMA regra do
+  // Relatório de Lucro (pago_em, subtotal bruto, estorno = cancelado+devolvido).
+  async function _fechPreencherDoCliente(nomeCliente) {
+    try {
+      // lojas vinculadas a este cliente (mesmo critério usado no resto do sistema)
+      const lojas = (typeof lojasErp !== 'undefined' ? lojasErp : [])
+        .filter(l => l.idBanco && l.clienteVinculado === nomeCliente);
+      if (!lojas.length) return; // cliente sem loja vinculada: não mexe nos campos
+
+      const mesRef = document.getElementById('fechMes').value;
+      const mesAlvo = _fechMesAnterior(mesRef);
+      const lojaIds = lojas.map(l => l.idBanco);
+
+      // feedback visual leve enquanto busca
+      const wrap = document.getElementById('fechPlataformas');
+      const marcador = document.createElement('div');
+      marcador.id = '_fechPreenchendo';
+      marcador.style.cssText = 'font-size:12px;color:#15803d;padding:4px 2px';
+      marcador.textContent = '⏳ Buscando faturamento de ' + mesAlvo + '…';
+      wrap.appendChild(marcador);
+
+      const params = new URLSearchParams();
+      params.set('lojaIds', lojaIds.join(','));
+      params.set('mes', mesAlvo);
+      const resp = await fetch(BACKEND_URL + '/api/lucro/fechamento-preenchimento?' + params.toString(),
+        { headers: { 'x-api-token': getApiToken() } });
+      const r = await resp.json();
+
+      const m = document.getElementById('_fechPreenchendo');
+      if (m) m.remove();
+      if (!r || !r.ok || !r.porLoja) return;
+
+      // monta uma linha de plataforma por loja (nome da loja + faturamento bruto),
+      // e soma os estornos (cancelado+devolvido) pra jogar em "Vendas canceladas".
+      wrap.innerHTML = ''; // limpa as linhas em branco iniciais
+      let totalEstorno = 0;
+      lojas.forEach(l => {
+        const d = r.porLoja[l.idBanco] || r.porLoja[String(l.idBanco)] || { bruto: 0, estorno: 0 };
+        totalEstorno += (d.estorno || 0);
+        const rotulo = l.nome + (l.marketplace ? ' (' + l.marketplace + ')' : '');
+        fechAddPlataforma(rotulo, _fmtNum(d.bruto || 0));
+      });
+      if (!lojas.length) fechAddPlataforma();
+
+      // campo de canceladas/devolvidas = soma dos estornos das lojas do cliente
+      document.getElementById('fechCanceladas').value = _fmtNum(totalEstorno);
+
+      recalcFechamento();
+      showToast('✓ Faturamento de ' + mesAlvo + ' preenchido (' + lojas.length + ' loja' + (lojas.length>1?'s':'') + ')');
+    } catch (e) {
+      const m = document.getElementById('_fechPreenchendo');
+      if (m) m.remove();
+      // falha silenciosa: o usuário ainda pode preencher à mão
+      console.warn('[fechamento] preenchimento automático falhou:', e);
+    }
+  }
+  window._fechPreencherDoCliente = _fechPreencherDoCliente;
 
   function novoFechamento() {
     _fechEditando = null;
