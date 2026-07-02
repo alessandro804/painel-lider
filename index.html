@@ -16723,16 +16723,25 @@ Retorne JSON: {"ID": "valor", ...}`;
     const itemIds = _adsAnunciosCache.map(a => String(a.itemId)).filter(Boolean);
     if (!itemIds.length) return;
     try {
-      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + loja + '/status-ao-vivo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-        body: JSON.stringify({ itemIds }),
-      }).then(x => x.json());
-      if (meu !== _adsStatusToken || _adsSubaba !== 'anuncios') return; // trocou de tela/loja
-      if (!r || !r.ok || !r.status) return;
+      // v33k.347: o backend corrige no MÁXIMO 60 itens por chamada. Antes o front
+      // mandava TODOS de uma vez, então anúncios além do 60º nunca tinham o status
+      // corrigido ao vivo — ficavam presos no status defasado do ETL (aparecendo
+      // "pausado" mesmo já ativos). Agora paginamos em lotes de 60 e mesclamos.
+      const LOTE = 60;
+      const statusMerged = {};
+      for (let i = 0; i < itemIds.length; i += LOTE) {
+        const fatia = itemIds.slice(i, i + LOTE);
+        const r = await fetch(BACKEND_URL + '/api/ads/loja/' + loja + '/status-ao-vivo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify({ itemIds: fatia }),
+        }).then(x => x.json());
+        if (meu !== _adsStatusToken || _adsSubaba !== 'anuncios') return; // trocou de tela/loja
+        if (r && r.ok && r.status) Object.assign(statusMerged, r.status);
+      }
       let mudou = false;
       _adsAnunciosCache.forEach(a => {
-        const novo = r.status[String(a.itemId)];
+        const novo = statusMerged[String(a.itemId)];
         // só corrige quando o backend tem resposta definitiva e difere do atual
         if (novo !== undefined && novo !== null && novo !== a.status) {
           a.status = novo; mudou = true;
@@ -39554,7 +39563,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.346-pedidos-paginacao-menu-kanban';
+  const _DIAG_VERSAO_PAINEL = 'v33k.347-ads-janela-status-pedidos-hoje';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
