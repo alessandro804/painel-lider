@@ -39484,7 +39484,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.336-label-devolucoes';
+  const _DIAG_VERSAO_PAINEL = 'v33k.337-fech-modo-fixo-unidades';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42704,6 +42704,7 @@ REGRAS DE OURO:
   // ============================================================
   let fechamentos = JSON.parse(localStorage.getItem('lider_fechamentos_v1') || '[]');
   let _fechEditando = null; // id do fechamento em edição (ou null pra novo)
+  let _fechMontando = false; // true enquanto novoFechamento monta a tela (bloqueia auto-preenchimento)
 
   function saveFechamentos() {
     try {
@@ -43546,8 +43547,8 @@ REGRAS DE OURO:
     }
     _carregarAsaasDoCliente();
     // PREENCHIMENTO AUTOMÁTICO: só quando é um NOVO fechamento (não em edição, pra
-    // não sobrescrever valores já salvos que o usuário abriu pra revisar).
-    if (_fechEditando == null && sel.value && sel.value !== '__novo__') {
+    // não sobrescrever valores já salvos) e a tela já terminou de montar.
+    if (_fechEditando == null && !_fechMontando && sel.value && sel.value !== '__novo__') {
       _fechPreencherDoCliente(sel.value);
     }
   }
@@ -43598,26 +43599,34 @@ REGRAS DE OURO:
       if (m) m.remove();
       if (!r || !r.ok || !r.porLoja) return;
 
-      // monta uma linha de plataforma por loja (nome da loja + faturamento bruto),
-      // e soma SEPARADAMENTE os cancelados (→ Vendas canceladas) e os devolvidos
-      // (→ Reembolsos), com a mesma classificação do Relatório de Lucro.
+      const fixo = (_fechTipoComissao === 'fixo');
+
+      // monta uma linha de plataforma por loja. No modo PERCENTUAL usa faturamento
+      // (R$); no modo FIXO usa unidades (itens). Cancelados/Devolvidos idem: R$ no
+      // percentual, unidades no fixo. Tudo com a mesma regra do Relatório de Lucro.
       wrap.innerHTML = ''; // limpa as linhas em branco iniciais
       let totalCancelado = 0, totalDevolvido = 0;
       lojas.forEach(l => {
         const d = r.porLoja[l.idBanco] || r.porLoja[String(l.idBanco)] || {};
-        totalCancelado += (d.canceladoValor || 0);
-        totalDevolvido += (d.devolvidoValor || 0);
         const rotulo = l.nome + (l.marketplace ? ' (' + l.marketplace + ')' : '');
-        fechAddPlataforma(rotulo, _fmtNum(d.bruto || 0));
+        if (fixo) {
+          totalCancelado += (d.unidadesCanceladas || 0);
+          totalDevolvido += (d.unidadesDevolvidas || 0);
+          fechAddPlataforma(rotulo, _fmtNumInt(d.unidadesBrutas || 0)); // unidades (inteiro)
+        } else {
+          totalCancelado += (d.canceladoValor || 0);
+          totalDevolvido += (d.devolvidoValor || 0);
+          fechAddPlataforma(rotulo, _fmtNum(d.bruto || 0));             // R$
+        }
       });
       if (!lojas.length) fechAddPlataforma();
 
-      // canceladas e devolvidas em campos separados (líquido = receita − canc − reemb − reaj)
-      document.getElementById('fechCanceladas').value = _fmtNum(totalCancelado);
-      document.getElementById('fechReembolsos').value = _fmtNum(totalDevolvido);
+      // canceladas e devolvidas em campos separados. No fixo são unidades (inteiro).
+      document.getElementById('fechCanceladas').value = fixo ? _fmtNumInt(totalCancelado) : _fmtNum(totalCancelado);
+      document.getElementById('fechReembolsos').value = fixo ? _fmtNumInt(totalDevolvido) : _fmtNum(totalDevolvido);
 
       recalcFechamento();
-      showToast('✓ Faturamento de ' + mesAlvo + ' preenchido (' + lojas.length + ' loja' + (lojas.length>1?'s':'') + ')');
+      showToast('✓ ' + (fixo ? 'Itens' : 'Faturamento') + ' de ' + mesAlvo + ' preenchido (' + lojas.length + ' loja' + (lojas.length>1?'s':'') + ')');
     } catch (e) {
       const m = document.getElementById('_fechPreenchendo');
       if (m) m.remove();
@@ -43629,6 +43638,7 @@ REGRAS DE OURO:
 
   function novoFechamento() {
     _fechEditando = null;
+    _fechMontando = true; // bloqueia auto-preenchimento durante a montagem da tela
     document.getElementById('fechEditorTitulo').textContent = 'Novo fechamento';
     document.getElementById('fechamentoEditor').style.display = 'block';
     _popularClientesFech('');
@@ -43648,6 +43658,7 @@ REGRAS DE OURO:
     document.getElementById('fechExtras').innerHTML = '';
     if (typeof setTipoComissao === 'function') setTipoComissao('percentual');
     recalcFechamento();
+    _fechMontando = false; // montagem concluída: auto-preenchimento liberado
     document.getElementById('fechamentoEditor').scrollIntoView({ behavior: 'smooth' });
   }
   window.novoFechamento = novoFechamento;
@@ -43702,6 +43713,16 @@ REGRAS DE OURO:
     // Atualiza placeholders dos campos de plataforma já existentes
     document.querySelectorAll('#fechPlataformas .fech-plat-valor').forEach(i => i.placeholder = fixo ? 'Qtd itens' : '0,00');
     recalcFechamento();
+    // Se já há um cliente selecionado num fechamento NOVO, re-preenche com a
+    // unidade certa do modo (fixo=itens, percentual=R$). Evita o usuário ter que
+    // reselecionar o cliente ao trocar o tipo de cobrança. Não roda durante a
+    // montagem inicial (novoFechamento) nem em edição.
+    if (_fechEditando == null && !_fechMontando) {
+      const cli = (document.getElementById('fechCliente') || {}).value;
+      if (cli && cli !== '__novo__' && typeof _fechPreencherDoCliente === 'function') {
+        _fechPreencherDoCliente(cli);
+      }
+    }
   }
   window.setTipoComissao = setTipoComissao;
 
