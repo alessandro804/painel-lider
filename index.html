@@ -39640,7 +39640,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.350-modal-proprio-substitui-nativos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.351-superadm-diagnostico-usuarios-webhook';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -40145,7 +40145,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (typeof atualizarBarraBloqueio === 'function') atualizarBarraBloqueio();
     // badge do papel no perfil (se existir)
     const badge = document.getElementById('papelBadge');
-    if (badge) badge.textContent = p === 'superadmin' ? 'Super Admin' : (p === 'admin' ? 'Agência' : (p === 'colaborador' ? 'Colaborador' : (p === 'cliente' ? 'Cliente' : 'Demonstração')));
+    if (badge) badge.textContent = p === 'superadmin' ? 'Super Admin' : (p === 'admin' ? 'Usuário' : (p === 'colaborador' ? 'Subusuário' : (p === 'cliente' ? 'Cliente' : 'Demonstração')));
   }
   window.aplicarPermissoesUI = aplicarPermissoesUI;
 
@@ -57629,6 +57629,26 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         </div>
         <button class="primary-btn" onclick="abrirAdmUsuarioModal()">+ Novo usuário</button>
       </div>
+      <div id="admUsuariosFiltros" style="display:none;margin-top:12px;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="admUsuBusca" type="text" placeholder="🔎 Buscar por nome ou e-mail..." oninput="renderListaAdmUsuarios()"
+          style="flex:1;min-width:200px;padding:9px 12px;border:1.5px solid #e5e7eb;border-radius:9px;font-size:13px;outline:none">
+        <select id="admUsuFiltroPapel" onchange="renderListaAdmUsuarios()"
+          style="padding:9px 12px;border:1.5px solid #e5e7eb;border-radius:9px;font-size:13px;background:#fff;cursor:pointer">
+          <option value="">Todos os tipos</option>
+          <option value="admin">Usuário</option>
+          <option value="colaborador">Subusuário</option>
+          <option value="marketplace">Marketplace</option>
+          <option value="cliente">Cliente</option>
+          <option value="superadmin">Super Admin</option>
+          <option value="demo">Demonstração</option>
+        </select>
+        <select id="admUsuFiltroStatus" onchange="renderListaAdmUsuarios()"
+          style="padding:9px 12px;border:1.5px solid #e5e7eb;border-radius:9px;font-size:13px;background:#fff;cursor:pointer">
+          <option value="">Ativos e inativos</option>
+          <option value="ativo">Só ativos</option>
+          <option value="inativo">Só inativos</option>
+        </select>
+      </div>
       <div id="admUsuariosLista" style="margin-top:12px"><em style="color:#9ca3af;font-size:13px">Carregando...</em></div>
     </div>
   </div>
@@ -57637,7 +57657,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 <script>
   // ═══ GESTÃO DE USUÁRIOS (ADM) ═══
   let _admUsuarios = [];
-  const ADM_PAPEL_LABEL = { superadmin:'Super Admin', admin:'Agência', colaborador:'Colaborador', cliente:'Cliente', marketplace:'Marketplace', demo:'Demonstração' };
+  // v33k.351: nomenclatura pedida — "Usuário" (antes Agência/admin) e
+  // "Subusuário" (antes Colaborador). Os valores internos do papel (admin/
+  // colaborador) NÃO mudam; só o rótulo exibido ao super admin.
+  const ADM_PAPEL_LABEL = { superadmin:'Super Admin', admin:'Usuário', colaborador:'Subusuário', cliente:'Cliente', marketplace:'Marketplace', demo:'Demonstração' };
   const ADM_PAPEL_COR = { superadmin:'#7c3aed', admin:'#16a34a', colaborador:'#2563eb', cliente:'#0891b2', marketplace:'#0d9488', demo:'#9ca3af' };
 
   async function renderAdmUsuarios() {
@@ -57647,25 +57670,67 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     try {
       const ehSuper = papelAtual() === 'superadmin';
       const titulo = document.querySelector('#admScreen .page-title-text');
-      if (titulo) titulo.innerHTML = ehSuper ? '👥 Administração de Usuários' : '👥 Meus Colaboradores';
+      if (titulo) titulo.innerHTML = ehSuper ? '👥 Administração de Usuários' : '👥 Meus Subusuários';
       const btnLabel = document.getElementById('btnAdmLabel');
-      if (btnLabel) btnLabel.textContent = ehSuper ? 'Administração de Usuários' : 'Gerenciar colaboradores';
+      if (btnLabel) btnLabel.textContent = ehSuper ? 'Administração de Usuários' : 'Gerenciar subusuários';
     } catch(e) {}
     cont.innerHTML = '<em style="color:#9ca3af;font-size:13px">Carregando...</em>';
     try {
       const r = await (await fetch(BACKEND_URL + '/api/auth/usuarios', { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
       _admUsuarios = (r.ok && r.usuarios) ? r.usuarios : [];
     } catch(e) { cont.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro ao carregar usuários</span>'; return; }
+    // mostra a barra de filtros quando há uma quantidade que justifique
+    const filtros = document.getElementById('admUsuariosFiltros');
+    if (filtros) filtros.style.display = (_admUsuarios.length > 4) ? 'flex' : 'none';
+    renderListaAdmUsuarios();
+  }
+  window.renderAdmUsuarios = renderAdmUsuarios;
+
+  // Aplica busca + filtros sobre _admUsuarios (sem re-buscar no backend) e monta a lista.
+  function renderListaAdmUsuarios() {
+    const cont = document.getElementById('admUsuariosLista');
+    if (!cont) return;
+
+    // mapa id → nome (pra resolver o "dono" de um subusuário)
+    const nomePorId = {};
+    _admUsuarios.forEach(u => { nomePorId[String(u.id)] = u.nome; });
+
+    const busca = (document.getElementById('admUsuBusca')?.value || '').toLowerCase().trim();
+    const fPapel = document.getElementById('admUsuFiltroPapel')?.value || '';
+    const fStatus = document.getElementById('admUsuFiltroStatus')?.value || '';
+
+    let lista = _admUsuarios.slice();
+    if (fPapel) lista = lista.filter(u => u.papel === fPapel);
+    if (fStatus === 'ativo') lista = lista.filter(u => u.ativo !== false);
+    else if (fStatus === 'inativo') lista = lista.filter(u => u.ativo === false);
+    if (busca) lista = lista.filter(u =>
+      String(u.nome||'').toLowerCase().includes(busca) ||
+      String(u.email||'').toLowerCase().includes(busca));
+
     const metr = document.getElementById('admMetricas');
-    if (metr) metr.textContent = _admUsuarios.length + ' usuário(s)';
+    if (metr) metr.textContent = (busca||fPapel||fStatus)
+      ? (lista.length + ' de ' + _admUsuarios.length + ' usuário(s)')
+      : (_admUsuarios.length + ' usuário(s)');
+
     if (!_admUsuarios.length) { cont.innerHTML = '<em style="color:#9ca3af;font-size:13px">Nenhum usuário. Clique em "+ Novo usuário".</em>'; return; }
-    cont.innerHTML = _admUsuarios.map(u => {
+    if (!lista.length) { cont.innerHTML = '<em style="color:#9ca3af;font-size:13px">Nenhum usuário encontrado com esses filtros.</em>'; return; }
+
+    cont.innerHTML = lista.map(u => {
       const cor = ADM_PAPEL_COR[u.papel] || '#6b7280';
       const nLojas = Array.isArray(u.lojas_vinculadas) ? u.lojas_vinculadas.length : 0;
+      // subusuário (colaborador): mostra de qual Usuário (dono) ele é
+      let vinculoDono = '';
+      if (u.papel === 'colaborador' && u.dono_id) {
+        const nomeDono = nomePorId[String(u.dono_id)];
+        vinculoDono = nomeDono
+          ? ' · <span style="color:#2563eb;font-weight:600">Subusuário de ' + escapeHtml(nomeDono) + '</span>'
+          : ' · <span style="color:#9ca3af">dono #' + u.dono_id + '</span>';
+      }
+      const infoLojas = (u.papel==='colaborador'||u.papel==='cliente') ? (' · ' + nLojas + ' loja(s) vinculada(s)') : '';
       return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;flex-wrap:wrap;${u.ativo===false?'opacity:0.5':''}">
         <div style="flex:1;min-width:180px">
           <div style="font-weight:700;font-size:14px">${escapeHtml(u.nome)} ${u.ativo===false?'<span style="color:#dc2626;font-size:11px">(inativo)</span>':''}</div>
-          <div style="font-size:11px;color:#6b7280">${escapeHtml(u.email)}${(u.papel==='colaborador'||u.papel==='cliente')?(' · '+nLojas+' loja(s) vinculada(s)'):''}</div>
+          <div style="font-size:11px;color:#6b7280">${escapeHtml(u.email)}${infoLojas}${vinculoDono}</div>
         </div>
         <span style="background:${cor};color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700">${ADM_PAPEL_LABEL[u.papel]||u.papel}</span>
         <div style="display:flex;gap:6px">
@@ -57678,7 +57743,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       </div>`;
     }).join('');
   }
-  window.renderAdmUsuarios = renderAdmUsuarios;
+  window.renderListaAdmUsuarios = renderListaAdmUsuarios;
 
   // ═══ MÉTRICAS GLOBAIS (só super admin) ═══
   async function renderAdmMetricas() {
@@ -57744,6 +57809,64 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
   // ═══ SAÚDE DO SISTEMA (infra) ═══
   let _admSaudeTimer = null;
+
+  // Avalia uma métrica e devolve { nivel: 'bom'|'medio'|'ruim'|'neutro', obs }.
+  // A observação é um texto curto e didático explicando o que aquele número
+  // significa pra saúde do sistema — e um alerta quando começa a preocupar.
+  function _admAvaliar(metrica, v) {
+    const N = (x) => (typeof x === 'number' && isFinite(x)) ? x : null;
+    switch (metrica) {
+      case 'latencia': {
+        const ms = N(v);
+        if (ms == null) return { nivel:'ruim', obs:'Banco sem resposta — o sistema não consegue ler/gravar. Precisa de atenção imediata.' };
+        if (ms < 150) return { nivel:'bom', obs:'Excelente. O banco responde rápido e as telas abrem sem espera.' };
+        if (ms < 500) return { nivel:'medio', obs:'Aceitável, mas de olho: acima de 500 ms as telas começam a travar. Se subir mais, considere índice ou upgrade do plano.' };
+        return { nivel:'ruim', obs:'Lento. As telas vão demorar. Verifique índices em falta e o plano do Supabase antes que piore.' };
+      }
+      case 'cache': {
+        const p = N(v);
+        if (p == null) return { nivel:'neutro', obs:'Sem dados de cache ainda.' };
+        if (p >= 70) return { nivel:'bom', obs:'Quantidade excelente de acertos — o cache está evitando muita consulta ao banco e deixando o sistema mais rápido. Está indo tudo bem.' };
+        if (p >= 40) return { nivel:'medio', obs:'Mediano. O cache ajuda, mas ainda vai bastante ao banco. Se cair mais, a latência tende a subir — vale acompanhar.' };
+        return { nivel:'ruim', obs:'Baixo. Quase tudo está indo direto ao banco, deixando o sistema mais lento. Cuidado: se a carga aumentar, pode ficar pesado.' };
+      }
+      case 'memoria': {
+        const mb = N(v);
+        if (mb == null) return { nivel:'neutro', obs:'—' };
+        if (mb < 500) return { nivel:'bom', obs:'Uso de memória tranquilo. Há folga de sobra pra crescer.' };
+        if (mb < 900) return { nivel:'medio', obs:'Uso moderado. Ainda ok, mas acima da média — se passar de ~900 MB o risco de reinício por falta de memória aumenta.' };
+        return { nivel:'ruim', obs:'Memória alta. Devemos tomar cuidado: se subir mais, o backend pode reiniciar sozinho e derrubar tarefas em andamento.' };
+      }
+      case 'tarefasErro': {
+        const n = N(v);
+        if (n == null) return { nivel:'neutro', obs:'—' };
+        if (n === 0) return { nivel:'bom', obs:'Nenhuma tarefa com erro. Os crons estão rodando limpos.' };
+        if (n <= 5) return { nivel:'medio', obs:'Algumas tarefas falharam. Vale abrir e ver o motivo antes que vire acúmulo.' };
+        return { nivel:'ruim', obs:'Muitas tarefas com erro. Algo está falhando de forma recorrente — abra pra investigar.' };
+      }
+      case 'tarefasPendentes': {
+        const n = N(v);
+        if (n == null) return { nivel:'neutro', obs:'—' };
+        if (n < 50) return { nivel:'bom', obs:'Fila de crons saudável, sem acúmulo.' };
+        if (n < 200) return { nivel:'medio', obs:'Fila crescendo. Se não drenar, os processamentos vão atrasar. Acompanhe.' };
+        return { nivel:'ruim', obs:'Fila grande. Os crons não estão dando conta — pode haver atraso nas sincronizações.' };
+      }
+      default: return { nivel:'neutro', obs:'' };
+    }
+  }
+
+  // Selo visual do nível
+  function _admSeloNivel(nivel) {
+    const M = {
+      bom:   ['#dcfce7', '#166534', 'BOM'],
+      medio: ['#fef3c7', '#92400e', 'MÉDIO'],
+      ruim:  ['#fee2e2', '#991b1b', 'RUIM'],
+      neutro:['#f3f4f6', '#6b7280', '—'],
+    };
+    const [bg, fg, txt] = M[nivel] || M.neutro;
+    return '<span style="background:' + bg + ';color:' + fg + ';font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;letter-spacing:.3px">' + txt + '</span>';
+  }
+
   async function renderAdmSaude() {
     const grid = document.getElementById('admSaudeGrid');
     if (!grid) return;
@@ -57751,6 +57874,20 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     try {
       const r = await (await fetch(BACKEND_URL + '/api/saude', { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
       if (!r.ok) { grid.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro ao carregar saúde do sistema</span>'; return; }
+      // Card rico: valor + selo bom/médio/ruim + observação explicativa.
+      const cardAval = (titulo, valor, sub, cor, aval) => {
+        const borda = aval && aval.nivel === 'ruim' ? '#fecaca' : (aval && aval.nivel === 'medio' ? '#fde68a' : '#e5e7eb');
+        const fundo = aval && aval.nivel === 'ruim' ? '#fef2f2' : (aval && aval.nivel === 'medio' ? '#fffbeb' : '#f9fafb');
+        return '<div style="background:' + fundo + ';border:1px solid ' + borda + ';border-radius:12px;padding:14px">'
+          + '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">'
+          + '<div style="font-size:24px;font-weight:800;color:' + (cor||'#10b981') + ';line-height:1.05">' + valor + '</div>'
+          + (aval ? _admSeloNivel(aval.nivel) : '') + '</div>'
+          + '<div style="font-size:12px;color:#374151;font-weight:600;margin-top:4px">' + titulo + '</div>'
+          + (sub?'<div style="font-size:11px;color:#9ca3af;margin-top:2px">' + sub + '</div>':'')
+          + (aval && aval.obs ? '<div style="font-size:11px;color:#4b5563;margin-top:8px;line-height:1.45;border-top:1px dashed ' + borda + ';padding-top:7px">' + aval.obs + '</div>' : '')
+          + '</div>';
+      };
+      // card simples (sem avaliação) pros informativos
       const card = (titulo, valor, sub, cor) => `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:14px">
         <div style="font-size:24px;font-weight:800;color:${cor||'#10b981'};line-height:1.05">${valor}</div>
         <div style="font-size:12px;color:#374151;font-weight:600;margin-top:4px">${titulo}</div>
@@ -57766,19 +57903,24 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const upt = r.maquina ? r.maquina.uptimeSeg : 0;
       const uptTxt = upt > 86400 ? Math.floor(upt/86400)+'d '+Math.floor((upt%86400)/3600)+'h' : (upt > 3600 ? Math.floor(upt/3600)+'h '+Math.floor((upt%3600)/60)+'m' : Math.floor(upt/60)+'m');
       const c = r.contagens || {};
+      const memMB = mem.rssMB || 0;
       const cardErro = (c.tarefasComErro > 0)
         ? `<div onclick="admVerTarefasErro()" style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:14px;cursor:pointer">
-            <div style="font-size:24px;font-weight:800;color:#dc2626;line-height:1.05">${c.tarefasComErro}</div>
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+              <div style="font-size:24px;font-weight:800;color:#dc2626;line-height:1.05">${c.tarefasComErro}</div>
+              ${_admSeloNivel(_admAvaliar('tarefasErro', c.tarefasComErro).nivel)}
+            </div>
             <div style="font-size:12px;color:#374151;font-weight:600;margin-top:4px">Tarefas com erro</div>
             <div style="font-size:11px;color:#dc2626;margin-top:2px;text-decoration:underline">clique pra ver e dispensar</div>
+            <div style="font-size:11px;color:#4b5563;margin-top:8px;line-height:1.45;border-top:1px dashed #fecaca;padding-top:7px">${_admAvaliar('tarefasErro', c.tarefasComErro).obs}</div>
           </div>`
-        : card('Tarefas com erro', c.tarefasComErro!=null?c.tarefasComErro:'—', 'tudo ok', '#16a34a');
+        : cardAval('Tarefas com erro', c.tarefasComErro!=null?c.tarefasComErro:'—', 'tudo ok', '#16a34a', _admAvaliar('tarefasErro', c.tarefasComErro));
       grid.innerHTML = [
-        card('Banco — latência', (r.banco&&r.banco.ok) ? lat+' ms' : 'offline', (r.banco&&r.banco.ok) ? (lat<150?'ótimo':(lat<500?'aceitável':'lento')) : (r.banco&&r.banco.erro||'sem resposta'), corBanco),
-        card('Cache — acertos', (cache.taxaAcerto||0)+'%', (cache.hits||0)+' hits · '+(cache.itens||0)+' itens', corCache),
-        card('Memória (Node)', (mem.rssMB||0)+' MB', 'heap '+(mem.heapUsadoMB||0)+'/'+(mem.heapTotalMB||0)+' MB', '#2563eb'),
+        cardAval('Banco — latência', (r.banco&&r.banco.ok) ? lat+' ms' : 'offline', (r.banco&&r.banco.ok) ? null : (r.banco&&r.banco.erro||'sem resposta'), corBanco, _admAvaliar('latencia', (r.banco&&r.banco.ok)?lat:null)),
+        cardAval('Cache — acertos', (cache.taxaAcerto||0)+'%', (cache.hits||0)+' hits · '+(cache.itens||0)+' itens', corCache, _admAvaliar('cache', cache.taxaAcerto)),
+        cardAval('Memória (Node)', memMB+' MB', 'heap '+(mem.heapUsadoMB||0)+'/'+(mem.heapTotalMB||0)+' MB', '#2563eb', _admAvaliar('memoria', memMB)),
         card('Uptime', uptTxt, 'backend no ar', '#7c3aed'),
-        card('Tarefas pendentes', c.tarefasPendentes!=null?c.tarefasPendentes:'—', 'na fila de crons', '#0891b2'),
+        cardAval('Tarefas pendentes', c.tarefasPendentes!=null?c.tarefasPendentes:'—', 'na fila de crons', '#0891b2', _admAvaliar('tarefasPendentes', c.tarefasPendentes)),
         cardErro,
         card('Lojas', c.lojas!=null?c.lojas:'—', 'no sistema', '#ea580c'),
         card('Usuários', c.usuarios!=null?c.usuarios:'—', 'cadastrados', '#16a34a'),
@@ -57803,7 +57945,16 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const r = await (await fetch(BACKEND_URL + '/api/saude/webhooks', { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
       if (!r.ok) { cont.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro ao carregar webhooks</span>'; return; }
       if (r.tabelaAusente) {
-        cont.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:10px 12px;border-radius:8px;font-size:12px">' + escapeHtml(r.aviso || 'Tabela de eventos de webhook ausente.') + '</div>';
+        cont.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:12px 14px;border-radius:8px;font-size:12px;line-height:1.5">'
+          + '<div style="font-weight:700;margin-bottom:6px">📋 Tabela de acompanhamento ausente</div>'
+          + escapeHtml(r.aviso || 'Tabela de eventos de webhook ausente.')
+          + '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
+          + '<button class="toolbar-btn" style="font-size:12px;background:#0d9488;color:#fff" onclick="admMostrarSqlWebhook()">Ver SQL de criação</button>'
+          + '<button class="toolbar-btn" style="font-size:12px" onclick="admCopiarSqlWebhook(this)">Copiar SQL</button>'
+          + '</div>'
+          + '<pre id="admSqlWebhookBox" style="display:none;margin-top:10px;background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-size:11px;line-height:1.5;overflow:auto;white-space:pre;max-height:280px"></pre>'
+          + '<div style="margin-top:8px;font-size:11px;color:#78716c">Rode este SQL no editor do Supabase (SQL Editor → New query). Depois clique em <b>Atualizar</b> aqui. Os webhooks já funcionam sem a tabela; ela serve só para este acompanhamento.</div>'
+          + '</div>';
         return;
       }
       const ROTULO = { venda:'Vendas', tracking:'Tracking', estoque:'Estoque', preco:'Preço', promocao:'Promoção', saude:'Saúde da loja' };
@@ -57841,6 +57992,48 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } catch(e) { cont.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
   }
   window.renderAdmWebhooks = renderAdmWebhooks;
+
+  // SQL de criação da tabela webhook_eventos_shopee (acompanhamento dos pushes).
+  // Schema espelha exatamente o que o backend grava (webhook-shopee.js) e lê
+  // (saude.js): shop_id + order_sn (chave de dedup, prefixada por tipo) + status
+  // (discriminador) + recebido_em. UNIQUE(shop_id, order_sn) faz o dedup funcionar
+  // (o insert de um push repetido bate na constraint e é ignorado). O índice por
+  // recebido_em acelera a janela de 24h. "if not exists" = seguro rodar de novo.
+  const _SQL_WEBHOOK_TABELA = [
+    'create table if not exists webhook_eventos_shopee (',
+    '  id bigint generated always as identity primary key,',
+    '  shop_id text,',
+    '  order_sn text not null,',
+    '  status text,',
+    '  recebido_em timestamptz not null default now(),',
+    '  unique (shop_id, order_sn)',
+    ');',
+    '',
+    '-- acelera a consulta por janela de tempo (últimas 24h) no painel',
+    'create index if not exists idx_webhook_eventos_recebido',
+    '  on webhook_eventos_shopee (recebido_em desc);'
+  ].join('\n');
+
+  function admMostrarSqlWebhook() {
+    const box = document.getElementById('admSqlWebhookBox');
+    if (!box) return;
+    box.textContent = _SQL_WEBHOOK_TABELA;
+    box.style.display = (box.style.display === 'none' || !box.style.display) ? 'block' : 'none';
+  }
+  window.admMostrarSqlWebhook = admMostrarSqlWebhook;
+
+  async function admCopiarSqlWebhook(btn) {
+    try {
+      await navigator.clipboard.writeText(_SQL_WEBHOOK_TABELA);
+      if (btn) { const t = btn.textContent; btn.textContent = '✓ Copiado!'; setTimeout(() => { btn.textContent = t; }, 1800); }
+      else showToast('SQL copiado');
+    } catch (e) {
+      // fallback: mostra o SQL pra copiar manualmente
+      admMostrarSqlWebhook();
+      showToast('Não consegui copiar automaticamente — o SQL está aí embaixo pra copiar.', true);
+    }
+  }
+  window.admCopiarSqlWebhook = admCopiarSqlWebhook;
 
   function admSaudeToggleAuto() {
     const on = document.getElementById('admSaudeAuto') && document.getElementById('admSaudeAuto').checked;
@@ -57946,7 +58139,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <input type="text" class="form-input" id="admSenha" style="margin-bottom:10px" placeholder="${u?'Digite a nova senha para alterar':'Defina a senha'}">
       <label class="form-label" style="font-size:12px">Papel</label>
       <select class="form-input" id="admPapel" style="margin-bottom:10px" onchange="admToggleDono()">
-        <option value="colaborador" ${(!u||u.papel==='colaborador')?'selected':''}>Colaborador (acessos definidos abaixo)</option>
+        <option value="colaborador" ${(!u||u.papel==='colaborador')?'selected':''}>Subusuário (acessos definidos abaixo)</option>
         <option value="marketplace" ${u&&u.papel==='marketplace'?'selected':''}>Marketplace (opera plataformas — sem agência)</option>
         <option value="cliente" ${u&&u.papel==='cliente'?'selected':''}>Cliente (dono de loja — vê só Lucro das lojas dele)</option>
         ${papelAtual()==='superadmin' ? `
@@ -57972,7 +58165,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         </div>
       </div>
       <div id="admDonoBox" style="display:${(u&&u.papel==='colaborador')?'block':'none'};margin-bottom:10px">
-        <label class="form-label" style="font-size:12px">Empresa do colaborador (dono das lojas)</label>
+        <label class="form-label" style="font-size:12px">Empresa do subusuário (dono das lojas)</label>
         <select class="form-input" id="admDonoId">
           <option value="">— selecione a empresa —</option>
           ${_admUsuarios.filter(x=>x.papel==='admin').map(a=>`<option value="${a.id}" ${(u&&u.dono_id===a.id)?'selected':''}>${escapeHtml(a.nome)} (${escapeHtml(a.email)})</option>`).join('')}
