@@ -860,6 +860,9 @@
   .ia-selo-criou { background: linear-gradient(90deg,#ea580c,#f97316); }
   /* IA que OPEROU a demanda (fluxo automático) — roxo */
   .ia-selo-operou { background: linear-gradient(90deg,#7c3aed,#a855f7); }
+  /* selo de IA dentro do modal de nova demanda (abaixo do seletor de tipo) */
+  .demanda-selo-ia { display: flex; align-items: center; gap: 8px; margin: -4px 0 14px; padding: 8px 10px; background: linear-gradient(90deg, rgba(124,58,237,.07), rgba(168,85,247,.07)); border: 1px solid rgba(124,58,237,.25); border-radius: 8px; }
+  .demanda-selo-ia-txt { font-size: 12px; color: #6b21a8; font-weight: 600; line-height: 1.35; }
   .kanban-card-cliente { font-size: 13px; font-weight: 700; color: var(--azul); margin-bottom: 2px; }
   .kanban-card-produto { font-size: 11px; color: var(--cinza-texto); margin-bottom: 8px; }
   .kanban-card-wa-row { margin-top: 6px; }
@@ -7558,6 +7561,12 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       <label class="form-label">Qual o tipo?</label>
       <input type="text" class="form-input" id="demandaTipoOutro" placeholder="Digite o tipo de demanda...">
     </div>
+    <!-- Selo de IA: aparece quando o tipo escolhido é operado pela IA (criação de
+         anúncio / régua de preços). Mostrado/escondido por sugerirFluxoPorTipo(). -->
+    <div id="demandaSeloIA" class="demanda-selo-ia" style="display:none">
+      <span class="ia-selo ia-selo-operou" style="font-size:11px;padding:3px 9px">🤖 IA</span>
+      <span class="demanda-selo-ia-txt">A IA vai executar essa ação automaticamente no marketplace.</span>
+    </div>
     <!-- Fluxo de trabalho agora é INTERNO e automático por tipo (v33k.175).
          O select fica oculto; sugerirFluxoPorTipo() vincula sozinho. -->
     <div class="form-group" id="demandaFluxoGrupo" style="display:none">
@@ -14051,7 +14060,7 @@ Retorne JSON: {"ID": "valor", ...}`;
               tipo: 'duplicar_anuncio',
               descricao: 'Exportar "' + (p.nome||'').slice(0,40) + '" → ' + loja.nome,
               rodar_em: d._agendarExportarEm,
-              params: { lojaId: lojaIdBanco, itens: [{ produtoId: p.idBanco, payload, regua: d._regua || undefined }] }
+              params: { lojaId: lojaIdBanco, demandaId: d.id, itens: [{ produtoId: p.idBanco, payload, regua: d._regua || undefined }] }
             }) })).json();
             if (rAg.ok) { resultados.push('📅 ' + sufixoLog + 'exportação agendada'); okCount++; }
             else { resultados.push('✗ ' + sufixoLog + 'erro ao agendar: ' + (rAg.erro||'falha')); erroCount++; }
@@ -37939,6 +37948,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const reguaExport = document.getElementById('demReguaBlocoExport');
     if (reguaExport) reguaExport.style.display = ehAnuncioNovo ? 'block' : 'none';
 
+    // Selo de IA no modal: criação de anúncio e régua de preços são operadas pela
+    // IA (ela executa a ação no marketplace), então mostramos o selo roxo.
+    const seloIA = document.getElementById('demandaSeloIA');
+    if (seloIA) seloIA.style.display = ehEspecial ? 'flex' : 'none';
+
     // VÍNCULO AUTOMÁTICO do fluxo pelo tipo (v33k.175): não depende mais do
     // usuário escolher no dropdown (que sumia pra colaboradores sem os fluxos
     // no localStorage). Liga sozinho ao fluxo cujo tipoDemanda casa.
@@ -39645,7 +39659,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.353-home-ia-hoje-programada-termometro';
+  const _DIAG_VERSAO_PAINEL = 'v33k.354-selo-ia-demanda-kanban-aprovado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -53988,6 +54002,16 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.recarregarDemandasDoBanco = recarregarDemandasDoBanco;
 
+  // Tipos de demanda em que a IA executa a ação no marketplace (criação de
+  // anúncio e régua de preços). Esses recebem o selo roxo "IA operou" no card,
+  // porque quem realiza o trabalho é o fluxo automático, não uma pessoa.
+  const TIPOS_OPERADOS_IA = ['anuncio_novo_ml', 'anuncio_novo_shopee', 'ajustar_preco'];
+  function _demandaOperadaPorIA(d) {
+    if (!d) return false;
+    // marcação explícita (fluxo automático já setou) OU tipo operado pela IA
+    return !!d._origemIA || TIPOS_OPERADOS_IA.includes(d.tipo);
+  }
+
   function renderKanban() {
     // ao renderizar, puxa o estado atualizado do banco e RE-RENDERIZA ao terminar
     // (a demanda IA concluída pelo backend reflete aqui).
@@ -54123,7 +54147,7 @@ ${JSON.stringify(metricas, null, 2)}`
         <div class="kanban-card-top">
           <span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span class="kanban-card-tipo">${tipoLabel}</span>
-            <span class="kanban-card-ia-selos">${(d.origemWhatsapp || d.origemIA) ? '<span class="ia-selo ia-selo-criou" title="Demanda criada automaticamente pela IA">🤖 IA</span>' : ''}${(d._origemIA || d.tipo === 'ajustar_preco') ? '<span class="ia-selo ia-selo-operou" title="Demanda operada pela IA (fluxo automático)">🤖 IA</span>' : ''}</span>
+            <span class="kanban-card-ia-selos">${(d.origemWhatsapp || d.origemIA) ? '<span class="ia-selo ia-selo-criou" title="Demanda criada automaticamente pela IA">🤖 IA</span>' : ''}${_demandaOperadaPorIA(d) ? '<span class="ia-selo ia-selo-operou" title="Demanda operada pela IA (fluxo automático)">🤖 IA</span>' : ''}</span>
           </span>
           <span class="kanban-card-prio">${prioIcon}</span>
         </div>
@@ -55281,6 +55305,10 @@ ${JSON.stringify(metricas, null, 2)}`
         atualizadoEm: new Date().toISOString(),
         concluidoEm: null
       };
+      // Criação de anúncio é operada pela IA (ela publica no marketplace): marca a
+      // origem pra o selo roxo "IA operou" persistir mesmo após recarregar. A régua
+      // (ajustar_preco) já marca _origemIA nas demandas-filhas em apProcessarAgendamentos.
+      if (TIPOS_OPERADOS_IA.includes(tipo)) novaDemanda._origemIA = true;
       // AJUSTE DE PREÇO: NÃO cria a demanda "pai" (ficaria em branco) — só cria as
       // demandas-filhas (1 por dia) via apProcessarAgendamentos.
       if (tipo === 'ajustar_preco') {
