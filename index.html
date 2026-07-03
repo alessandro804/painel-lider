@@ -5606,6 +5606,21 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   .lc-pay-metodo-ic .lc-ic { width: 22px; height: 22px; }
   .lc-pay-metodo-tit { font-size: 15px; font-weight: 800; color: #1e2a47; }
   .lc-pay-metodo-desc { font-size: 12px; color: #6b7280; line-height: 1.4; }
+  /* seletor de ciclo (mensal/anual) */
+  .lc-pay-ciclo { display: flex; gap: 10px; margin-bottom: 10px; }
+  .lc-pay-ciclo-op {
+    flex: 1; position: relative; display: flex; flex-direction: column; align-items: center;
+    gap: 2px; padding: 12px 8px; border: 1.5px solid var(--cinza-borda); border-radius: 12px;
+    background: #fff; cursor: pointer; transition: border 0.15s, background 0.15s;
+  }
+  .lc-pay-ciclo-op:hover { border-color: #6ea852; }
+  .lc-pay-ciclo-op.ativo { border-color: #5f9647; background: #f6fbf4; }
+  .lc-pay-ciclo-tit { font-size: 14px; font-weight: 700; color: #1e2a47; }
+  .lc-pay-ciclo-val { font-size: 12px; color: #6b7280; }
+  .lc-pay-ciclo-badge {
+    position: absolute; top: -8px; right: 8px; background: #5f9647; color: #fff;
+    font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 999px;
+  }
   .lc-pay-status {
     margin-top: 14px; padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 600;
     text-align: center;
@@ -39902,7 +39917,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.364-fix-valor-e-confirmacao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.365-assinatura-anual';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -50547,6 +50562,8 @@ ${JSON.stringify(metricas, null, 2)}`
   let _payExpiraEm = null;        // timestamp do fim dos 15 min
   let _payUltimoPlano = null;     // último plano escolhido (pra regenerar)
   let _payMetodo = null;          // 'pix' (PIX tradicional) ou 'cartao' (recorrente)
+  let _payCiclo = 'mensal';       // 'mensal' ou 'anual' (20% off)
+  let _payPrecoMensal = 0;        // valor mensal do plano escolhido (pra calcular anual)
   // Baseline capturado ao INICIAR o pagamento — usado pra detectar transição real
   // (evita confirmar por um 'ativo' que já existia antes de abrir o modal).
   let _payBaseStatus = null;      // plano_status no momento de gerar a cobrança
@@ -50560,6 +50577,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (pid === 'gratis') return; // grátis não passa por pagamento
     _payUltimoPlano = pid;
     _payMetodo = null;
+    _payCiclo = 'mensal';
 
     const overlay = document.getElementById('payOverlay');
     // valor efetivo: custom do usuário (se houver) ou o padrão do plano
@@ -50567,6 +50585,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (_usuarioLogado && _usuarioLogado.valor_mensal_custom != null && Number(_usuarioLogado.valor_mensal_custom) > 0) {
       precoModal = Number(_usuarioLogado.valor_mensal_custom);
     }
+    _payPrecoMensal = precoModal;
     document.getElementById('payTitulo').textContent = 'Assinar ' + p.nome;
     document.getElementById('paySub').textContent = 'R$ ' + precoModal.toFixed(2).replace('.', ',') + '/mês · cobrança recorrente';
     overlay.classList.add('aberto');
@@ -50577,13 +50596,35 @@ ${JSON.stringify(metricas, null, 2)}`
   // Tela 1: escolha do método de pagamento recorrente.
   function renderEscolhaMetodo() {
     const corpo = document.getElementById('payCorpo');
+    const mensal = Number(_payPrecoMensal) || 0;
+    const anualCheio = mensal * 12;
+    const anualComDesc = Math.round(mensal * 12 * 0.8 * 100) / 100;
+    const economia = Math.round((anualCheio - anualComDesc) * 100) / 100;
+    const fmt = (v) => 'R$ ' + v.toFixed(2).replace('.', ',');
+    const anualPorMes = Math.round(anualComDesc / 12 * 100) / 100;
+
     corpo.innerHTML =
-      '<div style="font-size:13px;color:#6b7280;text-align:center;margin-bottom:16px">Escolha como pagar. Nos dois casos a cobrança é <b>automática todo mês</b> — você não precisa lembrar de pagar.</div>'
+      // seletor de ciclo
+      '<div class="lc-pay-ciclo">'
+      +   '<button class="lc-pay-ciclo-op' + (_payCiclo === 'mensal' ? ' ativo' : '') + '" onclick="selecionarCiclo(\'mensal\')">'
+      +     '<span class="lc-pay-ciclo-tit">Mensal</span>'
+      +     '<span class="lc-pay-ciclo-val">' + fmt(mensal) + '/mês</span>'
+      +   '</button>'
+      +   '<button class="lc-pay-ciclo-op' + (_payCiclo === 'anual' ? ' ativo' : '') + '" onclick="selecionarCiclo(\'anual\')">'
+      +     '<span class="lc-pay-ciclo-badge">-20%</span>'
+      +     '<span class="lc-pay-ciclo-tit">Anual</span>'
+      +     '<span class="lc-pay-ciclo-val">' + fmt(anualPorMes) + '/mês</span>'
+      +   '</button>'
+      + '</div>'
+      + (_payCiclo === 'anual'
+          ? '<div style="text-align:center;font-size:12px;color:#3f6b2f;margin-bottom:14px">Cobrança única de <b>' + fmt(anualComDesc) + '</b> por ano · você economiza ' + fmt(economia) + '</div>'
+          : '<div style="text-align:center;font-size:12px;color:#6b7280;margin-bottom:14px">Cobrança mensal recorrente</div>')
+      // métodos
       + '<div class="lc-pay-metodos">'
       +   '<button class="lc-pay-metodo" onclick="pagarComMetodo(\'pix\')">'
       +     '<span class="lc-pay-metodo-ic"><span class="lc-ic" data-lucide="qr-code"></span></span>'
       +     '<span class="lc-pay-metodo-tit">PIX</span>'
-      +     '<span class="lc-pay-metodo-desc">Pague por PIX todo mês. Enviamos um novo QR Code a cada cobrança.</span>'
+      +     '<span class="lc-pay-metodo-desc">' + (_payCiclo === 'anual' ? 'Pague o ano via PIX. Enviamos um novo QR Code na renovação.' : 'Pague por PIX todo mês. Enviamos um novo QR Code a cada cobrança.') + '</span>'
       +   '</button>'
       +   '<button class="lc-pay-metodo" onclick="pagarComMetodo(\'cartao\')">'
       +     '<span class="lc-pay-metodo-ic"><span class="lc-ic" data-lucide="credit-card"></span></span>'
@@ -50593,6 +50634,13 @@ ${JSON.stringify(metricas, null, 2)}`
       + '</div>';
     try { window.lucide && window.lucide.createIcons(); } catch(e){}
   }
+
+  // troca o ciclo (mensal/anual) e re-renderiza a tela de método
+  function selecionarCiclo(c) {
+    _payCiclo = c;
+    renderEscolhaMetodo();
+  }
+  window.selecionarCiclo = selecionarCiclo;
 
   // Tela 2: dispara a geração da cobrança conforme o método escolhido.
   async function pagarComMetodo(metodo) {
@@ -50621,7 +50669,7 @@ ${JSON.stringify(metricas, null, 2)}`
       const r = await (await fetch(backend + '/api/assinaturas/iniciar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + getTokenLogin() },
-        body: JSON.stringify({ plano: pid, metodo }),
+        body: JSON.stringify({ plano: pid, metodo, ciclo: _payCiclo }),
       })).json();
 
       if (!r.ok) {
@@ -50651,7 +50699,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function renderPagamentoPix(r) {
     const pix = r.pix || {};
     let html = '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#0369a1">'
-      + '<b>Pagamento por PIX:</b> escaneie o QR Code abaixo para ativar seu plano. A cada mês enviamos um novo QR Code para a renovação.</div>';
+      + '<b>Pagamento por PIX:</b> escaneie o QR Code abaixo para ativar seu plano. ' + (_payCiclo === 'anual' ? 'A cada ano enviamos um novo QR Code para a renovação.' : 'A cada mês enviamos um novo QR Code para a renovação.') + '</div>';
     if (pix.imagem) {
       html += '<img class="lc-pay-pix-img" src="data:image/png;base64,' + pix.imagem + '" alt="QR Code PIX">'
         + '<div style="font-size:12px;color:#6b7280;text-align:center;margin-bottom:8px">Escaneie o QR Code ou copie o código PIX</div>'
@@ -50669,7 +50717,7 @@ ${JSON.stringify(metricas, null, 2)}`
   // Render Cartão — botão pro checkout hospedado do Asaas
   function renderPagamentoCartao(r) {
     let html = '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#6d28d9">'
-      + '<b>Cartão recorrente:</b> você será levado ao ambiente seguro do Asaas para cadastrar o cartão. A cobrança é feita automaticamente todo mês.</div>';
+      + '<b>Cartão recorrente:</b> você será levado ao ambiente seguro do Asaas para cadastrar o cartão. A cobrança é feita automaticamente ' + (_payCiclo === 'anual' ? 'todo ano.' : 'todo mês.') + '</div>';
     if (r.linkFatura) {
       html += '<a class="lc-pay-btn" href="' + _esc(r.linkFatura) + '" target="_blank" rel="noopener">Cadastrar cartão e pagar</a>';
     } else {
