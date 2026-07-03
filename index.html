@@ -5590,6 +5590,22 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     background: linear-gradient(135deg, #6ea852, #5f9647); color: #fff; font-weight: 700;
     font-size: 14px; cursor: pointer; text-align: center; text-decoration: none;
   }
+  /* escolha de método de pagamento (PIX Automático vs Cartão) */
+  .lc-pay-metodos { display: flex; flex-direction: column; gap: 12px; }
+  .lc-pay-metodo {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+    width: 100%; padding: 16px; border: 1.5px solid var(--cinza-borda); border-radius: 14px;
+    background: #fff; cursor: pointer; text-align: left; transition: border 0.15s, background 0.15s;
+    position: relative;
+  }
+  .lc-pay-metodo:hover { border-color: #6ea852; background: #f9fdf7; }
+  .lc-pay-metodo-ic {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px; border-radius: 10px; background: #eef2ff; color: #4338ca; margin-bottom: 4px;
+  }
+  .lc-pay-metodo-ic .lc-ic { width: 22px; height: 22px; }
+  .lc-pay-metodo-tit { font-size: 15px; font-weight: 800; color: #1e2a47; }
+  .lc-pay-metodo-desc { font-size: 12px; color: #6b7280; line-height: 1.4; }
   .lc-pay-status {
     margin-top: 14px; padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 600;
     text-align: center;
@@ -39886,7 +39902,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.356-cron-auditoria-manual-seletor-tipo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.357-pix-automatico-cartao-recorrente';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -50530,6 +50546,7 @@ ${JSON.stringify(metricas, null, 2)}`
   let _payPaymentId = null;       // cobrança atual (pra excluir se expirar)
   let _payExpiraEm = null;        // timestamp do fim dos 15 min
   let _payUltimoPlano = null;     // último plano escolhido (pra regenerar)
+  let _payMetodo = null;          // 'pix' (PIX Automático) ou 'cartao' (recorrente)
   const PAY_LIMITE_MS = 15 * 60 * 1000; // 15 minutos
 
   async function escolherPlano(pid) {
@@ -50537,6 +50554,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!p) return;
     if (pid === 'gratis') return; // grátis não passa por pagamento
     _payUltimoPlano = pid;
+    _payMetodo = null;
 
     const overlay = document.getElementById('payOverlay');
     // valor efetivo: custom do usuário (se houver) ou o padrão do plano
@@ -50545,16 +50563,45 @@ ${JSON.stringify(metricas, null, 2)}`
       precoModal = Number(_usuarioLogado.valor_mensal_custom);
     }
     document.getElementById('payTitulo').textContent = 'Assinar ' + p.nome;
-    document.getElementById('paySub').textContent = 'R$ ' + precoModal.toFixed(2).replace('.', ',') + '/mês · cobrança mensal';
-    document.getElementById('payCorpo').innerHTML = '<div class="lc-pay-loading">Gerando cobrança…</div>';
+    document.getElementById('paySub').textContent = 'R$ ' + precoModal.toFixed(2).replace('.', ',') + '/mês · cobrança recorrente';
     overlay.classList.add('aberto');
+    renderEscolhaMetodo();
+  }
+  window.escolherPlano = escolherPlano;
+
+  // Tela 1: escolha do método de pagamento recorrente.
+  function renderEscolhaMetodo() {
+    const corpo = document.getElementById('payCorpo');
+    corpo.innerHTML =
+      '<div style="font-size:13px;color:#6b7280;text-align:center;margin-bottom:16px">Escolha como pagar. Nos dois casos a cobrança é <b>automática todo mês</b> — você não precisa lembrar de pagar.</div>'
+      + '<div class="lc-pay-metodos">'
+      +   '<button class="lc-pay-metodo" onclick="pagarComMetodo(\'pix\')">'
+      +     '<span class="lc-pay-metodo-ic"><span class="lc-ic" data-lucide="qr-code"></span></span>'
+      +     '<span class="lc-pay-metodo-tit">PIX Automático</span>'
+      +     '<span class="lc-pay-metodo-desc">Autorize uma vez no app do banco. O valor é debitado sozinho todo mês.</span>'
+      +   '</button>'
+      +   '<button class="lc-pay-metodo" onclick="pagarComMetodo(\'cartao\')">'
+      +     '<span class="lc-pay-metodo-ic"><span class="lc-ic" data-lucide="credit-card"></span></span>'
+      +     '<span class="lc-pay-metodo-tit">Cartão de crédito</span>'
+      +     '<span class="lc-pay-metodo-desc">Cadastre o cartão uma vez. A cobrança recorrente é feita automaticamente.</span>'
+      +   '</button>'
+      + '</div>';
+    try { window.lucide && window.lucide.createIcons(); } catch(e){}
+  }
+
+  // Tela 2: dispara a geração da cobrança conforme o método escolhido.
+  async function pagarComMetodo(metodo) {
+    _payMetodo = metodo;
+    const pid = _payUltimoPlano;
+    if (!pid) return;
+    document.getElementById('payCorpo').innerHTML = '<div class="lc-pay-loading">Gerando cobrança…</div>';
 
     const backend = getBackendUrl();
     try {
       const r = await (await fetch(backend + '/api/assinaturas/iniciar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + getTokenLogin() },
-        body: JSON.stringify({ plano: pid }),
+        body: JSON.stringify({ plano: pid, metodo }),
       })).json();
 
       if (!r.ok) {
@@ -50565,59 +50612,51 @@ ${JSON.stringify(metricas, null, 2)}`
         document.getElementById('payCorpo').innerHTML = '<div class="lc-pay-status confirmado">Sua assinatura está em dia. Não há cobrança pendente no momento.</div>';
         return;
       }
-      _payPaymentId = r.paymentId || null;
-      renderPagamento(r);
+      if (metodo === 'pix') {
+        // PIX Automático: mostra o QR imediato (1º pagamento que autoriza a recorrência)
+        renderPagamentoPix(r);
+      } else {
+        // Cartão: leva ao checkout hospedado do Asaas
+        renderPagamentoCartao(r);
+      }
       iniciarPollPagamento();
-      iniciarTimerPagamento(); // contador de 15 min
     } catch (e) {
       document.getElementById('payCorpo').innerHTML = '<div class="lc-pay-status aguardando">Erro de conexão. Tente novamente.</div>';
     }
   }
-  window.escolherPlano = escolherPlano;
+  window.pagarComMetodo = pagarComMetodo;
 
-  function renderPagamento(r) {
-    const temPix = r.pix && r.pix.imagem;
-    const temCartao = !!r.linkFatura;
-    let html = '';
-
-    if (temPix || temCartao) {
-      html += '<div class="lc-pay-tabs">';
-      if (temPix) html += '<button class="lc-pay-tab ativo" id="payTabPix" onclick="payMostrar(\'pix\')">PIX</button>';
-      if (temCartao) html += '<button class="lc-pay-tab' + (temPix ? '' : ' ativo') + '" id="payTabCartao" onclick="payMostrar(\'cartao\')">Cartão</button>';
-      html += '</div>';
-    }
-
-    // PIX
-    if (temPix) {
-      html += '<div id="payPane-pix">'
-        + '<img class="lc-pay-pix-img" src="data:image/png;base64,' + r.pix.imagem + '" alt="QR Code PIX">'
+  // Render PIX Automático — QR do 1º pagamento (autoriza a recorrência)
+  function renderPagamentoPix(r) {
+    const pix = r.pix || {};
+    let html = '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#0369a1">'
+      + '<b>PIX Automático:</b> ao pagar este QR Code no app do seu banco, você autoriza a cobrança recorrente. Nos próximos meses o valor é debitado automaticamente.</div>';
+    if (pix.imagem) {
+      html += '<img class="lc-pay-pix-img" src="data:image/png;base64,' + pix.imagem + '" alt="QR Code PIX Automático">'
         + '<div style="font-size:12px;color:#6b7280;text-align:center;margin-bottom:8px">Escaneie o QR Code ou copie o código PIX</div>'
-        + '<div class="lc-pay-copia"><input type="text" id="payPixCopia" readonly value="' + _esc(r.pix.copiaECola || '') + '">'
-        + '<button onclick="payCopiarPix()">Copiar</button></div>'
-        + '</div>';
+        + '<div class="lc-pay-copia"><input type="text" id="payPixCopia" readonly value="' + _esc(pix.copiaECola || '') + '">'
+        + '<button onclick="payCopiarPix()">Copiar</button></div>';
+    } else {
+      html += '<div class="lc-pay-status aguardando">Não foi possível gerar o QR Code. Tente novamente.</div>';
     }
-    // Cartão
-    if (temCartao) {
-      html += '<div id="payPane-cartao" style="' + (temPix ? 'display:none' : '') + '">'
-        + '<p style="font-size:13px;color:#6b7280;margin:4px 0 14px">Você será levado ao ambiente seguro do Asaas para pagar com cartão de crédito.</p>'
-        + '<a class="lc-pay-btn" href="' + _esc(r.linkFatura) + '" target="_blank" rel="noopener">Pagar com cartão</a>'
-        + '</div>';
-    }
-
     html += '<div id="payTimer" style="text-align:center;font-size:13px;color:#6b7280;margin-top:12px">Tempo para pagamento: <b id="payTimerValor" style="color:#dc2626">15:00</b></div>';
-    html += '<div class="lc-pay-status aguardando" id="payStatus">Aguardando pagamento…</div>';
+    html += '<div class="lc-pay-status aguardando" id="payStatus">Aguardando autorização do PIX…</div>';
+    document.getElementById('payCorpo').innerHTML = html;
+    iniciarTimerPagamento();
+  }
+
+  // Render Cartão — botão pro checkout hospedado do Asaas
+  function renderPagamentoCartao(r) {
+    let html = '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#6d28d9">'
+      + '<b>Cartão recorrente:</b> você será levado ao ambiente seguro do Asaas para cadastrar o cartão. A cobrança é feita automaticamente todo mês.</div>';
+    if (r.linkFatura) {
+      html += '<a class="lc-pay-btn" href="' + _esc(r.linkFatura) + '" target="_blank" rel="noopener">Cadastrar cartão e pagar</a>';
+    } else {
+      html += '<div class="lc-pay-status aguardando">Não foi possível gerar o link de pagamento. Tente novamente.</div>';
+    }
+    html += '<div class="lc-pay-status aguardando" id="payStatus" style="margin-top:14px">Aguardando confirmação do pagamento…</div>';
     document.getElementById('payCorpo').innerHTML = html;
   }
-
-  function payMostrar(qual) {
-    ['pix', 'cartao'].forEach(t => {
-      const pane = document.getElementById('payPane-' + t);
-      const tab = document.getElementById('payTab' + (t === 'pix' ? 'Pix' : 'Cartao'));
-      if (pane) pane.style.display = (t === qual) ? '' : 'none';
-      if (tab) tab.classList.toggle('ativo', t === qual);
-    });
-  }
-  window.payMostrar = payMostrar;
 
   function payCopiarPix() {
     const inp = document.getElementById('payPixCopia');
@@ -50684,7 +50723,18 @@ ${JSON.stringify(metricas, null, 2)}`
   async function expirarPagamento() {
     pararPollPagamento();
     const corpo = document.getElementById('payCorpo');
-    if (!_payPaymentId) { if (corpo) corpo.innerHTML = '<div class="lc-pay-status aguardando">Tempo esgotado. Feche e tente de novo.</div>'; return; }
+    // PIX Automático (sem paymentId avulso): não há cobrança pra excluir; só oferece refazer.
+    if (!_payPaymentId) {
+      if (corpo) {
+        corpo.innerHTML = '<div style="text-align:center;padding:20px 0">'
+          + '<div style="font-size:34px;margin-bottom:8px;color:#dc2626"><span class="lc-ic" data-lucide="alarm-clock"></span></div>'
+          + '<div style="font-weight:700;color:#1e2a47;margin-bottom:6px">Tempo esgotado</div>'
+          + '<div style="font-size:13px;color:#6b7280;margin-bottom:18px">Você pode escolher a forma de pagamento e tentar de novo.</div>'
+          + '<button class="lc-pay-btn" onclick="regenerarPagamento()">Tentar de novo</button></div>';
+        try { window.lucide && window.lucide.createIcons(); } catch(e){}
+      }
+      return;
+    }
     try {
       const backend = getBackendUrl();
       const r = await (await fetch(backend + '/api/assinaturas/cancelar-cobranca', {
