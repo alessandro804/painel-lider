@@ -5590,7 +5590,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
     background: linear-gradient(135deg, #6ea852, #5f9647); color: #fff; font-weight: 700;
     font-size: 14px; cursor: pointer; text-align: center; text-decoration: none;
   }
-  /* escolha de método de pagamento (PIX Automático vs Cartão) */
+  /* escolha de método de pagamento (PIX vs Cartão) */
   .lc-pay-metodos { display: flex; flex-direction: column; gap: 12px; }
   .lc-pay-metodo {
     display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
@@ -39902,7 +39902,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.361-pix-chave-auto';
+  const _DIAG_VERSAO_PAINEL = 'v33k.362-pix-tradicional';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -50546,7 +50546,7 @@ ${JSON.stringify(metricas, null, 2)}`
   let _payPaymentId = null;       // cobrança atual (pra excluir se expirar)
   let _payExpiraEm = null;        // timestamp do fim dos 15 min
   let _payUltimoPlano = null;     // último plano escolhido (pra regenerar)
-  let _payMetodo = null;          // 'pix' (PIX Automático) ou 'cartao' (recorrente)
+  let _payMetodo = null;          // 'pix' (PIX tradicional) ou 'cartao' (recorrente)
   const PAY_LIMITE_MS = 15 * 60 * 1000; // 15 minutos
 
   async function escolherPlano(pid) {
@@ -50577,8 +50577,8 @@ ${JSON.stringify(metricas, null, 2)}`
       + '<div class="lc-pay-metodos">'
       +   '<button class="lc-pay-metodo" onclick="pagarComMetodo(\'pix\')">'
       +     '<span class="lc-pay-metodo-ic"><span class="lc-ic" data-lucide="qr-code"></span></span>'
-      +     '<span class="lc-pay-metodo-tit">PIX Automático</span>'
-      +     '<span class="lc-pay-metodo-desc">Autorize uma vez no app do banco. O valor é debitado sozinho todo mês.</span>'
+      +     '<span class="lc-pay-metodo-tit">PIX</span>'
+      +     '<span class="lc-pay-metodo-desc">Pague por PIX todo mês. Enviamos um novo QR Code a cada cobrança.</span>'
       +   '</button>'
       +   '<button class="lc-pay-metodo" onclick="pagarComMetodo(\'cartao\')">'
       +     '<span class="lc-pay-metodo-ic"><span class="lc-ic" data-lucide="credit-card"></span></span>'
@@ -50613,7 +50613,8 @@ ${JSON.stringify(metricas, null, 2)}`
         return;
       }
       if (metodo === 'pix') {
-        // PIX Automático: mostra o QR imediato (1º pagamento que autoriza a recorrência)
+        // PIX tradicional: guarda o paymentId (permite excluir a cobrança se expirar)
+        _payPaymentId = r.paymentId || null;
         renderPagamentoPix(r);
       } else {
         // Cartão: leva ao checkout hospedado do Asaas
@@ -50626,13 +50627,13 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.pagarComMetodo = pagarComMetodo;
 
-  // Render PIX Automático — QR do 1º pagamento (autoriza a recorrência)
+  // Render PIX tradicional — QR da cobrança do mês (cliente paga manualmente)
   function renderPagamentoPix(r) {
     const pix = r.pix || {};
     let html = '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#0369a1">'
-      + '<b>PIX Automático:</b> ao pagar este QR Code no app do seu banco, você autoriza a cobrança recorrente. Nos próximos meses o valor é debitado automaticamente.</div>';
+      + '<b>Pagamento por PIX:</b> escaneie o QR Code abaixo para ativar seu plano. A cada mês enviamos um novo QR Code para a renovação.</div>';
     if (pix.imagem) {
-      html += '<img class="lc-pay-pix-img" src="data:image/png;base64,' + pix.imagem + '" alt="QR Code PIX Automático">'
+      html += '<img class="lc-pay-pix-img" src="data:image/png;base64,' + pix.imagem + '" alt="QR Code PIX">'
         + '<div style="font-size:12px;color:#6b7280;text-align:center;margin-bottom:8px">Escaneie o QR Code ou copie o código PIX</div>'
         + '<div class="lc-pay-copia"><input type="text" id="payPixCopia" readonly value="' + _esc(pix.copiaECola || '') + '">'
         + '<button onclick="payCopiarPix()">Copiar</button></div>';
@@ -50640,7 +50641,7 @@ ${JSON.stringify(metricas, null, 2)}`
       html += '<div class="lc-pay-status aguardando">Não foi possível gerar o QR Code. Tente novamente.</div>';
     }
     html += '<div id="payTimer" style="text-align:center;font-size:13px;color:#6b7280;margin-top:12px">Tempo para pagamento: <b id="payTimerValor" style="color:#dc2626">15:00</b></div>';
-    html += '<div class="lc-pay-status aguardando" id="payStatus">Aguardando autorização do PIX…</div>';
+    html += '<div class="lc-pay-status aguardando" id="payStatus">Aguardando confirmação do pagamento…</div>';
     document.getElementById('payCorpo').innerHTML = html;
     iniciarTimerPagamento();
   }
@@ -50678,17 +50679,11 @@ ${JSON.stringify(metricas, null, 2)}`
           headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + getTokenLogin() },
         })).json();
         if (!r.ok) return;
-        // Confirmação depende do método:
-        //  - PIX Automático: só confirma quando a AUTORIZAÇÃO fica ACTIVE (o cliente
-        //    pagou o 1º PIX no app do banco). NÃO usa plano_status, que pode estar
-        //    'ativo' de um ciclo anterior e fecharia o modal cedo demais.
-        //  - Cartão: confirma quando plano_status vira 'ativo' (webhook do pagamento).
-        let confirmado = false;
-        if (_payMetodo === 'pix') {
-          confirmado = (r.pixAuthStatus === 'ACTIVE');
-        } else {
-          confirmado = (r.plano_status === 'ativo');
-        }
+        // PIX tradicional e Cartão: ambos são assinatura (subscription). O webhook
+        // PAYMENT_RECEIVED/CONFIRMED marca plano_status='ativo' quando o pagamento cai.
+        // O fix do "pago do nada" garante que 'ativo' só aparece após pagamento real
+        // (deveAguardar reseta pra 'aguardando' ao gerar cobrança nova).
+        const confirmado = (r.plano_status === 'ativo');
         if (confirmado) {
           pararPollPagamento();
           pararTimerPagamento();
@@ -50735,7 +50730,7 @@ ${JSON.stringify(metricas, null, 2)}`
   async function expirarPagamento() {
     pararPollPagamento();
     const corpo = document.getElementById('payCorpo');
-    // PIX Automático (sem paymentId avulso): não há cobrança pra excluir; só oferece refazer.
+    // Sem paymentId (ex.: cobrança não gerada): não há o que excluir; só oferece refazer.
     if (!_payPaymentId) {
       if (corpo) {
         corpo.innerHTML = '<div style="text-align:center;padding:20px 0">'
