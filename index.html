@@ -15974,8 +15974,11 @@ Retorne JSON: {"ID": "valor", ...}`;
       : lojasErp.map(l => ({ id: l.idBanco, nome: l.nome, marketplace: l.marketplace }));
     sel.innerHTML = '<option value="">Todas</option>' +
       fonte.filter(l => l.id != null).map(l => `<option value="${l.id}">${escapeHtml(l.nome)}</option>`).join('');
-    // 1ª selecionada vira o valor (se só 1 loja, é ela; se várias, a 1ª)
-    sel.value = (selecionadas.length === 1) ? String(selecionadas[0]) : (selecionadas[0] != null ? String(selecionadas[0]) : '');
+    // v33k.373 FIX: o hidden select só recebe UMA loja quando há EXATAMENTE uma
+    // selecionada (aí as views por loja — Anúncios/Diagnóstico — focam nela). Com
+    // VÁRIAS lojas (ex.: "Todas as contas"), fica VAZIO (= Todas), senão o Resumo
+    // por loja filtrava pra só a 1ª loja (mostrava 1 quando deveria mostrar todas).
+    sel.value = (selecionadas.length === 1) ? String(selecionadas[0]) : '';
   }
 
   function adsAtualizarPeriodoUI() {
@@ -16045,7 +16048,6 @@ Retorne JSON: {"ID": "valor", ...}`;
       desde: (p.custom && p.custom.desde) || intv.desde,
       ate: (p.custom && p.custom.ate) || intv.ate,
       onAplicar: (de, ate) => {
-        console.log('[ads/calendario][DIAG] onAplicar disparou: desde=' + de + ' ate=' + ate);
         setPeriodoGlobal(null, { desde: de, ate: ate });
         adsAtualizarPeriodoUI();
         renderAdsSubaba();
@@ -17523,29 +17525,19 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   async function renderAdsResumo(cont, meuToken) {
     const { dias } = adsParams();
-    // DIAG v33k.368: mostra como o 'dias' foi calculado (estado do período),
-    // pra caçar por que o painel Ads soma um dia a mais. Ver no console (F12).
-    try {
-      const _p = getPeriodoGlobal();
-      console.log('[ads/resumo][DIAG] dias enviado=' + dias +
-        ' | estado período=' + JSON.stringify(_p));
-    } catch (e) {}
     const headers = { 'x-api-token': getApiToken() };
     cont.innerHTML = '<div style="padding:40px;text-align:center;color:#9ca3af">Carregando lojas…</div>';
-    const r = await fetch(BACKEND_URL + '/api/ads/resumo?dias=' + dias, { headers }).then(x => x.json());
+    // v33k.373: passa as contas selecionadas pro backend (igual a Home). O backend
+    // filtra pelo subconjunto; sem seleção, traz todas as do escopo. Isso substitui
+    // o antigo filtro client-side por adsLojaFiltro (que mostrava só a 1ª loja
+    // quando "Todas as contas" estava selecionado).
+    const _sel = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || [];
+    const _lojasParam = _sel.length ? ('&lojaIds=' + _sel.join(',')) : '';
+    const r = await fetch(BACKEND_URL + '/api/ads/resumo?dias=' + dias + _lojasParam, { headers }).then(x => x.json());
     if (meuToken != null && meuToken !== _adsRenderToken) return; // outro render assumiu
     if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
     if (!r.lojas || r.lojas.length === 0) { cont.innerHTML = blocoVazio('Nenhuma loja com dados.', ''); return; }
 
-    // v33k.282 FIX: o Resumo por loja IGNORAVA o filtro de loja (mostrava sempre
-    // todas), enquanto a aba Anúncios filtrava. Agora respeita: se há loja
-    // selecionada no filtro, mostra SÓ ela; sem filtro, mostra todas.
-    const lojaFiltro = document.getElementById('adsLojaFiltro')?.value || '';
-    if (lojaFiltro) {
-      const _filtradas = r.lojas.filter(l => String(l.lojaId) === String(lojaFiltro));
-      if (!_filtradas.length) { cont.innerHTML = blocoVazio('A loja selecionada não tem dados de Ads nesse período.', lojaFiltro); return; }
-      r.lojas = _filtradas;
-    }
 
     // ordenação (maior → menor) conforme escolha do usuário
     const cmp = {
@@ -39925,7 +39917,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.371-home-receita-ontem-tabela';
+  const _DIAG_VERSAO_PAINEL = 'v33k.373-multitenant-cache-ads-filtro';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -40733,6 +40725,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // ANTERIOR (ex.: "Gontijo"), o cabeçalho "Olá, X" mostra o nome velho ao trocar
     // de conta. Limpar aqui faz o próximo usuário pegar o nome dele.
     try { if (typeof settings !== 'undefined' && settings) { settings.nomeUsuario = ''; settings.cargoUsuario = ''; } } catch(e){}
+    // v33k.373: zera os CACHES DE LISTA DE LOJAS e as instâncias dos seletores.
+    // BUG crítico multi-tenant: _lucroCacheLojas/_adsCacheLojas guardam a lista de
+    // lojas do usuário e NÃO eram limpos na troca — ao trocar de conta (ex.: Lucas→
+    // Alessandro), o dropdown do Lucro/Ads renderizava as lojas do usuário ANTERIOR
+    // (as do Lucas apareciam pro Alessandro). Limpar aqui força buscar as lojas do
+    // usuário atual. Também descarta as instâncias montadas dos seletores pra não
+    // reusarem a lista velha.
+    try { if (typeof _lucroCacheLojas !== 'undefined') _lucroCacheLojas = []; } catch(e){}
+    try { if (typeof _adsCacheLojas !== 'undefined') _adsCacheLojas = []; } catch(e){}
+    try { if (typeof _lucroSelComp !== 'undefined') _lucroSelComp = null; } catch(e){}
+    try { if (typeof _adsSelComp !== 'undefined') _adsSelComp = null; } catch(e){}
   }
   window.limparDadosOperacionais = limparDadosOperacionais;
 
