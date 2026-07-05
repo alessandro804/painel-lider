@@ -6197,6 +6197,10 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
           <div class="lc-block">
             <div class="lc-block-head">
               <div class="lc-block-title"><span class="lc-ic" data-lucide="triangle-alert"></span> Alertas operacionais</div>
+              <button id="lcAtrasadosRefresh" onclick="atualizarAtrasadosHome()" title="Recalcular pedidos atrasados agora (Shopee + ML)" style="display:inline-flex;align-items:center;gap:5px;border:1px solid var(--lc-border);background:var(--lc-surface);border-radius:99px;padding:4px 11px;font-size:11px;font-weight:600;color:var(--lc-ink-2);cursor:pointer">
+                <span class="lc-ic" data-lucide="refresh-cw" style="width:12px;height:12px"></span>
+                <span id="lcAtrasadosRefreshTxt">Atualizar</span>
+              </button>
             </div>
             <div class="lc-alert-grid" id="lcAlertas">
               <div class="lc-alert ok">
@@ -40081,7 +40085,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.385-home-comparativo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.386-atrasados-home';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -42038,14 +42042,68 @@ Responda APENAS com JSON válido (sem markdown), formato:
     ['lcIaHoje','lcIaProgramado','lcWhatsapp','lcPodio'].forEach(id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="lc-block-empty">Indisponível offline</div>'; });
     const t = document.getElementById('lcIaHojeTotal'); if (t) t.textContent = '—';
   }
+  // v33k.386: dispara a varredura de pedidos atrasados na hora (reusa a rota
+  // /pedidos-atrasados/listar) e recarrega o resumo da Home ao concluir. Mostra
+  // "atualizando…" no botão enquanto roda.
+  let _atualizandoAtrasados = false;
+  async function atualizarAtrasadosHome() {
+    if (_atualizandoAtrasados) return;
+    _atualizandoAtrasados = true;
+    const btn = document.getElementById('lcAtrasadosRefresh');
+    const txt = document.getElementById('lcAtrasadosRefreshTxt');
+    const sub = document.getElementById('lcAtrasadosSub');
+    if (btn) { btn.style.opacity = '0.7'; btn.style.cursor = 'wait'; }
+    if (txt) txt.textContent = 'Atualizando…';
+    if (sub) sub.textContent = 'recalculando…';
+    try {
+      const _tok = localStorage.getItem('lider_token_login') || '';
+      const hdr = { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + _tok };
+      const ini = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/listar', { method: 'POST', headers: hdr }).then(x => x.json());
+      if (!ini.ok || !ini.execId) throw new Error((ini && ini.erro) || 'falha ao iniciar');
+      const execId = ini.execId;
+      // polling do progresso até concluir (teto ~3min)
+      let tent = 0;
+      await new Promise((resolve) => {
+        const timer = setInterval(async () => {
+          tent++;
+          if (tent > 90) { clearInterval(timer); resolve(); return; }
+          let p;
+          try { p = await fetch(BACKEND_URL + '/api/tarefas/pedidos-atrasados/progresso/' + execId, { headers: hdr }).then(x => x.json()); }
+          catch (_) { return; }
+          if (!p || !p.ok || !p.exec) return;
+          if (p.exec.status === 'rodando') {
+            if (sub && p.exec.loja_atual) sub.textContent = 'varrendo ' + p.exec.loja_atual + '…';
+            return;
+          }
+          clearInterval(timer); resolve();
+        }, 2000);
+      });
+      // recarrega o resumo da Home (relê a tabela recém-gravada)
+      if (typeof carregarHomeResumo === 'function') await carregarHomeResumo();
+    } catch (e) {
+      if (typeof showToast === 'function') showToast('⚠ Não consegui atualizar os atrasados: ' + e.message, true);
+    } finally {
+      _atualizandoAtrasados = false;
+      if (btn) { btn.style.opacity = '1'; btn.style.cursor = 'pointer'; }
+      if (txt) txt.textContent = 'Atualizar';
+    }
+  }
+  window.atualizarAtrasadosHome = atualizarAtrasadosHome;
+
   function lcRenderAlertas(atr, ban) {
     atr = atr || { total: 0 }; ban = ban || { total: 0, porMarketplace: {} };
     const aNum = document.getElementById('lcAtrasadosNum');
     const aSub = document.getElementById('lcAtrasadosSub');
     const aCard = aNum && aNum.closest('.lc-alert');
-    if (aNum) aNum.textContent = atr.total || 0;
-    if (aSub) aSub.textContent = atr.total > 0 ? `em ${(atr.porLoja||[]).length || '—'} loja(s)` : 'tudo em dia';
-    if (aCard) aCard.className = 'lc-alert ' + (atr.total > 0 ? 'warn' : 'ok');
+    // v33k.386: distingue "nunca calculado" (sem atualizadoEm) de "calculado = 0".
+    const nuncaCalc = !atr || atr.atualizadoEm == null;
+    if (aNum) aNum.textContent = nuncaCalc ? '—' : (atr.total || 0);
+    if (aSub) {
+      if (nuncaCalc) aSub.textContent = 'toque em Atualizar';
+      else if (atr.total > 0) aSub.textContent = `em ${(atr.porLoja||[]).length || '—'} loja(s)`;
+      else aSub.textContent = 'tudo em dia';
+    }
+    if (aCard) aCard.className = 'lc-alert ' + (atr && atr.total > 0 ? 'warn' : 'ok');
 
     const bNum = document.getElementById('lcBanidosNum');
     const bSub = document.getElementById('lcBanidosSub');
