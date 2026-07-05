@@ -7277,6 +7277,9 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="expRodape" value="variacao" checked onchange="expSetRodape('variacao')"> variação</label>
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="expRodape" value="sku" onchange="expSetRodape('sku')"> SKU</label>
             </div>
+            <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBtnOrdem" onclick="expToggleOrdem()" title="Alternar ordem por prazo de envio">↕ Mais recentes</button>
+            <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBtnAtrasados" onclick="expToggleAtrasados()" title="Mostrar só os pedidos com prazo de envio vencido">⏰ Só atrasados</button>
+            <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expAbrirHistorico()" title="Ver o histórico de etiquetas impressas">🖨 Histórico</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expSemear()" title="Carrega os pedidos pendentes atuais para a fila (roda uma vez)">Sincronizar fila</button>
           </div>
           <div id="expLoading" style="display:none;text-align:center;padding:30px;color:var(--lc-muted)">Carregando…</div>
@@ -40170,7 +40173,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.400-fix-filtro-lojas-todas-contas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.401-etiqueta-pb-filtros-sku-atrasados-logs';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47824,6 +47827,10 @@ ${JSON.stringify(metricas, null, 2)}`
   let _expEstadoSel = null;             // sub-status (estado_shopee) filtrado
   let _expDados = null;                 // { etapas, rotulos, contagens, porEtapa }
   let _expSel = new Set();              // order_sn selecionados
+  let _expOrdem = 'recentes';           // v33k.401: 'recentes' | 'antigos' | 'sku'
+  let _expSoAtrasados = false;          // v33k.401: filtro só-atrasados (prazo vencido)
+  let _expSkuFiltro = '';               // v33k.401: filtro por SKU exato (chip)
+  let _expOrdemExibida = [];            // v33k.401: order_sn na ordem da tela (p/ PDF em lote)
 
   const EXP_ETAPA_ICONE = {
     1: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>',
@@ -48016,16 +48023,21 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!lojas.length || !_expEstadoSel) { if (acoes) acoes.style.display = 'none'; return; }
     lista.innerHTML = _expSkeletons();
     try {
-      // v33k.390: passa o texto do campo de busca (pedido) pra filtrar a lista.
+      // v33k.390: passa o texto do campo de busca (pedido/SKU/produto) pra filtrar.
       const buscaEl = document.getElementById('pedBusca');
       const q = (buscaEl && buscaEl.value || '').trim();
-      const paramsObj = { lojaIds: lojas.join(','), estado: _expEstadoSel, limit: '400' };
+      const paramsObj = { lojaIds: lojas.join(','), estado: _expEstadoSel, limit: '400', ordem: _expOrdem };
       if (q) paramsObj.q = q;
+      if (_expSoAtrasados) paramsObj.atrasados = '1';
+      if (_expSkuFiltro) paramsObj.sku = _expSkuFiltro;
       const params = new URLSearchParams(paramsObj);
       const resp = await fetch(BACKEND_URL + '/api/expedicao/lista?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
       const data = await resp.json();
       if (!data.ok) throw new Error(data.erro || 'Falha');
       const peds = data.pedidos || [];
+      // v33k.401: guarda a ORDEM EXIBIDA (order_sn na sequência da tela) pra que a
+      // geração de etiquetas em lote saia no PDF exatamente nessa ordem.
+      _expOrdemExibida = peds.map(p => p.orderSn);
       // barra de ações não aparece nos Cancelados (9) nem Devolvidos (8) — só informação/etiqueta
       if (acoes) acoes.style.display = (peds.length && _expEtapaSel !== 9 && _expEtapaSel !== 8) ? 'flex' : 'none';
       // checkbox master reflete se TODOS os visíveis estão selecionados (não força false)
@@ -48069,6 +48081,15 @@ ${JSON.stringify(metricas, null, 2)}`
       ? '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--lc-info-soft);color:var(--lc-info)">CPF</span>' : '';
     const prazo = p.shipBy ? '<span style="font-size:12px;color:var(--lc-muted)">Enviar até ' + new Date(p.shipBy * 1000).toLocaleDateString('pt-BR') + '</span>' : '';
     const rastreio = p.trackingNumber ? '<span style="font-size:12px;color:var(--lc-muted);font-family:monospace">' + p.trackingNumber + '</span>' : '';
+    // v33k.401: selo de ATRASADO (prazo de envio da Shopee vencido) — vermelho
+    const atrasadoBadge = p.atrasado
+      ? '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-danger-soft);color:var(--lc-danger)">⏰ Atrasado</span>' : '';
+    // v33k.401: SKU do produto (pra separação) — só mostra se houver
+    const skuBadge = p.sku
+      ? '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--lc-surface-2);color:var(--lc-ink-2);font-family:monospace" title="' + (p.produto || '') + '">' + p.sku + '</span>' : '';
+    // v33k.401: log de impressão — "Impresso em DD/MM HH:MM" (só na etapa Impressos)
+    const impressoEmTxt = (p.impressoEm && _expEtapaSel === 4)
+      ? '<span style="font-size:12px;color:var(--lc-success);font-weight:600">🖨 Impresso em ' + new Date(p.impressoEm).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + '</span>' : '';
 
     // sub-status de ERRO: mostra a mensagem + botão "tentar novamente"
     const estadosErro = ['falha_emissao','falha_subir','etiqueta_falhada'];
@@ -48147,9 +48168,9 @@ ${JSON.stringify(metricas, null, 2)}`
       '<div style="display:flex;align-items:center;gap:12px">' +
         checkboxHtml +
         '<div style="flex:1;min-width:0">' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-weight:700;color:var(--lc-ink);font-size:14px">' + p.orderSn + '</span>' + nfBadge + cpfBadge + impBadge + '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-weight:700;color:var(--lc-ink);font-size:14px">' + p.orderSn + '</span>' + nfBadge + cpfBadge + atrasadoBadge + skuBadge + impBadge + '</div>' +
           '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:3px"><span style="font-size:12px;color:var(--lc-muted-2)">' + (p.loja || '') + '</span>' +
-            (p.transportadora ? '<span style="font-size:12px;color:var(--lc-muted)">' + p.transportadora + '</span>' : '') + rastreio + prazo + '</div>' +
+            (p.transportadora ? '<span style="font-size:12px;color:var(--lc-muted)">' + p.transportadora + '</span>' : '') + rastreio + prazo + impressoEmTxt + '</div>' +
         '</div>' +
         acoesHtml +
         '<span style="font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap;' + corStatus + '">' + spinner + (p.estadoRotulo || p.estado) + '</span>' +
@@ -48231,10 +48252,124 @@ ${JSON.stringify(metricas, null, 2)}`
     }
   }
 
+  // v33k.401: tela (modal) de HISTÓRICO de impressões — lista as etiquetas já
+  // impressas, da mais recente pra mais antiga, com data/hora, loja e rastreio.
+  async function expAbrirHistorico() {
+    const lojas = expLojasSelecionadas();
+    if (!lojas.length) { showToast('Selecione ao menos uma conta.'); return; }
+    let ov = document.getElementById('expHistOverlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'expHistOverlay';
+      ov.className = 'lc-modal-overlay';
+      ov.onclick = (e) => { if (e.target === ov) ov.classList.remove('active'); };
+      document.body.appendChild(ov);
+    }
+    ov.innerHTML = '<div style="background:var(--lc-surface);border-radius:var(--lc-radius);max-width:640px;width:100%;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.25)">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--lc-border)">' +
+        '<div><div style="font-weight:700;font-size:16px;color:var(--lc-ink)">Histórico de impressões</div>' +
+        '<div style="font-size:12px;color:var(--lc-muted);margin-top:2px">Etiquetas geradas, da mais recente para a mais antiga</div></div>' +
+        '<button onclick="document.getElementById(\'expHistOverlay\').classList.remove(\'active\')" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--lc-muted);line-height:1">×</button>' +
+      '</div>' +
+      '<div style="padding:12px 18px;border-bottom:1px solid var(--lc-border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<input id="expHistBusca" placeholder="Buscar pedido…" oninput="expHistCarregar()" style="flex:1;min-width:140px;padding:7px 10px;border:1px solid var(--lc-border);border-radius:8px;font-size:13px">' +
+        '<select id="expHistDias" onchange="expHistCarregar()" style="padding:7px 10px;border:1px solid var(--lc-border);border-radius:8px;font-size:13px;background:var(--lc-surface)">' +
+          '<option value="7">Últimos 7 dias</option><option value="30" selected>Últimos 30 dias</option><option value="90">Últimos 90 dias</option></select>' +
+      '</div>' +
+      '<div id="expHistLista" style="overflow-y:auto;padding:12px 18px;flex:1"></div>' +
+    '</div>';
+    ov.classList.add('active');
+    expHistCarregar();
+  }
+
+  async function expHistCarregar() {
+    const cont = document.getElementById('expHistLista');
+    if (!cont) return;
+    const lojas = expLojasSelecionadas();
+    const dias = (document.getElementById('expHistDias') || {}).value || '30';
+    const q = ((document.getElementById('expHistBusca') || {}).value || '').trim();
+    cont.innerHTML = '<div style="text-align:center;padding:30px;color:var(--lc-muted)">Carregando…</div>';
+    try {
+      const paramsObj = { lojaIds: lojas.join(','), dias, limit: '300' };
+      if (q) paramsObj.q = q;
+      const params = new URLSearchParams(paramsObj);
+      const resp = await fetch(BACKEND_URL + '/api/expedicao/historico-impressoes?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.erro || 'Falha');
+      const itens = data.itens || [];
+      if (!itens.length) {
+        const msg = data.aviso === 'migracao_pendente'
+          ? 'O registro de impressões começa a ser gravado a partir de agora.<br><span style="font-size:12px">Gere uma etiqueta e ela aparecerá aqui.</span>'
+          : 'Nenhuma etiqueta impressa neste período.';
+        cont.innerHTML = '<div style="text-align:center;padding:34px;color:var(--lc-muted)">' + msg + '</div>';
+        return;
+      }
+      // agrupa por dia pra facilitar a leitura
+      const porDia = {};
+      itens.forEach(it => {
+        const d = new Date(it.impressoEm);
+        const chave = d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        (porDia[chave] = porDia[chave] || []).push(it);
+      });
+      let html = '';
+      Object.entries(porDia).forEach(([dia, lista]) => {
+        html += '<div style="font-size:12px;font-weight:700;color:var(--lc-muted);margin:10px 0 6px">' + dia + ' · ' + lista.length + ' etiqueta(s)</div>';
+        lista.forEach(it => {
+          const hora = new Date(it.impressoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+          html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--lc-border);border-radius:8px;margin-bottom:6px">' +
+            '<span style="font-size:12px;color:var(--lc-muted);font-variant-numeric:tabular-nums">' + hora + '</span>' +
+            '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;color:var(--lc-ink)">' + it.orderSn + '</div>' +
+            '<div style="font-size:11.5px;color:var(--lc-muted)">' + (it.loja || '') + (it.transportadora ? ' · ' + it.transportadora : '') + '</div></div>' +
+            (it.trackingNumber ? '<span style="font-size:11px;color:var(--lc-muted);font-family:monospace">' + it.trackingNumber + '</span>' : '') +
+          '</div>';
+        });
+      });
+      cont.innerHTML = html;
+    } catch (e) {
+      cont.innerHTML = '<div style="background:var(--lc-danger-soft);border:1px solid var(--lc-danger);color:var(--lc-danger);padding:12px;border-radius:8px">' + e.message + '</div>';
+    }
+  }
+
+  // v33k.401: cicla a ordenação recentes → antigos → sku → recentes...
+  function expToggleOrdem() {
+    _expOrdem = _expOrdem === 'recentes' ? 'antigos' : (_expOrdem === 'antigos' ? 'sku' : 'recentes');
+    _expAtualizarBotoesFiltro();
+    expCarregarLista();
+  }
+  // v33k.401: liga/desliga o filtro "só atrasados" (prazo de envio vencido).
+  function expToggleAtrasados() {
+    _expSoAtrasados = !_expSoAtrasados;
+    _expAtualizarBotoesFiltro();
+    expCarregarLista();
+  }
+  // atualiza o visual dos botões de ordem/atrasados conforme o estado atual.
+  function _expAtualizarBotoesFiltro() {
+    const bo = document.getElementById('expBtnOrdem');
+    if (bo) {
+      const lbl = _expOrdem === 'recentes' ? '↕ Mais recentes' : (_expOrdem === 'antigos' ? '↕ Mais urgentes' : '↕ Por SKU');
+      bo.textContent = lbl;
+      bo.classList.toggle('lc-btn--primary', _expOrdem === 'sku');
+      bo.classList.toggle('lc-btn--ghost', _expOrdem !== 'sku');
+    }
+    const ba = document.getElementById('expBtnAtrasados');
+    if (ba) {
+      ba.classList.toggle('lc-btn--primary', _expSoAtrasados);
+      ba.classList.toggle('lc-btn--ghost', !_expSoAtrasados);
+    }
+  }
+
+  // ordena um conjunto de order_sn pela ordem EXIBIDA na tela (p/ o PDF em lote
+  // sair na mesma sequência da lista). Os que não estão na lista vão pro fim.
+  function expOrdenarPelaTela(sns) {
+    const pos = {};
+    _expOrdemExibida.forEach((sn, i) => { pos[sn] = i; });
+    return [...sns].sort((a, b) => (pos[a] ?? 1e9) - (pos[b] ?? 1e9));
+  }
+
   async function expAcaoMassa() {
     const n = _expSel.size;
     if (!n) return;
-    const sns = [..._expSel];
+    const sns = expOrdenarPelaTela([..._expSel]);
     // ETAPA 1 (Emitir NF): ainda manual/leitura — a emissão automática entra depois.
     if (_expEtapaSel === 1) {
       showToast('A emissão de NF será integrada em breve. Por enquanto, emita no seu emissor e a Shopee atualiza o status aqui. ' + n + ' pedido(s) aguardando.');
@@ -48250,11 +48385,12 @@ ${JSON.stringify(metricas, null, 2)}`
       return;
     }
     // ETAPA 3: gerar etiqueta (create → download → PDF 10x15). Ação REAL.
+    // sns já vem na ORDEM DA TELA → o PDF sai nessa sequência.
     if (_expEtapaSel === 3) {
       expAvancar(sns, 'gerar_etiqueta');
       return;
     }
-    // ETAPA 4 (Impressos): reimprime as etiquetas dos selecionados.
+    // ETAPA 4 (Impressos): reimprime as etiquetas dos selecionados (ordem da tela).
     if (_expEtapaSel === 4) {
       expAvancar(sns, 'gerar_etiqueta');
       return;
@@ -49089,6 +49225,10 @@ ${JSON.stringify(metricas, null, 2)}`
   window.expAcaoMassa = expAcaoMassa;
   window.expSemear = expSemear;
   window.expMarcarImpresso = expMarcarImpresso;
+  window.expToggleOrdem = expToggleOrdem;
+  window.expToggleAtrasados = expToggleAtrasados;
+  window.expAbrirHistorico = expAbrirHistorico;
+  window.expHistCarregar = expHistCarregar;
   window.pedSetPeriodo = pedSetPeriodo;
   window.pedAplicar = pedAplicar;
   window.pedAbrirModal = pedAbrirModal;
