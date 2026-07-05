@@ -40170,7 +40170,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.395-fluxo-simples-etiqueta-sem-dace';
+  const _DIAG_VERSAO_PAINEL = 'v33k.396-orfaos-legados-programando';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47944,16 +47944,26 @@ ${JSON.stringify(metricas, null, 2)}`
     const etapa = _expDados.etapas[_expEtapaSel] || { estados: [] };
     const rotulos = _expDados.rotulos || {};
     const cont3 = _expDados.contagens || {};
-    let html = '<span style="font-size:12px;color:var(--lc-muted);font-weight:600;margin-right:2px">Status:</span>';
+    // v33k.395: FUNDE estados que compartilham o mesmo rótulo (ex.: 'programando'
+    // + legados 'obtendo_rastreio'/'erro_rastreio'/'falha_programacao' → todos
+    // "Programando"). Um chip só, contagem somada, clique seleciona o 1º estado.
+    const grupos = [];       // { rotulo, estados:[], n, principal }
+    const porRotulo = {};
     (etapa.estados || []).forEach(e => {
-      const n = cont3[e] || 0;
-      const ativo = e === _expEstadoSel;
-      // sub-status de falha/processo internos: só mostra se houver pedidos (não polui)
-      const ehProcesso = /emitindo|subindo|programando|gerando|falha|erro|pre_envio/.test(e);
-      if (ehProcesso && !n && !ativo) return;
-      html += '<button onclick="expSelEstado(\'' + e + '\')" style="font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer;font-weight:600;border:1.5px solid ' +
+      const rot = rotulos[e] || e;
+      if (!porRotulo[rot]) { const g = { rotulo: rot, estados: [], n: 0, principal: e }; porRotulo[rot] = g; grupos.push(g); }
+      porRotulo[rot].estados.push(e);
+      porRotulo[rot].n += (cont3[e] || 0);
+    });
+    let html = '<span style="font-size:12px;color:var(--lc-muted);font-weight:600;margin-right:2px">Status:</span>';
+    grupos.forEach(g => {
+      const ativo = g.estados.includes(_expEstadoSel);
+      // sub-status de processo/erro: só mostra se houver pedidos (não polui)
+      const ehProcesso = /emitindo|subindo|programando|gerando|falha|erro|pre_envio|rastreio/.test(g.principal);
+      if (ehProcesso && !g.n && !ativo) return;
+      html += '<button onclick="expSelEstado(\'' + g.principal + '\')" style="font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer;font-weight:600;border:1.5px solid ' +
         (ativo ? 'var(--lc-primary)' : 'var(--lc-border-2)') + ';background:' + (ativo ? 'var(--lc-primary)' : 'var(--lc-surface)') + ';color:' + (ativo ? '#fff' : 'var(--lc-ink-2)') + '">' +
-        (rotulos[e] || e) + ' <span style="opacity:.75">(' + n + ')</span></button>';
+        g.rotulo + ' <span style="opacity:.75">(' + g.n + ')</span></button>';
     });
     cont.innerHTML = html;
   }
@@ -48063,15 +48073,19 @@ ${JSON.stringify(metricas, null, 2)}`
     // sub-status de ERRO: mostra a mensagem + botão "tentar novamente"
     const estadosErro = ['falha_emissao','falha_subir','etiqueta_falhada'];
     const ehErro = estadosErro.includes(p.estado);
+    // 'programando' + legados (obtendo_rastreio/erro_rastreio/falha_programacao) são
+    // "em processamento". Os legados sempre carregam erro (falharam numa versão antiga).
+    const estadosLegadosProg = ['obtendo_rastreio', 'erro_rastreio', 'falha_programacao'];
+    const ehProgramando = (p.estado === 'programando' || estadosLegadosProg.includes(p.estado));
     const estadosProcesso = ['emitindo','subindo','programando','gerando_etiqueta'];
-    const ehProcesso = estadosProcesso.includes(p.estado);
+    const ehProcesso = estadosProcesso.includes(p.estado) || estadosLegadosProg.includes(p.estado);
 
     // botão individual de AÇÃO conforme etapa/estado
     let btnAcao = '';
     const btnStyle = 'font-size:12px;font-weight:600;padding:5px 10px;border-radius:8px;border:1px solid var(--lc-primary);background:var(--lc-primary-softer);color:var(--lc-primary-text);cursor:pointer;white-space:nowrap';
     const btnRetry = 'font-size:12px;font-weight:600;padding:5px 10px;border-radius:8px;border:1px solid var(--lc-warning,#d97706);background:var(--lc-warning-soft,#fef3c7);color:var(--lc-warning,#b45309);cursor:pointer;white-space:nowrap';
-    // "programando" travado com aviso (erro) → oferece tentar de novo
-    const programandoComErro = (p.estado === 'programando' && p.erro);
+    // "programando" travado com aviso (erro) OU um estado legado → tentar de novo
+    const programandoComErro = (ehProgramando && (p.erro || estadosLegadosProg.includes(p.estado)));
     if (_expEtapaSel === 2) {
       if (p.estado === 'para_programar') btnAcao = '<button onclick="expAvancarUm(\'' + p.orderSn + '\',\'programar\')" style="' + btnStyle + '">Programar envio</button>';
       else if (programandoComErro) btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'programar\')" style="' + btnRetry + '">↻ Tentar de novo</button>';
@@ -48104,7 +48118,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const spinner = ehProcesso ? '<span style="display:inline-block;width:8px;height:8px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;margin-right:5px;vertical-align:middle"></span>' : '';
 
     // linha de erro (mensagem) quando aplicável
-    // linha de aviso (mensagem) quando há erro/aviso — inclui 'programando' travado
+    // linha de aviso (mensagem) quando há erro/aviso — inclui 'programando'/legados
     const linhaErro = ((ehErro || programandoComErro) && p.erro)
       ? '<div style="margin-top:5px;font-size:11.5px;color:var(--lc-danger);background:var(--lc-danger-soft);padding:4px 8px;border-radius:6px;line-height:1.35">⚠ ' + p.erro + '</div>'
       : '';
