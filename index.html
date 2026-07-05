@@ -1944,7 +1944,10 @@
     background:#fff; border:1px solid var(--lc-border,#e5e7eb);
     border-radius:18px; box-shadow:0 1px 3px rgba(16,24,40,.08),0 1px 2px rgba(16,24,40,.04);
     padding:18px 22px; display:grid;
-    grid-template-columns:auto 1fr auto auto minmax(200px,auto);
+    /* colunas de largura FIXA (exceto as barras, que absorvem o resto) pra que */
+    /* TODOS os cards fiquem alinhados igual — monitor, carrinho e bloco de texto */
+    /* sempre na mesma posição, independente do tamanho do texto. */
+    grid-template-columns:74px 1fr 58px 1px 340px;
     align-items:center; gap:20px; position:relative; overflow:hidden;
     transition:border-color .3s, box-shadow .3s;
   }
@@ -1989,8 +1992,8 @@
   .lc-auto-cart .lc-ck{opacity:0; transform:scale(.6); transform-origin:center; transition:opacity .3s,transform .3s}
   .lc-auto-card.is-on .lc-auto-cart .lc-ck{opacity:1; transform:scale(1)}
   /* controle */
-  .lc-auto-div{width:1px; align-self:stretch; background:var(--lc-border,#e5e7eb); margin:0 4px}
-  .lc-auto-ctl{display:flex; flex-direction:column; gap:8px; min-width:190px}
+  .lc-auto-div{width:1px; align-self:stretch; background:var(--lc-border,#e5e7eb); margin:0}
+  .lc-auto-ctl{display:flex; flex-direction:column; gap:8px; min-width:0}
   .lc-auto-ctl .lc-auto-title{font-size:14px; font-weight:800; line-height:1.3; color:var(--azul,#111827)}
   .lc-auto-ctl .lc-auto-desc{font-size:12px; color:var(--cinza-texto,#6b7280); line-height:1.4}
   .lc-auto-ctl .lc-auto-meta{font-size:11px; color:#4f46e5; margin-top:1px}
@@ -34058,7 +34061,54 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (badge) badge.textContent = novoTotal + ' un. no estoque';
     }
     if (typeof renderEstoqueStats === 'function') renderEstoqueStats();
+    // v33k.383: ESTOQUE EM TEMPO REAL. Ao mudar o estoque de uma variação, o
+    // novo valor é enviado na hora aos anúncios vinculados (Shopee + ML), com
+    // debounce por SKU (agrupa dígitos digitados em sequência). O envio reusa o
+    // mesmo endpoint do botão "replicar" — cirúrgico por SKU, escopado só aos
+    // anúncios daquele SKU (nunca a loja inteira). O cron continua como rede de
+    // segurança (reconciliação diária).
+    _agendarPushEstoqueTempoReal(v.sku, v.estoque);
   }
+
+  // ── PUSH DE ESTOQUE EM TEMPO REAL (v33k.383) ─────────────────────────
+  // debounce por SKU: espera parar de digitar antes de enviar (evita 1 request
+  // por dígito). O último valor por SKU vence. Silencioso no meio; toast só no
+  // resultado final.
+  const _pushEstoqueTimers = {};   // sku → timeout
+  const _pushEstoqueUltimo = {};   // sku → último estoque digitado
+  function _agendarPushEstoqueTempoReal(sku, estoque) {
+    sku = String(sku || '').trim();
+    if (!sku) return; // sem SKU não há como casar com anúncios
+    _pushEstoqueUltimo[sku] = Math.max(0, parseInt(estoque) || 0);
+    if (_pushEstoqueTimers[sku]) clearTimeout(_pushEstoqueTimers[sku]);
+    _pushEstoqueTimers[sku] = setTimeout(() => {
+      delete _pushEstoqueTimers[sku];
+      _enviarEstoqueTempoReal(sku, _pushEstoqueUltimo[sku]);
+    }, 1200);
+  }
+  async function _enviarEstoqueTempoReal(sku, estoque) {
+    try {
+      const anuncios = (typeof _anunciosPorSku === 'function') ? _anunciosPorSku(sku) : [];
+      if (!anuncios.length) return; // SKU sem anúncio vinculado: nada a enviar (silencioso)
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ sku, estoque, anuncios }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      const d = (data && data.dados) || {};
+      if (data && data.ok) {
+        showToast('✓ Estoque enviado (' + (d.sucesso || anuncios.length) + ' anúncio' + ((d.sucesso||anuncios.length) === 1 ? '' : 's') + ')');
+      } else {
+        const falhas = (d.resultados || []).filter(r => !r.ok);
+        const detalhe = falhas.slice(0, 2).map(f => f.erro).join(' | ');
+        showToast('⚠ Estoque: ' + (d.sucesso||0) + ' ok, ' + (d.falhas||falhas.length||'?') + ' falha(s)' + (detalhe ? ' — ' + detalhe : ''), true);
+      }
+    } catch (e) {
+      showToast('⚠ Não consegui enviar o estoque agora: ' + e.message, true);
+    }
+  }
+  window._agendarPushEstoqueTempoReal = _agendarPushEstoqueTempoReal;
 
   // Encontra TODOS os anúncios vinculados que compartilham um mesmo SKU,
   // em todos os produtos e todas as lojas. Retorna [{lojaId, anuncioId, loja, marketplace}].
@@ -40003,7 +40053,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.382-automacoes-cards-animados';
+  const _DIAG_VERSAO_PAINEL = 'v33k.383-estoque-tempo-real';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
