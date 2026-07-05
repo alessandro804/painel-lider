@@ -40173,7 +40173,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.401-etiqueta-pb-filtros-sku-atrasados-logs';
+  const _DIAG_VERSAO_PAINEL = 'v33k.402-paginacao-foto-titulo-variacao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47831,6 +47831,8 @@ ${JSON.stringify(metricas, null, 2)}`
   let _expSoAtrasados = false;          // v33k.401: filtro só-atrasados (prazo vencido)
   let _expSkuFiltro = '';               // v33k.401: filtro por SKU exato (chip)
   let _expOrdemExibida = [];            // v33k.401: order_sn na ordem da tela (p/ PDF em lote)
+  let _expPagina = 1;                   // v33k.402: página atual (300 por página)
+  let _expTotalPaginas = 1;             // v33k.402: total de páginas no filtro atual
 
   const EXP_ETAPA_ICONE = {
     1: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>',
@@ -47933,6 +47935,7 @@ ${JSON.stringify(metricas, null, 2)}`
     _expEtapaSel = et;
     _expEstadoSel = (_expDados && _expDados.etapas[et] && (_expDados.etapas[et].estados || [])[0]) || null;
     _expSel.clear();
+    _expPagina = 1;                      // v33k.402: troca de etapa → página 1
     // seletor de rodapé (SKU/variação) aparece em TODAS as etapas que imprimem
     // etiqueta: 3 (Imprimir), 4 (Atendidos/Reimprimir) e 8 (Devolvidos).
     const rod = document.getElementById('expRodapeSel');
@@ -47978,6 +47981,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function expSelEstado(e) {
     _expEstadoSel = e;
     _expSel.clear();
+    _expPagina = 1;                      // v33k.402: troca de chip → página 1
     expRenderChips(); expCarregarLista();
   }
 
@@ -48026,7 +48030,7 @@ ${JSON.stringify(metricas, null, 2)}`
       // v33k.390: passa o texto do campo de busca (pedido/SKU/produto) pra filtrar.
       const buscaEl = document.getElementById('pedBusca');
       const q = (buscaEl && buscaEl.value || '').trim();
-      const paramsObj = { lojaIds: lojas.join(','), estado: _expEstadoSel, limit: '400', ordem: _expOrdem };
+      const paramsObj = { lojaIds: lojas.join(','), estado: _expEstadoSel, limit: '300', pagina: String(_expPagina), ordem: _expOrdem };
       if (q) paramsObj.q = q;
       if (_expSoAtrasados) paramsObj.atrasados = '1';
       if (_expSkuFiltro) paramsObj.sku = _expSkuFiltro;
@@ -48035,6 +48039,9 @@ ${JSON.stringify(metricas, null, 2)}`
       const data = await resp.json();
       if (!data.ok) throw new Error(data.erro || 'Falha');
       const peds = data.pedidos || [];
+      // v33k.402: dados de paginação
+      _expTotalPaginas = data.totalPaginas || 1;
+      const totalGeral = data.totalGeral || peds.length;
       // v33k.401: guarda a ORDEM EXIBIDA (order_sn na sequência da tela) pra que a
       // geração de etiquetas em lote saia no PDF exatamente nessa ordem.
       _expOrdemExibida = peds.map(p => p.orderSn);
@@ -48044,11 +48051,14 @@ ${JSON.stringify(metricas, null, 2)}`
       const selAll = document.getElementById('expSelAll');
       if (selAll) selAll.checked = peds.length > 0 && peds.every(p => _expSel.has(p.orderSn));
       if (!peds.length) {
-        lista.innerHTML = '<div style="text-align:center;padding:40px;color:var(--lc-muted)">Nenhum pedido neste status.<br><span style="font-size:12px">Se a fila estiver vazia, clique em <b>Sincronizar fila</b> para carregar os pedidos pendentes atuais.</span></div>';
+        const msgVazia = _expPagina > 1
+          ? 'Nenhum pedido nesta página.<br><span style="font-size:12px">Volte para a página anterior.</span>'
+          : 'Nenhum pedido neste status.<br><span style="font-size:12px">Se a fila estiver vazia, clique em <b>Sincronizar fila</b> para carregar os pedidos pendentes atuais.</span>';
+        lista.innerHTML = '<div style="text-align:center;padding:40px;color:var(--lc-muted)">' + msgVazia + '</div>';
         expAtualizaSelInfo();
         return;
       }
-      lista.innerHTML = peds.map(p => expCardHtml(p)).join('');
+      lista.innerHTML = peds.map(p => expCardHtml(p)).join('') + _expPaginacaoHtml(totalGeral);
       if (typeof animarCascata === 'function') animarCascata(lista);
       expAtualizaSelInfo();
     } catch (e) {
@@ -48164,11 +48174,27 @@ ${JSON.stringify(metricas, null, 2)}`
       : '';
     const acoesHtml = ehCancelado ? '' : (btnAcao + btnImpresso);
 
+    // v33k.402: thumbnail da FOTO do produto (vem no próprio pedido, sem chamada extra)
+    const fotoHtml = p.foto
+      ? '<img src="' + p.foto + '" loading="lazy" style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid var(--lc-border)" onerror="this.style.display=\'none\'">'
+      : '<div style="width:44px;height:44px;border-radius:8px;flex-shrink:0;background:var(--lc-surface-2);display:flex;align-items:center;justify-content:center;color:var(--lc-muted);font-size:18px">📦</div>';
+    // v33k.402: linha do produto — título + variação vendida (+ "e mais N" se multi-item)
+    const maisItens = (p.qtdItens && p.qtdItens > 1) ? ' <span style="color:var(--lc-muted-2)">+' + (p.qtdItens - 1) + ' item(ns)</span>' : '';
+    const linhaProduto = (p.produto || p.variacao)
+      ? '<div style="font-size:12px;color:var(--lc-ink-2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+          (p.produto ? p.produto : '') +
+          (p.variacao ? ' <span style="color:var(--lc-primary);font-weight:600">· ' + p.variacao + '</span>' : '') +
+          maisItens +
+        '</div>'
+      : '';
+
     return '<div style="background:var(--lc-surface);border:1px solid ' + (sel ? 'var(--lc-primary)' : (ehErro ? 'var(--lc-danger)' : 'var(--lc-border)')) + ';border-radius:var(--lc-radius);padding:11px 14px">' +
       '<div style="display:flex;align-items:center;gap:12px">' +
         checkboxHtml +
+        fotoHtml +
         '<div style="flex:1;min-width:0">' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-weight:700;color:var(--lc-ink);font-size:14px">' + p.orderSn + '</span>' + nfBadge + cpfBadge + atrasadoBadge + skuBadge + impBadge + '</div>' +
+          linhaProduto +
           '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:3px"><span style="font-size:12px;color:var(--lc-muted-2)">' + (p.loja || '') + '</span>' +
             (p.transportadora ? '<span style="font-size:12px;color:var(--lc-muted)">' + p.transportadora + '</span>' : '') + rastreio + prazo + impressoEmTxt + '</div>' +
         '</div>' +
@@ -48330,15 +48356,43 @@ ${JSON.stringify(metricas, null, 2)}`
     }
   }
 
+  // v33k.402: HTML da barra de paginação (aparece só se houver mais de 1 página).
+  function _expPaginacaoHtml(totalGeral) {
+    if (_expTotalPaginas <= 1) {
+      return '<div style="text-align:center;padding:8px;font-size:12px;color:var(--lc-muted)">' + totalGeral + ' pedido(s)</div>';
+    }
+    const ini = (_expPagina - 1) * 300 + 1;
+    const fim = Math.min(_expPagina * 300, totalGeral);
+    const btn = (txt, pag, hab) => hab
+      ? '<button onclick="expIrPagina(' + pag + ')" style="padding:6px 12px;border:1px solid var(--lc-border-2);background:var(--lc-surface);color:var(--lc-ink-2);border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">' + txt + '</button>'
+      : '<button disabled style="padding:6px 12px;border:1px solid var(--lc-border);background:var(--lc-surface-2);color:var(--lc-muted);border-radius:8px;font-size:13px">' + txt + '</button>';
+    return '<div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:16px 8px 4px;flex-wrap:wrap">' +
+      btn('← Anterior', _expPagina - 1, _expPagina > 1) +
+      '<span style="font-size:13px;color:var(--lc-muted-2)">Página <b style="color:var(--lc-ink-2)">' + _expPagina + '</b> de ' + _expTotalPaginas + ' · ' + ini + '–' + fim + ' de ' + totalGeral + '</span>' +
+      btn('Próxima →', _expPagina + 1, _expPagina < _expTotalPaginas) +
+    '</div>';
+  }
+  // vai pra uma página específica (limpa seleção, pois muda o conjunto visível).
+  function expIrPagina(pag) {
+    _expPagina = Math.max(1, Math.min(_expTotalPaginas, pag));
+    _expSel.clear();
+    expCarregarLista();
+    // rola pro topo da lista pra facilitar a leitura da nova página
+    const lista = document.getElementById('expLista');
+    if (lista && lista.scrollIntoView) lista.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   // v33k.401: cicla a ordenação recentes → antigos → sku → recentes...
   function expToggleOrdem() {
     _expOrdem = _expOrdem === 'recentes' ? 'antigos' : (_expOrdem === 'antigos' ? 'sku' : 'recentes');
+    _expPagina = 1;                      // v33k.402: muda ordem → volta pra página 1
     _expAtualizarBotoesFiltro();
     expCarregarLista();
   }
   // v33k.401: liga/desliga o filtro "só atrasados" (prazo de envio vencido).
   function expToggleAtrasados() {
     _expSoAtrasados = !_expSoAtrasados;
+    _expPagina = 1;                      // v33k.402: muda filtro → volta pra página 1
     _expAtualizarBotoesFiltro();
     expCarregarLista();
   }
@@ -49229,6 +49283,7 @@ ${JSON.stringify(metricas, null, 2)}`
   window.expToggleAtrasados = expToggleAtrasados;
   window.expAbrirHistorico = expAbrirHistorico;
   window.expHistCarregar = expHistCarregar;
+  window.expIrPagina = expIrPagina;
   window.pedSetPeriodo = pedSetPeriodo;
   window.pedAplicar = pedAplicar;
   window.pedAbrirModal = pedAbrirModal;
