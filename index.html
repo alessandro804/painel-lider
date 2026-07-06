@@ -2016,6 +2016,15 @@
   .settings-help { font-size: 11px; color: var(--cinza-texto); margin-top: 4px; }
 
   /* ============ CARD DE AUTOMAÇÃO (v33k.382) ============ */
+  /* rótulos de grupo na lista de automações (operação vs administrativas) */
+  .auto-grupo-lbl { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:800; color:var(--lc-ink-2,#374151); text-transform:uppercase; letter-spacing:.4px; margin:18px 0 12px; }
+  .auto-grupo-lbl:first-child { margin-top:4px; }
+  .auto-grupo-lbl .lc-ic { font-size:16px; color:var(--lc-primary,#4f46e5); }
+  .auto-grupo-lbl--adm { margin-top:26px; padding-top:18px; border-top:1px dashed var(--lc-border,#e5e7eb); }
+  .auto-grupo-lbl--adm .lc-ic { color:#7c3aed; }
+  .auto-grupo-tag { font-size:10px; font-weight:800; color:#fff; background:#7c3aed; padding:2px 8px; border-radius:20px; letter-spacing:.3px; }
+  .auto-grupo-desc { font-size:12.5px; color:var(--lc-muted,#6b7280); line-height:1.45; margin:-4px 0 14px; max-width:640px; }
+
   /* Reutilizável nas Configurações e no topo de cada página. Ativado = barras   */
   /* de equalização oscilam + logo colorida + conexão verde. Desativado = repouso.*/
   .lc-auto-card{
@@ -5283,7 +5292,9 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   .auto-tab { background:none; border:none; padding:9px 14px; font-size:13.5px; font-weight:700; color:var(--lc-muted,#6b7280); cursor:pointer; border-bottom:3px solid transparent; margin-bottom:-1px; }
   .auto-tab.ativa { color:var(--lc-primary,#4f46e5); border-bottom-color:var(--lc-primary,#4f46e5); }
 
-  .auto-modal-subbar { padding: 12px 20px; border-bottom:1px solid var(--lc-border,#e5e7eb); }
+  .auto-modal-subbar { padding: 12px 20px; border-bottom:1px solid var(--lc-border,#e5e7eb); display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .auto-modal-subbar select { padding:7px 11px; border:1px solid var(--lc-border,#e5e7eb); border-radius:8px; font-size:12.5px; background:var(--lc-surface,#fff); color:var(--lc-ink,#111827); font-family:inherit; cursor:pointer; }
+  .auto-modal-subbar select:focus { outline:none; border-color:var(--lc-primary,#4f46e5); }
   .auto-modal-subbar select { padding:8px 12px; border:1px solid var(--lc-border,#e5e7eb); border-radius:9px; font-size:13px; background:var(--lc-surface,#fff); color:var(--lc-ink,#111827); font-family:inherit; }
 
   .auto-modal-body { padding: 18px 20px; overflow-y:auto; flex:1; }
@@ -40488,7 +40499,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.411-historico-detalhe-por-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.412-crons-agencia-filtro-loja-historico';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -50866,7 +50877,22 @@ ${JSON.stringify(metricas, null, 2)}`
       lista.innerHTML = '<div class="empty-state-v2"><div class="empty-icon-v2"></div><div class="empty-title-v2">Nenhuma automação disponível</div></div>';
       return;
     }
-    lista.innerHTML = _automacoesCache.map(a => lcMontarCardAutomacao(a)).join('');
+    // separa administrativas (escopoAgencia) das de operação. Se houver
+    // administrativas (só agência recebe), mostra em grupos rotulados.
+    const admin = _automacoesCache.filter(a => a.escopoAgencia);
+    const oper = _automacoesCache.filter(a => !a.escopoAgencia);
+    if (admin.length) {
+      let html = '';
+      html += '<div class="auto-grupo-lbl"><span class="lc-ic" data-lucide="briefcase"></span> Operação nos marketplaces</div>';
+      html += oper.map(a => lcMontarCardAutomacao(a)).join('');
+      html += '<div class="auto-grupo-lbl auto-grupo-lbl--adm"><span class="lc-ic" data-lucide="shield"></span> Automações administrativas <span class="auto-grupo-tag">Agência</span></div>';
+      html += '<div class="auto-grupo-desc">Avisos e rotinas de gestão (WhatsApp, pedidos atrasados, banimentos, NF, cobrança). Rodam para todas as contas que você administra.</div>';
+      html += admin.map(a => lcMontarCardAutomacao(a)).join('');
+      lista.innerHTML = html;
+    } else {
+      lista.innerHTML = _automacoesCache.map(a => lcMontarCardAutomacao(a)).join('');
+    }
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(lista); } catch (e) {} }
   }
 
   // ── CARD DE AUTOMAÇÃO (v33k.382) ─────────────────────────────────────
@@ -51599,6 +51625,9 @@ ${JSON.stringify(metricas, null, 2)}`
             '<option value="30" selected>Últimos 30 dias</option>' +
             '<option value="90">Últimos 90 dias</option>' +
           '</select>' +
+          '<select id="autoHistLoja" onchange="autoHistCarregar()" title="Filtrar por loja">' +
+            '<option value="">Todas as lojas</option>' +
+          '</select>' +
         '</div>' +
         '<div class="auto-modal-body" id="autoHistBody">' +
           '<div class="auto-loading"><span class="lc-ic lc-spin" data-lucide="loader"></span> Carregando…</div>' +
@@ -51606,9 +51635,29 @@ ${JSON.stringify(metricas, null, 2)}`
       '</div>';
     ov.classList.add('active');
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(ov); } catch (e) {} }
+    autoHistPopularLojas();
     autoHistCarregar();
   }
   window.abrirHistoricoAutomacao = abrirHistoricoAutomacao;
+
+  // popula o seletor de lojas do histórico (Shopee para relâmpago, todas p/ resto)
+  async function autoHistPopularLojas() {
+    const sel = document.getElementById('autoHistLoja');
+    if (!sel) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: hLucroAuth() }).then(x => x.json());
+      let lojas = (r.ok && Array.isArray(r.lojas)) ? r.lojas : [];
+      // relâmpago é só Shopee
+      if (_autoModalTipo === 'motor_relampago_auto' || _autoModalTipo === 'gerar_flash_sale') {
+        lojas = lojas.filter(l => String(l.marketplace || '').toLowerCase().includes('shopee'));
+      }
+      const atual = sel.value;
+      sel.innerHTML = '<option value="">Todas as lojas</option>' +
+        lojas.map(l => '<option value="' + l.id + '">' + escapeHtml(l.nome) + '</option>').join('');
+      if (atual) sel.value = atual;
+    } catch (e) { /* mantém só "Todas as lojas" */ }
+  }
+  window.autoHistPopularLojas = autoHistPopularLojas;
 
   async function autoHistCarregar() {
     const body = document.getElementById('autoHistBody');
@@ -51719,6 +51768,14 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // monta o detalhe por loja de uma execução (problemas destacados no topo)
   function _autoHistDetalheLojasHtml(lojas) {
+    // filtro de loja ativo? mostra só ela (casa pelo nome selecionado)
+    const sel = document.getElementById('autoHistLoja');
+    const lojaFiltro = sel ? sel.value : '';
+    let listaLojas = lojas;
+    if (lojaFiltro && sel.selectedOptions[0]) {
+      const nomeSel = sel.selectedOptions[0].textContent;
+      listaLojas = lojas.filter(l => (l.loja || '') === nomeSel);
+    }
     // status legível + cor
     const mapa = {
       criada: { txt: 'Oferta criada', cls: 'ok', ic: 'check-circle' },
@@ -51729,7 +51786,7 @@ ${JSON.stringify(metricas, null, 2)}`
       'rodaria (dryRun)': { txt: 'Rodaria (simulação)', cls: 'neutro', ic: 'flask-conical' },
     };
     // ordena: problemas primeiro
-    const ordenadas = lojas.slice().sort((a, b) => {
+    const ordenadas = listaLojas.slice().sort((a, b) => {
       const ap = (a.status === 'falha' || a.status === 'erro' || a.status === 'sem-credencial') ? 0 : 1;
       const bp = (b.status === 'falha' || b.status === 'erro' || b.status === 'sem-credencial') ? 0 : 1;
       return ap - bp;
@@ -51799,6 +51856,13 @@ ${JSON.stringify(metricas, null, 2)}`
       const r = await fetch(backend + '/api/ads/motor/historico-detalhado?dias=' + dias, { headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') } }).then(x => x.json());
       if (!r.ok) throw new Error(r.erro || 'falha');
       const dias_ = r.dias || [];
+      // filtro por loja (client-side): mostra só a loja escolhida
+      const lojaFiltro = (document.getElementById('autoHistLoja') || {}).value || '';
+      if (lojaFiltro) {
+        dias_.forEach(g => {
+          if (g.lojas) g.lojas = g.lojas.filter(l => String(l.lojaId) === String(lojaFiltro));
+        });
+      }
       if (!dias_.length) {
         body.innerHTML = '<div class="auto-empty"><span class="lc-ic" data-lucide="calendar-off"></span>' +
           '<div>Nenhuma otimização registrada ainda</div>' +
@@ -51808,6 +51872,8 @@ ${JSON.stringify(metricas, null, 2)}`
       }
       let html = '';
       for (const g of dias_) {
+        // com filtro de loja ativo, pula dias que ficaram sem nenhuma loja
+        if (lojaFiltro && !g.semAlteracao && (!g.lojas || !g.lojas.length)) continue;
         const dLabel = _autoFmtDia(g.dia);
         // cabeçalho do dia
         let selo;
