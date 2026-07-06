@@ -5548,6 +5548,23 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   .auto-hist-execs:not(.oculto) { margin-top:6px; }
   .auto-hist-st.interrompido { color:#92400e; background:#fef3c7; }
   .auto-hist-dot.interrompido { background:#d97706; }
+  /* botão "Ver detalhes" na linha de execução + detalhe por loja */
+  .auto-hist-det-btn { display:inline-flex; align-items:center; gap:4px; background:none; border:none; color:var(--lc-primary,#4f46e5); font-size:11px; font-weight:700; cursor:pointer; padding:2px 0 2px 8px; margin-left:auto; white-space:nowrap; }
+  .auto-hist-det-btn .lc-ic { font-size:13px; }
+  .auto-hist-exec-det { margin:2px 0 8px; padding:8px 10px; background:var(--lc-surface-2,#f8fafc); border:1px solid var(--lc-border,#e5e7eb); border-radius:9px; display:flex; flex-direction:column; gap:6px; }
+  .auto-hist-exec-det.oculto { display:none; }
+  .auto-hist-det-loja { display:flex; align-items:flex-start; gap:8px; padding:6px 8px; background:var(--lc-surface,#fff); border-radius:7px; border-left:3px solid var(--lc-border,#e5e7eb); }
+  .auto-hist-det-loja.ok { border-left-color:#16a34a; }
+  .auto-hist-det-loja.erro { border-left-color:#dc2626; background:#fef2f2; }
+  .auto-hist-det-loja.neutro { border-left-color:#94a3b8; }
+  .auto-hist-det-loja > .lc-ic { font-size:15px; flex-shrink:0; margin-top:1px; }
+  .auto-hist-det-loja.ok > .lc-ic { color:#16a34a; }
+  .auto-hist-det-loja.erro > .lc-ic { color:#dc2626; }
+  .auto-hist-det-loja.neutro > .lc-ic { color:#64748b; }
+  .auto-hist-det-loja-txt { flex:1; min-width:0; }
+  .auto-hist-det-loja-nome { font-size:12.5px; font-weight:700; color:var(--lc-ink,#111827); }
+  .auto-hist-det-loja-st { font-size:11.5px; color:var(--lc-muted,#6b7280); margin-top:1px; }
+  .auto-hist-det-loja-erro { font-size:11.5px; color:#b91c1c; margin-top:3px; background:#fee2e2; padding:4px 7px; border-radius:5px; line-height:1.4; }
 
   @media (max-width: 560px) {
     .auto-modal { max-width:100%; max-height:94vh; border-radius:14px; }
@@ -40471,7 +40488,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.410-historico-json-truncado-resolvido';
+  const _DIAG_VERSAO_PAINEL = 'v33k.411-historico-detalhe-por-loja';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -51682,14 +51699,80 @@ ${JSON.stringify(metricas, null, 2)}`
     else if (ex.status === 'interrompido') { stCls = 'interrompido'; stTxt = 'Interrompido'; }
     else if (ex.status === 'pulado') { stCls = 'pulado'; stTxt = 'Pulado'; }
     else { stCls = 'pulado'; stTxt = ex.status; }
-    return '<div class="auto-hist-exec">' +
+    // tem detalhe por loja pra mostrar?
+    const lojas = (ex.etapas && Array.isArray(ex.etapas.lojas)) ? ex.etapas.lojas : [];
+    const temDetalhe = lojas.length > 0;
+    const detId = 'execdet-' + (ex.id || Math.random().toString(36).slice(2));
+    let html = '<div class="auto-hist-exec">' +
       '<span class="auto-hist-dot ' + stCls + '"></span>' +
       '<span class="auto-hist-hora">' + hora + '</span>' +
       '<span class="auto-hist-st ' + stCls + '">' + stTxt + '</span>' +
       '<span class="auto-hist-dur">' + dur + '</span>' +
       (ex.resultado ? '<span class="auto-hist-res" title="' + escapeHtml(_autoTraduzirResultado(ex.resultado)) + '">' + escapeHtml(_autoResumo(_autoTraduzirResultado(ex.resultado))) + '</span>' : '') +
+      (temDetalhe ? '<button class="auto-hist-det-btn" onclick="autoHistToggleExecDet(\'' + detId + '\', this)"><span class="lc-ic" data-lucide="chevron-down"></span> Ver detalhes</button>' : '') +
     '</div>';
+    if (temDetalhe) {
+      html += '<div class="auto-hist-exec-det oculto" id="' + detId + '">' + _autoHistDetalheLojasHtml(lojas) + '</div>';
+    }
+    return html;
   }
+
+  // monta o detalhe por loja de uma execução (problemas destacados no topo)
+  function _autoHistDetalheLojasHtml(lojas) {
+    // status legível + cor
+    const mapa = {
+      criada: { txt: 'Oferta criada', cls: 'ok', ic: 'check-circle' },
+      coberta: { txt: 'Já tinha oferta ativa', cls: 'neutro', ic: 'shield-check' },
+      falha: { txt: 'Falhou', cls: 'erro', ic: 'x-circle' },
+      erro: { txt: 'Erro', cls: 'erro', ic: 'x-circle' },
+      'sem-credencial': { txt: 'Loja sem conexão ativa', cls: 'erro', ic: 'plug' },
+      'rodaria (dryRun)': { txt: 'Rodaria (simulação)', cls: 'neutro', ic: 'flask-conical' },
+    };
+    // ordena: problemas primeiro
+    const ordenadas = lojas.slice().sort((a, b) => {
+      const ap = (a.status === 'falha' || a.status === 'erro' || a.status === 'sem-credencial') ? 0 : 1;
+      const bp = (b.status === 'falha' || b.status === 'erro' || b.status === 'sem-credencial') ? 0 : 1;
+      return ap - bp;
+    });
+    let h = '';
+    ordenadas.forEach(l => {
+      const info = mapa[l.status] || { txt: l.status || '—', cls: 'neutro', ic: 'circle' };
+      let extra = '';
+      if (l.status === 'criada') {
+        const bits = [];
+        if (l.ofertas != null) bits.push(l.ofertas + (l.ofertas === 1 ? ' campanha' : ' campanhas'));
+        if (l.produtos != null) bits.push(l.produtos + (l.produtos === 1 ? ' produto' : ' produtos'));
+        if (bits.length) extra = ' · ' + bits.join(', ');
+      } else if (l.status === 'coberta' && l.agendadas != null) {
+        extra = ' · ' + l.agendadas + (l.agendadas === 1 ? ' agendada' : ' agendadas');
+      }
+      h += '<div class="auto-hist-det-loja ' + info.cls + '">' +
+        '<span class="lc-ic" data-lucide="' + info.ic + '"></span>' +
+        '<div class="auto-hist-det-loja-txt">' +
+          '<div class="auto-hist-det-loja-nome">' + escapeHtml(l.loja || 'Loja') + '</div>' +
+          '<div class="auto-hist-det-loja-st">' + escapeHtml(info.txt) + extra + '</div>' +
+          (l.erro ? '<div class="auto-hist-det-loja-erro">Motivo: ' + escapeHtml(l.erro) + '</div>' : '') +
+        '</div>' +
+      '</div>';
+    });
+    return h;
+  }
+
+  // expande/recolhe o detalhe de UMA execução
+  function autoHistToggleExecDet(id, btn) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const aberto = !el.classList.contains('oculto');
+    el.classList.toggle('oculto', aberto);
+    if (btn) {
+      const ic = btn.querySelector('.lc-ic');
+      btn.childNodes[btn.childNodes.length - 1].textContent = aberto ? ' Ver detalhes' : ' Ocultar detalhes';
+      if (ic) ic.setAttribute('data-lucide', aberto ? 'chevron-down' : 'chevron-up');
+      if (window.lcHydrateIcons) { try { window.lcHydrateIcons(btn); } catch (e) {} }
+    }
+    if (!aberto && window.lcHydrateIcons) { try { window.lcHydrateIcons(el); } catch (e) {} }
+  }
+  window.autoHistToggleExecDet = autoHistToggleExecDet;
 
   // expande/recolhe as execuções detalhadas de um dia
   function autoHistToggleDetalhe(dia, btn) {
