@@ -7585,6 +7585,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             <button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pedAbrirSincronizar()">Sincronizar vendas</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirPedidosAtrasados()" title="Acompanhe os pedidos com envio atrasado (Shopee + ML) e dispare o aviso aos clientes">Pedidos atrasados</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirDisputas()" title="Monitore devoluções e reembolsos (Shopee + ML); a IA recomenda contestar ou aceitar">Disputas / Devoluções</button>
+            <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirPedidosTikTok()" title="Pedidos das lojas TikTok Shop conectadas">🎵 Pedidos TikTok</button>
           </div>
           <div style="display:flex;gap:6px;align-items:center">
             <button class="ped-periodo-btn lc-btn lc-btn--primary lc-btn--sm" data-dias="7" onclick="pedSetPeriodo(7,this)">7 Dias</button>
@@ -7598,6 +7599,8 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         <div id="pedidosAtrasadosPanel" style="display:none;margin-bottom:14px"></div>
         <!-- Painel de Disputas / Devoluções — escondido até abrir -->
         <div id="disputasPanel" style="display:none;margin-bottom:14px"></div>
+        <!-- Painel de Pedidos TikTok — escondido até abrir -->
+        <div id="tiktokPedidosPanel" style="display:none;margin-bottom:14px"></div>
 
         <!-- ABA LISTA -->
         <div id="pedAbaLista">
@@ -15664,7 +15667,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   // Marketplaces que suportam vínculo de conta via OAuth
-  const MARKETPLACES_OAUTH = ['mercadolivre', 'shopee'];
+  const MARKETPLACES_OAUTH = ['mercadolivre', 'shopee', 'tiktok'];
   
   async function abrirInfoIntegracao(id) {
     const integ = CATALOGO_INTEGRACOES.find(i => i.id === id);
@@ -29939,45 +29942,43 @@ REGRAS DURAS:
     
     // === TIKTOK SHOP — formato Create Product (Products API) ===
     if (marketplace === 'tiktok') {
-      // SKUs do TikTok: cada variação tem sales_attributes, price, inventory
-      const skusTikTok = (p.variacoes||[]).map(v => ({
-        // sales_attributes: os atributos que definem a variação (cor, tamanho)
-        sales_attributes: montarAttrTikTok(v),
-        // preço por variação (TikTok trabalha por SKU)
-        price: {
-          amount: String(parseFloat(v.preco) || p.preco || 0),
-          currency: 'BRL'
-        },
-        inventory: [{ quantity: parseInt(v.estoque) || 0 }],
-        seller_sku: v.sku || ''
-      }));
-      
-      // Size chart: o TikTok aceita por imagem (gerada via ChatGPT) ou template
-      const sizeChart = {};
-      if (p.guiaTamanhos && p.guiaTamanhos.imagemUrl) {
-        // melhor caso: imagem do guia já gerada
-        sizeChart.image = { uri: p.guiaTamanhos.imagemUrl };
-      } else if (p.guiaTamanhos && p.guiaTamanhos.linhas) {
-        // alternativa: template em texto (TikTok aceita os 2)
-        sizeChart.template = {
-          colunas: p.guiaTamanhos.colunas,
-          linhas: p.guiaTamanhos.linhas
-        };
-      }
-      
+      // O adapter TikTok (backend) monta o payload TikTok a partir do produto
+      // NORMALIZADO — ele espera variacoes (cor/tamanho/sku/estoque/preco), fotos,
+      // nome, descricao, peso, guiaTamanhos. NÃO mandamos skus/main_images
+      // pré-montados aqui (o formato TikTok final é responsabilidade do adapter).
+      // Passamos os campos normalizados + os IDs específicos do TikTok já
+      // resolvidos (categoria, warehouse, marca, atributos) quando existirem.
+      const catTikTok = (categoriaMkt && typeof categoriaMkt === 'object')
+        ? (categoriaMkt.categoryId || categoriaMkt.id || null)
+        : categoriaMkt;
       return {
         marketplace: 'tiktok',
-        title: String(p.nome || '').slice(0, 60),
-        category_id: categoriaMkt,
-        description: p.descricao || '',
-        // TikTok exige imagens por URL
-        main_images: (p.fotos||[]).map(f => ({ uri: f })),
-        package_weight: { value: String(p.peso || 0), unit: 'KILOGRAM' },
-        skus: skusTikTok,
-        product_attributes: p.atributosTikTok || [],
-        size_chart: sizeChart,
-        seller_sku: p.skuPai || '',
-        _pendencias: pendenciasTikTok(p, categoriaMkt)
+        // núcleo normalizado (mesmas chaves do paraPainel do backend)
+        nome: p.nome || '',
+        descricao: p.descricao || '',
+        skuPai: p.skuPai || '',
+        ean: p.ean || '',
+        preco: parseFloat(p.preco) || 0,
+        peso: parseFloat(p.peso) || 0,
+        comprimento: p.comprimento != null ? Number(p.comprimento) : undefined,
+        largura: p.largura != null ? Number(p.largura) : undefined,
+        altura: p.altura != null ? Number(p.altura) : undefined,
+        fotos: (p.fotos || []).filter(Boolean),
+        cores: p.cores || [],
+        variacoes: (p.variacoes || []).map(v => ({
+          cor: v.cor || '', tamanho: v.tamanho || '',
+          sku: v.sku || '', estoque: parseInt(v.estoque, 10) || 0,
+          preco: (v.preco != null && v.preco !== '') ? parseFloat(v.preco) : undefined,
+          ean: v.ean || '',
+        })),
+        guiaTamanhos: p.guiaTamanhos || null,
+        // IDs específicos do TikTok (o adapter usa se presentes; senão resolve
+        // sozinho via Recommend Category / Get Warehouses).
+        categoryIdTiktok: catTikTok || p.categoryIdTiktok || null,
+        _tiktokWarehouseId: p._tiktokWarehouseId || null,
+        _tiktokBrandId: p._tiktokBrandId || null,
+        _tiktokAttributes: p.atributosTikTok || p._tiktokAttributes || null,
+        _pendencias: (typeof pendenciasTikTok === 'function') ? pendenciasTikTok(p, catTikTok) : [],
       };
     }
     
@@ -35340,6 +35341,133 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.abrirDisputas = abrirDisputas;
 
+  // ===== Pedidos TikTok Shop (v33k.429) =====
+  // Painel dedicado e isolado (não mexe no fluxo Shopee/ML de pedidos). Consome
+  // a rota nova /api/tiktok/loja/:lojaId/pedidos/buscar de cada loja TikTok
+  // conectada. Mostra status, cliente, valor e itens.
+  const _TT_STATUS_LABEL = {
+    UNPAID: { txt: 'Não pago', cor: '#6b7280', bg: '#f3f4f6' },
+    ON_HOLD: { txt: 'Em espera', cor: '#b45309', bg: '#fef3c7' },
+    AWAITING_SHIPMENT: { txt: 'A despachar', cor: '#1d4ed8', bg: '#dbeafe' },
+    PARTIALLY_SHIPPING: { txt: 'Parcial', cor: '#7c3aed', bg: '#ede9fe' },
+    AWAITING_COLLECTION: { txt: 'Aguardando coleta', cor: '#0369a1', bg: '#e0f2fe' },
+    IN_TRANSIT: { txt: 'Em trânsito', cor: '#0891b2', bg: '#cffafe' },
+    DELIVERED: { txt: 'Entregue', cor: '#15803d', bg: '#dcfce7' },
+    COMPLETED: { txt: 'Concluído', cor: '#15803d', bg: '#dcfce7' },
+    CANCELLED: { txt: 'Cancelado', cor: '#b91c1c', bg: '#fee2e2' },
+  };
+
+  function _ttLojasConectadas() {
+    // lojas TikTok que têm idBanco (estão no servidor). contaConectada quando disponível.
+    return (typeof lojasErp !== 'undefined' ? lojasErp : [])
+      .filter(l => l && l.marketplace === 'tiktok');
+  }
+
+  async function abrirPedidosTikTok() {
+    const painel = document.getElementById('tiktokPedidosPanel');
+    if (!painel) return;
+    ['pedAbaLista', 'pedAbaConferencia', 'pedAbaExpedicao', 'pedidosAtrasadosPanel', 'disputasPanel'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    painel.style.display = 'block';
+    painel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+        <div style="font-size:15px;font-weight:800;color:#1e293b">🎵 Pedidos TikTok Shop</div>
+        <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="pedFecharPainelExtra()">← Voltar aos pedidos</button>
+      </div>
+      <div id="ttPedConteudo"><div style="padding:24px;text-align:center;color:#6b7280">⏳ Carregando pedidos do TikTok…</div></div>`;
+    await _ttCarregarPedidos();
+  }
+  window.abrirPedidosTikTok = abrirPedidosTikTok;
+
+  async function _ttCarregarPedidos() {
+    const cont = document.getElementById('ttPedConteudo');
+    if (!cont) return;
+    const lojas = _ttLojasConectadas();
+    if (lojas.length === 0) {
+      cont.innerHTML = `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:28px;text-align:center;color:#6b7280">
+        <div style="font-size:32px;margin-bottom:8px">🎵</div>
+        <div style="font-weight:700;color:#1e293b;margin-bottom:6px">Nenhuma loja TikTok conectada</div>
+        <div style="font-size:13px">Conecte uma loja TikTok Shop em <b>Lojas & Conexões</b> pra ver os pedidos aqui.</div>
+      </div>`;
+      return;
+    }
+
+    // janela: últimos 30 dias
+    const agora = Math.floor(Date.now() / 1000);
+    const desde = agora - 30 * 24 * 3600;
+
+    let todos = [];
+    const erros = [];
+    for (const loja of lojas) {
+      let idBanco = loja.idBanco;
+      try { if (!idBanco && typeof garantirLojaNoBanco === 'function') idBanco = await garantirLojaNoBanco(loja); } catch (_) {}
+      if (!idBanco) { erros.push((loja.nome || 'loja') + ' (sem ID no servidor)'); continue; }
+      try {
+        const r = await (await fetch(BACKEND_URL + '/api/tiktok/loja/' + idBanco + '/pedidos/buscar', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify({ createTimeGe: desde, sortField: 'create_time', sortOrder: 'DESC', pageSize: 50 }),
+        })).json();
+        if (r.ok && Array.isArray(r.pedidos)) {
+          r.pedidos.forEach(p => todos.push({ ...p, _lojaNome: loja.nome }));
+        } else if (!r.ok) {
+          erros.push((loja.nome || 'loja') + ': ' + (r.erro || 'falha'));
+        }
+      } catch (e) {
+        erros.push((loja.nome || 'loja') + ': ' + e.message);
+      }
+    }
+
+    // ordena por create_time desc
+    todos.sort((a, b) => (b.create_time || 0) - (a.create_time || 0));
+    cont.innerHTML = _ttRenderPedidos(todos, erros);
+  }
+
+  function _ttRenderPedidos(pedidos, erros) {
+    let html = '';
+    if (erros && erros.length) {
+      html += `<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:13px">
+        Algumas lojas não retornaram: ${erros.map(e => escapeHtml(e)).join('; ')}</div>`;
+    }
+    if (!pedidos.length) {
+      html += `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;text-align:center;color:#6b7280">Nenhum pedido no período (últimos 30 dias).</div>`;
+      return html;
+    }
+    html += `<div style="font-size:12px;color:#6b7280;margin-bottom:10px">${pedidos.length} pedido(s) nos últimos 30 dias</div>`;
+    html += '<div style="display:flex;flex-direction:column;gap:8px">';
+    pedidos.forEach(p => {
+      const st = _TT_STATUS_LABEL[p.status] || { txt: p.status || '—', cor: '#6b7280', bg: '#f3f4f6' };
+      const pay = p.payment || {};
+      const total = pay.total_amount != null ? ('R$ ' + Number(pay.total_amount).toFixed(2)) : '—';
+      const itens = (p.line_items || []);
+      const qtdItens = itens.length;
+      const primeiro = itens[0] || {};
+      const dataStr = p.create_time ? new Date(p.create_time * 1000).toLocaleString('pt-BR') : '—';
+      const rec = p.recipient_address || {};
+      html += `
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <div style="min-width:0">
+              <div style="font-weight:700;color:#111827;font-size:14px">Pedido ${escapeHtml(String(p.id || '—'))}
+                <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:${st.bg};color:${st.cor};margin-left:6px">${escapeHtml(st.txt)}</span>
+              </div>
+              <div style="font-size:12px;color:#6b7280;margin-top:2px">🏪 ${escapeHtml(p._lojaNome || '—')} · ${dataStr}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-weight:800;color:#15803d;font-size:15px">${total}</div>
+              <div style="font-size:11px;color:#9ca3af">${qtdItens} item(ns)</div>
+            </div>
+          </div>
+          ${qtdItens ? `<div style="font-size:12px;color:#374151;margin-top:8px;padding-top:8px;border-top:1px solid #f3f4f6">
+            ${escapeHtml(primeiro.product_name || primeiro.sku_name || 'Item')}${qtdItens > 1 ? ` <span style="color:#9ca3af">+ ${qtdItens - 1} outro(s)</span>` : ''}
+          </div>` : ''}
+          ${rec.name ? `<div style="font-size:11px;color:#9ca3af;margin-top:4px">📦 ${escapeHtml(rec.name)}${rec.state ? ' · ' + escapeHtml(rec.state) : ''}</div>` : ''}
+        </div>`;
+    });
+    html += '</div>';
+    return html;
+  }
+
   async function carregarCasosDisputas(filtro) {
     const painel = document.getElementById('disputasPanel');
     if (!painel) return;
@@ -40545,7 +40673,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.422-reagendar-acha-tarefa';
+  const _DIAG_VERSAO_PAINEL = 'v33k.429-tiktok-ui-demo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -44300,6 +44428,8 @@ REGRAS DE OURO:
       if (d.doc) mapa[nome].doc = d.doc;
       if (d.telefone) mapa[nome].telefone = d.telefone;
       if (d.contaId) mapa[nome].contaId = d.contaId;
+      if (d.email) mapa[nome].email = d.email;
+      if (d.endereco) mapa[nome].endereco = d.endereco;
       // status: ativo por padrão; só inativo se marcado explicitamente
       mapa[nome].ativo = (d.ativo !== false);
       mapa[nome].inativadoEm = d.inativadoEm || null;
@@ -44372,20 +44502,27 @@ REGRAS DE OURO:
     const nomeConta = (id) => (_asaasContas.find(c=>c.id===id)||{}).nome || (id||'—');
     wrap.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase">
-        <th style="padding:8px">Cliente</th><th style="padding:8px">CPF/CNPJ</th><th style="padding:8px">Telefone</th><th style="padding:8px">Conta Asaas</th><th></th>
+        <th style="padding:8px">Cliente</th><th style="padding:8px">CPF/CNPJ</th><th style="padding:8px">Telefone</th><th style="padding:8px">Conta Asaas</th><th style="padding:8px">NF</th><th></th>
       </tr></thead><tbody>` +
-      clientes.map(c => `<tr style="border-top:1px solid #f1f5f9">
+      clientes.map(c => {
+        const e = c.endereco || {};
+        const nfCompleto = !!(c.doc && e.cep && e.rua && e.numero);
+        const nfBadge = nfCompleto
+          ? '<span style="font-size:11px;color:#15803d;background:#dcfce7;padding:2px 8px;border-radius:10px;font-weight:700" title="Pronto p/ emitir NF">✓ ok</span>'
+          : '<span style="font-size:11px;color:#b45309;background:#fef3c7;padding:2px 8px;border-radius:10px;font-weight:700" title="Faltam dados p/ NF (CPF/CNPJ + endereço)">incompleto</span>';
+        return `<tr style="border-top:1px solid #f1f5f9">
         <td style="padding:8px;font-weight:600">${escapeHtml(c.nome)}</td>
         <td style="padding:8px;color:${c.doc?'#1e293b':'#cbd5e1'}">${escapeHtml(c.doc||'(faltando)')}</td>
         <td style="padding:8px;color:${c.telefone?'#1e293b':'#cbd5e1'}">${escapeHtml(c.telefone||'(faltando)')}</td>
         <td style="padding:8px;color:${c.contaId?'#1e293b':'#cbd5e1'}">${escapeHtml(c.contaId?nomeConta(c.contaId):'(não definida)')}</td>
+        <td style="padding:8px">${nfBadge}</td>
         <td style="padding:8px;text-align:right;white-space:nowrap">
           <button class="toolbar-btn" style="font-size:12px;color:#16a34a;font-weight:700" onclick="abrirEstrategiaDoCliente('${escapeHtml(c.nome).replace(/'/g,'')}')">🚀 Estratégia</button>
           <button class="toolbar-btn" style="font-size:12px" onclick="editarClienteCadastro('${escapeHtml(c.nome).replace(/'/g,'')}')">Editar</button>
           <button class="toolbar-btn" style="font-size:12px;color:#b45309" onclick="inativarCliente('${escapeHtml(c.nome).replace(/'/g,'')}')">Inativar</button>
           <button class="toolbar-btn" style="font-size:12px;color:#dc2626" onclick="excluirClienteCadastro('${escapeHtml(c.nome).replace(/'/g,'')}')" title="Excluir cadastro errado (fora das métricas)">🗑</button>
         </td>
-      </tr>`).join('') + '</tbody></table></div>';
+      </tr>`; }).join('') + '</tbody></table></div>';
   }
   window.renderCadastroClientes = renderCadastroClientes;
 
@@ -44414,53 +44551,151 @@ REGRAS DE OURO:
   }
   window.toggleClientesInativos = toggleClientesInativos;
 
-  async function editarClienteCadastro(nome) {
+  // v33k.426: modal completo de edição de cliente (antes era uma sequência de
+  // prompts). Agora com campos de NF (endereço + email) — TODOS OPCIONAIS, pois
+  // nem todo cliente tira nota. O parâmetro focoNF=true abre já rolado nos campos
+  // fiscais (usado pelo pop-up "faltam dados p/ NF" do Financeiro).
+  async function editarClienteCadastro(nome, focoNF) {
     if (typeof carregarContasAsaas === 'function') await carregarContasAsaas();
-    const d = getClienteCadastro(nome);
-    // v33k.420: permite RENOMEAR o cliente. O nome é a CHAVE em clientesAsaas e o
-    // que vincula lojas/demandas/billings — então renomear exige migrar tudo.
-    const novoNome = ((await lcPrompt('Nome do cliente:', nome)) || '').trim();
-    if (novoNome === null) return;
-    const doc = await lcPrompt('CPF/CNPJ de ' + (novoNome || nome) + ' (só números):', d.doc || '');
-    if (doc === null) return;
-    const tel = await lcPrompt('Telefone de ' + (novoNome || nome) + ' (com DDD):', d.telefone || '');
-    if (tel === null) return;
-    // conta Asaas via prompt simples (lista)
-    const contasLista = (_asaasContas||[]).map((c,i)=>`${i+1}) ${c.nome}`).join('\n');
-    const escolha = await lcPrompt('Conta Asaas que cobra ' + (novoNome || nome) + ':\n' + contasLista + '\n\nDigite o número (ou deixe vazio):', '');
-    let contaId = d.contaId || '';
-    if (escolha && _asaasContas[parseInt(escolha)-1]) contaId = _asaasContas[parseInt(escolha)-1].id;
+    const d = getClienteCadastro(nome) || {};
+    const e = d.endereco || {};
+    const existente = document.getElementById('clienteEditModal');
+    if (existente) existente.remove();
 
-    // resolve o nome final (se mudou e não colide)
-    const nomeFinal = (novoNome && novoNome !== nome) ? novoNome : nome;
-    const renomeou = nomeFinal !== nome;
+    const contasOpts = (_asaasContas || []).map(c =>
+      `<option value="${escapeHtml(c.id)}" ${d.contaId === c.id ? 'selected' : ''}>${escapeHtml(c.nome)}</option>`
+    ).join('');
+    const ufOpts = ['','AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO']
+      .map(uf => `<option value="${uf}" ${(e.uf||'') === uf ? 'selected' : ''}>${uf || '—'}</option>`).join('');
+
+    const modal = document.createElement('div');
+    modal.id = 'clienteEditModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100002;display:flex;align-items:center;justify-content:center;padding:20px';
+    const inpCss = 'width:100%;padding:9px 11px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:13px';
+    const lblCss = 'font-size:12px;color:#374151;font-weight:600;display:block;margin-bottom:4px';
+    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(620px,96vw);max-height:92vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:16px 20px;background:linear-gradient(135deg,#16a34a,#15803d);color:white;display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0;font-size:16px">Editar cliente</h2>
+        <button onclick="document.getElementById('clienteEditModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:18px 20px;overflow:auto;flex:1">
+        <div style="margin-bottom:14px">
+          <label style="${lblCss}">Nome</label>
+          <input id="cliEdNome" type="text" value="${escapeHtml(nome)}" style="${inpCss}">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+          <div><label style="${lblCss}">CPF / CNPJ</label>
+            <input id="cliEdDoc" type="text" inputmode="numeric" placeholder="só números" value="${escapeHtml(d.doc||'')}" style="${inpCss}"></div>
+          <div><label style="${lblCss}">Telefone (com DDD)</label>
+            <input id="cliEdTel" type="text" inputmode="numeric" value="${escapeHtml(d.telefone||'')}" style="${inpCss}"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+          <div><label style="${lblCss}">E-mail</label>
+            <input id="cliEdEmail" type="email" value="${escapeHtml(d.email||'')}" style="${inpCss}"></div>
+          <div><label style="${lblCss}">Conta Asaas</label>
+            <select id="cliEdConta" style="${inpCss}"><option value="">— não definida —</option>${contasOpts}</select></div>
+        </div>
+
+        <div id="cliEdNFSecao" style="border:1px dashed #d1d5db;border-radius:10px;padding:14px;background:#fafafa;margin-top:6px">
+          <div style="font-size:13px;font-weight:700;color:#15803d;margin-bottom:2px">📄 Dados para Nota Fiscal</div>
+          <div style="font-size:11px;color:#6b7280;margin-bottom:12px">Opcional. Preencha só para clientes que tiram NF — a prefeitura exige endereço do tomador.</div>
+          <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-bottom:12px">
+            <div><label style="${lblCss}">CEP</label>
+              <input id="cliEdCep" type="text" inputmode="numeric" value="${escapeHtml(e.cep||'')}" style="${inpCss}"></div>
+            <div><label style="${lblCss}">Rua / Logradouro</label>
+              <input id="cliEdRua" type="text" value="${escapeHtml(e.rua||'')}" style="${inpCss}"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+            <div><label style="${lblCss}">Número</label>
+              <input id="cliEdNumero" type="text" value="${escapeHtml(e.numero||'')}" style="${inpCss}"></div>
+            <div><label style="${lblCss}">Complemento</label>
+              <input id="cliEdComp" type="text" value="${escapeHtml(e.complemento||'')}" style="${inpCss}"></div>
+            <div><label style="${lblCss}">Bairro</label>
+              <input id="cliEdBairro" type="text" value="${escapeHtml(e.bairro||'')}" style="${inpCss}"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+            <div><label style="${lblCss}">Cidade</label>
+              <input id="cliEdCidade" type="text" value="${escapeHtml(e.cidade||'')}" style="${inpCss}"></div>
+            <div><label style="${lblCss}">UF</label>
+              <select id="cliEdUf" style="${inpCss}">${ufOpts}</select></div>
+          </div>
+        </div>
+      </div>
+      <div style="padding:12px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px">
+        <button onclick="document.getElementById('clienteEditModal').remove()" style="padding:10px 16px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;font-weight:600">Cancelar</button>
+        <button id="cliEdSalvarBtn" onclick="salvarClienteCadastro('${escapeHtml(nome).replace(/'/g,"\\'")}')" style="padding:10px 18px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">💾 Salvar</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    if (focoNF) {
+      setTimeout(() => { const s = document.getElementById('cliEdNFSecao'); if (s) s.scrollIntoView({ behavior:'smooth', block:'center' }); const cep = document.getElementById('cliEdCep'); if (cep) cep.focus(); }, 120);
+    }
+  }
+  window.editarClienteCadastro = editarClienteCadastro;
+
+  // Persiste os dados do modal de edição. Faz o renomeio (com migração de vínculos)
+  // e, se houver CPF/CNPJ + conta Asaas, completa o cadastro fiscal do cliente no
+  // Asaas (pra a NF que estava travada por falta de dado passar a sair).
+  async function salvarClienteCadastro(nomeOriginal) {
+    const val = id => (document.getElementById(id)||{}).value || '';
+    const novoNome = String(val('cliEdNome')).trim();
+    if (!novoNome) { showToast('O nome não pode ficar vazio', true); return; }
+    const doc = String(val('cliEdDoc')).replace(/\D/g,'');
+    const tel = String(val('cliEdTel')).replace(/\D/g,'');
+    const email = String(val('cliEdEmail')).trim();
+    const contaId = val('cliEdConta');
+    const endereco = {
+      cep: String(val('cliEdCep')).replace(/\D/g,''),
+      rua: String(val('cliEdRua')).trim(),
+      numero: String(val('cliEdNumero')).trim(),
+      complemento: String(val('cliEdComp')).trim(),
+      bairro: String(val('cliEdBairro')).trim(),
+      cidade: String(val('cliEdCidade')).trim(),
+      uf: val('cliEdUf'),
+    };
+
+    const nomeFinal = (novoNome && novoNome !== nomeOriginal) ? novoNome : nomeOriginal;
+    const renomeou = nomeFinal !== nomeOriginal;
+    if (renomeou && _clientesAsaas[nomeFinal] && _clientesAsaas[nomeFinal].excluido !== true) {
+      showToast('Já existe um cliente "' + nomeFinal + '". Escolha outro nome.', true); return;
+    }
+    const btn = document.getElementById('cliEdSalvarBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando...'; }
+
     if (renomeou) {
-      if (_clientesAsaas[nomeFinal] && _clientesAsaas[nomeFinal].excluido !== true) {
-        showToast('Já existe um cliente "' + nomeFinal + '". Escolha outro nome.', true);
-        return;
-      }
-      // migra o registro para a nova chave, preservando os dados
-      _clientesAsaas[nomeFinal] = Object.assign({}, _clientesAsaas[nome] || {});
-      // remove a chave antiga (marca excluída pra o merge do backend não ressuscitar)
-      _clientesAsaas[nome] = Object.assign({}, _clientesAsaas[nome] || {}, { excluido: true, ativo: false, renomeadoPara: nomeFinal, inativadoEm: new Date().toISOString() });
+      _clientesAsaas[nomeFinal] = Object.assign({}, _clientesAsaas[nomeOriginal] || {});
+      _clientesAsaas[nomeOriginal] = Object.assign({}, _clientesAsaas[nomeOriginal] || {}, { excluido: true, ativo: false, renomeadoPara: nomeFinal, inativadoEm: new Date().toISOString() });
     }
     if (!_clientesAsaas[nomeFinal]) _clientesAsaas[nomeFinal] = {};
-    _clientesAsaas[nomeFinal].doc = (doc||'').trim();
-    // normaliza telefone (só dígitos) — padrão que o backend usa em TODO disparo
-    _clientesAsaas[nomeFinal].telefone = String(tel||'').replace(/\D/g, '');
+    _clientesAsaas[nomeFinal].doc = doc;
+    _clientesAsaas[nomeFinal].telefone = tel;
+    _clientesAsaas[nomeFinal].email = email;
     _clientesAsaas[nomeFinal].contaId = contaId;
+    _clientesAsaas[nomeFinal].endereco = endereco;
     _clientesAsaas[nomeFinal].excluido = false;
     _clientesAsaas[nomeFinal].ativo = true;
     await _saveClientesAsaas();
 
-    // se renomeou, migra os VÍNCULOS de loja e o campo cliente das demandas/billings
     if (renomeou) {
-      try { await _migrarNomeCliente(nome, nomeFinal); } catch(e){ console.warn('[renomear cliente] migração:', e); }
+      try { await _migrarNomeCliente(nomeOriginal, nomeFinal); } catch(err){ console.warn('[renomear cliente] migração:', err); }
     }
+
+    // Completa o cadastro fiscal no Asaas (só se der pra localizar: precisa doc + conta).
+    if (doc && contaId) {
+      try {
+        await fetch(BACKEND_URL + '/api/asaas/cliente-fiscal', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify({ contaId, cpfCnpj: doc, nome: nomeFinal, email, telefone: tel, endereco }),
+        });
+      } catch(err) { console.warn('[cliente-fiscal] sync Asaas:', err); }
+    }
+
+    const m = document.getElementById('clienteEditModal'); if (m) m.remove();
     renderCadastroClientes();
-    showToast('✓ Cliente atualizado' + (renomeou ? ' e renomeado' : ''));
+    if (typeof _atualizarAvisoNF === 'function') _atualizarAvisoNF();
+    showToast('✓ Cliente salvo' + (renomeou ? ' e renomeado' : ''));
   }
-  window.editarClienteCadastro = editarClienteCadastro;
+  window.salvarClienteCadastro = salvarClienteCadastro;
 
   // Migra todas as referências de um nome de cliente antigo → novo, de forma que
   // renomear no Comercial não quebre os vínculos existentes.
@@ -45244,11 +45479,14 @@ REGRAS DE OURO:
     showToast('💳 Emitindo cobrança no Asaas...');
     try {
       const telefone = (_resolverTelefoneCliente ? _resolverTelefoneCliente(f.cliente) : '') || '';
+      // v33k.426: puxa email/endereço do cadastro pra o cliente Asaas já nascer
+      // com dados fiscais completos (a NF sai sem precisar completar depois).
+      const _cadCli = (typeof getClienteCadastro === 'function') ? (getClienteCadastro(f.cliente) || {}) : {};
       const resp = await fetch(BACKEND_URL + '/api/asaas/cobranca', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
         body: JSON.stringify({
           contaId: f.contaAsaas,
-          cliente: { nome: f.cliente, cpfCnpj: f.clienteDoc, telefone },
+          cliente: { nome: f.cliente, cpfCnpj: f.clienteDoc, telefone, email: _cadCli.email || '', endereco: _cadCli.endereco || null },
           valor: f.totalPagar,
           vencimento: venc,
           descricao: 'Fechamento ' + _fmtMesExt(f.mes) + ' - ' + f.cliente,
@@ -46124,7 +46362,109 @@ ${JSON.stringify(metricas, null, 2)}`
 
     // Carrega última análise de despesas do cache (não chama IA automaticamente)
     loadIaFromCache('despesas');
+
+    // v33k.426: verifica clientes pagos SEM dados p/ NF e NFs que falharam; se
+    // houver, mostra o pop-up assim que a tela financeira abre.
+    if (typeof _verificarNFPendentes === 'function') _verificarNFPendentes();
   }
+
+  // ─── NF: detecção de clientes sem dados fiscais + pop-up (v33k.426) ─────────
+  // Um cliente "precisa de dados p/ NF" quando tem fechamento PAGO na conta lider
+  // (não-dinheiro), ainda SEM nota, e o cadastro está incompleto p/ NFS-e
+  // (falta CPF/CNPJ ou endereço mínimo: CEP + rua + número). Também entram os
+  // fechamentos com nfErro do tipo dados_incompletos gravado pelo backend.
+  function _nfCadastroIncompleto(cli) {
+    if (!cli) return true;
+    if (!cli.doc) return true;
+    const e = cli.endereco || {};
+    if (!e.cep || !e.rua || !e.numero) return true;
+    return false;
+  }
+  function _clientesPendentesNF() {
+    const porCliente = {}; // nome → { nome, motivo, temErro }
+    const cadastro = {};
+    try { (listarClientesCadastro(false) || []).forEach(c => { cadastro[c.nome] = c; }); } catch(_) {}
+    (fechamentos || []).forEach(f => {
+      if (!f || !f.cliente) return;
+      const contaId = (f.cobranca && f.cobranca.contaId) || f.contaAsaas || 'lider';
+      const pago = f.statusPagamento === 'pago';
+      const jaTemNF = !!f.notaFiscal;
+      const dinheiro = f.formaPagamento === 'dinheiro';
+      // caso 1: backend registrou erro de dados incompletos
+      if (f.nfErro && f.nfErro.tipo === 'dados_incompletos') {
+        porCliente[f.cliente] = { nome: f.cliente, motivo: f.nfErro.motivo || 'Dados incompletos p/ NF', temErro: true };
+        return;
+      }
+      // caso 2: pago na lider, sem NF, sem ser dinheiro, e cadastro incompleto
+      if (pago && !jaTemNF && !dinheiro && contaId === 'lider') {
+        if (_nfCadastroIncompleto(cadastro[f.cliente])) {
+          if (!porCliente[f.cliente]) porCliente[f.cliente] = { nome: f.cliente, motivo: 'Faltam dados de cadastro p/ emitir a NF', temErro: false };
+        }
+      }
+    });
+    return Object.values(porCliente);
+  }
+  window._clientesPendentesNF = _clientesPendentesNF;
+
+  // Recalcula e atualiza o badge/aviso persistente (chamado após salvar um cliente)
+  function _atualizarAvisoNF() {
+    const pend = _clientesPendentesNF();
+    const modal = document.getElementById('nfPendentesModal');
+    if (modal) { if (pend.length === 0) modal.remove(); else _renderNFPendentesModal(pend); }
+  }
+  window._atualizarAvisoNF = _atualizarAvisoNF;
+
+  // Mostra o pop-up (uma vez por abertura da tela). Guarda um flag pra não
+  // reaparecer a cada re-render dentro da mesma sessão de tela.
+  let _nfPopupJaMostrado = false;
+  function _verificarNFPendentes() {
+    const pend = _clientesPendentesNF();
+    if (pend.length === 0) { _nfPopupJaMostrado = false; return; }
+    if (_nfPopupJaMostrado) return;
+    _nfPopupJaMostrado = true;
+    _renderNFPendentesModal(pend);
+  }
+  window._verificarNFPendentes = _verificarNFPendentes;
+
+  function _renderNFPendentesModal(pend) {
+    const existente = document.getElementById('nfPendentesModal');
+    if (existente) existente.remove();
+    const modal = document.createElement('div');
+    modal.id = 'nfPendentesModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100001;display:flex;align-items:center;justify-content:center;padding:20px';
+    const linhas = pend.map(p => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px">
+        <div style="min-width:0">
+          <div style="font-weight:700;font-size:14px;color:#111827">${escapeHtml(p.nome)}</div>
+          <div style="font-size:12px;color:${p.temErro?'#b91c1c':'#6b7280'}">${p.temErro?'⚠ ':''}${escapeHtml(p.motivo)}</div>
+        </div>
+        <button onclick="_nfPreencherCliente('${escapeHtml(p.nome).replace(/'/g,"\\'")}')" style="padding:8px 14px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700;white-space:nowrap">Preencher</button>
+      </div>`).join('');
+    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(540px,96vw);max-height:88vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:16px 20px;background:linear-gradient(135deg,#f59e0b,#d97706);color:white;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <h2 style="margin:0;font-size:16px">📄 Nota fiscal pendente</h2>
+          <div style="font-size:12px;opacity:0.92;margin-top:2px">${pend.length} cliente(s) precisam de dados p/ emitir a NF</div>
+        </div>
+        <button onclick="document.getElementById('nfPendentesModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:16px 20px;overflow:auto;flex:1">
+        <div style="font-size:12px;color:#6b7280;margin-bottom:12px">Esses clientes pagaram, mas a NF não saiu por falta de dados de cadastro (CPF/CNPJ e endereço). Clique em <b>Preencher</b> pra completar — na próxima rodada de emissão a nota sai automaticamente.</div>
+        ${linhas}
+      </div>
+      <div style="padding:12px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end">
+        <button onclick="document.getElementById('nfPendentesModal').remove()" style="padding:10px 16px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;font-weight:600">Depois</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+
+  // Botão "Preencher": fecha o aviso e abre o cadastro do cliente já na seção de NF.
+  async function _nfPreencherCliente(nome) {
+    const m = document.getElementById('nfPendentesModal'); if (m) m.remove();
+    await editarClienteCadastro(nome, true);
+  }
+  window._nfPreencherCliente = _nfPreencherCliente;
 
   function renderReceivablesGrid() {
     // Cobranças do mês
@@ -48231,7 +48571,7 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // Fecha os painéis extras (Atrasados / Disputas) e volta pra aba ativa.
   function pedFecharPainelExtra() {
-    ['pedidosAtrasadosPanel', 'disputasPanel'].forEach(id => {
+    ['pedidosAtrasadosPanel', 'disputasPanel', 'tiktokPedidosPanel'].forEach(id => {
       const el = document.getElementById(id); if (el) el.style.display = 'none';
     });
     pedTrocarAba(_pedAba || 'lista');
@@ -48240,8 +48580,8 @@ ${JSON.stringify(metricas, null, 2)}`
 
   function pedTrocarAba(aba) {
     _pedAba = aba;
-    // ao trocar de aba, fecha os painéis extras (Atrasados / Disputas) se abertos
-    ['pedidosAtrasadosPanel', 'disputasPanel'].forEach(id => {
+    // ao trocar de aba, fecha os painéis extras (Atrasados / Disputas / TikTok) se abertos
+    ['pedidosAtrasadosPanel', 'disputasPanel', 'tiktokPedidosPanel'].forEach(id => {
       const el = document.getElementById(id); if (el) el.style.display = 'none';
     });
     const abas = {
@@ -55674,6 +56014,7 @@ ${JSON.stringify(metricas, null, 2)}`
             <option value="expired">Expiradas</option>
             <option value="all">Todas</option>
           </select>
+          <button onclick="flashAbrirConfigRegra()" title="Configurar a regra de desconto da flash (ex.: promoção comum − R$0,50)" style="padding:8px 14px;background:#7c3aed;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">⚙ Regra de desconto</button>
           <button onclick="flashAbrirCriar()" style="padding:8px 14px;background:#dc2626;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">+ Nova Flash Sale</button>
           <button onclick="carregarFlashSales()" style="padding:8px 14px;background:#374151;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">↻ Atualizar</button>
         </div>
@@ -55683,6 +56024,87 @@ ${JSON.stringify(metricas, null, 2)}`
     await carregarFlashSales();
   }
   window.abrirFlashSaleShopee = abrirFlashSaleShopee;
+
+  // Modal de configuração da REGRA de desconto da flash (por usuário).
+  async function flashAbrirConfigRegra() {
+    let cfg = { modo: 'abaixo_promo', valor: 0.50 };
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/promocoes/flash-desconto/config', { headers: { 'x-api-token': getApiToken() } })).json();
+      if (r && r.ok) cfg = { modo: r.modo, valor: r.valor };
+    } catch(_) {}
+    const ex = document.getElementById('flashRegraModal'); if (ex) ex.remove();
+    const modal = document.createElement('div');
+    modal.id = 'flashRegraModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(480px,96vw);overflow:hidden">
+      <div style="padding:16px 20px;background:linear-gradient(135deg,#7c3aed,#5b21b6);color:white;display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0;font-size:16px">⚙ Regra de desconto da Flash</h2>
+        <button onclick="document.getElementById('flashRegraModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:18px">
+        <p style="font-size:13px;color:#4b5563;margin:0 0 14px">Define como o preço da flash é calculado a partir do preço da <b>promoção comum</b> de cada anúncio. Aplica quando você muda a promoção pelo sistema e quando ela muda direto na Shopee (webhook/cron).</p>
+        <label style="display:block;font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">Modo</label>
+        <select id="flashRegraModo" onchange="flashRegraAtualizarLabel()" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;margin-bottom:14px">
+          <option value="abaixo_promo" ${cfg.modo==='abaixo_promo'?'selected':''}>Promoção comum − valor fixo (R$)</option>
+          <option value="percentual_promo" ${cfg.modo==='percentual_promo'?'selected':''}>Promoção comum − percentual (%)</option>
+          <option value="desligado" ${cfg.modo==='desligado'?'selected':''}>Desligado (ajusto na mão)</option>
+        </select>
+        <div id="flashRegraValorBox">
+          <label style="display:block;font-size:12px;font-weight:700;color:#374151;margin-bottom:6px"><span id="flashRegraValorLabel">Desconto (R$)</span></label>
+          <input id="flashRegraValor" type="text" inputmode="decimal" value="${Number(cfg.valor).toFixed(2)}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px">
+          <p id="flashRegraExemplo" style="font-size:12px;color:#6b7280;margin:8px 0 0"></p>
+        </div>
+      </div>
+      <div style="padding:12px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px">
+        <button onclick="document.getElementById('flashRegraModal').remove()" style="padding:10px 16px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;font-weight:700">Cancelar</button>
+        <button id="flashRegraSalvarBtn" onclick="flashRegraSalvar()" style="padding:10px 18px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">Salvar regra</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    flashRegraAtualizarLabel();
+  }
+  window.flashAbrirConfigRegra = flashAbrirConfigRegra;
+
+  function flashRegraAtualizarLabel() {
+    const modo = (document.getElementById('flashRegraModo')||{}).value;
+    const box = document.getElementById('flashRegraValorBox');
+    const lbl = document.getElementById('flashRegraValorLabel');
+    const ex = document.getElementById('flashRegraExemplo');
+    const val = _parsePrecoPromo((document.getElementById('flashRegraValor')||{}).value) || 0;
+    if (!box) return;
+    if (modo === 'desligado') { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    if (modo === 'percentual_promo') {
+      if (lbl) lbl.textContent = 'Percentual (%)';
+      if (ex) ex.textContent = 'Ex.: promoção comum R$72,90 → flash R$' + (72.90 * (1 - val/100)).toFixed(2);
+    } else {
+      if (lbl) lbl.textContent = 'Desconto (R$)';
+      if (ex) ex.textContent = 'Ex.: promoção comum R$72,90 → flash R$' + (72.90 - val).toFixed(2);
+    }
+  }
+  window.flashRegraAtualizarLabel = flashRegraAtualizarLabel;
+
+  async function flashRegraSalvar() {
+    const modo = (document.getElementById('flashRegraModo')||{}).value || 'abaixo_promo';
+    const valor = _parsePrecoPromo((document.getElementById('flashRegraValor')||{}).value) || 0;
+    const btn = document.getElementById('flashRegraSalvarBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/promocoes/flash-desconto/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ modo, valor })
+      })).json();
+      if (r && r.ok) {
+        window._flashRegra = { modo: r.modo, valor: r.valor };
+        promoToast('✓ Regra de desconto salva');
+        const m = document.getElementById('flashRegraModal'); if (m) m.remove();
+      } else {
+        promoToast('Falha ao salvar: ' + ((r&&r.erro)||'erro'), true);
+      }
+    } catch(e) { promoToast('Erro: ' + e.message, true); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = 'Salvar regra'; } }
+  }
+  window.flashRegraSalvar = flashRegraSalvar;
 
   function fecharFlashSaleShopee() {
     const painel = document.getElementById('flashSalePanel');
@@ -55899,12 +56321,15 @@ ${JSON.stringify(metricas, null, 2)}`
     const ini = f.startTime ? new Date(f.startTime * 1000).toLocaleString('pt-BR') : '?';
     const fim = f.endTime ? new Date(f.endTime * 1000).toLocaleString('pt-BR') : '?';
     modal.innerHTML = `<div style="background:white;border-radius:16px;width:min(860px,96vw);max-height:92vh;overflow:hidden;display:flex;flex-direction:column">
-      <div style="padding:16px 20px;background:linear-gradient(135deg,#dc2626,#991b1b);color:white;display:flex;justify-content:space-between;align-items:center">
-        <div>
+      <div style="padding:16px 20px;background:linear-gradient(135deg,#dc2626,#991b1b);color:white;display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <div style="min-width:0">
           <h2 style="margin:0;font-size:16px">⚡ Flash Sale — ${escapeHtml(it.loja.nome)}</h2>
           <div style="font-size:12px;opacity:0.9;margin-top:2px">${ini} → ${fim} · ${FLASH_TIPO_LABEL[f.tipo] || ''}</div>
         </div>
-        <button onclick="document.getElementById('flashDetalheModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${(f.tipo === 1 || f.tipo === 2) ? `<button onclick="flashSincronizarPreco()" title="Reaplica a regra de desconto (promoção comum − X) em todas as variações da flash" style="background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.5);color:white;padding:7px 12px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap">🔄 Sincronizar preço</button>` : ''}
+          <button onclick="document.getElementById('flashDetalheModal').remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:30px;height:30px;border-radius:8px;cursor:pointer">×</button>
+        </div>
       </div>
       <div id="flashDetalheBody" style="padding:18px;overflow:auto;flex:1">
         <div style="text-align:center;color:#6b7280;padding:20px">⏳ Carregando itens e promoções de referência...</div>
@@ -55915,10 +56340,15 @@ ${JSON.stringify(metricas, null, 2)}`
 
     try {
       // Carrega itens da flash + promoções comuns ongoing da loja (referência de preço)
+      // + a regra de desconto da flash do dono (promo − X).
       const [fResp, pPrecos] = await Promise.all([
         fetch(BACKEND_URL + '/api/marketplaces/loja/' + it.loja.idBanco + '/flash-sale/' + f.flashSaleId, { headers: { 'x-api-token': getApiToken() } }).then(r => r.json()),
         _flashCarregarPrecosPromo(it.loja.idBanco),
       ]);
+      try {
+        const rc = await (await fetch(BACKEND_URL + '/api/promocoes/flash-desconto/config', { headers: { 'x-api-token': getApiToken() } })).json();
+        if (rc && rc.ok) window._flashRegra = { modo: rc.modo, valor: rc.valor };
+      } catch(_) { window._flashRegra = window._flashRegra || { modo: 'abaixo_promo', valor: 0.50 }; }
       _flashPrecosPromo = pPrecos;
       const itens = (fResp.ok && fResp.itens) ? fResp.itens : [];
       itens.forEach(item => (item.models || []).forEach(m => { m._precoFlashOrig = m.precoInput; m._statusOrig = m.status; }));
@@ -55966,12 +56396,24 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!body || !_flashEditando) return;
     const { itens } = _flashEditando;
 
+    // regra do dono (promoção comum − X). _flashRegra é carregada em _flashAbrirModalDetalhe.
+    const regra = window._flashRegra || { modo: 'abaixo_promo', valor: 0.50 };
+    const aplicarRegra = (promo) => {
+      const p = Number(promo); if (!(p > 0)) return null;
+      if (regra.modo === 'desligado') return null;
+      let v = regra.modo === 'percentual_promo' ? p * (1 - Number(regra.valor) / 100) : p - Number(regra.valor);
+      v = Math.round(v * 100) / 100; return v > 0.01 ? v : 0.01;
+    };
+    const regraTxt = regra.modo === 'desligado' ? 'sincronização automática desligada'
+      : regra.modo === 'percentual_promo' ? ('promoção comum −' + Number(regra.valor) + '%')
+      : ('promoção comum − R$' + Number(regra.valor).toFixed(2));
+
     let html = '';
     if (somenteLeitura) {
       html += `<div style="background:#f3f4f6;border-radius:8px;padding:8px 12px;font-size:12px;color:#6b7280;margin-bottom:12px">Flash sale expirada — somente leitura.</div>`;
     } else {
       html += `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;font-size:12px;color:#991b1b;margin-bottom:12px">
-        ⚡ Preços sugeridos = preço da promoção comum −1. O preço da flash deve ser <b>menor</b> que a promoção comum. Estoque padrão 2 (urgência). Pra mudar preço de variação já habilitada, o sistema desabilita e reabilita automaticamente ao salvar.</div>`;
+        ⚡ Regra atual: <b>${regraTxt}</b>. O preço da flash deve ser <b>menor</b> que a promoção comum. Use "🔄 Sincronizar preço" pra reaplicar a regra. Estoque padrão 2 (urgência). Pra mudar preço de variação já habilitada, o sistema desabilita e reabilita automaticamente ao salvar.</div>`;
     }
 
     if (itens.length === 0) {
@@ -55989,7 +56431,7 @@ ${JSON.stringify(metricas, null, 2)}`
       models.forEach((m, mi) => {
         const naFlashVar = m.status === 1;
         const precoPromo = _flashPrecosPromo[String(m.modelId)];
-        const sugestao = precoPromo != null ? Math.round((precoPromo - 1) * 100) / 100 : null;
+        const sugestao = precoPromo != null ? aplicarRegra(precoPromo) : null;
         const valorInput = naFlashVar ? (m.precoInput != null ? Number(m.precoInput).toFixed(2) : '') : (sugestao != null ? sugestao.toFixed(2) : '');
         html += `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #f3f4f6;font-size:12px">
           ${somenteLeitura ? '' : `<input type="checkbox" class="flash-chk" data-ii="${ii}" data-mi="${mi}" ${naFlashVar ? 'checked' : ''}>`}
@@ -56011,6 +56453,7 @@ ${JSON.stringify(metricas, null, 2)}`
     footer.style.display = 'flex';
     footer.innerHTML = `
       <button onclick="flashRemoverSelecionados()" style="padding:10px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700">🗑 Remover selec.</button>
+      <button onclick="flashSincronizarPreco()" title="Recalcula o preço da flash a partir do preço atual do anúncio, mantendo o mesmo desconto" style="padding:10px 14px;background:#fff;color:#7c3aed;border:1px solid #7c3aed;border-radius:8px;cursor:pointer;font-weight:700">🔄 Sincronizar preço</button>
       <button onclick="flashAbrirAdicionar()" style="padding:10px 14px;background:#fff;color:#2563eb;border:1px solid #2563eb;border-radius:8px;cursor:pointer;font-weight:700">+ Adicionar produtos</button>
       <button id="flashSalvarBtn" onclick="flashSalvarItens()" style="padding:10px 18px;background:#16a34a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">💾 Salvar na Shopee</button>`;
   }
@@ -56092,6 +56535,47 @@ ${JSON.stringify(metricas, null, 2)}`
     }
   }
   window.flashSalvarItens = flashSalvarItens;
+
+  // Sincroniza o preço da flash de todos os itens do modal com o preço-base ATUAL
+  // do anúncio, preservando o desconto. Conserta o caso "mudei o preço do produto
+  // mas a flash não acompanhou". Chama o backend por item e recarrega o detalhe.
+  async function flashSincronizarPreco() {
+    if (!_flashEditando) return;
+    const { loja, flash, itens } = _flashEditando;
+    if (!itens || !itens.length) { promoToast('Nenhum item na flash pra sincronizar', true); return; }
+    const regra = window._flashRegra || { modo: 'abaixo_promo', valor: 0.50 };
+    const regraTxt = regra.modo === 'desligado' ? 'sincronização desligada'
+      : regra.modo === 'percentual_promo' ? ('promoção comum −' + Number(regra.valor) + '%')
+      : ('promoção comum − R$' + Number(regra.valor).toFixed(2));
+    if (regra.modo === 'desligado') { promoToast('A sincronização automática está desligada nas configurações da flash', true); return; }
+    if (!await lcConfirm('Recalcular o preço da flash usando a regra: ' + regraTxt + '?\n\nIsso ajusta as variações que ficaram com preço fora da regra.')) return;
+    const lojaIdBanco = loja.idBanco;
+    if (!lojaIdBanco) { promoToast('Loja sem ID do banco — re-sincronize a loja', true); return; }
+    let okCount = 0, alterados = 0; const avisos = [];
+    for (const item of itens) {
+      try {
+        const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/anuncio/' + item.itemId + '/flash/sincronizar-preco', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify({})
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          okCount++;
+          const camps = data.flashSales && data.flashSales.campanhas || [];
+          camps.forEach(c => { alterados += (c.alterados || []).length; });
+          if (data.flashSales && data.flashSales.avisos) data.flashSales.avisos.forEach(a => avisos.push(a));
+        } else {
+          avisos.push('item ' + item.itemId + ': ' + (data.erro || 'falha'));
+        }
+      } catch (e) { avisos.push('item ' + item.itemId + ': ' + e.message); }
+    }
+    if (alterados > 0) promoToast('🔄 ' + alterados + ' variação(ões) da flash sincronizada(s) com o preço atual');
+    else promoToast('Nada a ajustar — os preços da flash já estão coerentes com o desconto atual' + (avisos.length ? ' (' + avisos.length + ' aviso(s))' : ''), avisos.length > 0);
+    if (avisos.length) console.warn('[flash sincronizar preço] avisos:', avisos);
+    // recarrega o detalhe pra refletir os novos valores
+    try { if (typeof _flashAbrirModalDetalhe === 'function' && _flashEditando) await _flashAbrirModalDetalhe(_flashEditando); } catch(_) {}
+  }
+  window.flashSincronizarPreco = flashSincronizarPreco;
 
   function _flashRegistrarFalhas(falhas, flash, loja) {
     adicionarPendencia('export_falhou', 'Flash sale: variações não entraram',
