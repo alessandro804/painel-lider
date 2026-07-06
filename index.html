@@ -40173,7 +40173,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.402-paginacao-foto-titulo-variacao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.403-fallback-upsert-robusto';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -48587,12 +48587,14 @@ ${JSON.stringify(metricas, null, 2)}`
       // 3) faz polling até concluir
       const jobId = data.jobId;
       let tentativas = 0;
+      let errosSeguidos = 0;      // v33k.403: falhas de rede consecutivas no polling
       const poll = async () => {
         tentativas++;
         try {
           const r = await fetch(BACKEND_URL + '/api/expedicao/semear/progresso/' + jobId, { headers: { 'x-api-token': getApiToken() } });
           const j = await r.json();
           if (!j.ok) throw new Error(j.erro || 'progresso indisponível');
+          errosSeguidos = 0;      // sucesso → zera contador de erros
           if (prog) prog.innerHTML = _expProgressoHtml(j.pct || 0, j.lojasProcessadas || 0, j.totalLojas || 0, _expProgressoLabel(j));
           if (j.status === 'concluido' || j.status === 'erro') {
             if (j.status === 'erro') { showToast('Erro na sincronização: ' + (j.erro || ''), true); }
@@ -48602,11 +48604,26 @@ ${JSON.stringify(metricas, null, 2)}`
             expCarregar();
             return;
           }
-          if (tentativas > 600) { showToast('Sincronização demorou demais; recarregando a tela.', true); if (prog) prog.style.display = 'none'; expCarregar(); return; }
+          if (tentativas > 1200) { showToast('Sincronização demorou demais; recarregando a tela.', true); if (prog) prog.style.display = 'none'; expCarregar(); return; }
           setTimeout(poll, 1000);
         } catch (e) {
-          showToast('Erro ao acompanhar progresso: ' + e.message, true);
-          if (prog) prog.style.display = 'none';
+          // v33k.403: falha de rede numa consulta NÃO aborta o acompanhamento — o job
+          // segue rodando no backend. Tolera até 15 falhas seguidas (~30s) antes de
+          // desistir, e mostra "reconectando" em vez de "erro". Isso corrige o falso
+          // "erro em 70-80%" que aparecia quando uma consulta de progresso falhava.
+          errosSeguidos++;
+          if (errosSeguidos >= 15) {
+            showToast('Perdi o acompanhamento da barra, mas a sincronização continua no servidor. Recarregando a tela em instantes…', true);
+            if (prog) prog.style.display = 'none';
+            // dá um tempo pro job terminar no backend e recarrega
+            setTimeout(() => expCarregar(), 8000);
+            return;
+          }
+          if (prog) {
+            const wrap = prog.querySelector('.exp-progresso-top');
+            if (wrap) { const s = wrap.querySelector('span:last-child'); if (s) s.textContent = 'reconectando… (' + errosSeguidos + ')'; }
+          }
+          setTimeout(poll, 2000);  // espera mais entre retries de erro
         }
       };
       setTimeout(poll, 800);
