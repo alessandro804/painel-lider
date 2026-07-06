@@ -18085,7 +18085,17 @@ Retorne JSON: {"ID": "valor", ...}`;
     // quando "Todas as contas" estava selecionado).
     const _sel = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || [];
     const _lojasParam = _sel.length ? ('&lojaIds=' + _sel.join(',')) : '';
-    const r = await fetch(BACKEND_URL + '/api/ads/resumo?dias=' + dias + _lojasParam, { headers }).then(x => x.json());
+    // v33k.418: envia o período EXATO (desde/ate) quando o usuário escolhe um
+    // intervalo custom — igual à Home. Antes só mandava `dias`, e o backend
+    // calculava uma janela diferente (excluindo hoje), divergindo da Home.
+    let _perParam = 'dias=' + dias;
+    try {
+      const _pg = (typeof getPeriodoGlobal === 'function') ? getPeriodoGlobal() : null;
+      if (_pg && _pg.custom && _pg.custom.desde && _pg.custom.ate) {
+        _perParam = 'desde=' + _pg.custom.desde + '&ate=' + _pg.custom.ate;
+      }
+    } catch (e) {}
+    const r = await fetch(BACKEND_URL + '/api/ads/resumo?' + _perParam + _lojasParam, { headers }).then(x => x.json());
     if (meuToken != null && meuToken !== _adsRenderToken) return; // outro render assumiu
     if (!r.ok) { cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>'; return; }
     if (!r.lojas || r.lojas.length === 0) { cont.innerHTML = blocoVazio('Nenhuma loja com dados.', ''); return; }
@@ -40533,7 +40543,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.417-dedup-atomico-selecao-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.419-fila-dono-e-loja-selecionada';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -58128,9 +58138,21 @@ ${JSON.stringify(metricas, null, 2)}`
           }
         }
         if (typeof dtipoAtualizarLabel === 'function') dtipoAtualizarLabel();
-        // contas: aceita o formato novo (lista) ou o antigo (marketplace único)
-        _demandaContasSel = Array.isArray(d.contas) ? [...d.contas]
-          : (d.marketplace ? [d.marketplace] : []);
+        // contas: aceita o formato novo (lista) ou o antigo (marketplace único).
+        // v33k.419 FIX EXIBIÇÃO: régua/anúncio criados por fluxo às vezes gravam a
+        // loja só em lojaDestinoId (a execução já usava esse fallback — por isso
+        // funciona 100%), deixando d.contas vazio. Sem espelhar aqui, o seletor
+        // abria SEM a loja marcada e passava a impressão de "não está 100%". Agora
+        // o load usa o MESMO fallback da execução: contas → senão lojaDestinoId.
+        if (Array.isArray(d.contas) && d.contas.length) {
+          _demandaContasSel = [...d.contas];
+        } else if (d.lojaDestinoId) {
+          _demandaContasSel = [d.lojaDestinoId];
+        } else if (d.marketplace) {
+          _demandaContasSel = [d.marketplace];
+        } else {
+          _demandaContasSel = [];
+        }
         document.getElementById('demandaDescricao').value = d.descricao || '';
         document.getElementById('demandaAvisarCliente').checked = !!d.avisarCliente;
         document.getElementById('demandaFluxo').value = d.fluxoId || '';
