@@ -40726,7 +40726,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.450-teto-desconto-obs-demanda';
+  const _DIAG_VERSAO_PAINEL = 'v33k.453-fix-vazamento-nf-anon';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -41014,11 +41014,24 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Como a chave carrega o uid, dá pra varrer e limpar só as dele.
   function lsUserClearAll() {
     try {
-      const suf = '__u' + _uidAtual();
+      // v33k.453 FIX vazamento entre usuários (modal "Nota fiscal pendente" e
+      // afins): além das chaves do usuário ATUAL, varremos SEMPRE o namespace
+      // '__uanon'. Motivo: no boot, ANTES do login, várias variáveis top-level
+      // são inicializadas lendo o localStorage (ex.: `let fechamentos = ...`).
+      // Nesse instante _uidAtual() ainda é 'anon', então o interceptor lê/grava
+      // em 'chave__uanon'. Se algo grava dado enquanto deslogado, ele fica preso
+      // em '__uanon' — e a limpeza de logout, que só mira o uid REAL, nunca o
+      // toca. No próximo boot de OUTRO usuário no mesmo browser, a leitura top-
+      // level (ainda 'anon') pega esse lixo e ele aparece na tela do novo
+      // usuário (ex.: fechamentos do dono anterior disparando o pop-up de NF).
+      // Some no incognito justamente porque lá '__uanon' nasce vazio. 'anon'
+      // nunca deve reter dados de ninguém, então varrer sempre é seguro.
+      const sufixos = ['__u' + _uidAtual()];
+      if (_uidAtual() !== 'anon') sufixos.push('__uanon');
       const remover = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.endsWith(suf)) remover.push(k);
+        if (k && sufixos.some(suf => k.endsWith(suf))) remover.push(k);
       }
       remover.forEach(k => { try { (window.__lsRaw ? window.__lsRaw.rem(k) : localStorage.removeItem(k)); } catch (e) {} });
     } catch (e) {}
@@ -41057,6 +41070,26 @@ Responda APENAS com JSON válido (sem markdown), formato:
   window.migrarChavesGlobaisParaUsuario = migrarChavesGlobaisParaUsuario;
   // roda já no carregamento (caso o usuário já esteja logado num reload)
   try { migrarChavesGlobaisParaUsuario(); } catch (e) {}
+
+  // v33k.453: LIMPA chaves órfãs do namespace '__uanon' assim que há um usuário
+  // identificado. Dados de USUÁRIO nunca deveriam viver em 'anon' — quando isso
+  // acontece (algo gravou no localStorage durante o boot, antes do login), o
+  // lixo fica preso e vaza pro próximo usuário do mesmo browser (ex.: o pop-up
+  // "Nota fiscal pendente" mostrando clientes do dono anterior). Aqui varremos
+  // '__uanon' no boot logado, o que também SANEIA browsers já poluídos sem
+  // depender de um logout. Só roda com usuário conhecido, pra não apagar nada
+  // legítimo de uma sessão anon em andamento (que não existe pra dados de user).
+  function _limparNamespaceAnonOrfao() {
+    try {
+      if (_uidAtual() === 'anon') return;
+      const lista = window.__lsChavesPorUsuario || {};
+      Object.keys(lista).forEach(base => {
+        try { window.__lsRaw.rem(base + '__uanon'); } catch (e) {}
+      });
+    } catch (e) {}
+  }
+  window._limparNamespaceAnonOrfao = _limparNamespaceAnonOrfao;
+  try { _limparNamespaceAnonOrfao(); } catch (e) {}
 
   // ═══ PLANOS / ASSINATURA (Fatia 2) ═══
   // Definição dos planos (espelha o backend src/util/planos.js). preco=null => sob consulta.
@@ -41293,6 +41326,10 @@ Responda APENAS com JSON válido (sem markdown), formato:
           _usuarioLogado = data.usuario;
           // v33k.344: migra chaves globais antigas → namespaced pra ESTE usuário
           try { migrarChavesGlobaisParaUsuario(); } catch(e){}
+          // v33k.453: varre o namespace órfão '__uanon' agora que há usuário
+          // conhecido — evita que lixo gravado durante o boot (deslogado) vaze
+          // pra esta sessão (ex.: pop-up de NF com clientes do dono anterior).
+          try { _limparNamespaceAnonOrfao(); } catch(e){}
         }
         aplicarPermissoesUI();
         if (typeof ajustarSettingsAoUsuario === 'function') ajustarSettingsAoUsuario();
