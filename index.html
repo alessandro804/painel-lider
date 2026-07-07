@@ -5610,6 +5610,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
   .auto-hist-det-loja-nome { font-size:12.5px; font-weight:700; color:var(--lc-ink,#111827); }
   .auto-hist-det-loja-st { font-size:11.5px; color:var(--lc-muted,#6b7280); margin-top:1px; }
   .auto-hist-det-loja-erro { font-size:11.5px; color:#b91c1c; margin-top:3px; background:#fee2e2; padding:4px 7px; border-radius:5px; line-height:1.4; }
+  .auto-hist-det-loja-aviso { font-size:11.5px; color:#92400e; margin-top:3px; background:#fffbeb; border:1px solid #fde68a; padding:4px 7px; border-radius:5px; line-height:1.4; }
 
   @media (max-width: 560px) {
     .auto-modal { max-width:100%; max-height:94vh; border-radius:14px; }
@@ -8337,7 +8338,25 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
       <div style="font-size:12px;color:#6b7280;margin-bottom:8px"><b id="apSelecionadosCount">0</b> produto(s) selecionado(s). Os preços das variações são agrupados abaixo.</div>
       <div id="apMassaBar" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;margin-bottom:12px">
         <div style="font-size:13px;font-weight:800;color:#15803d;margin-bottom:8px">⚡ Aplicar a TODOS os grupos de uma vez</div>
-        <div style="font-size:11px;color:#15803d;margin-bottom:10px">Cria a mesma régua em cascata em todos os grupos abaixo. Ex: +R$2 a cada 7 dias, repetido N vezes.</div>
+        <div style="font-size:11px;color:#15803d;margin-bottom:10px">Cria a mesma régua em cascata em todos os grupos abaixo. Ex: desconto de R$2 agora, depois +R$2 a cada 7 dias.</div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;padding-bottom:10px;border-bottom:1px dashed #bbf7d0">
+          <div style="font-size:11px;color:#15803d;font-weight:700;width:100%;margin-bottom:2px">Desconto imediato (opcional) — aplicado agora, antes da régua:</div>
+          <div>
+            <label style="font-size:10px;color:#374151;display:block">Operação inicial</label>
+            <select id="apMassaModo" onchange="apMassaPrevia()" style="width:170px;font-size:12px;padding:6px;border:1px solid #d1d5db;border-radius:6px">
+              <option value="manter">Manter preço atual</option>
+              <option value="menos_rs">− R$ (desconto)</option>
+              <option value="menos_pct">− % (desconto)</option>
+              <option value="mais_rs">+ R$ (aumento)</option>
+              <option value="mais_pct">+ % (aumento)</option>
+              <option value="fixo">Preço fixo R$</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:10px;color:#374151;display:block">Valor inicial</label>
+            <input type="number" id="apMassaModoValor" step="0.01" min="0" value="0" oninput="apMassaPrevia()" style="width:90px;font-size:12px;padding:6px;border:1px solid #d1d5db;border-radius:6px">
+          </div>
+        </div>
         <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
           <div>
             <label style="font-size:10px;color:#374151;display:block">A cada (dias)</label>
@@ -25127,7 +25146,12 @@ REGRAS DURAS:
     previa(prefixo) {
       const cfg = ReguaUI.ler(prefixo);
       const modo = cfg ? cfg.modo : 'manter';
-      const base = ReguaUI._baseDoPrefixo(prefixo, modo, cfg);
+      // preço atual de referência do grupo (o que a Shopee tem hoje)
+      const precoAtual = ReguaUI._baseDoPrefixo(prefixo, modo, cfg);
+      // BASE DA CASCATA = preço inicial COM o desconto imediato aplicado.
+      // Antes usava o precoAtual cru, então os degraus ignoravam o desconto
+      // imediato (bug). Agora o degrau 1 parte do preço já com desconto.
+      const base = ReguaUI.calcularPrecoInicial(prefixo, precoAtual);
       const degraus = (cfg && cfg.degraus) || [];
       const seq = ReguaUI._cascata(base, degraus);
       // atualiza o resultado ao lado de cada X (sem destaque)
@@ -36648,7 +36672,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       let regraTxt = 'Sem regra salva';
       if (r.desconto != null) {
         const modo = r.modoDesconto === 'rs' ? ('−R$' + r.desconto) : (r.modoDesconto === 'final' ? ('R$' + r.desconto + ' final') : ('−' + r.desconto + '%'));
-        regraTxt = modo + ' · ' + (r.quantidade || 20) + ' prod · estoque ' + (r.estoqueOferta || 50) + ' · ' + (conf.diasCampanha || 10) + ' dias';
+        regraTxt = modo + ' · ' + (r.quantidade || 20) + ' prod · estoque ' + (r.estoqueOferta || 20) + ' · ' + (conf.diasCampanha || 10) + ' dias';
       }
       html += '<div class="motor-rel-auto-loja">' +
         '<div class="motor-rel-auto-loja-info">' +
@@ -36678,7 +36702,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       modoDesconto,
       desconto,
       quantidade: parseInt(document.getElementById('autoQtd').value, 10) || 20,
-      estoqueOferta: parseInt(document.getElementById('autoEstoque').value, 10) || 50,
+      estoqueOferta: parseInt(document.getElementById('autoEstoque').value, 10) || 20,
       estoqueMinimo: 1,
       protegerMargem: false,
     };
@@ -36756,7 +36780,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       quantidade: parseInt(document.getElementById('motorQtd').value, 10) || 0,
       protegerMargem: proteger,
       margemMinima: (parseFloat(document.getElementById('motorMargemMin').value) || 0) / 100,
-      estoqueOferta: parseInt(document.getElementById('motorEstoqueMin').value, 10) || 50, // unidades a alocar por variação (limitado ao real)
+      estoqueOferta: parseInt(document.getElementById('motorEstoqueMin').value, 10) || 20, // unidades a alocar por variação (limitado ao real)
       estoqueMinimo: 1, // filtro: só pula variação esgotada (estoque 0)
     };
     const dias = parseInt(document.getElementById('motorDias').value, 10) || 30;
@@ -36993,7 +37017,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       quantidade: parseInt(document.getElementById('motorQtd').value, 10) || 0,
       protegerMargem: proteger,
       margemMinima: (parseFloat(document.getElementById('motorMargemMin').value) || 0) / 100,
-      estoqueOferta: parseInt(document.getElementById('motorEstoqueMin').value, 10) || 50,
+      estoqueOferta: parseInt(document.getElementById('motorEstoqueMin').value, 10) || 20,
       estoqueMinimo: 1,
     };
     const dias = parseInt(document.getElementById('motorDias').value, 10) || 30;
@@ -38869,13 +38893,27 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const valor = parseFloat((document.getElementById('apMassaValor')||{}).value) || 0;
     const qtd = parseInt((document.getElementById('apMassaQtd')||{}).value) || 0;
     if (!dias || !valor || !qtd) { box.textContent = ''; return; }
+    // desconto imediato (opcional)
+    const modoInicial = (document.getElementById('apMassaModo')||{}).value || 'manter';
+    const valorInicial = parseFloat((document.getElementById('apMassaModoValor')||{}).value) || 0;
     // usa o menor preço de grupo como exemplo
-    const base = Math.min(...grupos.map(g => g.preco));
+    const precoAtual = Math.min(...grupos.map(g => g.preco));
+    // aplica o desconto imediato pra achar o preço inicial (base da cascata)
+    let base = precoAtual;
+    if (modoInicial === 'fixo') base = valorInicial;
+    else if (modoInicial === 'menos_rs') base = precoAtual - valorInicial;
+    else if (modoInicial === 'mais_rs') base = precoAtual + valorInicial;
+    else if (modoInicial === 'menos_pct') base = precoAtual * (1 - valorInicial/100);
+    else if (modoInicial === 'mais_pct') base = precoAtual * (1 + valorInicial/100);
+    base = Math.max(0, Math.round(base*100)/100);
     const degraus = [];
     for (let k = 1; k <= qtd; k++) degraus.push({ dias: dias*k, preco: valor, tipo });
     const seq = ReguaUI._cascata(base, degraus);
-    const partes = ['R$ '+base.toFixed(2)].concat(seq.map((p,i)=>`${degraus[i].dias}d → R$ ${p.toFixed(2)}`));
-    box.innerHTML = `📈 Exemplo (grupo R$ ${base.toFixed(2)}): ` + partes.join('  →  ') + ` · será aplicado nos ${grupos.length} grupo(s)`;
+    const inicioTxt = modoInicial === 'manter'
+      ? `R$ ${base.toFixed(2)}`
+      : `R$ ${precoAtual.toFixed(2)} → R$ ${base.toFixed(2)} (agora)`;
+    const partes = [inicioTxt].concat(seq.map((p,i)=>`${degraus[i].dias}d → R$ ${p.toFixed(2)}`));
+    box.innerHTML = `📈 Exemplo (grupo R$ ${precoAtual.toFixed(2)}): ` + partes.join('  →  ') + ` · será aplicado nos ${grupos.length} grupo(s)`;
   }
   window.apMassaPrevia = apMassaPrevia;
 
@@ -38889,6 +38927,9 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const tipo = (document.getElementById('apMassaTipo')||{}).value || 'mais_rs';
     const valor = parseFloat((document.getElementById('apMassaValor')||{}).value) || 0;
     const qtd = parseInt((document.getElementById('apMassaQtd')||{}).value) || 0;
+    // desconto imediato (opcional): operação + valor aplicados como preço inicial
+    const modoInicial = (document.getElementById('apMassaModo')||{}).value || 'manter';
+    const valorInicial = parseFloat((document.getElementById('apMassaModoValor')||{}).value) || 0;
     if (!dias || !valor || !qtd) { showToast('Preencha dias, valor e quantidade de degraus', true); return; }
 
     let aplicados = 0;
@@ -38897,6 +38938,15 @@ Responda APENAS com JSON válido (sem markdown), formato:
       // garante a régua ativa
       const ativa = document.getElementById(prefixo+'_reguaAtiva');
       if (ativa && !ativa.checked) { ativa.checked = true; ReguaUI.toggle(prefixo); }
+      // aplica o DESCONTO IMEDIATO (modo + valor) — o preço inicial de cada grupo.
+      // A cascata dos degraus parte deste preço já com desconto (resolver usa ele como base).
+      const elModo = document.getElementById(prefixo+'_reguaModo');
+      const elValor = document.getElementById(prefixo+'_reguaValor');
+      if (elModo) {
+        elModo.value = modoInicial;
+        if (typeof ReguaUI.onModo === 'function') ReguaUI.onModo(prefixo);
+      }
+      if (elValor && modoInicial !== 'manter') elValor.value = valorInicial;
       // limpa degraus existentes do grupo
       const cont = document.getElementById(prefixo+'_reguaDegraus');
       if (cont) cont.innerHTML = '';
@@ -38917,7 +38967,10 @@ Responda APENAS com JSON válido (sem markdown), formato:
       if (typeof ReguaUI.previa === 'function') ReguaUI.previa(prefixo);
       aplicados++;
     });
-    showToast(`✓ Régua aplicada em ${aplicados} grupo(s): +${tipo==='mais_pct'?valor+'%':'R$'+valor} a cada ${dias} dias (${qtd}x)`);
+    const descTxt = modoInicial === 'manter' ? '' :
+      (modoInicial.startsWith('menos') ? '−' : (modoInicial === 'fixo' ? '=' : '+')) +
+      (modoInicial.endsWith('pct') ? valorInicial+'%' : 'R$'+valorInicial) + ' agora, depois ';
+    showToast(`✓ Régua aplicada em ${aplicados} grupo(s): ${descTxt}+${tipo==='mais_pct'?valor+'%':'R$'+valor} a cada ${dias} dias (${qtd}x)`);
   }
   window.apAplicarReguaEmMassa = apAplicarReguaEmMassa;
 
@@ -40673,7 +40726,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.446-flash-purchase-limit';
+  const _DIAG_VERSAO_PAINEL = 'v33k.449-regua-desconto-imediato';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -52022,7 +52075,7 @@ ${JSON.stringify(metricas, null, 2)}`
       modoDesconto: r.modoDesconto || 'pct',
       desconto: r.desconto != null ? r.desconto : 15,
       quantidade: r.quantidade != null ? r.quantidade : 20,
-      estoqueOferta: r.estoqueOferta != null ? r.estoqueOferta : 50,
+      estoqueOferta: r.estoqueOferta != null ? r.estoqueOferta : 20,
       dias: c.dias != null ? c.dias : 30,
       diasCampanha: c.diasCampanha != null ? c.diasCampanha : 10,
       ativo: c.ativo === true,
@@ -52182,7 +52235,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const modoDesconto = (document.getElementById('autoRelModo') || {}).value || 'pct';
     const desconto = parseFloat((document.getElementById('autoRelDesconto') || {}).value) || 0;
     const quantidade = parseInt((document.getElementById('autoRelQtd') || {}).value, 10) || 20;
-    const estoqueOferta = parseInt((document.getElementById('autoRelEstoque') || {}).value, 10) || 50;
+    const estoqueOferta = parseInt((document.getElementById('autoRelEstoque') || {}).value, 10) || 20;
     const dias = parseInt((document.getElementById('autoRelDias') || {}).value, 10) || 30;
     const diasCampanha = parseInt((document.getElementById('autoRelDiasCampanha') || {}).value, 10) || 10;
     const ativo = !!(document.getElementById('autoRelAtivo') || {}).checked;
@@ -52431,6 +52484,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const mapa = {
       criada: { txt: 'Oferta criada', cls: 'ok', ic: 'check-circle' },
       coberta: { txt: 'Já tinha oferta ativa', cls: 'neutro', ic: 'shield-check' },
+      sem_horario_shopee: { txt: 'Aguardando horário da Shopee', cls: 'neutro', ic: 'clock' },
       falha: { txt: 'Falhou', cls: 'erro', ic: 'x-circle' },
       erro: { txt: 'Erro', cls: 'erro', ic: 'x-circle' },
       'sem-credencial': { txt: 'Loja sem conexão ativa', cls: 'erro', ic: 'plug' },
@@ -52448,7 +52502,11 @@ ${JSON.stringify(metricas, null, 2)}`
       let extra = '';
       if (l.status === 'criada') {
         const bits = [];
-        if (l.ofertas != null) bits.push(l.ofertas + (l.ofertas === 1 ? ' campanha' : ' campanhas'));
+        if (l.ofertas != null) {
+          // mostra "3 de 10 dias" quando parcial, senão só o número
+          if (l.diasPedidos != null && l.ofertas < l.diasPedidos) bits.push(l.ofertas + ' de ' + l.diasPedidos + ' dias');
+          else bits.push(l.ofertas + (l.ofertas === 1 ? ' campanha' : ' campanhas'));
+        }
         if (l.produtos != null) bits.push(l.produtos + (l.produtos === 1 ? ' produto' : ' produtos'));
         if (bits.length) extra = ' · ' + bits.join(', ');
       } else if (l.status === 'coberta' && l.agendadas != null) {
@@ -52459,6 +52517,8 @@ ${JSON.stringify(metricas, null, 2)}`
         '<div class="auto-hist-det-loja-txt">' +
           '<div class="auto-hist-det-loja-nome">' + escapeHtml(l.loja || 'Loja') + '</div>' +
           '<div class="auto-hist-det-loja-st">' + escapeHtml(info.txt) + extra + '</div>' +
+          // aviso informativo (ex: dias parciais) — nota amarela, não é erro
+          (l.aviso ? '<div class="auto-hist-det-loja-aviso">ℹ️ ' + escapeHtml(l.aviso) + '</div>' : '') +
           (l.erro ? '<div class="auto-hist-det-loja-erro">Motivo: ' + escapeHtml(l.erro) + '</div>' : '') +
         '</div>' +
       '</div>';
