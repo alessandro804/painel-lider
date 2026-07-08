@@ -40726,7 +40726,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.453-fix-vazamento-nf-anon';
+  const _DIAG_VERSAO_PAINEL = 'v33k.455-painel-webhook-multi';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -62379,35 +62379,68 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       }
       const ROTULO = { venda:'Vendas', tracking:'Tracking', estoque:'Estoque', preco:'Preço', promocao:'Promoção', saude:'Saúde da loja' };
       const COR = { venda:'#16a34a', tracking:'#2563eb', estoque:'#7c3aed', preco:'#d97706', promocao:'#db2777', saude:'#dc2626' };
-      const pt = r.porTipo || {};
-      const chips = Object.keys(ROTULO).map(k => {
+      const MK_ROTULO = { shopee:'Shopee', mercadolivre:'Mercado Livre', shein:'Shein', tiktok:'TikTok Shop', outro:'Outro' };
+      const MK_COR = { shopee:'#ee4d2d', mercadolivre:'#ffe600', shein:'#000000', tiktok:'#010101', outro:'#6b7280' };
+
+      // monta os chips de tipo pra um dado porTipo
+      const montarChips = (pt) => Object.keys(ROTULO).map(k => {
         const n = pt[k] || 0;
         const ativo = n > 0;
-        return '<div style="background:' + (ativo?'#f0fdf4':'#f9fafb') + ';border:1px solid ' + (ativo?'#bbf7d0':'#e5e7eb') + ';border-radius:10px;padding:8px 12px;min-width:90px">'
+        return '<div style="background:' + (ativo?'#f0fdf4':'#f9fafb') + ';border:1px solid ' + (ativo?'#bbf7d0':'#e5e7eb') + ';border-radius:10px;padding:8px 12px;min-width:84px">'
           + '<div style="font-size:18px;font-weight:800;color:' + (ativo?COR[k]:'#9ca3af') + '">' + n + '</div>'
           + '<div style="font-size:11px;color:#374151;font-weight:600">' + ROTULO[k] + '</div></div>';
       }).join('');
-      // tempo desde o último evento (sinal de vida)
-      let vida = '';
-      if (r.ultimoEventoEm) {
-        const seg = Math.floor((Date.now() - new Date(r.ultimoEventoEm).getTime())/1000);
-        const txt = seg < 60 ? seg+'s atrás' : (seg < 3600 ? Math.floor(seg/60)+'min atrás' : Math.floor(seg/3600)+'h atrás');
-        const recente = seg < 6*3600;
-        vida = '<div style="font-size:12px;color:' + (recente?'#047857':'#d97706') + ';margin:8px 0;font-weight:600">Último push: ' + txt + (recente?' ✓':' (faz tempo — confira se os pushes estão ativos no Console)') + '</div>';
+
+      // sinal de vida a partir de um timestamp
+      const montarVida = (ultimoEm, ausenteMsg) => {
+        if (ultimoEm) {
+          const seg = Math.floor((Date.now() - new Date(ultimoEm).getTime())/1000);
+          const txt = seg < 60 ? seg+'s atrás' : (seg < 3600 ? Math.floor(seg/60)+'min atrás' : Math.floor(seg/3600)+'h atrás');
+          const recente = seg < 6*3600;
+          return '<div style="font-size:12px;color:' + (recente?'#047857':'#d97706') + ';margin:6px 0;font-weight:600">Último push: ' + txt + (recente?' ✓':' (faz tempo)') + '</div>';
+        }
+        return '<div style="font-size:12px;color:#dc2626;margin:6px 0;font-weight:600">' + ausenteMsg + '</div>';
+      };
+
+      const totalTxt = '<div style="font-size:12px;color:#6b7280;margin-bottom:10px">Total: <b>' + r.total + '</b> evento(s)' + (r.truncado?' (mostrando os 500 mais recentes)':'') + ' nas últimas ' + r.janelaHoras + 'h</div>';
+
+      // ── SEÇÃO POR MARKETPLACE ──
+      const porMk = r.porMarketplace || {};
+      // ordem: shopee, mercadolivre, shein, tiktok, depois o resto
+      const ordemMk = ['shopee','mercadolivre','shein','tiktok'].filter(m => porMk[m]);
+      Object.keys(porMk).forEach(m => { if (!ordemMk.includes(m)) ordemMk.push(m); });
+
+      let secoesMk = '';
+      if (ordemMk.length === 0) {
+        secoesMk = '<div style="font-size:12px;color:#dc2626;margin:8px 0;font-weight:600">Nenhum push recebido nas últimas ' + r.janelaHoras + 'h. Verifique se as URLs de webhook estão ativas nos consoles dos marketplaces.</div>';
       } else {
-        vida = '<div style="font-size:12px;color:#dc2626;margin:8px 0;font-weight:600">Nenhum push recebido nas últimas 24h. Verifique se as URLs estão ativas no Shopee Open Platform.</div>';
+        secoesMk = ordemMk.map(m => {
+          const d = porMk[m] || { total:0, porTipo:{}, ultimoEm:null };
+          const rotulo = MK_ROTULO[m] || m;
+          const cor = MK_COR[m] || '#6b7280';
+          return '<div style="border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;margin-bottom:10px">'
+            + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+            + '<span style="width:10px;height:10px;border-radius:50%;background:' + cor + ';border:1px solid #d1d5db;display:inline-block"></span>'
+            + '<span style="font-weight:800;font-size:13px;color:#111827">' + rotulo + '</span>'
+            + '<span style="font-size:12px;color:#6b7280">· ' + d.total + ' evento(s)</span></div>'
+            + montarVida(d.ultimoEm, 'Sem push nas últimas ' + r.janelaHoras + 'h')
+            + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">' + montarChips(d.porTipo || {}) + '</div>'
+            + '</div>';
+        }).join('');
       }
-      const totalTxt = '<div style="font-size:12px;color:#6b7280;margin-bottom:8px">Total: <b>' + r.total + '</b> evento(s)' + (r.truncado?'+ (mostrando os 500 mais recentes)':'') + ' nas últimas ' + r.janelaHoras + 'h</div>';
-      // últimos eventos
-      const ult = (r.ultimos||[]).slice(0,8).map(e => {
+
+      // últimos eventos (misturados, com o marketplace no rótulo)
+      const ult = (r.ultimos||[]).slice(0,10).map(e => {
         const hora = new Date(e.em).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+        const mkTxt = MK_ROTULO[e.marketplace] || e.marketplace || '';
         return '<div style="display:flex;gap:8px;align-items:center;font-size:11px;padding:3px 0;border-bottom:1px solid #f3f4f6">'
-          + '<span style="color:' + (COR[e.tipo]||'#6b7280') + ';font-weight:700;min-width:70px">' + (ROTULO[e.tipo]||e.tipo) + '</span>'
+          + '<span style="color:' + (MK_COR[e.marketplace]||'#6b7280') + ';font-weight:700;min-width:78px">' + escapeHtml(mkTxt) + '</span>'
+          + '<span style="color:' + (COR[e.tipo]||'#6b7280') + ';font-weight:600;min-width:58px">' + (ROTULO[e.tipo]||e.tipo) + '</span>'
           + '<span style="color:#374151;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(e.referencia||'') + (e.detalhe?(' · '+escapeHtml(e.detalhe)):'') + '</span>'
           + '<span style="color:#9ca3af">' + hora + '</span></div>';
       }).join('');
-      cont.innerHTML = totalTxt + vida
-        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + chips + '</div>'
+
+      cont.innerHTML = totalTxt + secoesMk
         + (ult ? ('<div style="margin-top:6px"><div style="font-size:11px;color:#9ca3af;font-weight:600;margin-bottom:4px">Últimos eventos</div>' + ult + '</div>') : '');
     } catch(e) { cont.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
   }
@@ -62420,6 +62453,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // (o insert de um push repetido bate na constraint e é ignorado). O índice por
   // recebido_em acelera a janela de 24h. "if not exists" = seguro rodar de novo.
   const _SQL_WEBHOOK_TABELA = [
+    '-- Tabela LEGADO da Shopee (mantida como está; já em uso)',
     'create table if not exists webhook_eventos_shopee (',
     '  id bigint generated always as identity primary key,',
     '  shop_id text,',
@@ -62428,10 +62462,24 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     '  recebido_em timestamptz not null default now(),',
     '  unique (shop_id, order_sn)',
     ');',
-    '',
-    '-- acelera a consulta por janela de tempo (últimas 24h) no painel',
     'create index if not exists idx_webhook_eventos_recebido',
-    '  on webhook_eventos_shopee (recebido_em desc);'
+    '  on webhook_eventos_shopee (recebido_em desc);',
+    '',
+    '-- Tabela GENÉRICA (Mercado Livre, Shein e futuros marketplaces).',
+    '-- Uma tabela só, separada por coluna marketplace — mesma filosofia da',
+    '-- tabela unificada de vendas. O painel agrega esta + a da Shopee.',
+    'create table if not exists webhook_eventos (',
+    '  id bigint generated always as identity primary key,',
+    '  marketplace text not null,',
+    '  conta_ref text,',
+    '  tipo text,',
+    '  referencia text,',
+    '  detalhe text,',
+    '  recebido_em timestamptz not null default now(),',
+    '  unique (marketplace, referencia, tipo)',
+    ');',
+    'create index if not exists idx_webhook_eventos_gen_recebido',
+    '  on webhook_eventos (recebido_em desc);'
   ].join('\n');
 
   function admMostrarSqlWebhook() {
