@@ -25,6 +25,7 @@
     animation: lcBootSpin .8s linear infinite;
   }
   @keyframes lcBootSpin { to { transform: rotate(360deg); } }
+  @keyframes lcPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 </style>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Painel Lider 10</title>
@@ -7426,7 +7427,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
                 <input type="number" id="lucroImposto" class="form-input" placeholder="0" step="0.1" min="0" max="30" style="width:100px" onchange="lucroCarregarRelatorio()">
               </div>
               <div style="display:flex;flex-direction:column;justify-content:flex-end">
-                <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Ignorar Frete (você paga)</label>
+                <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Ignorar Frete Comprador</label>
                 <label class="lc-switch"><input type="checkbox" id="lucroIgnFrete" onchange="lucroCarregarRelatorio()"><span class="lc-switch-slider"></span></label>
               </div>
             </div>
@@ -7443,7 +7444,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
                 <div style="background:#4a7c59;color:#fff;font-weight:700;padding:10px 14px">Entradas</div>
                 <div style="padding:14px;color:#16a34a;font-size:14px">
                   <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-weight:600"><span>Receitas Totais</span><span id="lucroReceita">R$ 0,00 (100%)</span></div>
-                  <div style="display:flex;justify-content:space-between;margin-bottom:8px"><span>Frete (você paga)</span><span id="lucroFreteEntrada">R$ 0,00 (0%)</span></div>
+                  <div style="display:flex;justify-content:space-between;margin-bottom:8px" id="lucroFreteEntradaLinha"><span>Frete Comprador <span style="font-size:11px;color:#94a3b8">(informativo)</span></span><span id="lucroFreteEntrada">R$ 0,00 (0%)</span></div>
                   <div style="display:flex;justify-content:space-between;margin-bottom:8px" id="lucroBonusMlLinha"><span>Estornos ML <span style="font-size:11px;color:#94a3b8">(rebate + tarifas)</span></span><span id="lucroBonusMl">R$ 0,00 (0%)</span></div>
                   <div style="display:flex;justify-content:space-between;border-top:1px solid #cdeacd;padding-top:8px;font-weight:800"><span>Total</span><span id="lucroEntradaTotal">R$ 0,00 (100%)</span></div>
                 </div>
@@ -17535,7 +17536,19 @@ Retorne JSON: {"ID": "valor", ...}`;
       return;
     }
 
-    const r = await fetch(BACKEND_URL + '/api/ads/loja/' + loja + '/anuncios?dias=' + dias, { headers }).then(x => x.json());
+    // JANELA (v33k.471): manda desde/ate quando o usuário escolheu período custom
+    // (ex.: só 07-07). Antes convertíamos pra "dias" via getPeriodoDias, que tinha
+    // off-by-one (07-07 virava 2 dias) E perdia a data exata (janelaDiasBR conta de
+    // ontem pra trás). Com desde/ate o backend usa o intervalo EXATO — o gasto por
+    // anúncio passa a bater com a Shopee no período selecionado.
+    let _adsUrl = BACKEND_URL + '/api/ads/loja/' + loja + '/anuncios';
+    const _pg = (typeof getPeriodoGlobal === 'function') ? getPeriodoGlobal() : null;
+    if (_pg && _pg.custom && _pg.custom.desde && _pg.custom.ate) {
+      _adsUrl += '?desde=' + encodeURIComponent(_pg.custom.desde) + '&ate=' + encodeURIComponent(_pg.custom.ate);
+    } else {
+      _adsUrl += '?dias=' + dias;
+    }
+    const r = await fetch(_adsUrl, { headers }).then(x => x.json());
     if (meuToken != null && meuToken !== _adsRenderToken) return; // outro render assumiu
     if (!r.ok) {
       if (r.semAds) { cont.innerHTML = blocoSemAds(); return; }
@@ -40727,7 +40740,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.463-ml-bonus-estorno';
+  const _DIAG_VERSAO_PAINEL = 'v33k.471-ads-anuncios-periodo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -47736,8 +47749,10 @@ ${JSON.stringify(metricas, null, 2)}`
   function getPeriodoDias() {
     const p = getPeriodoGlobal();
     if (p.custom && p.custom.desde && p.custom.ate) {
+      // conta dias INCLUSIVOS usando meia-noite nas duas pontas (v33k.471): antes
+      // o `ate` usava 23:59:59, o que somava ~1 dia e fazia 07-07 virar 2 dias.
       const d1 = new Date(p.custom.desde + 'T00:00:00-03:00');
-      const d2 = new Date(p.custom.ate + 'T23:59:59-03:00');
+      const d2 = new Date(p.custom.ate + 'T00:00:00-03:00');
       const dd = Math.max(1, Math.round((d2 - d1) / 86400000) + 1);
       return Math.min(dd, 90);
     }
@@ -48104,8 +48119,9 @@ ${JSON.stringify(metricas, null, 2)}`
       // consolidado
       setTxt('lucroReceita', fmt(r.entradas.receitaTotal) + ' (' + (r.entradas.total > 0 ? Math.round(r.entradas.receitaTotal / r.entradas.total * 100) : 100) + '%)');
       // Frete não é mais ENTRADA (virou custo, v33k.462). Oculta a linha das Entradas.
+      // Frete Comprador (v33k.464): informativo, controlado pelo toggle. Some quando 0.
       setTxt('lucroFreteEntrada', fmtPct(r.entradas.freteComprador || 0, r.entradas.pctFreteComprador || 0));
-      { const _fe = document.getElementById('lucroFreteEntrada'); if (_fe && _fe.parentElement) _fe.parentElement.style.display = (r.entradas.freteComprador || 0) > 0 ? '' : 'none'; }
+      { const _fe = document.getElementById('lucroFreteEntradaLinha'); if (_fe) _fe.style.display = (r.entradas.freteComprador || 0) > 0 ? '' : 'none'; }
       // Estornos/bônus do ML (v33k.463): crédito que o ML devolve. Só aparece quando > 0.
       setTxt('lucroBonusMl', fmtPct(r.entradas.bonusMl || 0, r.entradas.pctBonusMl || 0));
       { const _bm = document.getElementById('lucroBonusMlLinha'); if (_bm) _bm.style.display = (r.entradas.bonusMl || 0) > 0 ? '' : 'none'; }
@@ -49846,7 +49862,13 @@ ${JSON.stringify(metricas, null, 2)}`
       if (resumo) resumo.innerHTML =
         '<span><b style="color:var(--lc-ink)">' + (data.total || 0) + '</b> pedidos</span>' +
         '<span><b style="color:var(--lc-ink)">' + (data.totalProdutos || 0) + '</b> produtos</span>' +
-        '<span>Total: <b style="color:var(--lc-success)">' + formatBRL(data.totalValor || 0) + '</b></span>';
+        '<span>Total: <b style="color:var(--lc-success)">' + formatBRL(data.totalValor || 0) + '</b></span>' +
+        ((data.totalHoje || 0) > 0
+          ? '<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--lc-muted)">'
+            + '<span style="display:inline-flex;align-items:center;gap:4px;background:var(--lc-danger-soft);color:var(--lc-danger);font-weight:700;font-size:10px;padding:2px 7px;border-radius:999px">'
+            + '<span style="width:6px;height:6px;border-radius:50%;background:var(--lc-danger);display:inline-block;animation:lcPulse 1.4s infinite"></span>AO VIVO</span>'
+            + '+' + (data.totalHoje) + ' pedido(s) de hoje (' + formatBRL(data.totalValorHoje || 0) + ') — contabilizados amanhã, quando o dia fechar</span>'
+          : '');
 
       pedRenderStatusFiltros(data.statusContagens, data.somatorias);
       pedRenderPromoFiltros(data.promoContagens);
@@ -49874,6 +49896,9 @@ ${JSON.stringify(metricas, null, 2)}`
     atacado:              { label: 'Atacado',           cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
     cupom_vendedor:       { label: 'Cupom do vendedor', cor: 'var(--lc-primary)', soft: 'var(--lc-primary-soft)' },
     cupom_shopee:         { label: 'Cupom Shopee',      cor: 'var(--lc-muted)',   soft: 'var(--lc-surface-2)' },
+    cupom_ml:             { label: 'Cupom',             cor: 'var(--lc-primary)', soft: 'var(--lc-primary-soft)' },
+    oferta_ml:            { label: 'Oferta ML',         cor: 'var(--lc-danger)',  soft: 'var(--lc-danger-soft)' },
+    cashback_ml:          { label: 'Cashback',          cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
     free_gift:            { label: 'Brinde',            cor: 'var(--lc-success)', soft: 'var(--lc-success-soft)' },
     affiliate:            { label: 'Afiliado',          cor: 'var(--lc-info)',    soft: 'var(--lc-info-soft)' },
   };
@@ -49890,6 +49915,9 @@ ${JSON.stringify(metricas, null, 2)}`
     promocao_vendedor: 'Promoção: desconto de preço que você cadastrou no anúncio.',
     cupom_vendedor: 'Cupom do vendedor: cupom que você ofereceu ao cliente. É um custo seu (sai do seu repasse).',
     cupom_shopee: 'Cupom Shopee: cupom bancado pela Shopee. Não afeta o seu lucro.',
+    cupom_ml: 'Cupom: cupom aplicado no pedido do Mercado Livre.',
+    oferta_ml: 'Oferta ML: promoção em que o Mercado Livre banca parte do desconto (cofinanciada). Parte volta pra você como estorno.',
+    cashback_ml: 'Cashback: valor que o Mercado Livre devolveu ao comprador. Não sai do seu bolso.',
     atacado: 'Atacado: preço por faixa de quantidade configurado no anúncio.',
   };
   function pedPromoExplicacaoHtml(promocoes) {
