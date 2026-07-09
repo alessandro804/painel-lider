@@ -11743,9 +11743,35 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
    * - Ao salvar: grava no cache local imediato + envia pro Supabase em background
    * - Indicador visual mostra status da sincronização
    */
+  // ============================================================
+  // INPUTS DO FLUXO (v33k.484) — persiste os dados preenchidos numa demanda de
+  // anúncio novo (fotos, cores, tamanhos, SKU, preço, loja, dados fiscais, etc.)
+  // num único JSONB (coluna inputs_fluxo). Sem isso, ao reabrir a demanda depois
+  // de um reload, tudo voltava vazio e o anúncio era "pulado" por falta de fotos.
+  // ============================================================
+  const _CAMPOS_INPUTS_FLUXO = [
+    'skuPai', 'coresInput', 'tamanhosInput', 'fotosPorCor', 'precoBase',
+    'estoqueDefault', 'duplicacao', 'imagens', 'contas', 'lojaDestinoId',
+    'dadosFiscais', 'guiaTamanhos', 'fotos', 'cores', 'tamanhos', '_regua',
+    'categoria', 'marca', 'palavrasChaveSEO', 'fiscalSilenciado',
+  ];
+  function _serializarInputsFluxo(d) {
+    if (!d) return null;
+    const obj = {};
+    let temAlgo = false;
+    _CAMPOS_INPUTS_FLUXO.forEach(k => {
+      if (d[k] !== undefined && d[k] !== null) { obj[k] = d[k]; temAlgo = true; }
+    });
+    return temAlgo ? obj : null;
+  }
+  function _aplicarInputsFluxo(destino, inputs) {
+    if (!destino || !inputs || typeof inputs !== 'object') return;
+    _CAMPOS_INPUTS_FLUXO.forEach(k => {
+      if (inputs[k] !== undefined && inputs[k] !== null) destino[k] = inputs[k];
+    });
+  }
+
   const LiderSync = {
-    client: null,
-    enabled: false,
     syncing: false,
     lastError: null,
     // v33k.252: trava anti-perda de vínculos. Fica false até o pull inicial
@@ -11948,11 +11974,16 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         agendar_em: d._agendarExportarEm || null,
         aviso_agendado_para: d.avisoAgendadoPara || null,
         origem_ia: (d.origemIA || d._origemIA) ? true : null,
-        origem_whatsapp: d.origemWhatsapp || null
+        origem_whatsapp: d.origemWhatsapp || null,
+        // v33k.484: inputs do fluxo (anúncio novo) persistidos em JSONB. Antes viviam
+        // só em memória → ao reabrir a demanda depois de um reload, fotos/cores/
+        // tamanhos/SKU/loja/dados fiscais voltavam vazios (demanda "pulada" por falta
+        // de fotos). Agora tudo persiste e reaparece ao reabrir a demanda.
+        inputs_fluxo: _serializarInputsFluxo(d),
       };
     },
     _fromDbDemanda(r) {
-      return {
+      const base = {
         id: r.id, cliente: r.cliente, produto: r.produto, tipo: r.tipo,
         setor: r.setor,
         marketplace: r.marketplace, prioridade: r.prioridade, status: r.status,
@@ -11967,6 +11998,10 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
         origemWhatsapp: r.origem_whatsapp || null,
         origemIA: r.origem_ia || null
       };
+      // v33k.484: reidrata os inputs do fluxo (fotos, cores, tamanhos, SKU, loja,
+      // dados fiscais, etc.) a partir do JSONB — assim reabrir a demanda mostra tudo.
+      _aplicarInputsFluxo(base, r.inputs_fluxo);
+      return base;
     },
     _toDbVinculo(v) {
       return {
@@ -41182,7 +41217,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.483-fiscal-no-payload';
+  const _DIAG_VERSAO_PAINEL = 'v33k.484-inputs-fluxo-persist';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
