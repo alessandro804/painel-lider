@@ -1131,6 +1131,26 @@
   window._baixarDanfe = _baixarDanfe;
   window._baixarXml = _baixarXml;
 
+  // Imprime o DANFE pela CHAVE de acesso (usado na Expedição, que tem a chave).
+  async function _imprimirNfPorChave(chave) {
+    if (!chave) return _toast('Nota sem chave de acesso.', true);
+    try {
+      _toast('Gerando NF…');
+      const resp = await fetch(_base() + '/api/nfe/danfe-por-chave/' + encodeURIComponent(chave), {
+        headers: { 'x-api-token': _token() },
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        return _toast(err.erro || 'Erro ao gerar NF', true);
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) { _toast('Erro ao gerar NF', true); }
+  }
+  window._imprimirNfPorChave = _imprimirNfPorChave;
+
 
   // ─── Expõe as funções chamadas via onclick ─────────────────────────
   window._gfEditarClasse = _gfEditarClasse;
@@ -1147,23 +1167,44 @@
   // ════════════════════════════════════════════════════════════════
   // CENTRAL DE NOTAS FISCAIS (acompanhamento + XML p/ contabilidade)
   // ════════════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════════════════
+  // CENTRAL DE NOTAS FISCAIS — redesenho premium (v33k.518)
+  // Simples pra qualquer pessoa: períodos de 1 clique, resumo visual,
+  // tabela limpa e ações com nome claro.
+  // ════════════════════════════════════════════════════════════════
   async function abrirCentralNotas() {
     _overlay('centralNotasOverlay',
-      '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="receipt"></span> Notas Fiscais Emitidas</h2>' +
-      '<div style="font-size:12px;opacity:.9;margin-top:2px">Acompanhe, baixe o XML e imprima o DANFE</div></div>',
-      '<div id="cnConteudo"><div style="text-align:center;padding:30px;color:#64748b"><span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div></div>',
-      920);
-    // estado dos filtros
-    window._cnFiltros = { de: '', ate: '', lojaId: '', empresaId: '', status: '', busca: '' };
+      '<div><h2 style="margin:0;font-size:17px;display:flex;align-items:center;gap:8px"><span class="lc-ic" data-lucide="file-text"></span> Notas Fiscais</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Acompanhe as notas, imprima o PDF e envie os XMLs pra contabilidade</div></div>',
+      '<div id="cnConteudo"><div style="text-align:center;padding:40px;color:#64748b"><span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div></div>',
+      960);
+    const hoje = new Date();
+    const seteDias = new Date(Date.now() - 7 * 864e5);
+    window._cnFiltros = { de: seteDias.toISOString().slice(0, 10), ate: hoje.toISOString().slice(0, 10), lojaId: '', empresaId: '', status: '', busca: '', periodo: '7d' };
     await _cnCarregarFiltrosBase();
     await _cnCarregar();
   }
 
-  // carrega empresas e lojas pros seletores de filtro
   async function _cnCarregarFiltrosBase() {
     const data = await _api('/api/nfe/lojas-vinculo');
     window._cnEmpresas = (data && data.empresas) || [];
     window._cnLojas = ((data && data.lojas) || []).filter((l) => l.nfe_empresa_id);
+  }
+
+  function _cnSetPeriodo(p) {
+    const f = window._cnFiltros || {};
+    const hoje = new Date();
+    f.periodo = p;
+    if (p === 'hoje') { f.de = hoje.toISOString().slice(0, 10); f.ate = f.de; }
+    else if (p === '7d') { f.de = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10); f.ate = hoje.toISOString().slice(0, 10); }
+    else if (p === '30d') { f.de = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10); f.ate = hoje.toISOString().slice(0, 10); }
+    // 'custom' mantém o que estiver nos campos
+    window._cnFiltros = f;
+    if (p !== 'custom') _cnCarregar();
+    else {
+      const box = document.getElementById('cnPeriodoCustom');
+      if (box) box.style.display = box.style.display === 'none' ? 'flex' : 'none';
+    }
   }
 
   async function _cnCarregar() {
@@ -1177,8 +1218,8 @@
     if (f.empresaId) params.set('empresaId', f.empresaId);
     if (f.status) params.set('status', f.status);
     if (f.busca) params.set('busca', f.busca);
-
-    alvo.innerHTML = '<div style="text-align:center;padding:30px;color:#64748b"><span class="lc-ic" data-lucide="refresh-cw"></span> Carregando notas…</div>';
+    alvo.innerHTML = '<div style="text-align:center;padding:40px;color:#64748b"><span class="lc-ic" data-lucide="refresh-cw"></span> Carregando notas…</div>';
+    _hidratarIcones(alvo);
     const data = await _api('/api/nfe/notas?' + params.toString());
     if (!data.ok) { alvo.innerHTML = '<div style="color:#b91c1c;padding:16px">Erro: ' + _esc(data.erro || 'falha') + '</div>'; return; }
     _cnRender(data.notas || [], data.resumo || {});
@@ -1189,111 +1230,109 @@
     const lojas = window._cnLojas || [];
     const f = window._cnFiltros || {};
 
+    const btnPer = (id, rotulo) => {
+      const ativo = f.periodo === id;
+      return '<button onclick="_cnSetPeriodo(\'' + id + '\')" style="padding:7px 14px;border-radius:999px;border:1px solid ' + (ativo ? '#16a34a' : '#e2e8f0') + ';background:' + (ativo ? '#16a34a' : '#fff') + ';color:' + (ativo ? '#fff' : '#334155') + ';font-size:12.5px;font-weight:600;cursor:pointer">' + rotulo + '</button>';
+    };
+
     const optEmp = '<option value="">Todas as empresas</option>' +
       empresas.map((e) => '<option value="' + e.id + '"' + (String(f.empresaId) === String(e.id) ? ' selected' : '') + '>' + _esc(e.razao_social) + '</option>').join('');
     const optLoja = '<option value="">Todas as lojas</option>' +
       lojas.map((l) => '<option value="' + l.id + '"' + (String(f.lojaId) === String(l.id) ? ' selected' : '') + '>' + _esc(l.nome) + '</option>').join('');
     const optStatus = '<option value="">Todos os status</option>' +
-      ['autorizada', 'rejeitada', 'cancelada'].map((s) => '<option value="' + s + '"' + (f.status === s ? ' selected' : '') + '>' + s.charAt(0).toUpperCase() + s.slice(1) + '</option>').join('');
+      [['autorizada', 'Autorizadas'], ['cancelada', 'Canceladas'], ['rejeitada', 'Rejeitadas']].map(([v, r]) =>
+        '<option value="' + v + '"' + (f.status === v ? ' selected' : '') + '>' + r + '</option>').join('');
 
-    // cabeçalho com filtros
+    // ── barra de filtros: períodos de 1 clique + seletores ──
     const filtros =
-      '<div style="' + card + '">' +
-        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px">' +
+      '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px 16px;margin-bottom:14px">' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+          btnPer('hoje', 'Hoje') + btnPer('7d', '7 dias') + btnPer('30d', '30 dias') + btnPer('custom', 'Período…') +
+          '<div style="flex:1"></div>' +
+          '<select id="cnEmp" onchange="_cnAplicarFiltros()" style="' + inp + ';max-width:210px">' + optEmp + '</select>' +
+          '<select id="cnLoja" onchange="_cnAplicarFiltros()" style="' + inp + ';max-width:180px">' + optLoja + '</select>' +
+          '<select id="cnStatus" onchange="_cnAplicarFiltros()" style="' + inp + ';max-width:160px">' + optStatus + '</select>' +
+        '</div>' +
+        '<div id="cnPeriodoCustom" style="display:' + (f.periodo === 'custom' ? 'flex' : 'none') + ';gap:10px;margin-top:10px;align-items:end">' +
           '<div><label style="' + lbl + '">De</label><input type="date" id="cnDe" value="' + _esc(f.de) + '" style="' + inp + '"></div>' +
           '<div><label style="' + lbl + '">Até</label><input type="date" id="cnAte" value="' + _esc(f.ate) + '" style="' + inp + '"></div>' +
-          '<div><label style="' + lbl + '">Empresa</label><select id="cnEmp" style="' + inp + '">' + optEmp + '</select></div>' +
-          '<div><label style="' + lbl + '">Loja</label><select id="cnLoja" style="' + inp + '">' + optLoja + '</select></div>' +
-          '<div><label style="' + lbl + '">Status</label><select id="cnStatus" style="' + inp + '">' + optStatus + '</select></div>' +
-          '<div><label style="' + lbl + '">Buscar (chave/nº/pedido)</label><input id="cnBusca" value="' + _esc(f.busca) + '" style="' + inp + '" placeholder="digite e Enter"></div>' +
+          '<button class="lc-btn lc-btn--sm" style="background:#16a34a;color:#fff" onclick="_cnAplicarFiltros()">Aplicar</button>' +
         '</div>' +
-        '<div style="display:flex;gap:8px;justify-content:flex-end">' +
-          '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_cnLimparFiltros()">Limpar</button>' +
-          '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_cnAplicarFiltros()">Filtrar</button>' +
-          '<button class="lc-btn lc-btn--sm" style="background:#16a34a;color:#fff" onclick="_cnBaixarLote()"><span class="lc-ic" data-lucide="package"></span> Baixar XMLs (ZIP)</button>' +
+        '<div style="display:flex;gap:8px;margin-top:10px;align-items:center">' +
+          '<input id="cnBusca" value="' + _esc(f.busca) + '" style="' + inp + ';flex:1" placeholder="Buscar por chave, número da nota ou pedido…">' +
+          '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_cnAplicarFiltros()"><span class="lc-ic" data-lucide="search"></span> Buscar</button>' +
+          '<button class="lc-btn lc-btn--sm" style="background:#16a34a;color:#fff" onclick="_cnBaixarLote()" title="Baixa um ZIP com os XMLs do filtro atual — pronto pra mandar pra contabilidade"><span class="lc-ic" data-lucide="package"></span> XMLs p/ contabilidade</button>' +
         '</div>' +
       '</div>';
 
-    // resumo
+    // ── cards de resumo ──
+    const cardResumo = (icone, titulo, valor, cor, fundo) =>
+      '<div style="flex:1;min-width:140px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:12px">' +
+        '<div style="width:38px;height:38px;border-radius:10px;background:' + fundo + ';color:' + cor + ';display:flex;align-items:center;justify-content:center"><span class="lc-ic" data-lucide="' + icone + '"></span></div>' +
+        '<div><div style="font-size:11.5px;color:#64748b">' + titulo + '</div>' +
+        '<div style="font-size:19px;font-weight:800;color:#0f172a">' + valor + '</div></div>' +
+      '</div>';
     const resumoHtml =
-      '<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">' +
-        _cnCard('Total', resumo.total || 0, '#0f172a') +
-        _cnCard('Autorizadas', resumo.autorizadas || 0, '#16a34a') +
-        _cnCard('Rejeitadas', resumo.rejeitadas || 0, '#b91c1c') +
-        _cnCard('Valor autorizado', 'R$ ' + Number(resumo.valor_total || 0).toFixed(2), '#0369a1') +
+      '<div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap">' +
+        cardResumo('file-text', 'Notas no período', resumo.total || 0, '#0369a1', '#e0f2fe') +
+        cardResumo('check', 'Autorizadas', resumo.autorizadas || 0, '#166534', '#dcfce7') +
+        cardResumo('triangle-alert', 'Rejeitadas', resumo.rejeitadas || 0, '#b91c1c', '#fee2e2') +
+        cardResumo('banknote', 'Valor autorizado', 'R$ ' + Number(resumo.valor_total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }), '#7c3aed', '#f3e8ff') +
       '</div>';
 
-    // tabela de notas
+    // ── tabela ──
     let linhas;
     if (!notas.length) {
-      linhas = '<tr><td colspan="7" style="padding:24px;text-align:center;color:#64748b">Nenhuma nota encontrada neste filtro.</td></tr>';
+      linhas = '<tr><td colspan="7" style="padding:40px;text-align:center;color:#64748b">' +
+        '<div style="font-size:32px;margin-bottom:8px"><span class="lc-ic" data-lucide="file-text" style="width:32px;height:32px"></span></div>' +
+        '<div style="font-weight:600;margin-bottom:4px">Nenhuma nota neste período</div>' +
+        '<div style="font-size:12px">Ajuste o período acima ou emita notas pela tela de Pedidos → Expedição NF.</div></td></tr>';
     } else {
       linhas = notas.map((n) => {
-        const dt = n.criado_em ? new Date(n.criado_em).toLocaleDateString('pt-BR') + ' ' + new Date(n.criado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
-        const statusBadge = _cnStatusBadge(n.status);
-        const chave = n.chave_acesso ? (n.chave_acesso.slice(0, 8) + '…' + n.chave_acesso.slice(-6)) : '—';
-        // ações conforme status
+        const d = n.criado_em ? new Date(n.criado_em) : null;
+        const dt = d ? d.toLocaleDateString('pt-BR') + ' <span style="color:#94a3b8">' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + '</span>' : '';
+        const chave = n.chave_acesso ? (n.chave_acesso.slice(0, 6) + '…' + n.chave_acesso.slice(-6)) : '—';
         let acoes = '';
         if (n.status === 'autorizada') {
-          acoes =
-            '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff;padding:4px 8px" onclick="_baixarDanfe(' + n.id + ')" title="Imprimir DANFE"><span class="lc-ic" data-lucide="receipt"></span></button> ' +
-            '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="padding:4px 8px" onclick="_baixarXml(' + n.id + ')" title="Baixar XML">XML</button>';
-          if (!n.tem_xml) acoes = '<span style="font-size:11px;color:#b45309">XML indisponível</span>';
-          // cancelar (< 24h) ou devolver (> 24h)
+          acoes = n.tem_xml
+            ? '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff;padding:5px 10px" onclick="_baixarDanfe(' + n.id + ')" title="Abrir o PDF da nota pra imprimir"><span class="lc-ic" data-lucide="printer"></span> Imprimir</button> ' +
+              '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="padding:5px 10px" onclick="_baixarXml(' + n.id + ')" title="Baixa o arquivo XML desta nota">XML</button>'
+            : '<span style="font-size:11px;color:#b45309" title="Nota emitida fora do sistema ou antes da atualização">XML indisponível</span>';
           const horas = n.criado_em ? (Date.now() - new Date(n.criado_em).getTime()) / 3600000 : 999;
-          if (horas < 24) {
-            acoes += ' <button class="lc-btn lc-btn--sm" style="background:#dc2626;color:#fff;padding:4px 8px" onclick="_cnCancelar(' + n.id + ')" title="Cancelar NF-e (até 24h)"><span class="lc-ic" data-lucide="x"></span> Cancelar</button>';
-          } else {
-            acoes += ' <button class="lc-btn lc-btn--sm" style="background:#d97706;color:#fff;padding:4px 8px" onclick="_cnDevolver(' + n.id + ')" title="Emitir devolução (após 24h)"><span class="lc-ic" data-lucide="refresh-cw"></span> Devolver</button>';
-          }
+          if (horas < 24) acoes += ' <button class="lc-btn lc-btn--sm" style="background:#fee2e2;color:#b91c1c;padding:5px 10px;border:1px solid #fecaca" onclick="_cnCancelar(' + n.id + ')" title="Cancela a nota na SEFAZ (possível até 24h após a emissão)">Cancelar</button>';
+          else acoes += ' <button class="lc-btn lc-btn--sm" style="background:#fef3c7;color:#92400e;padding:5px 10px;border:1px solid #fde68a" onclick="_cnDevolver(' + n.id + ')" title="Emite uma nota de devolução referenciando esta">Devolver</button>';
         } else if (n.status === 'rejeitada') {
-          acoes = '<span style="font-size:11px;color:#b91c1c" title="' + _esc(n.motivo_rejeicao || '') + '">' + _esc((n.motivo_rejeicao || 'Rejeitada').slice(0, 30)) + '</span>';
+          acoes = '<span style="font-size:11px;color:#b91c1c" title="' + _esc(n.motivo_rejeicao || '') + '">' + _esc((n.motivo_rejeicao || 'Rejeitada').slice(0, 34)) + '</span>';
         } else if (n.status === 'cancelada') {
-          acoes = '<span style="font-size:11px;color:#64748b">Cancelada</span>' +
-            (n.tem_xml ? ' <button class="lc-btn lc-btn--sm lc-btn--ghost" style="padding:4px 8px" onclick="_baixarXml(' + n.id + ')" title="Baixar XML">XML</button>' : '');
+          acoes = (n.tem_xml ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="padding:5px 10px" onclick="_baixarXml(' + n.id + ')">XML</button>' : '<span style="font-size:11px;color:#64748b">—</span>');
         }
-        return '<tr style="border-top:1px solid #f1f5f9">' +
-          '<td style="padding:8px;font-size:12px;white-space:nowrap">' + dt + '</td>' +
-          '<td style="padding:8px;font-size:12px">' + _esc(n.empresa_nome) + '</td>' +
-          '<td style="padding:8px;font-size:12px">' + _esc(n.loja_nome) + '</td>' +
-          '<td style="padding:8px;font-size:12px;text-align:center">' + (n.numero || '—') + '</td>' +
-          '<td style="padding:8px;font-size:11px;font-family:monospace">' + chave + '</td>' +
-          '<td style="padding:8px;text-align:center">' + statusBadge + '</td>' +
-          '<td style="padding:8px;text-align:right;white-space:nowrap">' + acoes + '</td>' +
+        return '<tr style="border-top:1px solid #f1f5f9" onmouseover="this.style.background=\'#f8fafc\'" onmouseout="this.style.background=\'\'">' +
+          '<td style="padding:10px 12px;font-size:12px;white-space:nowrap">' + dt + '</td>' +
+          '<td style="padding:10px 12px;font-size:12.5px;font-weight:600;color:#0f172a">' + _esc(n.empresa_nome) + '</td>' +
+          '<td style="padding:10px 12px;font-size:12px;color:#475569">' + _esc(n.loja_nome) + '</td>' +
+          '<td style="padding:10px 12px;font-size:12.5px;text-align:center;font-weight:700">' + (n.numero || '—') + '</td>' +
+          '<td style="padding:10px 12px;font-size:11px;font-family:monospace;color:#64748b" title="' + _esc(n.chave_acesso || '') + '">' + chave + '</td>' +
+          '<td style="padding:10px 12px;text-align:center">' + _cnStatusBadge(n.status) + '</td>' +
+          '<td style="padding:10px 12px;text-align:right;white-space:nowrap">' + acoes + '</td>' +
         '</tr>';
       }).join('');
     }
 
     const tabela =
-      '<div style="' + card + ';padding:0;overflow:hidden">' +
-        '<div style="overflow-x:auto">' +
-          '<table style="width:100%;border-collapse:collapse">' +
-            '<thead><tr style="background:#f1f5f9">' +
-              '<th style="padding:8px;text-align:left;font-size:11px;color:#475569">Data</th>' +
-              '<th style="padding:8px;text-align:left;font-size:11px;color:#475569">Empresa</th>' +
-              '<th style="padding:8px;text-align:left;font-size:11px;color:#475569">Loja</th>' +
-              '<th style="padding:8px;text-align:center;font-size:11px;color:#475569">Nº</th>' +
-              '<th style="padding:8px;text-align:left;font-size:11px;color:#475569">Chave</th>' +
-              '<th style="padding:8px;text-align:center;font-size:11px;color:#475569">Status</th>' +
-              '<th style="padding:8px;text-align:right;font-size:11px;color:#475569">Ações</th>' +
-            '</tr></thead>' +
-            '<tbody>' + linhas + '</tbody>' +
-          '</table>' +
-        '</div>' +
+      '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden">' +
+        '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">' +
+          '<thead><tr style="background:#f8fafc">' +
+            ['Data', 'Empresa', 'Loja', 'Nº', 'Chave', 'Status', 'Ações'].map((h, i) =>
+              '<th style="padding:10px 12px;text-align:' + (i === 3 || i === 5 ? 'center' : (i === 6 ? 'right' : 'left')) + ';font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.03em">' + h + '</th>').join('') +
+          '</tr></thead>' +
+          '<tbody>' + linhas + '</tbody>' +
+        '</table></div>' +
       '</div>';
 
     document.getElementById('cnConteudo').innerHTML = filtros + resumoHtml + tabela;
     _hidratarIcones(document.getElementById('cnConteudo'));
-    // Enter na busca aplica filtro
     const buscaEl = document.getElementById('cnBusca');
     if (buscaEl) buscaEl.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') _cnAplicarFiltros(); });
-  }
-
-  function _cnCard(titulo, valor, cor) {
-    return '<div style="flex:1;min-width:120px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px">' +
-      '<div style="font-size:11px;color:#64748b;margin-bottom:4px">' + _esc(titulo) + '</div>' +
-      '<div style="font-size:18px;font-weight:700;color:' + cor + '">' + _esc(String(valor)) + '</div>' +
-    '</div>';
   }
 
   function _cnStatusBadge(status) {
@@ -1304,13 +1343,15 @@
       rascunho: ['Rascunho', '#fef9c3', '#854d0e'],
     };
     const s = map[status] || [status || '—', '#f1f5f9', '#475569'];
-    return '<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:11px;font-weight:600;background:' + s[1] + ';color:' + s[2] + '">' + s[0] + '</span>';
+    return '<span style="display:inline-block;padding:3px 11px;border-radius:999px;font-size:11px;font-weight:700;background:' + s[1] + ';color:' + s[2] + '">' + s[0] + '</span>';
   }
 
   function _cnAplicarFiltros() {
+    const f = window._cnFiltros || {};
     window._cnFiltros = {
-      de: (document.getElementById('cnDe') || {}).value || '',
-      ate: (document.getElementById('cnAte') || {}).value || '',
+      periodo: f.periodo || '7d',
+      de: (document.getElementById('cnDe') || {}).value || f.de || '',
+      ate: (document.getElementById('cnAte') || {}).value || f.ate || '',
       empresaId: (document.getElementById('cnEmp') || {}).value || '',
       lojaId: (document.getElementById('cnLoja') || {}).value || '',
       status: (document.getElementById('cnStatus') || {}).value || '',
@@ -1320,8 +1361,8 @@
   }
 
   function _cnLimparFiltros() {
-    window._cnFiltros = { de: '', ate: '', lojaId: '', empresaId: '', status: '', busca: '' };
-    _cnCarregar();
+    window._cnFiltros = { de: '', ate: '', lojaId: '', empresaId: '', status: '', busca: '', periodo: '30d' };
+    _cnSetPeriodo('30d');
   }
 
   async function _cnBaixarLote() {
@@ -1341,9 +1382,11 @@
       a.href = url; a.download = 'notas-fiscais.zip';
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 60000);
-      _toast('ZIP baixado');
+      _toast('ZIP baixado — pronto pra contabilidade');
     } catch (e) { _toast('Erro ao baixar ZIP', true); }
   }
+
+  window._cnSetPeriodo = _cnSetPeriodo;
 
   window.abrirCentralNotas = abrirCentralNotas;
   window._cnAplicarFiltros = _cnAplicarFiltros;
@@ -42439,11 +42482,12 @@ Responda APENAS com JSON válido (sem markdown), formato:
     { id: 'operacao', ic: 'layout-grid', label: 'Operações', screen: 'operacaoScreen', children: [
       { id: 'demandas', ic: 'clipboard-list', label: 'Demandas', screen: 'operacaoScreen' },
       { id: 'produtos', ic: 'package', label: 'Produtos', screen: 'produtosScreen' },
-      { id: 'estoque', ic: 'boxes', label: 'Estoque', screen: 'estoqueScreen' },
+      { id: 'pedidos', ic: 'receipt', label: 'Pedidos', screen: 'pedidosScreen' },
+      { id: 'notasfiscais', ic: 'file-text', label: 'Notas Fiscais', screen: 'pedidosScreen', action: 'abrirCentralNotas' },
+      { id: 'estoque', ic: 'boxes', label: 'Estoques', screen: 'estoqueScreen' },
       { id: 'promocoes', ic: 'ticket', label: 'Promoções', screen: 'promocoesScreen' },
       { id: 'ads', ic: 'chart-column', label: 'Ads', screen: 'adsScreen' },
-      { id: 'lucro', ic: 'trending-up', label: 'Lucro', screen: 'lucroScreen' },
-      { id: 'pedidos', ic: 'receipt', label: 'Pedidos', screen: 'pedidosScreen' }
+      { id: 'lucro', ic: 'trending-up', label: 'Lucro', screen: 'lucroScreen' }
     ]},
     { id: 'lojas', ic: 'store', label: 'Lojas & Conexões', screen: 'lojasConexoesScreen' },
     { id: 'settings', ic: 'settings', label: 'Configurações', screen: 'settingsScreen' }
@@ -43708,8 +43752,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
         const groupOpen = (parentId === item.id) || isActive;
         const childActive = item.children.some(c => c.screen === activeScreen);
         const subHtml = item.children.map(c => {
-          const ca = c.screen === activeScreen;
-          return `<div class="sidebar-subitem ${ca?'active':''}" data-tip="${c.label}" onclick="event.stopPropagation();goTo('${c.screen}')">
+          const ca = c.screen === activeScreen && !c.action;
+          const clickSub = c.action
+            ? `event.stopPropagation();if(typeof ${c.action}==='function')${c.action}();`
+            : `event.stopPropagation();goTo('${c.screen}')`;
+          return `<div class="sidebar-subitem ${ca?'active':''}" data-tip="${c.label}" onclick="${clickSub}">
             <span class="sidebar-label">${c.label}</span>
           </div>`;
         }).join('');
@@ -50805,6 +50852,7 @@ ${JSON.stringify(metricas, null, 2)}`
       }
       lista.innerHTML = peds.map(p => expCardHtml(p)).join('') + _expPaginacaoHtml(totalGeral);
       if (typeof animarCascata === 'function') animarCascata(lista);
+      if (window.lcHydrateIcons) window.lcHydrateIcons(lista); else if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
       expAtualizaSelInfo();
     } catch (e) {
       lista.innerHTML = '<div style="background:var(--lc-danger-soft);border:1px solid var(--lc-danger);color:var(--lc-danger);padding:12px;border-radius:8px">' + e.message + '</div>';
@@ -50830,7 +50878,9 @@ ${JSON.stringify(metricas, null, 2)}`
   function expCardHtml(p) {
     const sel = _expSel.has(p.orderSn);
     const nfBadge = p.nfEmitida
-      ? '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-success-soft);color:var(--lc-success)">NF ' + (p.nfNumero || 'emitida') + '</span>'
+      ? (p.nfChave
+          ? '<button onclick="event.stopPropagation();if(window._imprimirNfPorChave)_imprimirNfPorChave(\'' + p.nfChave + '\')" title="Imprimir NF-e (DANFE)" style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-success-soft);color:var(--lc-success);border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px"><span class="lc-ic" data-lucide="receipt" style="width:12px;height:12px"></span> NF ' + (p.nfNumero || 'emitida') + '</button>'
+          : '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-success-soft);color:var(--lc-success)">NF ' + (p.nfNumero || 'emitida') + '</span>')
       : '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-surface-2);color:var(--lc-muted)">Sem NF</span>';
     const cpfBadge = (p.emiteNf === false)
       ? '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--lc-info-soft);color:var(--lc-info)">CPF</span>' : '';
