@@ -50745,6 +50745,30 @@ ${JSON.stringify(metricas, null, 2)}`
       }
       expRenderChips();
       await expCarregarLista();
+      // v33k.521: a reconciliação com a Shopee agora roda em background no
+      // servidor (a tela abre instantânea com os dados locais). Depois de 12s,
+      // re-busca os contadores em silêncio (sem loading) pra refletir qualquer
+      // correção que a reconciliação tenha feito. Roda só uma vez por carga.
+      if (!window._expRefreshSilenciosoAgendado) {
+        window._expRefreshSilenciosoAgendado = true;
+        setTimeout(async () => {
+          window._expRefreshSilenciosoAgendado = false;
+          try {
+            const lojas2 = expLojasSelecionadas();
+            if (!lojas2.length) return;
+            const p2 = new URLSearchParams({ lojaIds: lojas2.join(',') });
+            const r2 = await fetch(BACKEND_URL + '/api/expedicao/contadores?' + p2.toString(), { headers: { 'x-api-token': getApiToken() } });
+            const d2 = await r2.json();
+            if (d2 && d2.ok) {
+              const antes = JSON.stringify((_expDados || {}).porEtapa || {});
+              _expDados = d2;
+              if (JSON.stringify(d2.porEtapa || {}) !== antes) {
+                expRenderEtapas(); expRenderChips(); expCarregarLista();
+              }
+            }
+          } catch (e) { /* silencioso */ }
+        }, 12000);
+      }
     } catch (e) {
       if (erro) { erro.textContent = e.message; erro.style.display = 'block'; }
     } finally {
@@ -50979,7 +51003,7 @@ ${JSON.stringify(metricas, null, 2)}`
       ? (p.nfChave
           ? '<button onclick="event.stopPropagation();if(window._imprimirNfPorChave)_imprimirNfPorChave(\'' + p.nfChave + '\')" title="Imprimir NF-e (DANFE)" style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-success-soft);color:var(--lc-success);border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px"><span class="lc-ic" data-lucide="receipt" style="width:12px;height:12px"></span> NF ' + (p.nfNumero || 'emitida') + '</button>'
           : '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-success-soft);color:var(--lc-success)">NF ' + (p.nfNumero || 'emitida') + '</span>')
-      : '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-surface-2);color:var(--lc-muted)">Sem NF</span>';
+      : '<span style="font-size:11px;font-weight:600;color:var(--lc-muted-2)">Sem NF</span>';
     const cpfBadge = (p.emiteNf === false)
       ? '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--lc-info-soft);color:var(--lc-info)">CPF</span>' : '';
     const prazo = p.shipBy ? '<span style="font-size:12px;color:var(--lc-muted)">Enviar até ' + new Date(p.shipBy * 1000).toLocaleDateString('pt-BR') + '</span>' : '';
@@ -50988,8 +51012,9 @@ ${JSON.stringify(metricas, null, 2)}`
     const atrasadoBadge = p.atrasado
       ? '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--lc-danger-soft);color:var(--lc-danger)">⏰ Atrasado</span>' : '';
     // v33k.401: SKU do produto (pra separação) — só mostra se houver
-    const skuBadge = p.sku
-      ? '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--lc-surface-2);color:var(--lc-ink-2);font-family:monospace" title="' + (p.produto || '') + '">' + p.sku + '</span>' : '';
+    // v33k.521: SKU saiu da linha de badges (tumultuava) — vai na linha do produto
+    const skuTxt = p.sku
+      ? '<span style="font-size:11px;color:var(--lc-muted);font-family:monospace;background:var(--lc-surface-2);padding:1px 6px;border-radius:5px;margin-left:6px" title="SKU">' + p.sku + '</span>' : '';
     // v33k.401: log de impressão — "Impresso em DD/MM HH:MM" (só na etapa Impressos)
     const impressoEmTxt = (p.impressoEm && _expEtapaSel === 4)
       ? '<span style="font-size:12px;color:var(--lc-success);font-weight:600">🖨 Impresso em ' + new Date(p.impressoEm).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + '</span>' : '';
@@ -51094,28 +51119,30 @@ ${JSON.stringify(metricas, null, 2)}`
 
     // v33k.402: thumbnail da FOTO do produto (vem no próprio pedido, sem chamada extra)
     const fotoHtml = p.foto
-      ? '<img src="' + p.foto + '" loading="lazy" style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid var(--lc-border)" onerror="this.style.display=\'none\'">'
-      : '<div style="width:44px;height:44px;border-radius:8px;flex-shrink:0;background:var(--lc-surface-2);display:flex;align-items:center;justify-content:center;color:var(--lc-muted);font-size:18px">📦</div>';
+      ? '<img src="' + p.foto + '" loading="lazy" style="width:48px;height:48px;border-radius:10px;object-fit:cover;flex-shrink:0;border:1px solid var(--lc-border)" onerror="this.style.display=\'none\'">'
+      : '<div style="width:48px;height:48px;border-radius:10px;flex-shrink:0;background:var(--lc-surface-2);display:flex;align-items:center;justify-content:center;color:var(--lc-muted);font-size:18px">📦</div>';
     // v33k.402: linha do produto — título + variação vendida (+ "e mais N" se multi-item)
     const maisItens = (p.qtdItens && p.qtdItens > 1) ? ' <span style="color:var(--lc-muted-2)">+' + (p.qtdItens - 1) + ' item(ns)</span>' : '';
-    const linhaProduto = (p.produto || p.variacao)
-      ? '<div style="font-size:12px;color:var(--lc-ink-2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+    const linhaProduto = (p.produto || p.variacao || p.sku)
+      ? '<div style="font-size:12px;color:var(--lc-ink-2);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
           (p.produto ? p.produto : '') +
           (p.variacao ? ' <span style="color:var(--lc-primary);font-weight:600">· ' + p.variacao + '</span>' : '') +
-          maisItens +
+          maisItens + skuTxt +
         '</div>'
       : '';
 
     const _cliqueRevisar = (_expEtapaSel === 1) ? ' onclick="if(!event.target.closest(\'button,input,a\'))abrirRevisaoPedido(\'' + (p.lojaId||'') + '\',\'' + p.orderSn + '\')" style="cursor:pointer"' : '';
-    return '<div' + _cliqueRevisar + ' style="background:var(--lc-surface);border:1px solid ' + (sel ? 'var(--lc-primary)' : (ehErro ? 'var(--lc-danger)' : 'var(--lc-border)')) + ';border-radius:var(--lc-radius);padding:11px 14px">' +
-      '<div style="display:flex;align-items:center;gap:12px">' +
+    return '<div' + _cliqueRevisar + ' style="background:var(--lc-surface);border:1px solid ' + (sel ? 'var(--lc-primary)' : (ehErro ? 'var(--lc-danger)' : 'var(--lc-border)')) + ';border-radius:var(--lc-radius);padding:13px 16px">' +
+      '<div style="display:flex;align-items:center;gap:14px">' +
         checkboxHtml +
         fotoHtml +
         '<div style="flex:1;min-width:0">' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-weight:700;color:var(--lc-ink);font-size:14px">' + p.orderSn + '</span>' + nfBadge + cpfBadge + atrasadoBadge + skuBadge + impBadge + fullBadge + '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-weight:700;color:var(--lc-ink);font-size:14px;letter-spacing:.01em">' + p.orderSn + '</span>' + nfBadge + cpfBadge + atrasadoBadge + impBadge + fullBadge + '</div>' +
           linhaProduto +
-          '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:3px"><span style="font-size:12px;color:var(--lc-muted-2)">' + (p.loja || '') + '</span>' +
-            (p.transportadora ? '<span style="font-size:12px;color:var(--lc-muted)">' + p.transportadora + '</span>' : '') + rastreio + prazo + impressoEmTxt + '</div>' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;font-size:12px"><span style="color:var(--lc-ink-2);font-weight:600">' + (p.loja || '') + '</span>' +
+            (p.transportadora ? '<span style="color:var(--lc-muted-2)">·</span><span style="color:var(--lc-muted)">' + p.transportadora + '</span>' : '') +
+            (rastreio ? '<span style="color:var(--lc-muted-2)">·</span>' + rastreio : '') +
+            (prazo ? '<span style="color:var(--lc-muted-2)">·</span>' + prazo : '') + impressoEmTxt + '</div>' +
         '</div>' +
         acoesHtml +
         '<span style="font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap;' + corStatus + '">' + spinner + (p.estadoRotulo || p.estado) + '</span>' +
