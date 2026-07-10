@@ -132,7 +132,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.0/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.2/dist/umd/supabase.min.js"></script>
-<!-- inicio modulo NF-e (v33k.506) -->
+<!-- inicio modulo NF-e (v33k.507) -->
 <script>
 /* ============================================================
    MODULO NF-e - Gestao Fiscal (inline no index.html, v33k.502)
@@ -811,12 +811,24 @@
     const msg = document.getElementById('rpMsg');
     // salva NCMs primeiro (garante que estão no banco)
     await _rpSalvarNcms();
+    // GARANTIA: se não temos código IBGE mas temos CEP, busca agora
+    // (cobre o caso do onblur não ter disparado ou CEP vindo pré-preenchido)
+    const cepDigitado = g('rpCep').replace(/\D/g, '');
+    if ((!ctx.codigoMunicipio || String(ctx.codigoMunicipio).length !== 7) && cepDigitado.length === 8) {
+      if (msg) { msg.textContent = '⏳ buscando código do município…'; msg.style.color = '#64748b'; }
+      const cepData = await _api('/api/nfe/consultar-cep/' + cepDigitado);
+      if (cepData.ok && cepData.endereco && cepData.endereco.codigoMunicipio) {
+        ctx.codigoMunicipio = cepData.endereco.codigoMunicipio;
+        if (!g('rpMunicipio') && cepData.endereco.municipio) { const el = document.getElementById('rpMunicipio'); if (el) el.value = cepData.endereco.municipio; }
+        if (!g('rpUf') && cepData.endereco.uf) { const el = document.getElementById('rpUf'); if (el) el.value = cepData.endereco.uf; }
+      }
+    }
     const doc = g('rpDoc').replace(/\D/g, '');
     const destinatario = {
       nome: g('rpNome'), cpf: doc.length === 11 ? doc : undefined, cnpj: doc.length === 14 ? doc : undefined,
       endereco: {
         logradouro: g('rpLogradouro'), numero: g('rpNumero'), bairro: g('rpBairro'),
-        complemento: g('rpComplemento'), cep: g('rpCep').replace(/\D/g, ''),
+        complemento: g('rpComplemento'), cep: cepDigitado,
         municipio: g('rpMunicipio'), uf: g('rpUf'), codigoMunicipio: ctx.codigoMunicipio || '',
       },
     };
@@ -858,6 +870,17 @@
     if (r.pendenteFiscal) {
       if (!msgEl) _toast('Faltam NCMs — preencha os produtos.', true);
       _abrirModalProdutoFaltante(r.pendentes || [], ctx, destinatario, msgEl);
+      return;
+    }
+    // DESTINATÁRIO INCOMPLETO → abre a revisão pra completar (tem CEP-autofill)
+    if (r.errosDestinatario && r.errosDestinatario.length) {
+      if (!msgEl) {
+        // veio do emitir-direto: abre a revisão pra preencher o destinatário
+        _toast('Complete os dados do destinatário para emitir.', true);
+        abrirRevisaoPedido(ctx.lojaId, ctx.orderSn);
+      } else {
+        setMsg('⚠ ' + _esc(r.erro || 'Dados do destinatário incompletos'), '#b91c1c');
+      }
       return;
     }
     if (!r.ok) { setMsg('✗ ' + _esc(r.erro || 'Falha') + (r.cstat ? ' (cStat ' + r.cstat + ')' : ''), '#b91c1c'); if (!msgEl) _toast(r.erro || 'Falha', true); return; }
