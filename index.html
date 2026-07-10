@@ -132,7 +132,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.0/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.2/dist/umd/supabase.min.js"></script>
-<!-- inicio modulo NF-e (v33k.502) -->
+<!-- inicio modulo NF-e (v33k.503) -->
 <script>
 /* ============================================================
    MODULO NF-e - Gestao Fiscal (inline no index.html, v33k.502)
@@ -688,6 +688,154 @@
     _toast(r.vinculadas + ' lojas vinculadas ✓');
     _carregarVinculos();
   }
+
+  // ════════════════════════════════════════════════════════════════
+  // MODAL DE EMISSÃO DE NF-e (destinatário editável)
+  // ════════════════════════════════════════════════════════════════
+  async function abrirEmissaoNF(lojaId, orderSn) {
+    _overlay('emissaoNFOverlay',
+      '<div><h2 style="margin:0;font-size:16px">🧾 Emitir NF-e</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Pedido ' + _esc(orderSn) + '</div></div>',
+      '<div id="enfConteudo"><div style="text-align:center;padding:30px;color:#64748b">⏳ Carregando dados do pedido…</div></div>',
+      760);
+    const data = await _api('/api/nfe/pedido-para-emissao?lojaId=' + lojaId + '&orderSn=' + encodeURIComponent(orderSn));
+    if (!data.ok) {
+      document.getElementById('enfConteudo').innerHTML = '<div style="color:#b91c1c;padding:16px">Erro: ' + _esc(data.erro || 'falha') + '</div>';
+      return;
+    }
+    window._enfCtx = { lojaId, orderSn, empresa: data.empresa, itens: data.itens || [] };
+    _renderEmissao(data);
+  }
+
+  function _renderEmissao(data) {
+    const d = data.destinatario || {};
+    const end = d.endereco || {};
+    const itens = data.itens || [];
+
+    // aviso se empresa não vinculada
+    let avisoEmpresa = '';
+    if (!data.empresa) {
+      avisoEmpresa = '<div style="' + card + ';background:#fef2f2;border-color:#fecaca;color:#991b1b">' +
+        '⚠ Esta loja não tem empresa emitente vinculada. Vá em <b>Config. Fiscal → Vincular lojas</b> antes de emitir.</div>';
+    } else {
+      avisoEmpresa = '<div style="' + card + ';background:#f0fdf4;border-color:#bbf7d0;color:#166534;font-size:13px">' +
+        '✓ Emitindo por: <b>' + _esc(data.empresa.razao_social) + '</b> (' + _fmtCnpj(data.empresa.cnpj) + ') · ' + _esc(data.empresa.uf) +
+        ' · ' + (Number(data.empresa.ambiente) === 1 ? '<span style="color:#166534">PRODUÇÃO</span>' : '<span style="color:#92400e">HOMOLOGAÇÃO</span>') + '</div>';
+    }
+
+    // aviso de dados mascarados
+    let avisoMasc = '';
+    if (d.mascarado) {
+      avisoMasc = '<div style="display:flex;gap:10px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:12.5px;color:#92400e;margin-bottom:14px">' +
+        '<span>ℹ</span><div>A Shopee mascara os dados do comprador. Preencha manualmente abaixo os dados do destinatário para emitir.</div></div>';
+    }
+
+    // tabela de itens (só leitura)
+    const itensHtml = itens.length ? itens.map((it) =>
+      '<tr><td style="padding:5px 8px;font-size:12px">' + _esc(it.sku) + '</td>' +
+      '<td style="padding:5px 8px;font-size:12px">' + _esc((it.descricao || '').slice(0, 40)) + '</td>' +
+      '<td style="padding:5px 8px;font-size:12px;text-align:center">' + it.quantidade + '</td>' +
+      '<td style="padding:5px 8px;font-size:12px;text-align:right">R$ ' + Number(it.valorUnitario).toFixed(2) + '</td></tr>'
+    ).join('') : '<tr><td colspan="4" style="padding:10px;text-align:center;color:#64748b">Nenhum item encontrado</td></tr>';
+
+    const corpo =
+      avisoEmpresa +
+      avisoMasc +
+      '<div style="' + card + '">' +
+        '<div style="font-weight:700;color:#0f172a;margin-bottom:10px">Itens da nota</div>' +
+        '<table style="width:100%;border-collapse:collapse">' +
+          '<thead><tr style="background:#f1f5f9"><th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">SKU</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Produto</th><th style="padding:6px 8px;font-size:11px;color:#475569">Qtd</th><th style="padding:6px 8px;text-align:right;font-size:11px;color:#475569">Valor un.</th></tr></thead>' +
+          '<tbody>' + itensHtml + '</tbody>' +
+        '</table>' +
+      '</div>' +
+
+      '<div style="' + card + '">' +
+        '<div style="font-weight:700;color:#0f172a;margin-bottom:12px">Destinatário (editável)</div>' +
+        '<div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">' +
+          _campo('enfNome', 'Nome / Razão Social *', d.nome || '') +
+          _campo('enfDoc', 'CPF / CNPJ *', d.cpf || d.cnpj || '') +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:3fr 1fr;gap:12px;margin-top:12px">' +
+          _campo('enfLogradouro', 'Logradouro *', end.logradouro || '') +
+          _campo('enfNumero', 'Número *', end.numero || '') +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">' +
+          _campo('enfBairro', 'Bairro *', end.bairro || '') +
+          _campo('enfComplemento', 'Complemento', end.complemento || '') +
+          _campo('enfCep', 'CEP *', end.cep || '') +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-top:12px">' +
+          _campo('enfMunicipio', 'Município *', end.municipio || '') +
+          _campoComDica('enfCodMun', 'Cód. IBGE Município *', end.codigoMunicipio || '', 'Ex: 3143906 (obrigatório p/ NF-e)') +
+          _campo('enfUf', 'UF *', end.uf || '') +
+        '</div>' +
+      '</div>' +
+
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px">' +
+        '<div id="enfMsg" style="font-size:13px;color:#64748b"></div>' +
+        '<div style="display:flex;gap:8px">' +
+          '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'emissaoNFOverlay\').remove()">Cancelar</button>' +
+          '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_enfEmitir()"' + (data.empresa ? '' : ' disabled') + '>🧾 Emitir NF-e</button>' +
+        '</div>' +
+      '</div>';
+    document.getElementById('enfConteudo').innerHTML = corpo;
+  }
+
+  async function _enfEmitir() {
+    const ctx = window._enfCtx || {};
+    const g = (x) => { const el = document.getElementById(x); return el ? el.value.trim() : ''; };
+    const msg = document.getElementById('enfMsg');
+
+    // validação mínima
+    const doc = g('enfDoc').replace(/\D/g, '');
+    if (!g('enfNome')) { msg.textContent = 'Preencha o nome do destinatário.'; msg.style.color = '#b91c1c'; return; }
+    if (doc.length !== 11 && doc.length !== 14) { msg.textContent = 'CPF (11) ou CNPJ (14 dígitos) inválido.'; msg.style.color = '#b91c1c'; return; }
+    if (!g('enfCodMun')) { msg.textContent = 'Código IBGE do município é obrigatório.'; msg.style.color = '#b91c1c'; return; }
+
+    const destinatario = {
+      nome: g('enfNome'),
+      cpf: doc.length === 11 ? doc : undefined,
+      cnpj: doc.length === 14 ? doc : undefined,
+      endereco: {
+        logradouro: g('enfLogradouro'), numero: g('enfNumero'), bairro: g('enfBairro'),
+        complemento: g('enfComplemento'), cep: g('enfCep'),
+        municipio: g('enfMunicipio'), codigoMunicipio: g('enfCodMun'), uf: g('enfUf'),
+      },
+    };
+
+    msg.textContent = '⏳ Emitindo… (assinando e transmitindo à SEFAZ)'; msg.style.color = '#0369a1';
+    const r = await _api('/api/nfe/emitir', {
+      method: 'POST',
+      body: JSON.stringify({
+        empresaId: ctx.empresa.id,
+        destinatario,
+        itens: ctx.itens,
+        pedido: { marketplace: 'shopee', order_sn: ctx.orderSn, loja_id: ctx.lojaId },
+      }),
+    });
+
+    if (r.pendenteFiscal) {
+      msg.innerHTML = '⚠ Produtos sem NCM: ' + (r.pendentes || []).map((p) => _esc(p.sku)).join(', ') + '. Configure o fiscal deles primeiro.';
+      msg.style.color = '#b91c1c';
+      return;
+    }
+    if (!r.ok) {
+      msg.innerHTML = '✗ ' + _esc(r.erro || 'Falha') + (r.cstat ? ' (cStat ' + r.cstat + ')' : '');
+      msg.style.color = '#b91c1c';
+      return;
+    }
+    if (r.autorizada) {
+      _toast('NF-e autorizada ✓');
+      msg.innerHTML = '✓ <b>NF-e autorizada!</b> Chave: ' + _esc((r.chaveAcesso || '').replace(/(\d{4})/g, '$1 ').trim());
+      msg.style.color = '#166534';
+    } else {
+      msg.innerHTML = '⚠ Rejeitada pela SEFAZ: ' + _esc(r.motivo || '') + (r.cstat ? ' (cStat ' + r.cstat + ')' : '');
+      msg.style.color = '#b91c1c';
+    }
+  }
+
+  window.abrirEmissaoNF = abrirEmissaoNF;
+  window._enfEmitir = _enfEmitir;
 
   // ─── Expõe as funções chamadas via onclick ─────────────────────────
   window._gfEditarClasse = _gfEditarClasse;
@@ -50479,7 +50627,13 @@ ${JSON.stringify(metricas, null, 2)}`
     const sns = expOrdenarPelaTela([..._expSel]);
     // ETAPA 1 (Emitir NF): ainda manual/leitura — a emissão automática entra depois.
     if (_expEtapaSel === 1) {
-      showToast('A emissão de NF será integrada em breve. Por enquanto, emita no seu emissor e a Shopee atualiza o status aqui. ' + n + ' pedido(s) aguardando.');
+      // v33k.503: abre o modal de emissão de NF-e (destinatário editável) pro 1º selecionado.
+      const lojas = expLojasSelecionadas();
+      const lojaId = lojas && lojas.length ? lojas[0] : null;
+      if (!lojaId) { showToast('Selecione uma conta Shopee.', true); return; }
+      if (sns.length > 1) showToast('Emitindo 1 por vez. Abrindo o primeiro: ' + sns[0]);
+      if (typeof abrirEmissaoNF === 'function') abrirEmissaoNF(lojaId, sns[0]);
+      else showToast('Módulo de emissão não carregado.', true);
       return;
     }
     // ETAPA 2: programar envio (ship_order + rastreio). Ação REAL — confirma.
