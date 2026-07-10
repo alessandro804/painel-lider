@@ -132,6 +132,377 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.0/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.2/dist/umd/supabase.min.js"></script>
+<!-- ====== MODULO NF-e (Gestao Fiscal) — inline, v33k.501 ====== -->
+<script>
+/* ============================================================
+   MÓDULO NF-e — Gestão Fiscal (inline no index.html, v33k.501)
+   ============================================================
+   Cadastro de empresa emitente + certificado A1 + classes de
+   imposto para emissão de NF-e. Ponto de entrada: a função
+   abrirGestaoFiscalNFe(), chamada pelo botão "Config. Fiscal"
+   na barra da Expedição. Reusa BACKEND_URL, getApiToken(),
+   showToast() e as classes lc-btn já existentes no painel.
+   Para manutenção: todo o código fiscal do front está entre os
+   marcadores "MODULO NF-e" ... "FIM MODULO NF-e".
+   ============================================================ */
+(function () {
+  'use strict';
+
+  // Helpers que reusam a infra do painel (fallbacks defensivos)
+  const _base = () => (typeof BACKEND_URL !== 'undefined' ? BACKEND_URL : '');
+  const _token = () => (typeof getApiToken === 'function' ? getApiToken() : '');
+  const _toast = (m, e) => (typeof showToast === 'function' ? showToast(m, e) : alert(m));
+  const _esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const soDig = (v) => String(v || '').replace(/\D/g, '');
+
+  async function _api(path, opts) {
+    const resp = await fetch(_base() + path, Object.assign({
+      headers: { 'Content-Type': 'application/json', 'x-api-token': _token() },
+    }, opts || {}));
+    const data = await resp.json().catch(() => ({ ok: false, erro: 'Resposta inválida' }));
+    return data;
+  }
+
+  // Constantes fiscais (espelham as do index.html, com fallback próprio)
+  const ORIGENS = (typeof FISCAL_ORIGENS !== 'undefined') ? FISCAL_ORIGENS : [
+    ['0', '0 - Nacional'], ['1', '1 - Estrangeira (importação direta)'],
+    ['2', '2 - Estrangeira (mercado interno)'],
+  ];
+
+  const inp = 'width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;color:#0f172a;background:#fff';
+  const lbl = 'display:block;font-size:12.5px;font-weight:600;color:#334155;margin-bottom:4px';
+  const card = 'background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:14px';
+
+  // ─── Overlay base ──────────────────────────────────────────────────
+  function _overlay(id, tituloHtml, corpoHtml, larguraPx) {
+    const antigo = document.getElementById(id);
+    if (antigo) antigo.remove();
+    const o = document.createElement('div');
+    o.id = id;
+    o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100002;display:flex;align-items:center;justify-content:center;padding:20px';
+    o.innerHTML =
+      '<div style="background:#f8fafc;border-radius:16px;width:min(' + (larguraPx || 720) + 'px,96vw);max-height:92vh;overflow:hidden;display:flex;flex-direction:column">' +
+        '<div style="padding:16px 20px;background:linear-gradient(135deg,#0ea5e9,#0369a1);color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">' +
+          tituloHtml +
+          '<button onclick="document.getElementById(\'' + id + '\').remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:18px;line-height:1">×</button>' +
+        '</div>' +
+        '<div id="' + id + 'Body" style="padding:18px 20px;overflow:auto;flex:1">' + corpoHtml + '</div>' +
+      '</div>';
+    document.body.appendChild(o);
+    return o;
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // TELA PRINCIPAL: lista de empresas + ação de cadastrar
+  // ════════════════════════════════════════════════════════════════
+  async function abrirGestaoFiscalNFe() {
+    _overlay('gestaoFiscalOverlay',
+      '<div><h2 style="margin:0;font-size:16px">🧾 Gestão Fiscal — Emissão de NF-e</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Cadastre a empresa emitente e o certificado digital</div></div>',
+      '<div id="gfConteudo"><div style="text-align:center;padding:30px;color:#64748b">⏳ Carregando…</div></div>',
+      760);
+    await _carregarEmpresas();
+  }
+
+  async function _carregarEmpresas() {
+    const alvo = document.getElementById('gfConteudo');
+    if (!alvo) return;
+    const data = await _api('/api/nfe/empresas');
+    if (!data.ok) {
+      alvo.innerHTML = '<div style="color:#b91c1c;padding:16px">Erro: ' + _esc(data.erro || 'falha') + '</div>';
+      return;
+    }
+    const empresas = data.empresas || [];
+
+    let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">' +
+      '<div style="font-weight:700;color:#0f172a">Empresas emitentes (' + empresas.length + ')</div>' +
+      '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_gfNovaEmpresa()">+ Nova empresa</button>' +
+      '</div>';
+
+    if (!empresas.length) {
+      html += '<div style="' + card + ';text-align:center;color:#64748b;padding:28px">' +
+        '<div style="font-size:32px;margin-bottom:8px">🏢</div>' +
+        '<div style="font-weight:600;color:#334155">Nenhuma empresa cadastrada</div>' +
+        '<div style="font-size:13px;margin-top:4px">Cadastre a primeira empresa para começar a emitir notas.</div></div>';
+    } else {
+      empresas.forEach((e) => {
+        const amb = Number(e.ambiente) === 1
+          ? '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">PRODUÇÃO</span>'
+          : '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">HOMOLOGAÇÃO</span>';
+        let certBadge;
+        if (!e.certificado) {
+          certBadge = '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">SEM CERTIFICADO</span>';
+        } else if (e.certificado.vencido) {
+          certBadge = '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">CERT. VENCIDO</span>';
+        } else {
+          const val = e.certificado.validade ? new Date(e.certificado.validade).toLocaleDateString('pt-BR') : '';
+          certBadge = '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">CERT. OK' + (val ? ' (val ' + val + ')' : '') + '</span>';
+        }
+        html += '<div style="' + card + '">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">' +
+            '<div>' +
+              '<div style="font-weight:700;color:#0f172a;font-size:15px">' + _esc(e.razao_social) + '</div>' +
+              '<div style="font-size:12.5px;color:#64748b;margin-top:2px">CNPJ ' + _esc(_fmtCnpj(e.cnpj)) + ' · ' + _esc(e.uf) + ' · ' + _esc(_nomeRegime(e.crt)) + '</div>' +
+              '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">' + amb + certBadge + '</div>' +
+            '</div>' +
+            '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+              '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_gfEditarEmpresa(' + e.id + ')">Editar</button>' +
+              '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_gfUploadCert(' + e.id + ',\'' + _esc(e.razao_social).replace(/'/g, "\\'") + '\')">📎 Certificado</button>' +
+              '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_gfClasses(' + e.id + ')">Impostos</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      });
+    }
+    alvo.innerHTML = html;
+  }
+
+  function _fmtCnpj(c) {
+    const d = soDig(c);
+    if (d.length !== 14) return c;
+    return d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+  }
+  function _nomeRegime(crt) {
+    return { 1: 'Simples Nacional', 2: 'Simples (excesso)', 3: 'Regime Normal' }[Number(crt)] || 'Simples Nacional';
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // CADASTRO DE EMPRESA (com consulta CNPJ que auto-preenche)
+  // ════════════════════════════════════════════════════════════════
+  function _gfNovaEmpresa() { _formEmpresa(null); }
+
+  async function _gfEditarEmpresa(id) {
+    const data = await _api('/api/nfe/empresas');
+    const emp = (data.empresas || []).find((e) => e.id === id);
+    // busca completa (a lista traz resumo; pra editar precisamos de tudo — recarrega via consulta simples)
+    _formEmpresa(emp || { id });
+  }
+
+  function _formEmpresa(emp) {
+    emp = emp || {};
+    const ehNovo = !emp.id;
+    const v = (k, d) => (emp[k] != null ? emp[k] : (d || ''));
+
+    const corpo =
+      '<div style="' + card + '">' +
+        '<div style="font-weight:700;color:#0f172a;margin-bottom:10px">1. Consultar CNPJ (preenche automático)</div>' +
+        '<div style="display:flex;gap:8px">' +
+          '<input id="gfCnpjBusca" placeholder="00.000.000/0000-00" style="' + inp + '" value="' + _esc(_fmtCnpj(v('cnpj'))) + '">' +
+          '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff;white-space:nowrap" onclick="_gfConsultarCnpj()">🔍 Buscar</button>' +
+        '</div>' +
+        '<div id="gfCnpjMsg" style="font-size:12px;margin-top:6px;color:#64748b"></div>' +
+      '</div>' +
+
+      '<div style="' + card + '">' +
+        '<div style="font-weight:700;color:#0f172a;margin-bottom:12px">2. Dados da empresa</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+          _campo('gfRazao', 'Razão Social *', v('razao_social'), 'grid-column:1/3') +
+          _campo('gfFantasia', 'Nome Fantasia', v('nome_fantasia')) +
+          _campo('gfIe', 'Inscrição Estadual', v('ie')) +
+          _selectRegime('gfCrt', v('crt', 1)) +
+          _selectAmbiente('gfAmbiente', v('ambiente', 2)) +
+          _campo('gfEmail', 'E-mail', v('email')) +
+          _campo('gfTelefone', 'Telefone', v('telefone')) +
+        '</div>' +
+      '</div>' +
+
+      '<div style="' + card + '">' +
+        '<div style="font-weight:700;color:#0f172a;margin-bottom:12px">3. Endereço</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">' +
+          _campo('gfCep', 'CEP', v('cep')) +
+          _campo('gfLogradouro', 'Logradouro', v('logradouro'), 'grid-column:2/4') +
+          _campo('gfNumero', 'Número', v('numero')) +
+          _campo('gfBairro', 'Bairro', v('bairro')) +
+          _campo('gfComplemento', 'Complemento', v('complemento')) +
+          _campo('gfMunicipio', 'Município', v('municipio')) +
+          _campo('gfCodMunicipio', 'Cód. IBGE Município', v('cod_municipio')) +
+          _campo('gfUf', 'UF *', v('uf')) +
+        '</div>' +
+      '</div>' +
+
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="_carregarEmpresasVoltar()">Cancelar</button>' +
+        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_gfSalvarEmpresa(' + (emp.id || 'null') + ')">💾 Salvar empresa</button>' +
+      '</div>';
+
+    document.getElementById('gfConteudo').innerHTML = corpo;
+  }
+
+  function _campo(id, label, valor, extraStyle) {
+    return '<div style="' + (extraStyle || '') + '">' +
+      '<label style="' + lbl + '">' + label + '</label>' +
+      '<input id="' + id + '" style="' + inp + '" value="' + _esc(valor) + '"></div>';
+  }
+  function _selectRegime(id, sel) {
+    const opts = [[1, 'Simples Nacional'], [2, 'Simples Nacional (excesso sublimite)'], [3, 'Regime Normal (Presumido/Real)']]
+      .map(([v, t]) => '<option value="' + v + '"' + (Number(sel) === v ? ' selected' : '') + '>' + t + '</option>').join('');
+    return '<div><label style="' + lbl + '">Regime Tributário *</label><select id="' + id + '" style="' + inp + '">' + opts + '</select></div>';
+  }
+  function _selectAmbiente(id, sel) {
+    const opts = [[2, 'Homologação (teste)'], [1, 'Produção (valor fiscal)']]
+      .map(([v, t]) => '<option value="' + v + '"' + (Number(sel) === v ? ' selected' : '') + '>' + t + '</option>').join('');
+    return '<div><label style="' + lbl + '">Ambiente *</label><select id="' + id + '" style="' + inp + '">' + opts + '</select></div>';
+  }
+
+  async function _gfConsultarCnpj() {
+    const cnpj = soDig(document.getElementById('gfCnpjBusca').value);
+    const msg = document.getElementById('gfCnpjMsg');
+    if (cnpj.length !== 14) { msg.textContent = 'CNPJ precisa ter 14 dígitos.'; msg.style.color = '#b91c1c'; return; }
+    msg.textContent = '⏳ Consultando Receita…'; msg.style.color = '#64748b';
+    const data = await _api('/api/nfe/consultar-cnpj/' + cnpj);
+    if (!data.ok) { msg.textContent = data.erro || 'Não encontrado.'; msg.style.color = '#b91c1c'; return; }
+    const e = data.empresa;
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+    set('gfRazao', e.razao_social); set('gfFantasia', e.nome_fantasia); set('gfEmail', e.email);
+    set('gfTelefone', e.telefone); set('gfCep', e.cep); set('gfLogradouro', e.logradouro);
+    set('gfNumero', e.numero); set('gfBairro', e.bairro); set('gfComplemento', e.complemento);
+    set('gfMunicipio', e.municipio); set('gfCodMunicipio', e.cod_municipio); set('gfUf', e.uf);
+    msg.textContent = '✓ Dados preenchidos' + (data.raw && data.raw.situacao ? ' · Situação: ' + data.raw.situacao : '') + '. Revise e complete a IE.';
+    msg.style.color = '#166534';
+  }
+
+  async function _gfSalvarEmpresa(id) {
+    const g = (x) => { const el = document.getElementById(x); return el ? el.value.trim() : ''; };
+    const payload = {
+      cnpj: soDig(g('gfCnpjBusca')),
+      razao_social: g('gfRazao'), nome_fantasia: g('gfFantasia'),
+      ie: g('gfIe'), crt: g('gfCrt'), ambiente: g('gfAmbiente'),
+      email: g('gfEmail'), telefone: g('gfTelefone'),
+      cep: g('gfCep'), logradouro: g('gfLogradouro'), numero: g('gfNumero'),
+      bairro: g('gfBairro'), complemento: g('gfComplemento'),
+      municipio: g('gfMunicipio'), cod_municipio: g('gfCodMunicipio'), uf: g('gfUf'),
+    };
+    if (payload.cnpj.length !== 14) return _toast('CNPJ inválido', true);
+    if (!payload.razao_social) return _toast('Razão social obrigatória', true);
+    if (!payload.uf) return _toast('UF obrigatória', true);
+
+    const data = await _api('/api/nfe/empresas', { method: 'POST', body: JSON.stringify(payload) });
+    if (!data.ok) return _toast(data.erro || 'Erro ao salvar', true);
+    _toast('Empresa salva ✓');
+    await _carregarEmpresas();
+  }
+
+  function _carregarEmpresasVoltar() { _carregarEmpresas(); }
+
+  // ════════════════════════════════════════════════════════════════
+  // UPLOAD DO CERTIFICADO A1 (.pfx → base64 → backend cifra)
+  // ════════════════════════════════════════════════════════════════
+  function _gfUploadCert(empresaId, nome) {
+    const corpo =
+      '<div style="' + card + '">' +
+        '<div style="display:flex;gap:10px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;font-size:13px;color:#1e40af;line-height:1.45;margin-bottom:16px">' +
+          '<span>🔒</span><div>O certificado é <b>cifrado antes de ser guardado</b>. A senha nunca fica em texto puro. Apenas seu servidor consegue decifrar.</div>' +
+        '</div>' +
+        '<div style="font-weight:700;margin-bottom:10px">Certificado de: ' + _esc(nome) + '</div>' +
+        '<label style="' + lbl + '">Arquivo do certificado (.pfx ou .p12)</label>' +
+        '<input type="file" id="gfCertFile" accept=".pfx,.p12" style="' + inp + ';padding:7px">' +
+        '<label style="' + lbl + ';margin-top:12px">Senha do certificado</label>' +
+        '<input type="password" id="gfCertSenha" style="' + inp + '" placeholder="senha do A1">' +
+        '<div id="gfCertMsg" style="font-size:12px;margin-top:8px;color:#64748b"></div>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="_carregarEmpresas()">Voltar</button>' +
+        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_gfEnviarCert(' + empresaId + ')">📎 Enviar certificado</button>' +
+      '</div>';
+    document.getElementById('gfConteudo').innerHTML = corpo;
+  }
+
+  async function _gfEnviarCert(empresaId) {
+    const file = document.getElementById('gfCertFile').files[0];
+    const senha = document.getElementById('gfCertSenha').value;
+    const msg = document.getElementById('gfCertMsg');
+    if (!file) { msg.textContent = 'Selecione o arquivo do certificado.'; msg.style.color = '#b91c1c'; return; }
+    if (!senha) { msg.textContent = 'Informe a senha.'; msg.style.color = '#b91c1c'; return; }
+    msg.textContent = '⏳ Enviando e validando…'; msg.style.color = '#64748b';
+
+    // lê o arquivo como base64
+    const pfxBase64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(',')[1]);
+      r.onerror = () => rej(new Error('Falha ao ler arquivo'));
+      r.readAsDataURL(file);
+    }).catch((e) => { msg.textContent = e.message; msg.style.color = '#b91c1c'; return null; });
+    if (!pfxBase64) return;
+
+    const data = await _api('/api/nfe/empresas/' + empresaId + '/certificado', {
+      method: 'POST', body: JSON.stringify({ pfxBase64, senha }),
+    });
+    if (!data.ok) { msg.textContent = data.erro || 'Erro'; msg.style.color = '#b91c1c'; return; }
+    const c = data.certificado;
+    const val = c.validade ? new Date(c.validade).toLocaleDateString('pt-BR') : '';
+    _toast('Certificado enviado ✓');
+    msg.innerHTML = '✓ Certificado válido. Titular: <b>' + _esc(c.titular || '?') + '</b>' + (val ? ' · Validade: ' + val : '');
+    msg.style.color = '#166534';
+    setTimeout(() => _carregarEmpresas(), 1400);
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // CLASSES DE IMPOSTO (auto-gerar revenda/fabricante)
+  // ════════════════════════════════════════════════════════════════
+  async function _gfClasses(empresaId) {
+    const data = await _api('/api/nfe/empresas/' + empresaId + '/classes');
+    const classes = (data.ok && data.classes) || [];
+    let listaHtml = classes.length
+      ? classes.map((c) =>
+          '<div style="' + card + '">' +
+            '<div style="font-weight:700;color:#0f172a">' + _esc(c.nome) + (c.padrao ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:5px;font-size:11px">PADRÃO</span>' : '') + '</div>' +
+            '<div style="font-size:12.5px;color:#64748b;margin-top:4px">' +
+              'Perfil: ' + _esc(c.perfil) + ' · CSOSN: ' + _esc(c.csosn || '—') + ' · CST: ' + _esc(c.cst_icms || '—') +
+              ' · CFOP dentro: ' + _esc(c.cfop_dentro_uf || '—') + ' · fora: ' + _esc(c.cfop_fora_uf || '—') +
+            '</div>' +
+          '</div>').join('')
+      : '<div style="' + card + ';text-align:center;color:#64748b">Nenhuma classe. Gere abaixo.</div>';
+
+    const corpo =
+      '<div style="display:flex;gap:10px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:13px;color:#92400e;margin-bottom:16px">' +
+        '<span>⚠</span><div>As classes geradas usam padrões comuns de calçados/varejo. <b>Confirme com sua contabilidade</b> antes de emitir em produção.</div>' +
+      '</div>' +
+      listaHtml +
+      '<div style="' + card + '">' +
+        '<div style="font-weight:700;margin-bottom:10px">Gerar classe padrão</div>' +
+        '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+          '<select id="gfPerfilClasse" style="' + inp + ';max-width:220px">' +
+            '<option value="revenda">Revenda (compra e revende)</option>' +
+            '<option value="fabricante">Fabricante (produção própria)</option>' +
+          '</select>' +
+          '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_gfGerarClasse(' + empresaId + ')">⚙ Gerar automático</button>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;margin-top:8px">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="_carregarEmpresas()">Voltar</button>' +
+      '</div>';
+    document.getElementById('gfConteudo').innerHTML = corpo;
+  }
+
+  async function _gfGerarClasse(empresaId) {
+    const perfil = document.getElementById('gfPerfilClasse').value;
+    const data = await _api('/api/nfe/empresas/' + empresaId + '/classes/auto', {
+      method: 'POST', body: JSON.stringify({ perfil }),
+    });
+    if (!data.ok) return _toast(data.erro || 'Erro', true);
+    _toast('Classe gerada ✓');
+    _gfClasses(empresaId);
+  }
+
+  // ─── Expõe as funções chamadas via onclick ─────────────────────────
+  window.abrirGestaoFiscalNFe = abrirGestaoFiscalNFe;
+  window._carregarEmpresas = _carregarEmpresas;
+  window._carregarEmpresasVoltar = _carregarEmpresasVoltar;
+  window._gfNovaEmpresa = _gfNovaEmpresa;
+  window._gfEditarEmpresa = _gfEditarEmpresa;
+  window._gfConsultarCnpj = _gfConsultarCnpj;
+  window._gfSalvarEmpresa = _gfSalvarEmpresa;
+  window._gfUploadCert = _gfUploadCert;
+  window._gfEnviarCert = _gfEnviarCert;
+  window._gfClasses = _gfClasses;
+  window._gfGerarClasse = _gfGerarClasse;
+
+  console.log('[nfe-fiscal.js] Módulo de Gestão Fiscal NF-e carregado (v33k.501)');
+})();
+
+</script>
+<!-- ====== FIM MODULO NF-e ====== -->
 <script>
 /* Chart.js v4.4.4 (MIT) — embutido para não depender de CDN */
 /*!
@@ -7741,6 +8112,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBtnAtrasados" onclick="expToggleAtrasados()" title="Mostrar só os pedidos com prazo de envio vencido">⏰ Só atrasados</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expAbrirHistorico()" title="Ver o histórico de etiquetas impressas">🖨 Histórico</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expSemear()" title="Carrega os pedidos pendentes atuais para a fila (roda uma vez)">Sincronizar fila</button>
+            <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirGestaoFiscalNFe()" title="Cadastrar empresa emitente, certificado e impostos para emissao de NF-e">🧾 Config. Fiscal</button>
           </div>
           <div id="expLoading" style="display:none;text-align:center;padding:30px;color:var(--lc-muted)">Carregando…</div>
           <div id="expProgresso" style="display:none"></div>
