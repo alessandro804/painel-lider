@@ -50456,6 +50456,10 @@ ${JSON.stringify(metricas, null, 2)}`
       // v33k.401: guarda a ORDEM EXIBIDA (order_sn na sequência da tela) pra que a
       // geração de etiquetas em lote saia no PDF exatamente nessa ordem.
       _expOrdemExibida = peds.map(p => p.orderSn);
+      // v33k.512: mapa order_sn → lojaId (pra emitir NF na loja CERTA do pedido,
+      // não na primeira do filtro quando está em "Todas as contas").
+      window._expLojaPorSn = window._expLojaPorSn || {};
+      peds.forEach(p => { if (p.orderSn) window._expLojaPorSn[p.orderSn] = p.lojaId; });
       // barra de ações não aparece nos Cancelados (9) nem Devolvidos (8) — só informação/etiqueta
       if (acoes) acoes.style.display = (peds.length && _expEtapaSel !== 9 && _expEtapaSel !== 8 && _expEtapaSel !== 5) ? 'flex' : 'none';
       // checkbox master reflete se TODOS os visíveis estão selecionados (não força false)
@@ -50880,11 +50884,14 @@ ${JSON.stringify(metricas, null, 2)}`
     const sns = expOrdenarPelaTela([..._expSel]);
     // ETAPA 1 (Emitir NF): ainda manual/leitura — a emissão automática entra depois.
     if (_expEtapaSel === 1) {
-      const lojas = expLojasSelecionadas();
-      const lojaId = lojas && lojas.length ? lojas[0] : null;
-      if (!lojaId) { showToast('Selecione uma conta Shopee.', true); return; }
-      if (sns.length > 1) showToast('Emitindo 1 por vez. Primeiro: ' + sns[0]);
-      if (typeof emitirDireto === 'function') emitirDireto(lojaId, sns[0]);
+      // v33k.512: usa a loja DO PEDIDO selecionado (não a primeira do filtro).
+      // Quando o filtro está em "Todas as contas", a primeira loja pode não ser
+      // a dona do pedido — isso causava emitir na loja errada.
+      const snEmitir = sns[0];
+      const lojaId = (window._expLojaPorSn && window._expLojaPorSn[snEmitir]) || null;
+      if (!lojaId) { showToast('Não identifiquei a loja deste pedido. Recarregue a lista e tente de novo.', true); return; }
+      if (sns.length > 1) showToast('Emitindo 1 por vez. Primeiro: ' + snEmitir);
+      if (typeof emitirDireto === 'function') emitirDireto(lojaId, snEmitir);
       else showToast('Módulo de emissão não carregado.', true);
       return;
     }
