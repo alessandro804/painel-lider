@@ -132,7 +132,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.0/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.2/dist/umd/supabase.min.js"></script>
-<!-- inicio modulo NF-e (v33k.503) -->
+<!-- inicio modulo NF-e (v33k.504) -->
 <script>
 /* ============================================================
    MODULO NF-e - Gestao Fiscal (inline no index.html, v33k.502)
@@ -690,152 +690,235 @@
   }
 
   // ════════════════════════════════════════════════════════════════
-  // MODAL DE EMISSÃO DE NF-e (destinatário editável)
+  // FLUXO DE EMISSÃO — clicar no pedido = revisar; botão Emitir = direto
   // ════════════════════════════════════════════════════════════════
-  async function abrirEmissaoNF(lojaId, orderSn) {
-    _overlay('emissaoNFOverlay',
-      '<div><h2 style="margin:0;font-size:16px">🧾 Emitir NF-e</h2>' +
-      '<div style="font-size:12px;opacity:.9;margin-top:2px">Pedido ' + _esc(orderSn) + '</div></div>',
-      '<div id="enfConteudo"><div style="text-align:center;padding:30px;color:#64748b">⏳ Carregando dados do pedido…</div></div>',
+
+  // Busca CEP e preenche endereço (código IBGE fica invisível, guardado no ctx)
+  async function _buscarCep(prefixo) {
+    const cepEl = document.getElementById(prefixo + 'Cep');
+    if (!cepEl) return;
+    const cep = cepEl.value.replace(/\D/g, '');
+    if (cep.length !== 8) return;
+    const msgEl = document.getElementById(prefixo + 'CepMsg');
+    if (msgEl) { msgEl.textContent = '⏳ buscando…'; msgEl.style.color = '#64748b'; }
+    const data = await _api('/api/nfe/consultar-cep/' + cep);
+    if (!data.ok) { if (msgEl) { msgEl.textContent = data.erro || 'CEP não encontrado'; msgEl.style.color = '#b91c1c'; } return; }
+    const e = data.endereco;
+    const set = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
+    set(prefixo + 'Logradouro', e.logradouro);
+    set(prefixo + 'Bairro', e.bairro);
+    set(prefixo + 'Municipio', e.municipio);
+    set(prefixo + 'Uf', e.uf);
+    // código IBGE guardado INVISÍVEL no contexto (nunca mostrado)
+    if (!window._enfCtx) window._enfCtx = {};
+    window._enfCtx.codigoMunicipio = e.codigoMunicipio || '';
+    if (msgEl) { msgEl.textContent = '✓ endereço preenchido'; msgEl.style.color = '#166534'; }
+  }
+
+  // Abre o modal de REVISÃO do pedido (endereço editável + produtos + NCM)
+  async function abrirRevisaoPedido(lojaId, orderSn) {
+    _overlay('revisaoPedidoOverlay',
+      '<div><h2 style="margin:0;font-size:16px">📋 Revisar pedido</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Pedido ' + _esc(orderSn) + ' · confira antes de emitir</div></div>',
+      '<div id="rpConteudo"><div style="text-align:center;padding:30px;color:#64748b">⏳ Carregando…</div></div>',
       760);
     const data = await _api('/api/nfe/pedido-para-emissao?lojaId=' + lojaId + '&orderSn=' + encodeURIComponent(orderSn));
     if (!data.ok) {
-      document.getElementById('enfConteudo').innerHTML = '<div style="color:#b91c1c;padding:16px">Erro: ' + _esc(data.erro || 'falha') + '</div>';
+      document.getElementById('rpConteudo').innerHTML = '<div style="color:#b91c1c;padding:16px">Erro: ' + _esc(data.erro || 'falha') + '</div>';
       return;
     }
-    window._enfCtx = { lojaId, orderSn, empresa: data.empresa, itens: data.itens || [] };
-    _renderEmissao(data);
+    window._enfCtx = { lojaId, orderSn, empresa: data.empresa, itens: data.itens || [], codigoMunicipio: (data.destinatario && data.destinatario.endereco && data.destinatario.endereco.codigoMunicipio) || '' };
+    _renderRevisao(data);
   }
 
-  function _renderEmissao(data) {
+  function _renderRevisao(data) {
     const d = data.destinatario || {};
     const end = d.endereco || {};
     const itens = data.itens || [];
 
-    // aviso se empresa não vinculada
-    let avisoEmpresa = '';
-    if (!data.empresa) {
-      avisoEmpresa = '<div style="' + card + ';background:#fef2f2;border-color:#fecaca;color:#991b1b">' +
-        '⚠ Esta loja não tem empresa emitente vinculada. Vá em <b>Config. Fiscal → Vincular lojas</b> antes de emitir.</div>';
-    } else {
-      avisoEmpresa = '<div style="' + card + ';background:#f0fdf4;border-color:#bbf7d0;color:#166534;font-size:13px">' +
-        '✓ Emitindo por: <b>' + _esc(data.empresa.razao_social) + '</b> (' + _fmtCnpj(data.empresa.cnpj) + ') · ' + _esc(data.empresa.uf) +
-        ' · ' + (Number(data.empresa.ambiente) === 1 ? '<span style="color:#166534">PRODUÇÃO</span>' : '<span style="color:#92400e">HOMOLOGAÇÃO</span>') + '</div>';
-    }
+    let avisoEmpresa = data.empresa
+      ? '<div style="' + card + ';background:#f0fdf4;border-color:#bbf7d0;color:#166534;font-size:13px">✓ Emitindo por: <b>' + _esc(data.empresa.razao_social) + '</b> (' + _fmtCnpj(data.empresa.cnpj) + ') · ' + _esc(data.empresa.uf) + ' · ' + (Number(data.empresa.ambiente) === 1 ? 'PRODUÇÃO' : 'HOMOLOGAÇÃO') + '</div>'
+      : '<div style="' + card + ';background:#fef2f2;border-color:#fecaca;color:#991b1b">⚠ Loja sem empresa emitente vinculada. Vá em Config. Fiscal → Vincular lojas.</div>';
 
-    // aviso de dados mascarados
-    let avisoMasc = '';
-    if (d.mascarado) {
-      avisoMasc = '<div style="display:flex;gap:10px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:12.5px;color:#92400e;margin-bottom:14px">' +
-        '<span>ℹ</span><div>A Shopee mascara os dados do comprador. Preencha manualmente abaixo os dados do destinatário para emitir.</div></div>';
-    }
-
-    // tabela de itens (só leitura)
-    const itensHtml = itens.length ? itens.map((it) =>
+    const itensHtml = itens.length ? itens.map((it, i) =>
       '<tr><td style="padding:5px 8px;font-size:12px">' + _esc(it.sku) + '</td>' +
-      '<td style="padding:5px 8px;font-size:12px">' + _esc((it.descricao || '').slice(0, 40)) + '</td>' +
+      '<td style="padding:5px 8px;font-size:12px">' + _esc((it.descricao || '').slice(0, 36)) + '</td>' +
       '<td style="padding:5px 8px;font-size:12px;text-align:center">' + it.quantidade + '</td>' +
-      '<td style="padding:5px 8px;font-size:12px;text-align:right">R$ ' + Number(it.valorUnitario).toFixed(2) + '</td></tr>'
-    ).join('') : '<tr><td colspan="4" style="padding:10px;text-align:center;color:#64748b">Nenhum item encontrado</td></tr>';
+      '<td style="padding:5px 8px;font-size:12px;text-align:right">R$ ' + Number(it.valorUnitario).toFixed(2) + '</td>' +
+      '<td style="padding:4px 6px"><input id="rpNcm' + i + '" placeholder="NCM" value="' + _esc(it.ncm || '') + '" style="width:80px;padding:5px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td></tr>'
+    ).join('') : '<tr><td colspan="5" style="padding:10px;text-align:center;color:#64748b">Nenhum item</td></tr>';
 
-    const corpo =
-      avisoEmpresa +
-      avisoMasc +
+    const corpo = avisoEmpresa +
       '<div style="' + card + '">' +
-        '<div style="font-weight:700;color:#0f172a;margin-bottom:10px">Itens da nota</div>' +
-        '<table style="width:100%;border-collapse:collapse">' +
-          '<thead><tr style="background:#f1f5f9"><th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">SKU</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Produto</th><th style="padding:6px 8px;font-size:11px;color:#475569">Qtd</th><th style="padding:6px 8px;text-align:right;font-size:11px;color:#475569">Valor un.</th></tr></thead>' +
-          '<tbody>' + itensHtml + '</tbody>' +
-        '</table>' +
+        '<div style="font-weight:700;color:#0f172a;margin-bottom:10px">Produtos <span style="font-weight:400;font-size:12px;color:#64748b">(preencha o NCM se estiver vazio)</span></div>' +
+        '<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f1f5f9">' +
+          '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">SKU</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Produto</th><th style="padding:6px;font-size:11px;color:#475569">Qtd</th><th style="padding:6px 8px;text-align:right;font-size:11px;color:#475569">Valor</th><th style="padding:6px 8px;font-size:11px;color:#475569">NCM</th>' +
+        '</tr></thead><tbody>' + itensHtml + '</tbody></table>' +
+        '<div style="text-align:right;margin-top:8px"><button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_rpSalvarNcms()">💾 Salvar NCMs</button></div>' +
       '</div>' +
-
       '<div style="' + card + '">' +
-        '<div style="font-weight:700;color:#0f172a;margin-bottom:12px">Destinatário (editável)</div>' +
+        '<div style="font-weight:700;color:#0f172a;margin-bottom:12px">Destinatário</div>' +
         '<div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">' +
-          _campo('enfNome', 'Nome / Razão Social *', d.nome || '') +
-          _campo('enfDoc', 'CPF / CNPJ *', d.cpf || d.cnpj || '') +
+          _campo('rpNome', 'Nome / Razão Social', d.nome || '') +
+          _campo('rpDoc', 'CPF / CNPJ', d.cpf || d.cnpj || '') +
         '</div>' +
-        '<div style="display:grid;grid-template-columns:3fr 1fr;gap:12px;margin-top:12px">' +
-          _campo('enfLogradouro', 'Logradouro *', end.logradouro || '') +
-          _campo('enfNumero', 'Número *', end.numero || '') +
+        '<div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-top:12px">' +
+          '<div><label style="' + lbl + '">CEP</label><input id="rpCep" style="' + inp + '" value="' + _esc(end.cep || '') + '" onblur="_buscarCep(\'rp\')" placeholder="00000-000"><div id="rpCepMsg" style="font-size:11px;margin-top:3px;color:#64748b"></div></div>' +
+          _campo('rpLogradouro', 'Logradouro', end.logradouro || '') +
         '</div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">' +
-          _campo('enfBairro', 'Bairro *', end.bairro || '') +
-          _campo('enfComplemento', 'Complemento', end.complemento || '') +
-          _campo('enfCep', 'CEP *', end.cep || '') +
+          _campo('rpNumero', 'Número', end.numero || '') +
+          _campo('rpBairro', 'Bairro', end.bairro || '') +
+          _campo('rpComplemento', 'Complemento', end.complemento || '') +
         '</div>' +
-        '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-top:12px">' +
-          _campo('enfMunicipio', 'Município *', end.municipio || '') +
-          _campoComDica('enfCodMun', 'Cód. IBGE Município *', end.codigoMunicipio || '', 'Ex: 3143906 (obrigatório p/ NF-e)') +
-          _campo('enfUf', 'UF *', end.uf || '') +
+        '<div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:12px">' +
+          _campo('rpMunicipio', 'Município', end.municipio || '') +
+          _campo('rpUf', 'UF', end.uf || '') +
         '</div>' +
+        '<div style="font-size:11px;color:#64748b;margin-top:8px">ℹ Digite o CEP para preencher o endereço automaticamente.</div>' +
       '</div>' +
-
-      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px">' +
-        '<div id="enfMsg" style="font-size:13px;color:#64748b"></div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">' +
+        '<div id="rpMsg" style="font-size:13px;color:#64748b"></div>' +
         '<div style="display:flex;gap:8px">' +
-          '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'emissaoNFOverlay\').remove()">Cancelar</button>' +
-          '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_enfEmitir()"' + (data.empresa ? '' : ' disabled') + '>🧾 Emitir NF-e</button>' +
+          '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'revisaoPedidoOverlay\').remove()">Fechar</button>' +
+          '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_rpEmitirDaRevisao()"' + (data.empresa ? '' : ' disabled') + '>🧾 Emitir NF-e</button>' +
         '</div>' +
       '</div>';
-    document.getElementById('enfConteudo').innerHTML = corpo;
+    document.getElementById('rpConteudo').innerHTML = corpo;
   }
 
-  async function _enfEmitir() {
+  // Salva os NCMs digitados na revisão (aprende p/ próximas vendas)
+  async function _rpSalvarNcms() {
+    const ctx = window._enfCtx || {};
+    const itens = ctx.itens || [];
+    let salvos = 0;
+    for (let i = 0; i < itens.length; i++) {
+      const ncmEl = document.getElementById('rpNcm' + i);
+      const ncm = ncmEl ? ncmEl.value.replace(/\D/g, '') : '';
+      if (ncm && ncm.length >= 4) {
+        await _api('/api/nfe/produtos-fiscal', { method: 'POST', body: JSON.stringify({ sku: itens[i].sku, ncm, descricao: itens[i].descricao }) });
+        itens[i].ncm = ncm;
+        salvos++;
+      }
+    }
+    _toast(salvos + ' NCM(s) salvo(s) ✓');
+  }
+
+  // Emite a partir da revisão (coleta os campos do modal)
+  async function _rpEmitirDaRevisao() {
     const ctx = window._enfCtx || {};
     const g = (x) => { const el = document.getElementById(x); return el ? el.value.trim() : ''; };
-    const msg = document.getElementById('enfMsg');
-
-    // validação mínima
-    const doc = g('enfDoc').replace(/\D/g, '');
-    if (!g('enfNome')) { msg.textContent = 'Preencha o nome do destinatário.'; msg.style.color = '#b91c1c'; return; }
-    if (doc.length !== 11 && doc.length !== 14) { msg.textContent = 'CPF (11) ou CNPJ (14 dígitos) inválido.'; msg.style.color = '#b91c1c'; return; }
-    if (!g('enfCodMun')) { msg.textContent = 'Código IBGE do município é obrigatório.'; msg.style.color = '#b91c1c'; return; }
-
+    const msg = document.getElementById('rpMsg');
+    // salva NCMs primeiro (garante que estão no banco)
+    await _rpSalvarNcms();
+    const doc = g('rpDoc').replace(/\D/g, '');
     const destinatario = {
-      nome: g('enfNome'),
-      cpf: doc.length === 11 ? doc : undefined,
-      cnpj: doc.length === 14 ? doc : undefined,
+      nome: g('rpNome'), cpf: doc.length === 11 ? doc : undefined, cnpj: doc.length === 14 ? doc : undefined,
       endereco: {
-        logradouro: g('enfLogradouro'), numero: g('enfNumero'), bairro: g('enfBairro'),
-        complemento: g('enfComplemento'), cep: g('enfCep'),
-        municipio: g('enfMunicipio'), codigoMunicipio: g('enfCodMun'), uf: g('enfUf'),
+        logradouro: g('rpLogradouro'), numero: g('rpNumero'), bairro: g('rpBairro'),
+        complemento: g('rpComplemento'), cep: g('rpCep').replace(/\D/g, ''),
+        municipio: g('rpMunicipio'), uf: g('rpUf'), codigoMunicipio: ctx.codigoMunicipio || '',
       },
     };
+    await _executarEmissao(ctx, destinatario, msg);
+  }
 
-    msg.textContent = '⏳ Emitindo… (assinando e transmitindo à SEFAZ)'; msg.style.color = '#0369a1';
+  // EMITIR DIRETO (botão Emitir da Expedição, sem abrir revisão)
+  // Busca os dados, e se faltar NCM abre o modal SÓ de produto.
+  async function emitirDireto(lojaId, orderSn) {
+    _toast('⏳ Preparando emissão…');
+    const data = await _api('/api/nfe/pedido-para-emissao?lojaId=' + lojaId + '&orderSn=' + encodeURIComponent(orderSn));
+    if (!data.ok) return _toast(data.erro || 'Erro ao buscar pedido', true);
+    if (!data.empresa) return _toast('Loja sem empresa emitente vinculada (Config. Fiscal → Vincular lojas).', true);
+    const ctx = { lojaId, orderSn, empresa: data.empresa, itens: data.itens || [],
+      codigoMunicipio: (data.destinatario && data.destinatario.endereco && data.destinatario.endereco.codigoMunicipio) || '' };
+    window._enfCtx = ctx;
+    // monta destinatário direto do que veio (marketplace preencherá 100% no futuro)
+    const d = data.destinatario || {}; const end = d.endereco || {};
+    const doc = (d.cpf || d.cnpj || '').replace(/\D/g, '');
+    const destinatario = {
+      nome: d.nome, cpf: doc.length === 11 ? doc : undefined, cnpj: doc.length === 14 ? doc : undefined,
+      endereco: { logradouro: end.logradouro, numero: end.numero, bairro: end.bairro,
+        complemento: end.complemento, cep: end.cep, municipio: end.municipio, uf: end.uf, codigoMunicipio: end.codigoMunicipio },
+    };
+    await _executarEmissao(ctx, destinatario, null);
+  }
+
+  // Núcleo da emissão: chama a API e trata pendência de NCM (abre modal de produto)
+  async function _executarEmissao(ctx, destinatario, msgEl) {
+    const setMsg = (html, cor) => { if (msgEl) { msgEl.innerHTML = html; msgEl.style.color = cor; } };
+    setMsg('⏳ Emitindo…', '#0369a1');
     const r = await _api('/api/nfe/emitir', {
       method: 'POST',
-      body: JSON.stringify({
-        empresaId: ctx.empresa.id,
-        destinatario,
-        itens: ctx.itens,
-        pedido: { marketplace: 'shopee', order_sn: ctx.orderSn, loja_id: ctx.lojaId },
-      }),
+      body: JSON.stringify({ empresaId: ctx.empresa.id, destinatario, itens: ctx.itens,
+        pedido: { marketplace: 'shopee', order_sn: ctx.orderSn, loja_id: ctx.lojaId } }),
     });
 
+    // PENDÊNCIA DE NCM → abre modal SÓ de produto
     if (r.pendenteFiscal) {
-      msg.innerHTML = '⚠ Produtos sem NCM: ' + (r.pendentes || []).map((p) => _esc(p.sku)).join(', ') + '. Configure o fiscal deles primeiro.';
-      msg.style.color = '#b91c1c';
+      if (!msgEl) _toast('Faltam NCMs — preencha os produtos.', true);
+      _abrirModalProdutoFaltante(r.pendentes || [], ctx, destinatario, msgEl);
       return;
     }
-    if (!r.ok) {
-      msg.innerHTML = '✗ ' + _esc(r.erro || 'Falha') + (r.cstat ? ' (cStat ' + r.cstat + ')' : '');
-      msg.style.color = '#b91c1c';
-      return;
-    }
+    if (!r.ok) { setMsg('✗ ' + _esc(r.erro || 'Falha') + (r.cstat ? ' (cStat ' + r.cstat + ')' : ''), '#b91c1c'); if (!msgEl) _toast(r.erro || 'Falha', true); return; }
     if (r.autorizada) {
       _toast('NF-e autorizada ✓');
-      msg.innerHTML = '✓ <b>NF-e autorizada!</b> Chave: ' + _esc((r.chaveAcesso || '').replace(/(\d{4})/g, '$1 ').trim());
-      msg.style.color = '#166534';
+      setMsg('✓ <b>NF-e autorizada!</b> Chave: ' + _esc((r.chaveAcesso || '').replace(/(\d{4})/g, '$1 ').trim()), '#166534');
+      if (!msgEl) { const ov = document.getElementById('revisaoPedidoOverlay'); if (ov) ov.remove(); }
     } else {
-      msg.innerHTML = '⚠ Rejeitada pela SEFAZ: ' + _esc(r.motivo || '') + (r.cstat ? ' (cStat ' + r.cstat + ')' : '');
-      msg.style.color = '#b91c1c';
+      setMsg('⚠ Rejeitada: ' + _esc(r.motivo || '') + (r.cstat ? ' (cStat ' + r.cstat + ')' : ''), '#b91c1c');
+      if (!msgEl) _toast('Rejeitada: ' + (r.motivo || ''), true);
     }
   }
 
-  window.abrirEmissaoNF = abrirEmissaoNF;
-  window._enfEmitir = _enfEmitir;
+  // MODAL SÓ DE PRODUTO (quando falta NCM ao emitir direto)
+  function _abrirModalProdutoFaltante(pendentes, ctx, destinatario, msgOrigem) {
+    _overlay('produtoFaltanteOverlay',
+      '<div><h2 style="margin:0;font-size:16px">📦 Dados do produto necessários</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Preencha o NCM para emitir</div></div>',
+      '', 560);
+    const linhas = pendentes.map((p, i) =>
+      '<div style="' + card + '">' +
+        '<div style="font-weight:600;color:#0f172a;font-size:13px;margin-bottom:8px">' + _esc(p.sku) + '</div>' +
+        '<div style="font-size:12px;color:#64748b;margin-bottom:8px">' + _esc((p.descricao || '').slice(0, 60)) + '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
+          '<div><label style="' + lbl + '">NCM *</label><input id="pfNcm' + i + '" style="' + inp + '" placeholder="Ex: 64039990"></div>' +
+          '<div><label style="' + lbl + '">CEST (opcional)</label><input id="pfCest' + i + '" style="' + inp + '"></div>' +
+        '</div>' +
+      '</div>').join('');
+    document.getElementById('produtoFaltanteOverlayBody').innerHTML =
+      '<div style="display:flex;gap:10px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:12.5px;color:#92400e;margin-bottom:14px">' +
+        '<span>⚠</span><div>Estes produtos não têm NCM cadastrado. Preencha para emitir (salva para as próximas vendas).</div></div>' +
+      linhas +
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'produtoFaltanteOverlay\').remove()">Cancelar</button>' +
+        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_pfSalvarEEmitir()">💾 Salvar e emitir</button>' +
+      '</div>';
+    window._pfCtx = { pendentes, ctx, destinatario, msgOrigem: msgOrigem ? msgOrigem.id : null };
+  }
+
+  async function _pfSalvarEEmitir() {
+    const { pendentes, ctx, destinatario } = window._pfCtx || {};
+    if (!pendentes) return;
+    for (let i = 0; i < pendentes.length; i++) {
+      const ncm = (document.getElementById('pfNcm' + i) || {}).value || '';
+      const cest = (document.getElementById('pfCest' + i) || {}).value || '';
+      if (!ncm.replace(/\D/g, '')) { _toast('Preencha o NCM de ' + pendentes[i].sku, true); return; }
+      await _api('/api/nfe/produtos-fiscal', { method: 'POST', body: JSON.stringify({ sku: pendentes[i].sku, ncm: ncm.replace(/\D/g, ''), cest: cest.replace(/\D/g, ''), descricao: pendentes[i].descricao }) });
+    }
+    _toast('Produtos salvos ✓ Emitindo…');
+    document.getElementById('produtoFaltanteOverlay').remove();
+    const msgEl = window._pfCtx.msgOrigem ? document.getElementById(window._pfCtx.msgOrigem) : null;
+    await _executarEmissao(ctx, destinatario, msgEl);
+  }
+
+  window.abrirRevisaoPedido = abrirRevisaoPedido;
+  window.emitirDireto = emitirDireto;
+  window._buscarCep = _buscarCep;
+  window._rpSalvarNcms = _rpSalvarNcms;
+  window._rpEmitirDaRevisao = _rpEmitirDaRevisao;
+  window._pfSalvarEEmitir = _pfSalvarEEmitir;
+
 
   // ─── Expõe as funções chamadas via onclick ─────────────────────────
   window._gfEditarClasse = _gfEditarClasse;
@@ -50372,7 +50455,8 @@ ${JSON.stringify(metricas, null, 2)}`
         '</div>'
       : '';
 
-    return '<div style="background:var(--lc-surface);border:1px solid ' + (sel ? 'var(--lc-primary)' : (ehErro ? 'var(--lc-danger)' : 'var(--lc-border)')) + ';border-radius:var(--lc-radius);padding:11px 14px">' +
+    const _cliqueRevisar = (_expEtapaSel === 1) ? ' onclick="if(!event.target.closest(\'button,input,a\'))abrirRevisaoPedido(\'' + (p.lojaId||'') + '\',\'' + p.orderSn + '\')" style="cursor:pointer"' : '';
+    return '<div' + _cliqueRevisar + ' style="background:var(--lc-surface);border:1px solid ' + (sel ? 'var(--lc-primary)' : (ehErro ? 'var(--lc-danger)' : 'var(--lc-border)')) + ';border-radius:var(--lc-radius);padding:11px 14px">' +
       '<div style="display:flex;align-items:center;gap:12px">' +
         checkboxHtml +
         fotoHtml +
@@ -50627,12 +50711,12 @@ ${JSON.stringify(metricas, null, 2)}`
     const sns = expOrdenarPelaTela([..._expSel]);
     // ETAPA 1 (Emitir NF): ainda manual/leitura — a emissão automática entra depois.
     if (_expEtapaSel === 1) {
-      // v33k.503: abre o modal de emissão de NF-e (destinatário editável) pro 1º selecionado.
+      // v33k.504: emite direto o 1º selecionado (modal de produto abre se faltar NCM).
       const lojas = expLojasSelecionadas();
       const lojaId = lojas && lojas.length ? lojas[0] : null;
       if (!lojaId) { showToast('Selecione uma conta Shopee.', true); return; }
-      if (sns.length > 1) showToast('Emitindo 1 por vez. Abrindo o primeiro: ' + sns[0]);
-      if (typeof abrirEmissaoNF === 'function') abrirEmissaoNF(lojaId, sns[0]);
+      if (sns.length > 1) showToast('Emitindo 1 por vez. Primeiro: ' + sns[0]);
+      if (typeof emitirDireto === 'function') emitirDireto(lojaId, sns[0]);
       else showToast('Módulo de emissão não carregado.', true);
       return;
     }
