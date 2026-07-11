@@ -132,7 +132,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.0/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.2/dist/umd/supabase.min.js"></script>
-<!-- inicio modulo NF-e (v33k.530) -->
+<!-- inicio modulo NF-e (v33k.534) -->
 <script>
 /* ============================================================
    MODULO NF-e - Gestao Fiscal (inline no index.html, v33k.502)
@@ -363,11 +363,37 @@
     if (!el) return;
     const data = await _api('/api/nfe/empresas/' + empresaId + '/series');
     if (!data || !data.ok) { el.innerHTML = '<div style="color:#b91c1c">Erro ao carregar numeração.</div>'; return; }
-    window._gfSeriesCtx = { empresaId, ambienteEmpresa: data.ambienteEmpresa || ambienteEmpresa, seriePadrao: data.seriePadrao };
+    const ambAtual = Number(data.ambienteEmpresa);
+    window._gfSeriesCtx = { empresaId, ambienteEmpresa: ambAtual, seriePadrao: data.seriePadrao };
     const series = data.series || [];
     const ambLabel = (a) => Number(a) === 1 ? 'Produção' : 'Homologação';
 
-    // tabela das séries existentes
+    // linha que será REALMENTE usada na próxima emissão = série padrão + ambiente atual
+    const ativa = series.find(s => Number(s.serie) === Number(data.seriePadrao) && Number(s.ambiente) === ambAtual);
+    const proxNumAtivo = ativa ? ativa.proximo_numero : 1;
+
+    // ── BANNER de ambiente (o que resolve a confusão): mostra em qual ambiente a
+    //    empresa está e deixa trocar na hora, explicando o efeito. ──
+    const ehProd = ambAtual === 1;
+    const banner =
+      '<div style="border-radius:12px;padding:14px;margin-bottom:14px;border:1px solid ' + (ehProd ? '#bbf7d0' : '#fde68a') + ';background:' + (ehProd ? '#f0fdf4' : '#fffbeb') + '">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">' +
+          '<div style="display:flex;align-items:center;gap:10px">' +
+            '<span style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:' + (ehProd ? '#16a34a' : '#d97706') + ';color:#fff"><span class="lc-ic" data-lucide="' + (ehProd ? 'badge-check' : 'flask-conical') + '"></span></span>' +
+            '<div><div style="font-size:11px;color:' + (ehProd ? '#15803d' : '#b45309') + ';text-transform:uppercase;letter-spacing:.4px;font-weight:700">Ambiente de emissão atual</div>' +
+              '<div style="font-size:16px;font-weight:800;color:' + (ehProd ? '#14532d' : '#92400e') + '">' + (ehProd ? 'PRODUÇÃO (notas reais)' : 'HOMOLOGAÇÃO (teste, sem valor fiscal)') + '</div></div>' +
+          '</div>' +
+          '<div style="display:flex;gap:6px">' +
+            '<button onclick="_gfTrocarAmbiente(2)" style="padding:8px 12px;border-radius:8px;border:1px solid ' + (!ehProd ? '#d97706' : '#e2e8f0') + ';background:' + (!ehProd ? '#d97706' : '#fff') + ';color:' + (!ehProd ? '#fff' : '#64748b') + ';font-size:12.5px;font-weight:600;cursor:pointer">Homologação</button>' +
+            '<button onclick="_gfTrocarAmbiente(1)" style="padding:8px 12px;border-radius:8px;border:1px solid ' + (ehProd ? '#16a34a' : '#e2e8f0') + ';background:' + (ehProd ? '#16a34a' : '#fff') + ';color:' + (ehProd ? '#fff' : '#64748b') + ';font-size:12.5px;font-weight:600;cursor:pointer">Produção</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-top:10px;font-size:12.5px;color:' + (ehProd ? '#15803d' : '#92400e') + ';display:flex;align-items:center;gap:6px">' +
+          '<span class="lc-ic" data-lucide="arrow-right-circle"></span> A próxima NF vai usar a <b>série ' + data.seriePadrao + '</b>, número <b>' + proxNumAtivo + '</b>, em <b>' + ambLabel(ambAtual) + '</b>.' +
+        '</div>' +
+      '</div>';
+
+    // tabela das séries existentes — destaca a linha ATIVA
     let tabela = '';
     if (series.length) {
       tabela = '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:14px">' +
@@ -376,21 +402,25 @@
             '<th style="padding:7px 10px;text-align:left;font-size:11px;color:#475569">Série</th>' +
             '<th style="padding:7px 10px;text-align:left;font-size:11px;color:#475569">Ambiente</th>' +
             '<th style="padding:7px 10px;text-align:right;font-size:11px;color:#475569">Próximo nº</th>' +
-            '<th style="padding:7px 10px;text-align:center;font-size:11px;color:#475569">Padrão</th>' +
+            '<th style="padding:7px 10px;text-align:center;font-size:11px;color:#475569">Status</th>' +
           '</tr></thead><tbody>' +
           series.map(s => {
-            const ehPadrao = Number(s.serie) === Number(data.seriePadrao) && Number(s.ambiente) === Number(data.ambienteEmpresa);
-            return '<tr style="border-top:1px solid #f1f5f9">' +
+            const ehAtiva = Number(s.serie) === Number(data.seriePadrao) && Number(s.ambiente) === ambAtual;
+            const ehPadraoSerie = Number(s.serie) === Number(data.seriePadrao);
+            let selo = '';
+            if (ehAtiva) selo = '<span style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;background:#dcfce7;color:#166534">● EM USO AGORA</span>';
+            else if (ehPadraoSerie) selo = '<span style="font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:99px;background:#f1f5f9;color:#64748b">série padrão</span>';
+            return '<tr style="border-top:1px solid #f1f5f9;background:' + (ehAtiva ? '#f0fdf4' : 'transparent') + '">' +
               '<td style="padding:7px 10px;font-weight:700;color:#0f172a">' + s.serie + '</td>' +
               '<td style="padding:7px 10px;color:#475569">' + ambLabel(s.ambiente) + '</td>' +
               '<td style="padding:7px 10px;text-align:right;font-weight:600;color:#0f172a">' + s.proximo_numero + '</td>' +
-              '<td style="padding:7px 10px;text-align:center">' + (ehPadrao ? '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:#dcfce7;color:#166534">Padrão</span>' : '') + '</td>' +
+              '<td style="padding:7px 10px;text-align:center">' + selo + '</td>' +
             '</tr>';
           }).join('') +
         '</tbody></table></div>';
     }
 
-    // formulário de definir/atualizar
+    // formulário de definir/atualizar — ambiente já vem no ambiente ATUAL
     const form =
       '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px">' +
         '<div style="font-size:12.5px;font-weight:700;color:#334155;margin-bottom:10px">Definir série e próximo número</div>' +
@@ -398,8 +428,8 @@
           '<div><label style="' + lbl + '">Série</label><input id="gfSetSerie" type="number" min="0" max="999" style="' + inp + '" value="' + (data.seriePadrao || 1) + '"></div>' +
           '<div><label style="' + lbl + '">Próximo número</label><input id="gfSetNumero" type="number" min="1" style="' + inp + '" placeholder="ex: 1250"></div>' +
           '<div><label style="' + lbl + '">Ambiente</label><select id="gfSetAmbiente" style="' + inp + '">' +
-            '<option value="2"' + (Number(data.ambienteEmpresa) === 2 ? ' selected' : '') + '>Homologação</option>' +
-            '<option value="1"' + (Number(data.ambienteEmpresa) === 1 ? ' selected' : '') + '>Produção</option>' +
+            '<option value="1"' + (ambAtual === 1 ? ' selected' : '') + '>Produção</option>' +
+            '<option value="2"' + (ambAtual === 2 ? ' selected' : '') + '>Homologação</option>' +
           '</select></div>' +
         '</div>' +
         '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12.5px;color:#334155;cursor:pointer">' +
@@ -409,10 +439,31 @@
           '<button class="lc-btn lc-btn--sm" style="background:#16a34a;color:#fff" onclick="_gfSalvarSerie(false)"><span class="lc-ic" data-lucide="save"></span> Salvar numeração</button>' +
         '</div>' +
       '</div>' +
-      '<div style="font-size:11.5px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;margin-top:10px"><span class="lc-ic" data-lucide="triangle-alert"></span> Atenção: o próximo número precisa continuar a numeração já usada na SEFAZ para esta série/CNPJ. Repetir um número já emitido faz a SEFAZ rejeitar a nota.</div>';
+      '<div style="font-size:11.5px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;margin-top:10px"><span class="lc-ic" data-lucide="triangle-alert"></span> Atenção: em <b>produção</b>, o próximo número precisa continuar a numeração já usada na SEFAZ para esta série/CNPJ. Repetir um número já emitido faz a SEFAZ rejeitar a nota. A numeração de homologação e produção é independente.</div>';
 
-    el.innerHTML = tabela + form;
+    el.innerHTML = banner + tabela + form;
     _hidratarIcones(el);
+  }
+
+  // Troca o ambiente da empresa (homologação ↔ produção) e recarrega a tela.
+  async function _gfTrocarAmbiente(ambiente) {
+    const ctx = window._gfSeriesCtx || {};
+    if (!ctx.empresaId) return;
+    if (Number(ctx.ambienteEmpresa) === Number(ambiente)) return; // já está nesse
+    // confirmação forte ao ir pra PRODUÇÃO (passa a emitir nota real)
+    if (Number(ambiente) === 1) {
+      const ok = await lcConfirm('Ao mudar para PRODUÇÃO, as próximas notas emitidas serão REAIS e terão valor fiscal. Confirme que a numeração está correta (continuando do seu emissor anterior). Deseja continuar?', {
+        titulo: 'Ativar ambiente de Produção?', okLabel: 'Sim, ativar produção', perigo: true,
+      });
+      if (!ok) return;
+    }
+    const r = await _api('/api/nfe/empresas/' + ctx.empresaId + '/ambiente', { method: 'POST', body: JSON.stringify({ ambiente: Number(ambiente) }) });
+    if (r && r.ok) {
+      _toast(Number(ambiente) === 1 ? 'Ambiente alterado para PRODUÇÃO' : 'Ambiente alterado para Homologação');
+      _gfCarregarSeries(ctx.empresaId, Number(ambiente));
+    } else {
+      _toast((r && r.erro) || 'Falha ao trocar ambiente', true);
+    }
   }
 
   // Salva/atualiza a série. forcar=true reenvia confirmando o retrocesso de número.
@@ -638,60 +689,201 @@
     _gfClasses(empresaId);
   }
 
-  // ─── Editar uma classe: grade de cenários (PF/PJ × dentro/fora × op) ─
+  // ═══ EDITOR DE CLASSE FISCAL — padrão Up Seller (abas) — v33k.532 ═══
+  // Abas: Info Básica · ICMS · IPI · PIS · COFINS · Info Adicional.
+  // Os cenários (Saída/Entrada × dentro/fora × PF/PJ) ficam no ICMS; os demais
+  // impostos são por tipo de pessoa. Tudo guardado no mesmo array _gfCenariosEdit.
+  const _gfAbas = ['basica', 'icms', 'ipi', 'pis', 'cofins', 'adicional'];
+  const _gfAbaNome = { basica: 'Informação Básica', icms: 'ICMS', ipi: 'IPI', pis: 'PIS', cofins: 'COFINS', adicional: 'Informações Adicionais' };
+
   function _gfEditarClasse(empresaId, classeId) {
     const c = (window._gfClassesCache || []).find((x) => x.id === classeId) || {};
     let cenarios = (c.config_extra && c.config_extra.cenarios) || [];
-    // se a classe é antiga sem cenários, gera os 8 a partir dos campos legado
-    if (!cenarios.length) {
-      cenarios = _gerarCenariosDeLegado(c);
-    }
+    if (!cenarios.length) cenarios = _gerarCenariosDeLegado(c);
+    // garante os campos por-imposto em cada cenário (classes antigas podem não ter)
+    cenarios = cenarios.map(cen => ({
+      cst_pis: '99', cst_cofins: '99', cst_ipi: '99', cenq_ipi: '999',
+      aliq_pis: 0, aliq_cofins: 0, aliq_ipi: 0,
+      ...cen,
+    }));
     window._gfCenariosEdit = cenarios;
+    window._gfClasseMeta = {
+      id: classeId, empresaId,
+      nome: c.nome || 'Classe fiscal',
+      perfil: c.perfil || 'fabricante',
+      natureza_operacao: c.natureza_operacao || 'Venda de mercadorias',
+      natureza_entrada: c.natureza_entrada || 'Devolução de mercadoria',
+      info_complementar: c.info_complementar || '',
+      info_fisco: c.info_fisco || '',
+      aliq_cred_sn: c.aliq_cred_sn != null ? c.aliq_cred_sn : 0,
+      padrao: !!c.padrao,
+    };
+    window._gfAbaAtual = 'basica';
+    _gfRenderEditor();
+  }
 
-    const linhas = cenarios.map((cen, i) => {
-      const bg = cen.operacao === 'devolucao' ? '#fef2f2' : '#f0f9ff';
-      return '<tr style="background:' + bg + '">' +
-        '<td style="padding:6px 8px;font-size:12px;color:#334155;white-space:nowrap">' + _esc(cen.operacao_nome || cen.operacao) + '</td>' +
-        '<td style="padding:6px 8px;font-size:12px;color:#334155;white-space:nowrap">' + _esc(cen.tipo_pessoa_nome || cen.tipo_pessoa) + '</td>' +
-        '<td style="padding:6px 8px;font-size:12px;color:#334155;white-space:nowrap">' + _esc(cen.destino_nome || cen.destino) + '</td>' +
-        '<td style="padding:4px 6px"><input value="' + _esc(cen.cfop || '') + '" onchange="_gfSetCenario(' + i + ',\'cfop\',this.value)" style="width:64px;padding:5px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
-        '<td style="padding:4px 6px"><input value="' + _esc(cen.csosn || '') + '" onchange="_gfSetCenario(' + i + ',\'csosn\',this.value)" style="width:56px;padding:5px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px" placeholder="CSOSN"></td>' +
-        '<td style="padding:4px 6px"><input value="' + _esc(cen.cst_icms || '') + '" onchange="_gfSetCenario(' + i + ',\'cst_icms\',this.value)" style="width:52px;padding:5px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px" placeholder="CST"></td>' +
-        '<td style="padding:4px 6px"><input value="' + _esc(cen.aliq_icms || 0) + '" onchange="_gfSetCenario(' + i + ',\'aliq_icms\',this.value)" style="width:52px;padding:5px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
-        '</tr>';
-    }).join('');
+  function _gfRenderEditor() {
+    const meta = window._gfClasseMeta || {};
+    const aba = window._gfAbaAtual || 'basica';
+    // navegação de abas
+    const nav = _gfAbas.map(a =>
+      '<button onclick="_gfMudarAba(\'' + a + '\')" style="text-align:left;padding:9px 12px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:' + (a === aba ? '700' : '500') + ';background:' + (a === aba ? '#e0f2fe' : 'transparent') + ';color:' + (a === aba ? '#0369a1' : '#475569') + '">' + _gfAbaNome[a] + '</button>'
+    ).join('');
 
     const corpo =
-      '<div style="' + card + '">' +
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">' +
-          _campo('gfcNome', 'Nome da classe', c.nome || '') +
-          '<div><label style="' + lbl + '">Natureza da operação</label><input id="gfcNat" style="' + inp + '" value="' + _esc(c.natureza_operacao || 'Venda de mercadoria') + '"></div>' +
-        '</div>' +
-        '<div style="font-weight:700;color:#0f172a;font-size:13px;margin-bottom:8px">Cenários fiscais</div>' +
-        '<div style="overflow-x:auto">' +
-          '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
-            '<thead><tr style="background:#f1f5f9">' +
-              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Operação</th>' +
-              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Pessoa</th>' +
-              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Destino</th>' +
-              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">CFOP</th>' +
-              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">CSOSN</th>' +
-              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">CST</th>' +
-              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Alíq%</th>' +
-            '</tr></thead>' +
-            '<tbody>' + linhas + '</tbody>' +
-          '</table>' +
+      '<div style="display:flex;gap:16px;align-items:flex-start">' +
+        '<div style="flex:1;min-width:0">' + _gfRenderAbaConteudo(aba) + '</div>' +
+        '<div style="width:190px;flex-shrink:0;display:flex;flex-direction:column;gap:4px;position:sticky;top:0">' +
+          '<div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;padding:0 12px">Seções</div>' +
+          nav +
         '</div>' +
       '</div>' +
-      '<div style="display:flex;gap:10px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:12.5px;color:#92400e;margin-bottom:14px">' +
-        '<span><span class="lc-ic" data-lucide="triangle-alert"></span></span><div>Cada linha é um cenário de emissão. O sistema escolhe automaticamente conforme o comprador (PF/PJ) e o estado. <b>Confirme os CFOPs/CSOSN com sua contabilidade.</b></div>' +
-      '</div>' +
-      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
-        '<button class="lc-btn lc-btn--ghost" onclick="_gfClasses(' + empresaId + ')">Cancelar</button>' +
-        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_gfSalvarCenarios(' + empresaId + ',' + classeId + ')">💾 Salvar cenários</button>' +
+      '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="_gfClasses(' + meta.empresaId + ')">Cancelar</button>' +
+        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_gfSalvarClasseCompleta()"><span class="lc-ic" data-lucide="save"></span> Salvar classe</button>' +
       '</div>';
     document.getElementById('gfConteudo').innerHTML = corpo;
     _hidratarIcones(document.getElementById('gfConteudo'));
+  }
+
+  function _gfMudarAba(a) { window._gfAbaAtual = a; _gfRenderEditor(); }
+
+  // Rótulo amigável do cenário (pra cabeçalho dos cards)
+  function _gfRotuloCenario(cen) {
+    const op = cen.operacao === 'devolucao' ? 'Entrada' : 'Saída';
+    const dst = cen.destino === 'dentro' ? 'Dentro do estado' : 'Fora do estado';
+    return op + ' - ' + dst;
+  }
+  function _gfPessoaNome(cen) { return cen.tipo_pessoa === 'juridica' ? 'Pessoa Jurídica' : 'Pessoa Física'; }
+
+  // índice de um cenário no array (pra os onchange)
+  function _gfIdxCenario(cen) { return (window._gfCenariosEdit || []).indexOf(cen); }
+
+  function _gfRenderAbaConteudo(aba) {
+    const meta = window._gfClasseMeta || {};
+    const cenarios = window._gfCenariosEdit || [];
+
+    if (aba === 'basica') {
+      const emp = (window._gfEmpresaAtual && window._gfEmpresaAtual.razao_social) || '';
+      return '<div style="' + card + '">' +
+          '<div style="font-weight:700;color:#0f172a;margin-bottom:14px">Informação Básica</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+            _campo('gfcNome', 'Nome da classe', meta.nome, 'grid-column:1/3') +
+            '<div><label style="' + lbl + '">Perfil</label><select id="gfcPerfil" style="' + inp + '">' +
+              '<option value="fabricante"' + (meta.perfil === 'fabricante' ? ' selected' : '') + '>Fabricante (produção própria)</option>' +
+              '<option value="revenda"' + (meta.perfil === 'revenda' ? ' selected' : '') + '>Revenda (compra e revende)</option>' +
+            '</select></div>' +
+            '<div><label style="' + lbl + '">Tipo de tributação</label><input style="' + inp + ';background:#f1f5f9" value="Simples Nacional ou MEI" disabled></div>' +
+            '<div><label style="' + lbl + '">Natureza de operação (Saída)</label><input id="gfcNat" style="' + inp + '" value="' + _esc(meta.natureza_operacao) + '"></div>' +
+            '<div><label style="' + lbl + '">Natureza de operação (Entrada/Devolução)</label><input id="gfcNatEnt" style="' + inp + '" value="' + _esc(meta.natureza_entrada) + '"></div>' +
+          '</div>' +
+          '<label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:#334155;cursor:pointer">' +
+            '<input type="checkbox" id="gfcPadrao" ' + (meta.padrao ? 'checked' : '') + ' style="width:16px;height:16px"> Definir como classe padrão desta empresa</label>' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;font-size:12.5px;color:#1e40af">' +
+          '<span><span class="lc-ic" data-lucide="info"></span></span><div>Antes de alterar a classe de impostos, <b>consulte seu contador</b> para evitar problemas fiscais. Este padrão segue o modelo de fabricante do Simples Nacional (CSOSN 102, sem crédito).</div>' +
+        '</div>';
+    }
+
+    if (aba === 'icms') {
+      // cards por cenário, agrupados: Saída primeiro, depois Entrada; PF antes de PJ
+      const ordenados = _gfOrdenarCenarios(cenarios);
+      const cards = ordenados.map(cen => {
+        const i = _gfIdxCenario(cen);
+        const naoContrib = cen.nao_contribuinte === true;
+        return '<div style="border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:10px">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">' +
+            '<div><label style="' + lbl + '">Cenário</label><input style="' + inp + ';background:#f1f5f9" value="' + _gfRotuloCenario(cen) + '" disabled></div>' +
+            '<div><label style="' + lbl + '">Tipo pessoa</label><input style="' + inp + ';background:#f1f5f9" value="' + _gfPessoaNome(cen) + '" disabled></div>' +
+          '</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;align-items:end">' +
+            '<div><label style="' + lbl + '">CFOP</label><input value="' + _esc(cen.cfop || '') + '" onchange="_gfSetCenario(' + i + ',\'cfop\',this.value)" style="' + inp + '"></div>' +
+            '<div><label style="' + lbl + '">Situação tributária (CSOSN)</label><select onchange="_gfSetCenario(' + i + ',\'csosn\',this.value)" style="' + inp + '">' + _gfOpcoesCsosn(cen.csosn) + '</select></div>' +
+          '</div>' +
+          '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12.5px;color:#334155;cursor:pointer">' +
+            '<input type="checkbox" ' + (naoContrib ? 'checked' : '') + ' onchange="_gfSetCenario(' + i + ',\'nao_contribuinte\',this.checked)" style="width:15px;height:15px"> Cenário específico para PJ não contribuinte do ICMS ou Consumidor final</label>' +
+        '</div>';
+      }).join('');
+      return '<div style="' + card + '">' +
+          '<div style="font-weight:700;color:#0f172a;margin-bottom:6px">ICMS</div>' +
+          '<div style="font-size:12px;color:#64748b;margin-bottom:14px">Um cenário por combinação de operação, destino e tipo de pessoa. O sistema escolhe automaticamente na emissão.</div>' +
+          cards +
+        '</div>';
+    }
+
+    // IPI / PIS / COFINS: por cenário, com CST + (IPI) enquadramento + alíquota
+    if (aba === 'ipi' || aba === 'pis' || aba === 'cofins') {
+      const ehIpi = aba === 'ipi';
+      const campoCst = 'cst_' + aba;                 // cst_ipi/cst_pis/cst_cofins
+      const campoAliq = 'aliq_' + aba;
+      const ordenados = _gfOrdenarCenarios(cenarios);
+      const cards = ordenados.map(cen => {
+        const i = _gfIdxCenario(cen);
+        return '<div style="border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:10px">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">' +
+            '<div><label style="' + lbl + '">Cenário</label><input style="' + inp + ';background:#f1f5f9" value="' + _gfRotuloCenario(cen) + '" disabled></div>' +
+            '<div><label style="' + lbl + '">Tipo pessoa</label><input style="' + inp + ';background:#f1f5f9" value="' + _gfPessoaNome(cen) + '" disabled></div>' +
+          '</div>' +
+          '<div style="display:grid;grid-template-columns:' + (ehIpi ? '2fr 1fr 1fr' : '2fr 1fr') + ';gap:10px;align-items:end">' +
+            '<div><label style="' + lbl + '">Situação tributária (CST)</label><select onchange="_gfSetCenario(' + i + ',\'' + campoCst + '\',this.value)" style="' + inp + '">' + _gfOpcoesCstPisCofinsIpi(cen[campoCst] || '99') + '</select></div>' +
+            (ehIpi ? '<div><label style="' + lbl + '">Cód. enquadramento</label><input value="' + _esc(cen.cenq_ipi || '999') + '" onchange="_gfSetCenario(' + i + ',\'cenq_ipi\',this.value)" style="' + inp + '"></div>' : '') +
+            '<div><label style="' + lbl + '">Alíquota %</label><input value="' + _esc(cen[campoAliq] != null ? cen[campoAliq] : 0) + '" onchange="_gfSetCenario(' + i + ',\'' + campoAliq + '\',this.value)" style="' + inp + '"></div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+      return '<div style="' + card + '">' +
+          '<div style="font-weight:700;color:#0f172a;margin-bottom:6px">' + _gfAbaNome[aba] + '</div>' +
+          '<div style="font-size:12px;color:#64748b;margin-bottom:14px">Padrão do Simples Nacional: CST 99 (Outras operações), alíquota 0.' + (ehIpi ? ' Enquadramento 999.' : '') + '</div>' +
+          '<div style="text-align:right;margin-bottom:10px"><button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_gfCopiarParaTodos(\'' + aba + '\')"><span class="lc-ic" data-lucide="copy"></span> Copiar 1º cenário para todos</button></div>' +
+          cards +
+        '</div>';
+    }
+
+    if (aba === 'adicional') {
+      return '<div style="' + card + '">' +
+          '<div style="font-weight:700;color:#0f172a;margin-bottom:14px">Informações Adicionais</div>' +
+          '<div style="margin-bottom:12px"><label style="' + lbl + '">Informações ao Fisco</label>' +
+            '<textarea id="gfcInfoFisco" rows="3" style="' + inp + ';resize:vertical" placeholder="Informações ao Fisco (opcional)">' + _esc(meta.info_fisco || '') + '</textarea></div>' +
+          '<div><label style="' + lbl + '">Informação Complementar (aparece no DANFE)</label>' +
+            '<textarea id="gfcInfoComp" rows="3" style="' + inp + ';resize:vertical">' + _esc(meta.info_complementar || '') + '</textarea>' +
+            '<div style="font-size:11.5px;color:#64748b;margin-top:4px">Padrão Simples: "EMPRESA OPTANTE PELO SIMPLES NACIONAL NAO GERA DIREITO A CREDITO FISCAL DE ICMS, ISS E IPI".</div></div>' +
+        '</div>';
+    }
+    return '';
+  }
+
+  // ordena cenários: Saída antes de Entrada; dentro antes de fora; PF antes de PJ
+  function _gfOrdenarCenarios(cenarios) {
+    const peso = (cen) => {
+      let p = 0;
+      p += (cen.operacao === 'devolucao') ? 1000 : 0;
+      p += (cen.destino === 'fora') ? 100 : 0;
+      p += (cen.tipo_pessoa === 'juridica') ? 10 : 0;
+      return p;
+    };
+    return cenarios.slice().sort((a, b) => peso(a) - peso(b));
+  }
+
+  function _gfOpcoesCsosn(sel) {
+    const ops = [['101', '101 - Tributada com permissão de crédito'], ['102', '102 - Tributada sem permissão de crédito'],
+      ['103', '103 - Isenção do ICMS para faixa de receita'], ['300', '300 - Imune'], ['400', '400 - Não tributada pelo Simples'],
+      ['500', '500 - ICMS cobrado por ST/antecipação'], ['900', '900 - Outros']];
+    return ops.map(([v, t]) => '<option value="' + v + '"' + (String(sel) === v ? ' selected' : '') + '>' + t + '</option>').join('');
+  }
+  function _gfOpcoesCstPisCofinsIpi(sel) {
+    const ops = [['01', '01 - Operação tributável'], ['49', '49 - Outras operações de saída'], ['99', '99 - Outras operações']];
+    return ops.map(([v, t]) => '<option value="' + v + '"' + (String(sel) === v ? ' selected' : '') + '>' + t + '</option>').join('');
+  }
+
+  // copia os campos do imposto (CST/enq/alíq) do 1º cenário pra todos
+  function _gfCopiarParaTodos(aba) {
+    const cenarios = window._gfCenariosEdit || [];
+    if (!cenarios.length) return;
+    const base = _gfOrdenarCenarios(cenarios)[0];
+    const campos = aba === 'ipi' ? ['cst_ipi', 'cenq_ipi', 'aliq_ipi'] : ['cst_' + aba, 'aliq_' + aba];
+    cenarios.forEach(cen => { campos.forEach(c => { cen[c] = base[c]; }); });
+    _toast('Copiado para todos os cenários');
+    _gfRenderEditor();
   }
 
   // Gera os 8 cenários a partir de uma classe antiga (campos legado)
@@ -704,7 +896,9 @@
           if (op === 'venda') cfop = dst === 'dentro' ? (c.cfop_dentro_uf || '5102') : (c.cfop_fora_uf || '6102');
           else cfop = dst === 'dentro' ? '1202' : '2202';
           out.push({ operacao: op, operacao_nome: opN, tipo_pessoa: pes, tipo_pessoa_nome: pesN,
-            destino: dst, destino_nome: dstN, cfop, csosn: c.csosn || null, cst_icms: c.cst_icms || null, aliq_icms: c.aliq_icms || 0 });
+            destino: dst, destino_nome: dstN, cfop, csosn: c.csosn || '102', cst_icms: c.cst_icms || null, aliq_icms: c.aliq_icms || 0,
+            cst_pis: c.cst_pis || '99', cst_cofins: c.cst_cofins || '99', cst_ipi: c.cst_ipi || '99', cenq_ipi: c.cenq_ipi || '999',
+            aliq_pis: c.aliq_pis || 0, aliq_cofins: c.aliq_cofins || 0, aliq_ipi: c.aliq_ipi || 0 });
         });
       });
     });
@@ -713,18 +907,48 @@
 
   function _gfSetCenario(idx, campo, valor) {
     if (!window._gfCenariosEdit || !window._gfCenariosEdit[idx]) return;
-    window._gfCenariosEdit[idx][campo] = (campo === 'aliq_icms') ? (parseFloat(valor) || 0) : (valor || null);
+    const numericos = ['aliq_icms', 'aliq_pis', 'aliq_cofins', 'aliq_ipi'];
+    if (campo === 'nao_contribuinte') window._gfCenariosEdit[idx][campo] = !!valor;
+    else if (numericos.includes(campo)) window._gfCenariosEdit[idx][campo] = parseFloat(valor) || 0;
+    else window._gfCenariosEdit[idx][campo] = valor || null;
   }
 
-  async function _gfSalvarCenarios(empresaId, classeId) {
-    const nome = (document.getElementById('gfcNome') || {}).value || '';
-    const nat = (document.getElementById('gfcNat') || {}).value || '';
-    const data = await _api('/api/nfe/empresas/' + empresaId + '/classes/' + classeId + '/cenarios', {
-      method: 'PUT', body: JSON.stringify({ cenarios: window._gfCenariosEdit, nome, natureza_operacao: nat }),
+  // Salva a classe inteira (todos os campos das abas + cenários).
+  async function _gfSalvarClasseCompleta() {
+    const meta = window._gfClasseMeta || {};
+    // coleta os campos das abas que estiverem no DOM (a aba atual)
+    const g = (id) => { const el = document.getElementById(id); return el ? el.value : undefined; };
+    const gc = (id) => { const el = document.getElementById(id); return el ? el.checked : undefined; };
+    // atualiza meta com o que estiver visível
+    if (g('gfcNome') !== undefined) meta.nome = g('gfcNome');
+    if (g('gfcPerfil') !== undefined) meta.perfil = g('gfcPerfil');
+    if (g('gfcNat') !== undefined) meta.natureza_operacao = g('gfcNat');
+    if (g('gfcNatEnt') !== undefined) meta.natureza_entrada = g('gfcNatEnt');
+    if (gc('gfcPadrao') !== undefined) meta.padrao = gc('gfcPadrao');
+    if (g('gfcInfoFisco') !== undefined) meta.info_fisco = g('gfcInfoFisco');
+    if (g('gfcInfoComp') !== undefined) meta.info_complementar = g('gfcInfoComp');
+    window._gfClasseMeta = meta;
+
+    const payload = {
+      cenarios: window._gfCenariosEdit,
+      nome: meta.nome,
+      perfil: meta.perfil,
+      natureza_operacao: meta.natureza_operacao,
+      natureza_entrada: meta.natureza_entrada,
+      info_complementar: meta.info_complementar,
+      info_fisco: meta.info_fisco,
+      aliq_cred_sn: meta.aliq_cred_sn || 0,
+    };
+    const data = await _api('/api/nfe/empresas/' + meta.empresaId + '/classes/' + meta.id + '/cenarios', {
+      method: 'PUT', body: JSON.stringify(payload),
     });
     if (!data.ok) return _toast(data.erro || 'Erro ao salvar', true);
-    _toast('Cenários salvos');
-    _gfClasses(empresaId);
+    // define padrão se marcado (rota separada de edição da classe)
+    if (meta.padrao) {
+      try { await _api('/api/nfe/empresas/' + meta.empresaId + '/classes/' + meta.id, { method: 'PUT', body: JSON.stringify({ padrao: true }) }); } catch (_) {}
+    }
+    _toast('Classe salva');
+    _gfClasses(meta.empresaId);
   }
 
   async function _gfExcluirClasse(empresaId, classeId) {
@@ -1338,48 +1562,41 @@
       _toast('NF-e autorizada!');
       const chaveFmt = _esc((r.chaveAcesso || '').replace(/(\d{4})/g, '$1 ').trim());
       const notaId = r.notaId;
-      const botoesDoc = notaId
-        ? ' <button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff;margin-left:8px" onclick="_baixarDanfe(' + notaId + ')"><span class="lc-ic" data-lucide="receipt"></span> DANFE</button>' +
-          ' <button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_baixarXml(' + notaId + ')">XML</button>'
-        : '';
-      // ── status do upload automático pra Shopee (BR: obrigatório antes do envio) ──
-      let linhaShopee = '';
-      const up = r.uploadShopee;
-      if (up) {
-        if (up.enviada) {
-          linhaShopee = '<div style="margin-top:8px;font-size:12.5px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:6px 10px"><span class="lc-ic" data-lucide="cloud-check"></span> NF enviada à Shopee — aguardando validação junto à SEFAZ para liberar o envio.</div>';
-        } else if (up.pulado) {
-          linhaShopee = ''; // pedido não-Shopee: nada a mostrar aqui
-        } else {
-          const reNota = notaId ? ('<button class="lc-btn lc-btn--sm" style="background:#d97706;color:#fff;margin-left:8px" onclick="_reenviarNfShopee(' + notaId + ', this)"><span class="lc-ic" data-lucide="upload-cloud"></span> Reenviar à Shopee</button>') : '';
-          linhaShopee = '<div style="margin-top:8px;font-size:12.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:6px 10px"><span class="lc-ic" data-lucide="triangle-alert"></span> A NF foi autorizada, mas o envio pra Shopee falhou: ' + _esc(up.erro || 'erro desconhecido') + '. Você pode reenviar.' + reNota + '</div>';
-        }
+      // Novo fluxo (v33k.531): a NF autorizou → o pedido JÁ avançou pra "Programar"
+      // no backend. Mostramos uma confirmação limpa com o DANFE e, em seguida,
+      // fechamos o modal e atualizamos a Expedição (o pedido sai de "Emitir").
+      // O upload pro marketplace acontece na hora de PROGRAMAR, não aqui.
+      const alvo = msgEl || document.getElementById('dpMsg') || document.getElementById('rpMsg');
+      if (alvo) {
+        alvo.innerHTML =
+          '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 12px">' +
+            '<span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:#16a34a;color:#fff"><span class="lc-ic" data-lucide="check"></span></span>' +
+            '<div style="flex:1;min-width:180px"><div style="font-weight:700;color:#166534">NF-e autorizada!</div>' +
+              '<div style="font-size:11.5px;color:#15803d">Chave: ' + chaveFmt + '</div></div>' +
+            (notaId ? '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_baixarDanfe(' + notaId + ')"><span class="lc-ic" data-lucide="receipt"></span> DANFE</button>' +
+              '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_baixarXml(' + notaId + ')">XML</button>' : '') +
+          '</div>' +
+          '<div style="margin-top:8px;font-size:12px;color:#0369a1;display:flex;align-items:center;gap:6px"><span class="lc-ic" data-lucide="arrow-right-circle"></span> O pedido avançou para <b>Programar</b>. Feche para continuar.</div>';
+        alvo.style.color = '#166534';
+        _hidratarIcones(alvo.parentElement || alvo);
       }
-      // ── status do upload pro Mercado Livre (Caminho B) ──
-      let linhaMl = '';
-      const upm = r.uploadMl;
-      if (upm) {
-        if (upm.enviada) {
-          linhaMl = '<div style="margin-top:8px;font-size:12.5px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:6px 10px"><span class="lc-ic" data-lucide="cloud-check"></span> NF enviada ao Mercado Livre — o ML vai gerar o DANFE e liberar a etiqueta para impressão.</div>';
-        } else if (upm.pulado) {
-          linhaMl = '';
-        } else {
-          const reNotaMl = notaId ? ('<button class="lc-btn lc-btn--sm" style="background:#d97706;color:#fff;margin-left:8px" onclick="_reenviarNfMl(' + notaId + ', this)"><span class="lc-ic" data-lucide="upload-cloud"></span> Reenviar ao ML</button>') : '';
-          // mensagem específica por gate (substatus/logística/homologação)
-          let dica = '';
-          if (upm.gate === 'substatus') dica = ' O ML ainda não liberou este envio para receber a nota — assim que ficar pronto, reenvie.';
-          else if (upm.gate === 'logistica') dica = ' Este envio é faturado pelo próprio ML (Full/coleta), não é preciso subir XML.';
-          else if (upm.gate === 'homologacao') dica = ' O ML só aceita notas de produção.';
-          linhaMl = '<div style="margin-top:8px;font-size:12.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:6px 10px"><span class="lc-ic" data-lucide="triangle-alert"></span> NF autorizada, mas o envio ao ML não foi concluído: ' + _esc(upm.erro || 'erro') + '.' + dica + (upm.gate === 'logistica' ? '' : reNotaMl) + '</div>';
-        }
-      }
-      setMsg('<span class="lc-ic" data-lucide="check"></span> <b>NF-e autorizada!</b> Chave: ' + chaveFmt + botoesDoc + linhaShopee + linhaMl, '#166534');
-      if (msgEl) _hidratarIcones(msgEl.parentElement || msgEl);
-      // não fecha o modal automaticamente — deixa o usuário baixar o DANFE
+      // fecha o modal e atualiza a Expedição em ~1.4s (tempo de ver a confirmação)
+      setTimeout(() => {
+        try { _fecharModalEmissao(); } catch (_) {}
+        if (typeof expCarregar === 'function') { try { expCarregar(); } catch (_) {} }
+      }, 1400);
     } else {
       setMsg('<span class="lc-ic" data-lucide="triangle-alert"></span> Rejeitada: ' + _esc(r.motivo || '') + (r.cstat ? ' (cStat ' + r.cstat + ')' : ''), '#b91c1c');
       if (!msgEl) _toast('Rejeitada: ' + (r.motivo || ''), true);
     }
+  }
+
+  // Fecha qualquer modal de emissão aberto (detalhes ou revisão).
+  function _fecharModalEmissao() {
+    ['detPedidoOverlay', 'revisaoPedidoOverlay'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.remove) el.remove();
+    });
   }
 
   // Reenvia o XML da nota pra Shopee (usado quando o upload automático falhou).
@@ -2058,6 +2275,300 @@
   window._cnDevolver = _cnDevolver;
   window._cnConfirmarDevolucao = _cnConfirmarDevolucao;
 
+  // ════════════════════════════════════════════════════════════════
+  // DADOS FISCAIS DOS PRODUTOS (cadastro em massa) — v33k.532
+  // ════════════════════════════════════════════════════════════════
+  // Lista todos os SKUs das lojas do usuário (mesma fonte da tela de Estoque:
+  // produtosErp, agrupado por SKU) e mostra o status fiscal de cada um (NCM/CEST/
+  // origem/unidade). Permite filtrar (status, loja, busca) e aplicar em massa.
+  const _dfState = { itens: [], sel: new Set(), filtroStatus: 'todos', busca: '', lojaSel: [], pagina: 1, porPagina: 100 };
+
+  // Extrai a lista de SKUs distintos de produtosErp (produtos → variações).
+  // Cada SKU vira uma linha com nome do produto, loja e (depois) status fiscal.
+  function _dfColetarSkus() {
+    const out = new Map(); // sku -> { sku, nome, lojaIds:Set, marketplaces:Set }
+    const produtos = (typeof produtosErp !== 'undefined' && Array.isArray(produtosErp)) ? produtosErp : [];
+    const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp : [];
+    const mktDaLoja = (lojaId) => { const l = lojas.find(x => String(x.id) === String(lojaId)); return l ? (l.marketplace || '') : ''; };
+    produtos.forEach(p => {
+      if (p.status === 'excluido') return;
+      (p.variacoes || []).forEach(v => {
+        const sku = String(v.sku || '').trim();
+        if (!sku) return;
+        if (!out.has(sku)) out.set(sku, { sku, nome: p.nome || sku, lojaIds: new Set(), marketplaces: new Set() });
+        const reg = out.get(sku);
+        if (p.lojaId != null) { reg.lojaIds.add(String(p.lojaId)); const m = mktDaLoja(p.lojaId); if (m) reg.marketplaces.add(m); }
+        (v.vinculos || []).forEach(vi => { const lid = String(vi.lojaId || vi.lojaIdBanco || ''); if (lid) { reg.lojaIds.add(lid); const m = mktDaLoja(lid); if (m) reg.marketplaces.add(m); } });
+      });
+    });
+    return Array.from(out.values());
+  }
+
+  async function abrirDadosFiscaisProdutos() {
+    _overlay('dadosFiscaisOverlay',
+      '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="package-search"></span> Dados Fiscais dos Produtos</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Cadastre NCM, CEST, origem e unidade em massa</div></div>',
+      '<div id="dfConteudo"><div style="text-align:center;padding:30px;color:#64748b"><span class="lc-ic" data-lucide="refresh-cw"></span> Carregando produtos…</div></div>',
+      920);
+    // coleta os SKUs e busca o status fiscal no backend
+    const base = _dfColetarSkus();
+    if (!base.length) {
+      const el = document.getElementById('dfConteudo');
+      if (el) el.innerHTML = '<div style="' + card + ';text-align:center;color:#64748b">Nenhum produto com SKU encontrado. Cadastre/importe produtos primeiro (tela de Estoque).</div>';
+      return;
+    }
+    const skus = base.map(b => b.sku);
+    let fiscais = {};
+    try {
+      const r = await _api('/api/nfe/produtos-fiscal/status', { method: 'POST', body: JSON.stringify({ skus }) });
+      if (r && r.ok) fiscais = r.fiscais || {};
+    } catch (_) {}
+    _dfState.itens = base.map(b => {
+      const f = fiscais[b.sku] || null;
+      return {
+        sku: b.sku, nome: b.nome,
+        lojaIds: Array.from(b.lojaIds), marketplaces: Array.from(b.marketplaces),
+        ncm: f ? (f.ncm || '') : '', cest: f ? (f.cest || '') : '',
+        unidade: f ? (f.unidade || 'UN') : 'UN', origem: f ? (f.origem != null ? String(f.origem) : '0') : '0',
+        temFiscal: !!(f && f.ncm),
+      };
+    });
+    _dfState.sel = new Set();
+    _dfState.pagina = 1;
+    _dfRender();
+  }
+
+  function _dfFiltrar() {
+    const busca = _dfState.busca.toLowerCase().trim();
+    const lojaSel = (_dfState.lojaSel || []).map(String);
+    return _dfState.itens.filter(it => {
+      if (_dfState.filtroStatus === 'com' && !it.temFiscal) return false;
+      if (_dfState.filtroStatus === 'sem' && it.temFiscal) return false;
+      if (lojaSel.length && !it.lojaIds.some(l => lojaSel.includes(String(l)))) return false;
+      if (busca) { const txt = (it.sku + ' ' + it.nome).toLowerCase(); if (!txt.includes(busca)) return false; }
+      return true;
+    });
+  }
+
+  function _dfRender() {
+    const el = document.getElementById('dfConteudo');
+    if (!el) return;
+    const filtrados = _dfFiltrar();
+    const total = _dfState.itens.length;
+    const comFiscal = _dfState.itens.filter(x => x.temFiscal).length;
+    const semFiscal = total - comFiscal;
+
+    // paginação
+    const totalPag = Math.max(1, Math.ceil(filtrados.length / _dfState.porPagina));
+    if (_dfState.pagina > totalPag) _dfState.pagina = totalPag;
+    const ini = (_dfState.pagina - 1) * _dfState.porPagina;
+    const pagina = filtrados.slice(ini, ini + _dfState.porPagina);
+
+    // lojas p/ o filtro
+    const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp : [];
+
+    // barra de stats
+    const stats =
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
+        '<div style="flex:1;min-width:120px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:#0369a1">Total de SKUs</div><div style="font-size:20px;font-weight:800;color:#0c4a6e">' + total + '</div></div>' +
+        '<div style="flex:1;min-width:120px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:#166534">Com NCM ✓</div><div style="font-size:20px;font-weight:800;color:#14532d">' + comFiscal + '</div></div>' +
+        '<div style="flex:1;min-width:120px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:#b45309">Falta NCM !</div><div style="font-size:20px;font-weight:800;color:#92400e">' + semFiscal + '</div></div>' +
+      '</div>';
+
+    // filtros
+    const optLojas = lojas.map(l => '<option value="' + l.id + '"' + ((_dfState.lojaSel || []).map(String).includes(String(l.id)) ? ' selected' : '') + '>' + _esc(l.nome) + '</option>').join('');
+    const filtros =
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">' +
+        '<input id="dfBusca" placeholder="🔍 Buscar SKU ou nome…" value="' + _esc(_dfState.busca) + '" oninput="_dfSetBusca(this.value)" style="' + inp + ';flex:1;min-width:180px">' +
+        '<select id="dfStatus" onchange="_dfSetStatus(this.value)" style="' + inp + ';max-width:170px">' +
+          '<option value="todos"' + (_dfState.filtroStatus === 'todos' ? ' selected' : '') + '>Todos os status</option>' +
+          '<option value="sem"' + (_dfState.filtroStatus === 'sem' ? ' selected' : '') + '>Só falta NCM</option>' +
+          '<option value="com"' + (_dfState.filtroStatus === 'com' ? ' selected' : '') + '>Só com NCM</option>' +
+        '</select>' +
+        '<select id="dfLoja" multiple onchange="_dfSetLojas(this)" style="' + inp + ';max-width:180px;height:38px" title="Segure Ctrl para várias lojas">' +
+          '<option value="">Todas as lojas</option>' + optLojas +
+        '</select>' +
+      '</div>';
+
+    // painel de aplicação em massa
+    const nSel = _dfState.sel.size;
+    const painelMassa =
+      '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px;margin-bottom:12px">' +
+        '<div style="font-weight:700;color:#1e40af;font-size:13px;margin-bottom:10px"><span class="lc-ic" data-lucide="wand-2"></span> Aplicar em massa aos selecionados (' + nSel + ')</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;align-items:end">' +
+          '<div><label style="' + lbl + '">NCM (8 díg)</label><input id="dfMassaNcm" placeholder="ex: 64041100" style="' + inp + '"></div>' +
+          '<div><label style="' + lbl + '">CEST (opcional)</label><input id="dfMassaCest" placeholder="ex: 2800100" style="' + inp + '"></div>' +
+          '<div><label style="' + lbl + '">Origem</label><select id="dfMassaOrigem" style="' + inp + '">' +
+            '<option value="">(não alterar)</option><option value="0">0 - Nacional</option><option value="1">1 - Estrangeira (imp. direta)</option><option value="2">2 - Estrangeira (merc. interno)</option></select></div>' +
+          '<div><label style="' + lbl + '">Unidade</label><input id="dfMassaUn" placeholder="UN" style="' + inp + '"></div>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:8px;flex-wrap:wrap">' +
+          '<div style="font-size:11.5px;color:#64748b">Preencha só os campos que quer alterar. Vazio = mantém o atual.</div>' +
+          '<button class="lc-btn lc-btn--sm" style="background:#2563eb;color:#fff' + (nSel ? '' : ';opacity:.5;pointer-events:none') + '" onclick="_dfAplicarMassa()"><span class="lc-ic" data-lucide="check-check"></span> Aplicar aos ' + nSel + ' selecionados</button>' +
+        '</div>' +
+      '</div>';
+
+    // tabela
+    const todosSelNaPagina = pagina.length > 0 && pagina.every(it => _dfState.sel.has(it.sku));
+    const linhas = pagina.length ? pagina.map(it => {
+      const selo = it.temFiscal
+        ? '<span style="font-size:10.5px;font-weight:700;color:#166534;background:#dcfce7;padding:1px 6px;border-radius:99px">✓</span>'
+        : '<span style="font-size:10.5px;font-weight:700;color:#b45309;background:#fef3c7;padding:1px 6px;border-radius:99px">!</span>';
+      const mkt = it.marketplaces.length ? it.marketplaces.join(', ') : '—';
+      const checked = _dfState.sel.has(it.sku) ? 'checked' : '';
+      return '<tr style="border-top:1px solid #f1f5f9">' +
+        '<td style="padding:5px 8px;text-align:center"><input type="checkbox" ' + checked + ' onclick="_dfToggle(\'' + _esc(it.sku).replace(/'/g, "\\'") + '\')" style="width:16px;height:16px"></td>' +
+        '<td style="padding:5px 8px;font-size:12px;white-space:nowrap">' + selo + ' ' + _esc(it.sku) + '</td>' +
+        '<td style="padding:5px 8px;font-size:12px;color:#475569">' + _esc((it.nome || '').slice(0, 34)) + '</td>' +
+        '<td style="padding:5px 8px;font-size:11px;color:#64748b">' + _esc(mkt) + '</td>' +
+        '<td style="padding:4px 6px"><input value="' + _esc(it.ncm) + '" onchange="_dfSetCampo(\'' + _esc(it.sku).replace(/'/g, "\\'") + '\',\'ncm\',this.value)" placeholder="NCM" style="width:80px;padding:4px;border:1px solid ' + (it.temFiscal ? '#bbf7d0' : '#fcd34d') + ';border-radius:6px;font-size:12px"></td>' +
+        '<td style="padding:4px 6px"><input value="' + _esc(it.cest) + '" onchange="_dfSetCampo(\'' + _esc(it.sku).replace(/'/g, "\\'") + '\',\'cest\',this.value)" placeholder="CEST" style="width:70px;padding:4px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
+        '<td style="padding:4px 6px"><input value="' + _esc(it.origem) + '" onchange="_dfSetCampo(\'' + _esc(it.sku).replace(/'/g, "\\'") + '\',\'origem\',this.value)" style="width:42px;padding:4px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
+        '<td style="padding:4px 6px"><input value="' + _esc(it.unidade) + '" onchange="_dfSetCampo(\'' + _esc(it.sku).replace(/'/g, "\\'") + '\',\'unidade\',this.value)" style="width:46px;padding:4px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
+        '</tr>';
+    }).join('') : '<tr><td colspan="8" style="padding:16px;text-align:center;color:#64748b">Nenhum SKU com esses filtros.</td></tr>';
+
+    const tabela =
+      '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">' +
+        '<div style="overflow-x:auto;max-height:46vh;overflow-y:auto">' +
+          '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+            '<thead style="position:sticky;top:0;z-index:1"><tr style="background:#f1f5f9">' +
+              '<th style="padding:7px 8px"><input type="checkbox" ' + (todosSelNaPagina ? 'checked' : '') + ' onclick="_dfToggleTodosPagina()" style="width:16px;height:16px" title="Selecionar a página"></th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">SKU</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Produto</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Canal</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">NCM</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">CEST</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Orig</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Un</th>' +
+            '</tr></thead><tbody>' + linhas + '</tbody>' +
+          '</table>' +
+        '</div>' +
+      '</div>';
+
+    // rodapé: seleção rápida + paginação + salvar linhas editadas
+    const selRapida =
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0">' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_dfSelecionarFiltrados()">Selecionar todos filtrados (' + filtrados.length + ')</button>' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_dfLimparSel()">Limpar seleção</button>' +
+        '<div style="flex:1"></div>' +
+        (totalPag > 1 ? (
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" ' + (_dfState.pagina <= 1 ? 'disabled' : '') + ' onclick="_dfPagina(' + (_dfState.pagina - 1) + ')">‹</button>' +
+          '<span style="font-size:12px;color:#64748b">Página ' + _dfState.pagina + '/' + totalPag + '</span>' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" ' + (_dfState.pagina >= totalPag ? 'disabled' : '') + ' onclick="_dfPagina(' + (_dfState.pagina + 1) + ')">›</button>'
+        ) : '') +
+      '</div>';
+
+    const rodape =
+      '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px;flex-wrap:wrap">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'dadosFiscaisOverlay\').remove()">Fechar</button>' +
+        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_dfSalvarEditadosLinha()"><span class="lc-ic" data-lucide="save"></span> Salvar edições da tabela</button>' +
+      '</div>';
+
+    el.innerHTML = stats + filtros + painelMassa + selRapida + tabela + rodape;
+    _hidratarIcones(el);
+  }
+
+  // ── handlers de filtro/estado (re-renderam) ──
+  function _dfSetBusca(v) { _dfState.busca = v; _dfState.pagina = 1; _dfRenderDebounceBusca(); }
+  let _dfBuscaTimer = null;
+  function _dfRenderDebounceBusca() { clearTimeout(_dfBuscaTimer); _dfBuscaTimer = setTimeout(() => { _dfRenderMantendoFoco('dfBusca'); }, 200); }
+  function _dfSetStatus(v) { _dfState.filtroStatus = v; _dfState.pagina = 1; _dfRender(); }
+  function _dfSetLojas(sel) {
+    const vals = Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean);
+    _dfState.lojaSel = vals; _dfState.pagina = 1; _dfRender();
+  }
+  function _dfPagina(n) { _dfState.pagina = n; _dfRender(); }
+
+  // re-render preservando o foco/carret de um input (pra busca não perder o cursor)
+  function _dfRenderMantendoFoco(inputId) {
+    const antigo = document.getElementById(inputId);
+    const pos = antigo ? antigo.selectionStart : null;
+    _dfRender();
+    const novo = document.getElementById(inputId);
+    if (novo) { novo.focus(); if (pos != null) try { novo.setSelectionRange(pos, pos); } catch (_) {} }
+  }
+
+  // ── seleção ──
+  function _dfToggle(sku) { if (_dfState.sel.has(sku)) _dfState.sel.delete(sku); else _dfState.sel.add(sku); _dfRender(); }
+  function _dfToggleTodosPagina() {
+    const filtrados = _dfFiltrar();
+    const ini = (_dfState.pagina - 1) * _dfState.porPagina;
+    const pagina = filtrados.slice(ini, ini + _dfState.porPagina);
+    const todos = pagina.every(it => _dfState.sel.has(it.sku));
+    pagina.forEach(it => { if (todos) _dfState.sel.delete(it.sku); else _dfState.sel.add(it.sku); });
+    _dfRender();
+  }
+  function _dfSelecionarFiltrados() { _dfFiltrar().forEach(it => _dfState.sel.add(it.sku)); _dfRender(); }
+  function _dfLimparSel() { _dfState.sel.clear(); _dfRender(); }
+
+  // ── edição de campo por linha (guarda no estado local) ──
+  function _dfSetCampo(sku, campo, valor) {
+    const it = _dfState.itens.find(x => x.sku === sku);
+    if (!it) return;
+    it[campo] = valor;
+    it._editado = true;
+  }
+
+  // ── aplicar em massa aos selecionados ──
+  async function _dfAplicarMassa() {
+    if (!_dfState.sel.size) return _toast('Selecione ao menos um SKU.', true);
+    const ncm = (document.getElementById('dfMassaNcm') || {}).value || '';
+    const cest = (document.getElementById('dfMassaCest') || {}).value || '';
+    const origem = (document.getElementById('dfMassaOrigem') || {}).value || '';
+    const unidade = (document.getElementById('dfMassaUn') || {}).value || '';
+    const ncmDig = ncm.replace(/\D/g, '');
+    if (ncm && ncmDig.length !== 8) return _toast('NCM precisa ter 8 dígitos.', true);
+    if (!ncm && !cest && !origem && !unidade) return _toast('Preencha ao menos um campo pra aplicar.', true);
+
+    const itens = [];
+    _dfState.itens.forEach(it => {
+      if (!_dfState.sel.has(it.sku)) return;
+      const reg = { sku: it.sku };
+      if (ncmDig) reg.ncm = ncmDig;
+      if (cest) reg.cest = cest.replace(/\D/g, '');
+      if (origem) reg.origem = origem;
+      if (unidade) reg.unidade = unidade;
+      reg.descricao = it.nome;
+      itens.push(reg);
+      // aplica no estado local pra refletir na hora
+      if (ncmDig) { it.ncm = ncmDig; it.temFiscal = true; }
+      if (cest) it.cest = cest.replace(/\D/g, '');
+      if (origem) it.origem = origem;
+      if (unidade) it.unidade = unidade;
+    });
+
+    const r = await _api('/api/nfe/produtos-fiscal/em-massa', { method: 'POST', body: JSON.stringify({ itens }) });
+    if (r && r.ok) {
+      _toast(r.gravados + ' produto(s) atualizados' + (r.invalidos ? ' · ' + r.invalidos + ' NCM inválido(s)' : ''));
+      _dfState.sel.clear();
+      _dfRender();
+    } else {
+      _toast((r && r.erro) || 'Falha ao aplicar em massa', true);
+    }
+  }
+
+  // ── salvar as edições feitas linha a linha na tabela ──
+  async function _dfSalvarEditadosLinha() {
+    const editados = _dfState.itens.filter(it => it._editado);
+    if (!editados.length) return _toast('Nenhuma edição na tabela pra salvar.');
+    // valida NCMs preenchidos
+    const invalidos = editados.filter(it => it.ncm && it.ncm.replace(/\D/g, '').length !== 8);
+    if (invalidos.length) return _toast(invalidos.length + ' NCM(s) com dígitos ≠ 8. Corrija antes de salvar.', true);
+    const itens = editados.map(it => ({
+      sku: it.sku, ncm: it.ncm ? it.ncm.replace(/\D/g, '') : '', cest: it.cest ? it.cest.replace(/\D/g, '') : '',
+      origem: it.origem, unidade: it.unidade, descricao: it.nome,
+    }));
+    const r = await _api('/api/nfe/produtos-fiscal/em-massa', { method: 'POST', body: JSON.stringify({ itens }) });
+    if (r && r.ok) {
+      _toast(r.gravados + ' produto(s) salvos');
+      editados.forEach(it => { it._editado = false; if (it.ncm && it.ncm.replace(/\D/g, '').length === 8) it.temFiscal = true; });
+      _dfRender();
+    } else {
+      _toast((r && r.erro) || 'Falha ao salvar', true);
+    }
+  }
+
   window.abrirGestaoFiscalNFe = abrirGestaoFiscalNFe;
   window._carregarEmpresas = _carregarEmpresas;
   window._carregarEmpresasVoltar = _carregarEmpresasVoltar;
@@ -2065,12 +2576,32 @@
   window._gfEditarEmpresa = _gfEditarEmpresa;
   window._gfCarregarSeries = _gfCarregarSeries;
   window._gfSalvarSerie = _gfSalvarSerie;
+  window._gfTrocarAmbiente = _gfTrocarAmbiente;
   window._gfConsultarCnpj = _gfConsultarCnpj;
   window._gfSalvarEmpresa = _gfSalvarEmpresa;
   window._gfUploadCert = _gfUploadCert;
   window._gfEnviarCert = _gfEnviarCert;
   window._gfClasses = _gfClasses;
   window._gfGerarClasse = _gfGerarClasse;
+  window._gfEditarClasse = _gfEditarClasse;
+  window._gfExcluirClasse = _gfExcluirClasse;
+  window._gfMudarAba = _gfMudarAba;
+  window._gfSetCenario = _gfSetCenario;
+  window._gfCopiarParaTodos = _gfCopiarParaTodos;
+  window._gfSalvarClasseCompleta = _gfSalvarClasseCompleta;
+
+  window.abrirDadosFiscaisProdutos = abrirDadosFiscaisProdutos;
+  window._dfSetBusca = _dfSetBusca;
+  window._dfSetStatus = _dfSetStatus;
+  window._dfSetLojas = _dfSetLojas;
+  window._dfPagina = _dfPagina;
+  window._dfToggle = _dfToggle;
+  window._dfToggleTodosPagina = _dfToggleTodosPagina;
+  window._dfSelecionarFiltrados = _dfSelecionarFiltrados;
+  window._dfLimparSel = _dfLimparSel;
+  window._dfSetCampo = _dfSetCampo;
+  window._dfAplicarMassa = _dfAplicarMassa;
+  window._dfSalvarEditadosLinha = _dfSalvarEditadosLinha;
 
   console.log('[NF-e] Modulo de Gestao Fiscal carregado (v33k.502)');
 })();
@@ -9737,6 +10268,7 @@ window.LC_SVG = {"archive":"<rect width=\"20\" height=\"5\" x=\"2\" y=\"3\" rx=\
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expAbrirHistorico()" title="Ver o histórico de etiquetas impressas">🖨 Histórico</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expSemear()" title="Carrega os pedidos pendentes atuais para a fila (roda uma vez)">Sincronizar fila</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirGestaoFiscalNFe()" title="Config fiscal para emissao de NF-e"><span class="lc-ic" data-lucide="receipt"></span> Config. Fiscal</button>
+            <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirDadosFiscaisProdutos()" title="Cadastrar NCM, CEST, origem e unidade dos produtos em massa"><span class="lc-ic" data-lucide="package-search"></span> Dados Fiscais</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirCentralNotas()" title="Notas fiscais emitidas"><span class="lc-ic" data-lucide="clipboard-list"></span> Notas Emitidas</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirNotasEntrada()" title="NF-e emitidas contra o seu CNPJ (compras e devoluções), recebidas da SEFAZ"><span class="lc-ic" data-lucide="inbox"></span> Notas de Entrada</button>
           </div>
@@ -43229,7 +43761,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.530-padrao-fabricante-102';
+  const _DIAG_VERSAO_PAINEL = 'v33k.534-numeracao-ambiente';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
