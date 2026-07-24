@@ -4576,8 +4576,16 @@
     '</div>';
 
     // ── gráfico das maiores ──────────────────────────────────────
-    const comReceita = emps.filter(e => e.receita_bruta > 0)
-      .sort((a, b) => b.receita_bruta - a.receita_bruta);
+    // v33k.1001: o gráfico mostra TODAS as empresas, não só as que
+    // faturaram. Antes filtrava por `receita_bruta > 0` e a empresa sem
+    // apuração (null) sumia — o contador olhava o gráfico e concluía que
+    // ela não existe, quando na verdade é ela que precisa de atenção.
+    //
+    // `null` (não apurada) e `0` (apurada, sem faturamento) são coisas
+    // diferentes e a barra distingue as duas.
+    const comReceita = emps
+      .map(e => ({ ...e, _valor: Number(e.receita_bruta) || 0 }))
+      .sort((a, b) => b._valor - a._valor);
     if (comReceita.length) {
       html += '<div class="lc-chart-card" style="background:var(--lc-surface);border:1px solid var(--lc-border);' +
         'border-radius:var(--lc-radius-lg);padding:19px;margin-bottom:20px">' +
@@ -4657,8 +4665,10 @@
           return n.length > 26 ? n.slice(0, 24) + '…' : n;
         }),
         datasets: [{
-          data: top.map(e => e.receita_bruta),
-          backgroundColor: '#10b981',
+          data: top.map(e => e._valor != null ? e._valor : (Number(e.receita_bruta) || 0)),
+          // cinza para quem ainda não foi apurada — a barra existe, mas
+          // a cor diz que o número não é faturamento, é ausência de dado
+          backgroundColor: top.map(e => e.receita_bruta == null ? '#d1d5db' : '#10b981'),
           borderRadius: 5,
           barThickness: 15,
         }],
@@ -4671,7 +4681,14 @@
           legend: { display: false },
           tooltip: {
             backgroundColor: 'rgba(17,24,39,.94)', padding: 10, cornerRadius: 8, displayColors: false,
-            callbacks: { label: (c) => _cMoeda(c.parsed.x) },
+            callbacks: {
+              label: (c) => {
+                const e = top[c.dataIndex];
+                return (e && e.receita_bruta == null)
+                  ? 'Ainda não apurada neste mês'
+                  : _cMoeda(c.parsed.x);
+              },
+            },
           },
         },
         scales: {
@@ -5073,6 +5090,73 @@
     renderContabConciliacao();
   }
   window._contabConcMes = _contabConcMes;
+
+  // ════════════════════════════════════════════════════════════════
+  // NOTAS FISCAIS EM TELA CHEIA — só contabilidade (v33k.1001)
+  // ════════════════════════════════════════════════════════════════
+  // O usuário normal continua com o modal: ele chega ali no meio de um
+  // fluxo de expedição e precisa voltar para onde estava. A contabilidade
+  // não — para ela, consultar nota é a tarefa, não um desvio.
+  //
+  // Reaproveita `_cnCarregar` sem tocar nela: a função só preenche
+  // `#cnConteudo`, e aqui criamos esse elemento dentro da página. Zero
+  // risco para o caminho do usuário normal.
+  async function renderContabNotas() {
+    const alvo = document.getElementById('contabNotasConteudo');
+    if (!alvo) return;
+
+    alvo.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px">' +
+        '<div>' +
+          '<div style="font-size:var(--lc-fs-2xl);font-weight:800;color:var(--lc-ink);letter-spacing:-.6px">Notas fiscais</div>' +
+          '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:3px">' +
+            'Consulte, imprima e exporte as notas das empresas vinculadas</div>' +
+        '</div>' +
+      '</div>' +
+      '<div id="cnConteudo"><div style="text-align:center;padding:60px;color:var(--lc-muted)">' +
+      '<span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div></div>';
+    _hidratarIcones(alvo);
+
+    const hoje = new Date();
+    const seteDias = new Date(Date.now() - 7 * 864e5);
+    window._cnFiltros = {
+      de: seteDias.toISOString().slice(0, 10), ate: hoje.toISOString().slice(0, 10),
+      lojaId: '', empresaId: '', status: '', busca: '', periodo: '7d',
+    };
+    try {
+      if (typeof _cnCarregarFiltrosBase === 'function') await _cnCarregarFiltrosBase();
+      if (typeof _cnCarregar === 'function') await _cnCarregar();
+    } catch (e) {
+      const c = document.getElementById('cnConteudo');
+      if (c) c.innerHTML = '<div style="padding:24px;color:var(--lc-danger)">Não consegui carregar as notas.</div>';
+    }
+  }
+  window.renderContabNotas = renderContabNotas;
+
+  // v33k.1001: abre as notas no lugar certo para cada papel — tela cheia
+  // para a contabilidade, modal para o resto. Centralizado aqui para não
+  // espalhar o `if` por cinco lugares.
+  async function _abrirNotasNoContexto(filtros) {
+    const ehContab = (typeof papelAtual === 'function' && papelAtual() === 'contabilidade');
+    if (ehContab && typeof goTo === 'function') {
+      goTo('contabNotasScreen');
+      if (typeof renderContabNotas === 'function') await renderContabNotas();
+    } else {
+      if (typeof window.abrirCentralNotas !== 'function') return;
+      await window.abrirCentralNotas();
+    }
+    if (filtros) {
+      setTimeout(() => {
+        try {
+          window._cnFiltros = Object.assign(window._cnFiltros || {}, filtros);
+          if (typeof _cnCarregar === 'function') _cnCarregar();
+        } catch (e) { /* ignore */ }
+      }, 350);
+    }
+  }
+  window._abrirNotasNoContexto = _abrirNotasNoContexto;
+
+
 
 
 
@@ -5482,6 +5566,13 @@
     const ov = document.getElementById('fechamentoOverlay');
     if (ov) ov.remove();
 
+    if (typeof _abrirNotasNoContexto === 'function') {
+      _abrirNotasNoContexto({
+        periodo: 'custom', de: fmt(primeiro), ate: fmt(ultimo),
+        empresaId: String(empresaId), lojaId: '', status: '', busca: '',
+      });
+      return;
+    }
     if (typeof window.abrirCentralNotas !== 'function') return;
     window.abrirCentralNotas();
     setTimeout(() => {
@@ -6153,7 +6244,7 @@
           '<span class="lc-ic" data-lucide="package"></span> Conciliação</button>' +
         '<button class="lc-btn lc-btn--ghost" onclick="if(window.abrirFechamento)window.abrirFechamento()">' +
           '<span class="lc-ic" data-lucide="calendar"></span> Fechamento</button>' +
-        '<button class="lc-btn lc-btn--ghost" onclick="if(window.abrirCentralNotas)window.abrirCentralNotas()">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="goTo(\'contabNotasScreen\')">' +
           '<span class="lc-ic" data-lucide="file-text"></span> Todas as notas</button>' +
         '<button class="lc-btn lc-btn--primary" onclick="_abrirConvidarEmpresa()">' +
           '<span class="lc-ic" data-lucide="plus"></span> Convidar empresa</button>' +
@@ -6403,6 +6494,10 @@
 
   // Abre a Central de Notas já filtrada por uma empresa.
   function _verNotasDaEmpresa(empresaId) {
+    if (typeof _abrirNotasNoContexto === 'function') {
+      _abrirNotasNoContexto({ empresaId: String(empresaId) });
+      return;
+    }
     if (typeof window.abrirCentralNotas !== 'function') return;
     window.abrirCentralNotas();
     setTimeout(() => {
@@ -15610,6 +15705,45 @@ window.LC_SVG = {
       </div>
       <div class="content">
         <div id="contabConciliacaoConteudo"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+
+<!-- ─── NOTAS FISCAIS (contabilidade) ───────────────────────────── -->
+<div class="screen" id="contabNotasScreen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"></div>
+        <div class="sidebar-header-text">
+          <div class="sidebar-title">Lider 10</div>
+          <div class="sidebar-subtitle">Contabilidade</div>
+        </div>
+        <button class="lc-side-toggle" onclick="lcToggleSidebar()" title="Recolher menu" aria-label="Recolher menu"><span class="lc-ic" data-lucide="chevron-left"></span></button>
+      </div>
+      <nav class="sidebar-menu" id="sidebarMenuContabNotas"></nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-avatar">C</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name">Contabilidade</div>
+          <div class="sidebar-user-role">Escritório</div>
+        </div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <div class="top-bar">
+        <div class="top-logo">
+          <div class="top-logo-icon"></div>
+          <div class="top-logo-text">Lider 10</div>
+        </div>
+        <div class="top-actions">
+          <div class="user-avatar" onclick="abrirMenuUsuario(this)" style="cursor:pointer" title="Conta">C</div>
+        </div>
+      </div>
+      <div class="content">
+        <div id="contabNotasConteudo"></div>
       </div>
     </main>
   </div>
@@ -53832,7 +53966,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       { id: 'contabEmpresas', ic: 'building-2', label: 'Minhas empresas', screen: 'contabEmpresasScreen' },
       { id: 'contabFechamento', ic: 'calendar', label: 'Fechamento contábil', screen: 'contabFechamentoScreen' },
       { id: 'contabConciliacao', ic: 'package', label: 'Conciliação fiscal', screen: 'contabConciliacaoScreen' },
-      { id: 'contabNotas', ic: 'file-text', label: 'Notas fiscais', screen: 'notasFiscaisScreen' },
+      { id: 'contabNotas', ic: 'file-text', label: 'Notas fiscais', screen: 'contabNotasScreen' },
     ] },
     { id: 'home', ic: 'house', label: 'Início', screen: 'homeScreen' },
     { id: 'financial', ic: 'wallet', label: 'Financeiro', screen: 'financialScreen' },
@@ -53956,7 +54090,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.999-area-contabilidade';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1001-notas-tela-cheia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -54602,7 +54736,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // a trava REAL é a allowlist do backend (util/escopo-contabil.js) — a UI
     // esconde, o backend recusa. Nunca confiar só nesta linha.
     contabilidade: ['contabHomeScreen','contabEmpresasScreen','contabFechamentoScreen',
-                    'contabConciliacaoScreen','notasFiscaisScreen','loginScreen'],
+                    'contabConciliacaoScreen','contabNotasScreen','notasFiscaisScreen','loginScreen'],
   };
   // Catálogo de telas que um colaborador PODE receber permissão (checklist granular).
   // 'always' = telas sempre liberadas (login, perfil) que não entram no checklist.
@@ -55520,6 +55654,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       else if (screenId === 'contabEmpresasScreen' && typeof renderContabEmpresas === 'function') renderContabEmpresas({});
       else if (screenId === 'contabFechamentoScreen' && typeof renderContabFechamento === 'function') renderContabFechamento();
       else if (screenId === 'contabConciliacaoScreen' && typeof renderContabConciliacao === 'function') renderContabConciliacao();
+      else if (screenId === 'contabNotasScreen' && typeof renderContabNotas === 'function') renderContabNotas();
     } catch (e) { console.warn('[contab] render:', e); }
     renderSidebars(screenId);
     // v33k.646: em qualquer navegação, checa se o usuário estourou o limite de
@@ -55561,7 +55696,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         <span class="sidebar-icon">${LC_ICON('users')}</span>
         <span class="sidebar-label">Administração</span>
       </div>`;
-      ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao'].forEach(id => {
+      ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao','sidebarMenuContabNotas'].forEach(id => {
         const el = document.getElementById(id); if (el) el.innerHTML = htmlSuper;
       });
       return;
@@ -55608,7 +55743,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         <span class="sidebar-label">${item.label}</span>
       </div>`;
     }).join('');
-    ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao'].forEach(id => {
+    ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao','sidebarMenuContabNotas'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.innerHTML = html;
     });
@@ -63398,8 +63533,8 @@ ${JSON.stringify(metricas, null, 2)}`
           '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:7px;line-height:1.6">' +
             'Consulte, imprima e exporte as notas das empresas vinculadas.</div>' +
           '<button class="lc-btn lc-btn--primary" style="margin-top:16px" ' +
-            'onclick="if(window.abrirCentralNotas)window.abrirCentralNotas()">' +
-            '<span class="lc-ic" data-lucide="file-text"></span> Abrir Central de Notas</button>' +
+            'onclick="goTo(\'contabNotasScreen\')">' +
+            '<span class="lc-ic" data-lucide="file-text"></span> Ir para Notas fiscais</button>' +
           '</div>';
         _hidratarIcones(painelContab);
       }
