@@ -3816,8 +3816,11 @@
   };
 
   async function abrirConciliacao(empresaId, competencia) {
+    // v33k.988: NÃO herda mais o empresaId do dashboard. Antes, abrir o
+    // painel da empresa A e depois a conciliação pelo card da empresa B
+    // trazia os dados da A — o contexto vazava entre as telas. Só a
+    // competência é reaproveitada, que é informação de período, não de quem.
     const ctx = window._dashCtx || {};
-    empresaId = empresaId || ctx.empresaId;
     competencia = competencia || ctx.competencia;
     if (!empresaId) {
       const d = await _api('/api/nfe/empresas').catch(() => null);
@@ -3867,9 +3870,13 @@
 
   async function _concCarregar(filtro) {
     const ctx = window._concCtx || {};
-    if (filtro) ctx.filtro = filtro;
+    if (filtro) { ctx.filtro = filtro; ctx.pagina = 1; }
     const alvo = document.getElementById('concCorpo');
     if (!alvo) return;
+
+    // preserva foco e cursor da busca: o innerHTML abaixo destrói o campo
+    const buscaAtiva = document.activeElement && document.activeElement.id === 'concBusca';
+    const posCursor = buscaAtiva ? document.activeElement.selectionStart : null;
 
     let d;
     try {
@@ -3939,12 +3946,21 @@
       chip('nota_orfa', 'Nota sem pedido', r.notas_orfas) +
       chip('conciliado', 'Conciliados', r.conciliados) +
       chip('todos', 'Todos', r.total) +
+      '<input id="concBusca" type="text" placeholder="Buscar pedido…" value="' + _esc(ctx.busca || '') + '" ' +
+        'oninput="_concBuscarDebounce(this.value)" ' +
+        'style="padding:6px 12px;border:1px solid var(--lc-border-2);border-radius:999px;font-size:12.5px;min-width:170px;margin-left:auto">' +
     '</div>';
 
     // ── lista ────────────────────────────────────────────────────
     let lista = itens;
     if (ctx.filtro === 'acao') lista = precisaAcao;
     else if (ctx.filtro !== 'todos') lista = itens.filter(i => i.status === ctx.filtro);
+    if (ctx.busca) {
+      const b = String(ctx.busca).toLowerCase();
+      lista = lista.filter(i =>
+        String(i.order_sn || '').toLowerCase().includes(b) ||
+        String((i.nota && i.nota.numero) || '').includes(b));
+    }
 
     if (!lista.length) {
       html += '<div style="text-align:center;padding:48px 24px;background:var(--lc-surface);border:1px dashed var(--lc-border-2);border-radius:var(--lc-radius-lg)">' +
@@ -3957,9 +3973,14 @@
           : '') +
       '</div>';
     } else {
-      // teto de exibição: listas enormes travam o navegador
-      const MAX = 200;
-      const mostrar = lista.slice(0, MAX);
+      // v33k.988: PAGINAÇÃO. Com 336 itens numa lista só, o modal engasgava.
+      // 25 por página, com navegação — e busca por número de pedido para
+      // quem já sabe o que procura.
+      const POR_PAG = 25;
+      const paginas = Math.max(Math.ceil(lista.length / POR_PAG), 1);
+      const pag = Math.min(Math.max(ctx.pagina || 1, 1), paginas);
+      ctx.pagina = pag;
+      const mostrar = lista.slice((pag - 1) * POR_PAG, pag * POR_PAG);
       html += '<div style="border:1px solid var(--lc-border);border-radius:var(--lc-radius-lg);overflow:hidden;background:var(--lc-surface)">';
       for (const it of mostrar) {
         const c = _CONC_CFG[it.status] || _CONC_CFG.conciliado;
@@ -3995,9 +4016,27 @@
         '</div>';
       }
       html += '</div>';
-      if (lista.length > MAX) {
-        html += '<div style="font-size:11.5px;color:var(--lc-muted);margin-top:10px;text-align:center">' +
-          'Mostrando ' + MAX + ' de ' + lista.length + '. Refine o filtro para ver os demais.</div>';
+
+      if (paginas > 1) {
+        const btn = (n, rot, ativo, hab) =>
+          '<button ' + (hab ? 'onclick="_concPagina(' + n + ')"' : 'disabled') + ' ' +
+          'style="padding:6px 12px;border-radius:8px;border:1px solid ' +
+          (ativo ? 'var(--lc-primary)' : 'var(--lc-border)') + ';background:' +
+          (ativo ? 'var(--lc-primary)' : 'var(--lc-surface)') + ';color:' +
+          (ativo ? '#fff' : (hab ? 'var(--lc-ink-2)' : 'var(--lc-muted-2)')) +
+          ';font-size:12.5px;font-weight:600;cursor:' + (hab ? 'pointer' : 'default') + '">' + rot + '</button>';
+        const ini = Math.max(1, Math.min(pag - 2, paginas - 4));
+        const fim = Math.min(paginas, ini + 4);
+        let nums = '';
+        for (let i = ini; i <= fim; i++) nums += btn(i, String(i), i === pag, true);
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px">' +
+          '<div style="font-size:11.5px;color:var(--lc-muted)">' +
+            'Mostrando ' + ((pag - 1) * POR_PAG + 1) + '–' + Math.min(pag * POR_PAG, lista.length) +
+            ' de ' + lista.length + '</div>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+            btn(pag - 1, '&lsaquo;', false, pag > 1) + nums + btn(pag + 1, '&rsaquo;', false, pag < paginas) +
+          '</div>' +
+        '</div>';
       }
     }
 
@@ -4012,8 +4051,33 @@
 
     alvo.innerHTML = html;
     _hidratarIcones(alvo);
+
+    if (buscaAtiva) {
+      const inp = document.getElementById('concBusca');
+      if (inp) { inp.focus(); try { inp.setSelectionRange(posCursor, posCursor); } catch (_) {} }
+    }
   }
   window._concCarregar = _concCarregar;
+
+  function _concPagina(n) {
+    const ctx = window._concCtx || {};
+    ctx.pagina = n;
+    _concCarregar();
+  }
+  window._concPagina = _concPagina;
+
+  // Espera a digitação parar — sem isso cada tecla refiltra 336 itens.
+  let _concTimer = null;
+  function _concBuscarDebounce(valor) {
+    clearTimeout(_concTimer);
+    _concTimer = setTimeout(() => {
+      const ctx = window._concCtx || {};
+      ctx.busca = valor;
+      ctx.pagina = 1;
+      _concCarregar();
+    }, 350);
+  }
+  window._concBuscarDebounce = _concBuscarDebounce;
 
 
 
@@ -52540,7 +52604,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.987-fix-valor-pedido';
+  const _DIAG_VERSAO_PAINEL = 'v33k.988-conc-paginacao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
