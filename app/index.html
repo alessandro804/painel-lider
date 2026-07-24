@@ -256,6 +256,8 @@
         (empresas.length ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="abrirFechamento()"><span class="lc-ic" data-lucide="calendar"></span> Fechamento</button>' : '') +
         // v33k.983: painel contábil — serve ao dono também.
         (empresas.length ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="abrirDashboardContabil()"><span class="lc-ic" data-lucide="file-text"></span> Painel contábil</button>' : '') +
+        // v33k.991: importar XML de outro emissor. Só o dono — é escrita fiscal.
+        (empresas.length ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="abrirImportarXml()"><span class="lc-ic" data-lucide="package"></span> Importar XML</button>' : '') +
         '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_gfNovaEmpresa()">+ Nova empresa</button>' +
       '</div>' +
       '</div>';
@@ -4078,6 +4080,183 @@
     }, 350);
   }
   window._concBuscarDebounce = _concBuscarDebounce;
+
+  // ════════════════════════════════════════════════════════════════
+  // IMPORTAR XML (v33k.991) — notas emitidas em outro sistema
+  // ════════════════════════════════════════════════════════════════
+  // O diagnóstico mostrou que a maior parte das notas dessas empresas
+  // sai por outro emissor. Sem trazer esses XMLs, a receita bruta fica
+  // 90% menor que a real e todo o resto da suite fiscal erra junto.
+  async function abrirImportarXml(empresaId, competencia) {
+    if (!empresaId) {
+      const d = await _api('/api/nfe/empresas').catch(() => null);
+      const emps = (d && d.empresas) || [];
+      if (!emps.length) {
+        if (typeof lcAlert === 'function') lcAlert('Nenhuma empresa fiscal disponível.');
+        return;
+      }
+      if (emps.length > 1) { _impEscolherEmpresa(emps); return; }
+      empresaId = emps[0].id;
+    }
+    if (!competencia) {
+      const h = new Date();
+      competencia = h.getUTCFullYear() + '-' + String(h.getUTCMonth() + 1).padStart(2, '0');
+    }
+    window._impCtx = { empresaId, competencia };
+
+    _overlay('impOverlay',
+      '<div><h2 style="margin:0;font-size:17px;display:flex;align-items:center;gap:8px">' +
+      '<span class="lc-ic" data-lucide="package"></span> Importar XML</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Notas emitidas em outro sistema</div></div>',
+      '<div id="impCorpo"><div style="text-align:center;padding:44px;color:var(--lc-muted)">' +
+      '<span class="lc-ic" data-lucide="refresh-cw"></span> Verificando o que falta…</div></div>', 640);
+    _hidratarIcones(document.getElementById('impOverlay'));
+    await _impCarregar();
+  }
+  window.abrirImportarXml = abrirImportarXml;
+
+  function _impEscolherEmpresa(emps) {
+    _overlay('impEscolhaOverlay',
+      '<div><h2 style="margin:0;font-size:16px">Escolha a empresa</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Para qual empresa são os XMLs?</div></div>',
+      '<div style="padding:2px">' +
+        emps.map(e => '<button onclick="document.getElementById(\'impEscolhaOverlay\').remove();abrirImportarXml(' + e.id + ')" ' +
+          'style="display:block;width:100%;text-align:left;padding:13px 15px;margin-bottom:8px;background:var(--lc-surface);' +
+          'border:1px solid var(--lc-border);border-radius:var(--lc-radius);cursor:pointer" ' +
+          'onmouseover="this.style.borderColor=\'var(--lc-primary)\'" onmouseout="this.style.borderColor=\'var(--lc-border)\'">' +
+          '<div style="font-size:var(--lc-fs-sm);font-weight:700;color:var(--lc-ink)">' + _esc(e.razao_social) + '</div>' +
+          '<div style="font-size:11.5px;color:var(--lc-muted);margin-top:2px">' + _fmtCnpjC(e.cnpj) + '</div>' +
+        '</button>').join('') +
+      '</div>', 460);
+  }
+
+  async function _impCarregar() {
+    const ctx = window._impCtx || {};
+    const alvo = document.getElementById('impCorpo');
+    if (!alvo) return;
+
+    let d = null;
+    try {
+      d = await _api('/api/nfe/xml-pendentes/' + ctx.empresaId + '/' + ctx.competencia);
+    } catch (e) { /* segue sem o diagnóstico */ }
+
+    const faltam = (d && d.ok) ? d.total : null;
+
+    let html = '';
+    if (faltam != null) {
+      html += faltam > 0
+        ? '<div style="background:var(--lc-warning-soft);border:1px solid #fde68a;border-radius:var(--lc-radius-lg);padding:14px 16px;margin-bottom:16px">' +
+          '<div style="display:flex;gap:10px;align-items:flex-start">' +
+            '<span class="lc-ic" data-lucide="triangle-alert" style="color:#92400e;flex-shrink:0;margin-top:1px"></span>' +
+            '<div style="font-size:12.5px;color:#92400e;line-height:1.55">' +
+              '<strong>' + faltam + ' nota' + (faltam > 1 ? 's' : '') + ' não está' + (faltam > 1 ? 'ão' : '') + ' no sistema.</strong><br>' +
+              'Os pedidos deste mês registram número e chave de NF-e, mas o XML nunca foi importado. ' +
+              'Enquanto isso, a receita apurada fica menor que a real.' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+        : '<div style="background:var(--lc-primary-softer);border:1px solid var(--lc-primary-soft);border-radius:var(--lc-radius-lg);padding:14px 16px;margin-bottom:16px;font-size:12.5px;color:var(--lc-primary-text)">' +
+          'Todas as notas com chave registrada já estão no sistema neste mês.' +
+        '</div>';
+    }
+
+    html += '<div style="font-size:13px;color:var(--lc-ink-2);line-height:1.6;margin-bottom:14px">' +
+      'Exporte os XMLs do seu emissor e cole aqui, ou selecione os arquivos. ' +
+      'Pode ser um arquivo com várias notas.' +
+    '</div>' +
+
+    '<input type="file" id="impArquivo" accept=".xml,text/xml,application/xml" multiple ' +
+      'onchange="_impLerArquivos(this.files)" ' +
+      'style="width:100%;padding:11px;border:1px dashed var(--lc-border-2);border-radius:var(--lc-radius);font-size:13px;box-sizing:border-box;cursor:pointer;background:var(--lc-surface-2)">' +
+
+    '<div style="text-align:center;font-size:11.5px;color:var(--lc-muted-2);margin:10px 0">ou cole o conteúdo</div>' +
+
+    '<textarea id="impTexto" rows="5" placeholder="&lt;nfeProc&gt;…&lt;/nfeProc&gt;" ' +
+      'style="width:100%;padding:11px 13px;border:1px solid var(--lc-border-2);border-radius:var(--lc-radius);' +
+      'font-size:12px;box-sizing:border-box;resize:vertical;font-family:ui-monospace,monospace"></textarea>' +
+
+    '<div id="impMsg" style="font-size:12.5px;margin-top:10px;display:none;line-height:1.5"></div>' +
+
+    '<div style="display:flex;justify-content:flex-end;gap:9px;margin-top:16px">' +
+      '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'impOverlay\').remove()">Fechar</button>' +
+      '<button id="impBtn" class="lc-btn lc-btn--primary" onclick="_impEnviar()">Importar</button>' +
+    '</div>' +
+
+    '<div style="margin-top:14px;padding:11px 13px;background:var(--lc-surface-2);border-radius:var(--lc-radius);font-size:11.5px;color:var(--lc-muted);line-height:1.55">' +
+      'A nota importada entra na apuração igual a uma emitida aqui — marcada como ' +
+      '<strong>importada</strong>, para você saber a origem. Reimportar o mesmo XML não duplica: ' +
+      'a chave de acesso é única.' +
+    '</div>';
+
+    alvo.innerHTML = html;
+    _hidratarIcones(alvo);
+  }
+  window._impCarregar = _impCarregar;
+
+  // Lê os arquivos escolhidos e joga no textarea.
+  function _impLerArquivos(files) {
+    if (!files || !files.length) return;
+    const txt = document.getElementById('impTexto');
+    const msg = document.getElementById('impMsg');
+    let lidos = 0, conteudo = '';
+    for (const f of files) {
+      const r = new FileReader();
+      r.onload = (ev) => {
+        conteudo += (ev.target.result || '') + '\n';
+        lidos++;
+        if (lidos === files.length) {
+          if (txt) txt.value = conteudo;
+          if (msg) {
+            msg.style.display = 'block';
+            msg.style.color = 'var(--lc-muted)';
+            msg.textContent = files.length + ' arquivo(s) carregado(s). Clique em Importar.';
+          }
+        }
+      };
+      r.readAsText(f);
+    }
+  }
+  window._impLerArquivos = _impLerArquivos;
+
+  async function _impEnviar() {
+    const ctx = window._impCtx || {};
+    const txt = ((document.getElementById('impTexto') || {}).value || '').trim();
+    const msg = document.getElementById('impMsg');
+    const btn = document.getElementById('impBtn');
+    const mostrar = (html, cor) => {
+      if (msg) { msg.style.display = 'block'; msg.style.color = cor; msg.innerHTML = html; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Importar'; }
+    };
+    if (txt.length < 100) return mostrar('Cole o XML ou selecione os arquivos.', 'var(--lc-danger)');
+    if (btn) { btn.disabled = true; btn.textContent = 'Importando…'; }
+
+    try {
+      const d = await _api('/api/nfe/importar-xml/' + ctx.empresaId, {
+        method: 'POST', body: JSON.stringify({ xml: txt }),
+      });
+      if (!d || !d.ok) return mostrar(_esc((d && d.erro) || 'Falha na importação.'), 'var(--lc-danger)');
+
+      let r = '<div style="padding:12px 14px;background:var(--lc-primary-softer);border:1px solid var(--lc-primary-soft);border-radius:var(--lc-radius);color:var(--lc-primary-text)">' +
+        '<strong>' + d.importadas + ' nota(s) importada(s)</strong>' +
+        (d.atualizadas ? ' &middot; ' + d.atualizadas + ' XML completado(s)' : '') +
+        (d.ja_existiam ? ' &middot; ' + d.ja_existiam + ' já existia(m)' : '') +
+        (d.ignoradas ? ' &middot; <span style="color:#92400e">' + d.ignoradas + ' ignorada(s)</span>' : '') +
+      '</div>';
+      if (d.erros && d.erros.length) {
+        r += '<div style="margin-top:10px;max-height:150px;overflow:auto;border:1px solid var(--lc-border);border-radius:var(--lc-radius)">' +
+          d.erros.map(e => '<div style="padding:8px 12px;border-bottom:1px solid var(--lc-border);font-size:11.5px;color:var(--lc-ink-2)">' +
+            (e.numero ? '<strong>NF ' + e.numero + '</strong> — ' : '') + _esc(e.erro) + '</div>').join('') +
+        '</div>';
+      }
+      mostrar(r, 'var(--lc-ink-2)');
+      const t = document.getElementById('impTexto'); if (t) t.value = '';
+      setTimeout(() => _impCarregar(), 1200);
+    } catch (e) {
+      mostrar('Erro de conexão.', 'var(--lc-danger)');
+    }
+  }
+  window._impEnviar = _impEnviar;
+
 
 
 
@@ -52604,7 +52783,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.989-fix-cfops';
+  const _DIAG_VERSAO_PAINEL = 'v33k.991-importar-xml';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
