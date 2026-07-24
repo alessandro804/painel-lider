@@ -4431,6 +4431,652 @@
   }
   window._marcaSalvar = _marcaSalvar;
 
+  // ════════════════════════════════════════════════════════════════
+  // ÁREA CONTABILIDADE — VISÃO GERAL (v33k.999)
+  // ════════════════════════════════════════════════════════════════
+  // Tela própria, no padrão da Home: cabeçalho com saudação, KPIs,
+  // gráfico e lista de atenção. Antes isso era um modal dentro de
+  // Notas Fiscais.
+  const _cMoeda = (v) => 'R$ ' + Number(v || 0).toLocaleString('pt-BR',
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const _cMoedaCurta = (v) => {
+    const n = Number(v || 0);
+    if (n >= 1000000) return 'R$ ' + (n / 1000000).toFixed(1).replace('.', ',') + 'M';
+    if (n >= 1000) return 'R$ ' + (n / 1000).toFixed(1).replace('.', ',') + 'k';
+    return 'R$ ' + n.toFixed(0);
+  };
+  const _cMesExt = (comp) => {
+    const [a, m] = String(comp || '').split('-').map(Number);
+    if (!a || !m) return comp || '';
+    const n = ['janeiro','fevereiro','março','abril','maio','junho',
+               'julho','agosto','setembro','outubro','novembro','dezembro'];
+    return (n[m - 1] || '') + ' de ' + a;
+  };
+  function _cCompAtual() {
+    if (window._contabComp) return window._contabComp;
+    const h = new Date();
+    return h.getUTCFullYear() + '-' + String(h.getUTCMonth() + 1).padStart(2, '0');
+  }
+  function _cUltimosMeses(n) {
+    const out = [];
+    const h = new Date();
+    for (let i = 0; i < n; i++) {
+      const d = new Date(Date.UTC(h.getUTCFullYear(), h.getUTCMonth() - i, 1));
+      out.push(d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0'));
+    }
+    return out;
+  }
+  // Seletor de competência reaproveitado nas quatro telas.
+  function _cSeletorMes(onChange) {
+    const atual = _cCompAtual();
+    return '<select onchange="' + onChange + '(this.value)" ' +
+      'style="padding:9px 14px;border:1px solid var(--lc-border-2);border-radius:var(--lc-radius);' +
+      'font-size:13.5px;font-weight:600;color:var(--lc-ink);background:var(--lc-surface);cursor:pointer">' +
+      _cUltimosMeses(12).map(m => '<option value="' + m + '"' + (m === atual ? ' selected' : '') + '>' +
+        _cMesExt(m) + '</option>').join('') +
+    '</select>';
+  }
+
+  async function renderContabHome(competencia) {
+    if (competencia) window._contabComp = competencia;
+    const alvo = document.getElementById('contabHomeConteudo');
+    if (!alvo) return;
+    alvo.innerHTML = '<div style="text-align:center;padding:70px;color:var(--lc-muted)">' +
+      '<span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div>';
+    _hidratarIcones(alvo);
+
+    let d;
+    try {
+      d = await _api('/api/contabilidade/visao-geral?competencia=' + _cCompAtual());
+    } catch (e) {
+      alvo.innerHTML = '<div style="padding:24px;color:var(--lc-danger)">Não consegui carregar.</div>';
+      return;
+    }
+    if (!d || !d.ok) {
+      alvo.innerHTML = '<div style="padding:24px;color:var(--lc-danger)">' + _esc((d && d.erro) || 'Erro') + '</div>';
+      return;
+    }
+
+    const r = d.resumo || {};
+    const emps = d.empresas || [];
+    const avisos = d.avisos || [];
+    const hora = new Date().getHours();
+    const saudacao = hora < 12 ? 'Bom dia' : (hora < 18 ? 'Boa tarde' : 'Boa noite');
+
+    // ── cabeçalho ────────────────────────────────────────────────
+    let html = '<div class="lc-home-head" style="display:flex;justify-content:space-between;' +
+      'align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:22px">' +
+      '<div>' +
+        '<div style="font-size:var(--lc-fs-2xl);font-weight:800;color:var(--lc-ink);letter-spacing:-.6px">' +
+          saudacao + '</div>' +
+        '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:3px">' +
+          'Panorama de ' + _cMesExt(d.competencia) + ' · ' + r.empresas + ' empresa' +
+          (r.empresas !== 1 ? 's' : '') + ' sob sua responsabilidade</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">' +
+        _cSeletorMes('renderContabHome') +
+        '<button class="lc-btn lc-btn--primary" onclick="_abrirConvidarEmpresa()">' +
+          '<span class="lc-ic" data-lucide="plus"></span> Convidar empresa</button>' +
+      '</div>' +
+    '</div>';
+
+    // ── avisos ───────────────────────────────────────────────────
+    if (avisos.length) {
+      html += '<div style="margin-bottom:20px">';
+      for (const a of avisos.slice(0, 2)) {
+        const saida = a.tipo === 'vinculo_encerrado';
+        html += '<div class="lc-block" style="background:' +
+          (saida ? 'var(--lc-warning-soft)' : 'var(--lc-primary-softer)') + ';border:1px solid ' +
+          (saida ? '#fde68a' : 'var(--lc-primary-soft)') + ';border-radius:var(--lc-radius-lg);' +
+          'padding:14px 16px;margin-bottom:9px;display:flex;gap:11px;align-items:flex-start">' +
+          '<span class="lc-ic" data-lucide="' + (saida ? 'triangle-alert' : 'check') + '" ' +
+            'style="color:' + (saida ? '#92400e' : 'var(--lc-primary-text)') + ';flex-shrink:0;margin-top:1px"></span>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-weight:700;font-size:var(--lc-fs-sm);color:' +
+              (saida ? '#92400e' : 'var(--lc-primary-text)') + '">' + _esc(a.titulo) + '</div>' +
+            (a.mensagem ? '<div style="font-size:var(--lc-fs-xs);color:' +
+              (saida ? '#92400e' : 'var(--lc-primary-text)') + ';margin-top:3px;line-height:1.55;opacity:.9">' +
+              _esc(a.mensagem) + '</div>' : '') +
+          '</div>' +
+          '<button onclick="_marcarAvisoLido(' + a.id + ')" title="Marcar como lido" ' +
+            'style="flex-shrink:0;background:none;border:none;cursor:pointer;font-size:17px;line-height:1;' +
+            'opacity:.5;color:' + (saida ? '#92400e' : 'var(--lc-primary-text)') + '">&times;</button>' +
+        '</div>';
+      }
+      html += '</div>';
+    }
+
+    // ── KPIs ─────────────────────────────────────────────────────
+    const kpi = (rot, val, sub, cor, ic) =>
+      '<div class="lc-kpi" style="flex:1 1 200px;background:var(--lc-surface);border:1px solid var(--lc-border);' +
+        'border-radius:var(--lc-radius-lg);padding:17px 19px;position:relative;overflow:hidden">' +
+        '<div style="position:absolute;top:0;left:0;width:3px;height:100%;background:' + cor + '"></div>' +
+        '<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">' +
+          '<span class="lc-ic" data-lucide="' + ic + '" style="color:' + cor + ';width:15px;height:15px"></span>' +
+          '<span style="font-size:11px;color:var(--lc-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px">' +
+            rot + '</span>' +
+        '</div>' +
+        '<div style="font-size:25px;font-weight:800;color:var(--lc-ink);line-height:1.1;letter-spacing:-.6px">' +
+          val + '</div>' +
+        (sub ? '<div style="font-size:11.5px;color:var(--lc-muted);margin-top:4px">' + sub + '</div>' : '') +
+      '</div>';
+
+    html += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:22px">' +
+      kpi('Receita do mês', _cMoeda(r.receita_total),
+        r.apuradas + ' de ' + r.empresas + ' apuradas', 'var(--lc-primary)', 'receipt') +
+      kpi('Notas emitidas', String(r.notas || 0),
+        'no período', 'var(--lc-info)', 'file-text') +
+      kpi('Precisam de atenção', String(r.com_pendencia || 0),
+        r.com_pendencia ? 'com nota rejeitada' : 'tudo em ordem',
+        r.com_pendencia ? '#b45309' : 'var(--lc-primary)', 'triangle-alert') +
+      (r.em_carencia
+        ? kpi('Em encerramento', String(r.em_carencia), 'acesso terminando', '#b45309', 'clock')
+        : kpi('Competências fechadas', String(r.fechadas || 0),
+            'de ' + r.empresas, 'var(--lc-muted)', 'check')) +
+    '</div>';
+
+    // ── gráfico das maiores ──────────────────────────────────────
+    const comReceita = emps.filter(e => e.receita_bruta > 0)
+      .sort((a, b) => b.receita_bruta - a.receita_bruta);
+    if (comReceita.length) {
+      html += '<div class="lc-chart-card" style="background:var(--lc-surface);border:1px solid var(--lc-border);' +
+        'border-radius:var(--lc-radius-lg);padding:19px;margin-bottom:20px">' +
+        '<div style="font-size:var(--lc-fs-md);font-weight:800;color:var(--lc-ink);margin-bottom:3px">' +
+          'Receita por empresa</div>' +
+        '<div style="font-size:11.5px;color:var(--lc-muted);margin-bottom:16px">' +
+          'Maiores faturamentos de ' + _cMesExt(d.competencia) + '</div>' +
+        '<div style="height:' + Math.min(260, Math.max(120, comReceita.length * 28)) + 'px">' +
+          '<canvas id="contabChartReceita"></canvas></div>' +
+      '</div>';
+    }
+
+    // ── empresas que precisam de atenção ─────────────────────────
+    const atencao = emps.filter(e =>
+      (e.qtd_rejeitadas > 0) || e.estado_vinculo === 'carencia' || e.homologacao ||
+      (e.receita_bruta == null));
+    html += '<div class="lc-block" style="background:var(--lc-surface);border:1px solid var(--lc-border);' +
+      'border-radius:var(--lc-radius-lg);padding:19px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px">' +
+        '<div>' +
+          '<div style="font-size:var(--lc-fs-md);font-weight:800;color:var(--lc-ink)">' +
+            (atencao.length ? 'Precisam da sua atenção' : 'Tudo em ordem') + '</div>' +
+          '<div style="font-size:11.5px;color:var(--lc-muted);margin-top:2px">' +
+            (atencao.length
+              ? atencao.length + ' empresa(s) com algo pendente'
+              : 'Nenhuma empresa com pendência neste mês') + '</div>' +
+        '</div>' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="goTo(\'contabEmpresasScreen\')">' +
+          'Ver todas</button>' +
+      '</div>';
+
+    if (!atencao.length) {
+      html += '<div style="text-align:center;padding:32px 20px">' +
+        '<div style="width:48px;height:48px;border-radius:50%;background:var(--lc-primary-softer);' +
+          'display:flex;align-items:center;justify-content:center;margin:0 auto 12px">' +
+          '<span class="lc-ic" data-lucide="check" style="color:var(--lc-primary)"></span></div>' +
+        '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted)">' +
+          'Todas as empresas estão apuradas e sem pendências.</div></div>';
+    } else {
+      for (const e of atencao.slice(0, 8)) {
+        const motivos = [];
+        if (e.qtd_rejeitadas > 0) motivos.push(e.qtd_rejeitadas + ' nota(s) rejeitada(s)');
+        if (e.estado_vinculo === 'carencia') motivos.push('acesso encerra em ' + e.dias_carencia + ' dia(s)');
+        if (e.homologacao) motivos.push('em homologação');
+        if (e.receita_bruta == null) motivos.push('ainda não apurada');
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;' +
+          'padding:12px 0;border-top:1px solid var(--lc-border);flex-wrap:wrap">' +
+          '<div style="min-width:0;flex:1 1 220px">' +
+            '<div style="font-size:var(--lc-fs-sm);font-weight:700;color:var(--lc-ink);word-break:break-word">' +
+              _esc(e.razao_social) + '</div>' +
+            '<div style="font-size:11.5px;color:#b45309;margin-top:2px">' + motivos.join(' · ') + '</div>' +
+          '</div>' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_contabAbrirEmpresa(' + e.id + ')">' +
+            'Abrir</button>' +
+        '</div>';
+      }
+    }
+    html += '</div>';
+
+    alvo.innerHTML = html;
+    _hidratarIcones(alvo);
+    setTimeout(() => _contabGraficoReceita(comReceita), 40);
+  }
+  window.renderContabHome = renderContabHome;
+
+  let _contabChart = null;
+  function _contabGraficoReceita(lista) {
+    const cv = document.getElementById('contabChartReceita');
+    if (!cv || typeof Chart === 'undefined' || !lista.length) return;
+    try { if (_contabChart) _contabChart.destroy(); } catch (e) {}
+    const top = lista.slice(0, 8);
+    _contabChart = new Chart(cv.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: top.map(e => {
+          const n = e.nome_fantasia || e.razao_social || '';
+          return n.length > 26 ? n.slice(0, 24) + '…' : n;
+        }),
+        datasets: [{
+          data: top.map(e => e.receita_bruta),
+          backgroundColor: '#10b981',
+          borderRadius: 5,
+          barThickness: 15,
+        }],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true, maintainAspectRatio: false,
+        animation: _dashReduzMov() ? false : { duration: 700, easing: 'easeOutCubic' },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: 'rgba(17,24,39,.94)', padding: 10, cornerRadius: 8, displayColors: false,
+            callbacks: { label: (c) => _cMoeda(c.parsed.x) },
+          },
+        },
+        scales: {
+          x: { beginAtZero: true, grid: { color: 'rgba(0,0,0,.05)', drawBorder: false },
+               ticks: { font: { size: 11 }, color: '#9ca3af', callback: (v) => _cMoedaCurta(v) } },
+          y: { grid: { display: false }, ticks: { font: { size: 11.5 }, color: '#374151' } },
+        },
+      },
+    });
+  }
+
+  // Abre a empresa na tela de empresas, já filtrada.
+  function _contabAbrirEmpresa(id) {
+    window._contabEmpresaFoco = id;
+    goTo('contabEmpresasScreen');
+  }
+  window._contabAbrirEmpresa = _contabAbrirEmpresa;
+
+  // ════════════════════════════════════════════════════════════════
+  // MINHAS EMPRESAS (v33k.999)
+  // ════════════════════════════════════════════════════════════════
+  // Preparada para 200+ empresas: paginação de 24, busca com debounce,
+  // filtros por situação e dois modos de visualização (cartões e lista).
+  // A carga vem paginada do backend — não trazemos as 200 de uma vez.
+  function _empEstado() {
+    window._empCfg = window._empCfg || {
+      pagina: 1, busca: '', filtro: 'todas', modo: 'cards', porPagina: 24,
+    };
+    return window._empCfg;
+  }
+
+  async function renderContabEmpresas(opts) {
+    const cfg = _empEstado();
+    Object.assign(cfg, opts || {});
+    const alvo = document.getElementById('contabEmpresasConteudo');
+    if (!alvo) return;
+
+    const buscaAtiva = document.activeElement && document.activeElement.id === 'empBusca';
+    const cursor = buscaAtiva ? document.activeElement.selectionStart : null;
+
+    if (!alvo.dataset.montado) {
+      alvo.innerHTML = '<div style="text-align:center;padding:70px;color:var(--lc-muted)">' +
+        '<span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div>';
+      _hidratarIcones(alvo);
+    }
+
+    let d;
+    try {
+      d = await _api('/api/contabilidade/visao-geral?competencia=' + _cCompAtual());
+    } catch (e) {
+      alvo.innerHTML = '<div style="padding:24px;color:var(--lc-danger)">Não consegui carregar.</div>';
+      return;
+    }
+    if (!d || !d.ok) {
+      alvo.innerHTML = '<div style="padding:24px;color:var(--lc-danger)">' + _esc((d && d.erro) || 'Erro') + '</div>';
+      return;
+    }
+    alvo.dataset.montado = '1';
+
+    let emps = d.empresas || [];
+    const totalGeral = emps.length;
+
+    // ── filtros ──────────────────────────────────────────────────
+    if (cfg.filtro === 'pendencia') {
+      emps = emps.filter(e => (e.qtd_rejeitadas > 0) || e.receita_bruta == null || e.homologacao);
+    } else if (cfg.filtro === 'carencia') {
+      emps = emps.filter(e => e.estado_vinculo === 'carencia');
+    } else if (cfg.filtro === 'fechadas') {
+      emps = emps.filter(e => e.fechada);
+    }
+    if (cfg.busca) {
+      const b = cfg.busca.toLowerCase();
+      const dig = b.replace(/\D/g, '');
+      emps = emps.filter(e =>
+        String(e.razao_social || '').toLowerCase().includes(b) ||
+        String(e.nome_fantasia || '').toLowerCase().includes(b) ||
+        (dig && String(e.cnpj || '').includes(dig)));
+    }
+
+    const paginas = Math.max(Math.ceil(emps.length / cfg.porPagina), 1);
+    const pag = Math.min(Math.max(cfg.pagina, 1), paginas);
+    cfg.pagina = pag;
+    const mostrar = emps.slice((pag - 1) * cfg.porPagina, pag * cfg.porPagina);
+
+    // ── cabeçalho ────────────────────────────────────────────────
+    let html = '<div style="display:flex;justify-content:space-between;align-items:flex-start;' +
+      'gap:16px;flex-wrap:wrap;margin-bottom:20px">' +
+      '<div>' +
+        '<div style="font-size:var(--lc-fs-2xl);font-weight:800;color:var(--lc-ink);letter-spacing:-.6px">' +
+          'Minhas empresas</div>' +
+        '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:3px">' +
+          totalGeral + ' vinculada' + (totalGeral !== 1 ? 's' : '') +
+          ' · dados de ' + _cMesExt(d.competencia) + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">' +
+        _cSeletorMes('_empTrocarMes') +
+        '<button class="lc-btn lc-btn--primary" onclick="_abrirConvidarEmpresa()">' +
+          '<span class="lc-ic" data-lucide="plus"></span> Convidar</button>' +
+      '</div>' +
+    '</div>';
+
+    // ── barra de controles ───────────────────────────────────────
+    const chip = (v, rot, n) =>
+      '<button onclick="renderContabEmpresas({filtro:\'' + v + '\',pagina:1})" ' +
+      'style="padding:7px 14px;border-radius:999px;font-size:12.5px;font-weight:600;cursor:pointer;' +
+      'border:1px solid ' + (cfg.filtro === v ? 'var(--lc-primary)' : 'var(--lc-border)') + ';' +
+      'background:' + (cfg.filtro === v ? 'var(--lc-primary)' : 'var(--lc-surface)') + ';' +
+      'color:' + (cfg.filtro === v ? '#fff' : 'var(--lc-ink-2)') + '">' + rot +
+      (n != null ? ' <span style="opacity:.75">' + n + '</span>' : '') + '</button>';
+
+    const todas = d.empresas || [];
+    html += '<div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">' +
+      '<div style="display:flex;gap:7px;flex-wrap:wrap">' +
+        chip('todas', 'Todas', totalGeral) +
+        chip('pendencia', 'Com pendência',
+          todas.filter(e => (e.qtd_rejeitadas > 0) || e.receita_bruta == null || e.homologacao).length) +
+        (todas.some(e => e.estado_vinculo === 'carencia')
+          ? chip('carencia', 'Em encerramento', todas.filter(e => e.estado_vinculo === 'carencia').length) : '') +
+        (todas.some(e => e.fechada) ? chip('fechadas', 'Fechadas', todas.filter(e => e.fechada).length) : '') +
+      '</div>' +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input id="empBusca" type="text" placeholder="Buscar empresa ou CNPJ…" value="' + _esc(cfg.busca) + '" ' +
+          'oninput="_empBuscar(this.value)" ' +
+          'style="padding:8px 14px;border:1px solid var(--lc-border-2);border-radius:999px;font-size:13px;min-width:210px">' +
+        '<button onclick="renderContabEmpresas({modo:\'' + (cfg.modo === 'cards' ? 'lista' : 'cards') + '\'})" ' +
+          'title="' + (cfg.modo === 'cards' ? 'Ver em lista' : 'Ver em cartões') + '" ' +
+          'style="padding:8px 11px;border:1px solid var(--lc-border);background:var(--lc-surface);' +
+          'border-radius:var(--lc-radius);cursor:pointer;color:var(--lc-ink-2)">' +
+          '<span class="lc-ic" data-lucide="' + (cfg.modo === 'cards' ? 'file-text' : 'package') + '"></span></button>' +
+      '</div>' +
+    '</div>';
+
+    // ── conteúdo ─────────────────────────────────────────────────
+    if (!mostrar.length) {
+      html += '<div style="text-align:center;padding:60px 24px;background:var(--lc-surface);' +
+        'border:1px dashed var(--lc-border-2);border-radius:var(--lc-radius-lg)">' +
+        '<div style="width:52px;height:52px;border-radius:50%;background:var(--lc-primary-softer);' +
+          'display:flex;align-items:center;justify-content:center;margin:0 auto 14px">' +
+          '<span class="lc-ic" data-lucide="building-2" style="color:var(--lc-primary)"></span></div>' +
+        '<div style="font-weight:700;color:var(--lc-ink)">' +
+          (cfg.busca || cfg.filtro !== 'todas' ? 'Nenhuma empresa neste filtro' : 'Nenhuma empresa vinculada') + '</div>' +
+        (cfg.busca || cfg.filtro !== 'todas'
+          ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="margin-top:12px" ' +
+            'onclick="renderContabEmpresas({busca:\'\',filtro:\'todas\',pagina:1})">Limpar filtros</button>'
+          : '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:7px;line-height:1.6;max-width:330px;margin-left:auto;margin-right:auto">' +
+            'Convide seus clientes pelo CNPJ. Quando aprovarem, as notas aparecem aqui.</div>' +
+            '<button class="lc-btn lc-btn--primary" style="margin-top:16px" onclick="_abrirConvidarEmpresa()">' +
+            '<span class="lc-ic" data-lucide="plus"></span> Convidar primeira empresa</button>') +
+      '</div>';
+    } else if (cfg.modo === 'cards') {
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:13px">';
+      for (const e of mostrar) html += _empCard(e);
+      html += '</div>';
+    } else {
+      html += _empLista(mostrar);
+    }
+
+    // ── paginação ────────────────────────────────────────────────
+    if (paginas > 1) {
+      const btn = (n, rot, ativo, hab) =>
+        '<button ' + (hab ? 'onclick="renderContabEmpresas({pagina:' + n + '})"' : 'disabled') + ' ' +
+        'style="padding:7px 13px;border-radius:8px;border:1px solid ' +
+        (ativo ? 'var(--lc-primary)' : 'var(--lc-border)') + ';background:' +
+        (ativo ? 'var(--lc-primary)' : 'var(--lc-surface)') + ';color:' +
+        (ativo ? '#fff' : (hab ? 'var(--lc-ink-2)' : 'var(--lc-muted-2)')) +
+        ';font-size:12.5px;font-weight:600;cursor:' + (hab ? 'pointer' : 'default') + '">' + rot + '</button>';
+      const ini = Math.max(1, Math.min(pag - 2, paginas - 4));
+      const fim = Math.min(paginas, ini + 4);
+      let nums = '';
+      for (let i = ini; i <= fim; i++) nums += btn(i, String(i), i === pag, true);
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;' +
+        'flex-wrap:wrap;margin-top:20px">' +
+        '<div style="font-size:12px;color:var(--lc-muted)">Mostrando ' +
+          ((pag - 1) * cfg.porPagina + 1) + '–' + Math.min(pag * cfg.porPagina, emps.length) +
+          ' de ' + emps.length + '</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+          btn(pag - 1, '&lsaquo;', false, pag > 1) + nums + btn(pag + 1, '&rsaquo;', false, pag < paginas) +
+        '</div>' +
+      '</div>';
+    }
+
+    alvo.innerHTML = html;
+    _hidratarIcones(alvo);
+    if (buscaAtiva) {
+      const i = document.getElementById('empBusca');
+      if (i) { i.focus(); try { i.setSelectionRange(cursor, cursor); } catch (_) {} }
+    }
+  }
+  window.renderContabEmpresas = renderContabEmpresas;
+
+  function _empCard(e) {
+    const inicial = (e.razao_social || '?').trim().charAt(0).toUpperCase();
+    const carencia = e.estado_vinculo === 'carencia';
+    const temAlerta = e.qtd_rejeitadas > 0 || e.homologacao;
+    return '<div style="background:var(--lc-surface);border:1px solid ' +
+      (carencia ? '#fde68a' : 'var(--lc-border)') + ';border-radius:var(--lc-radius-lg);padding:16px 17px;' +
+      'transition:box-shadow .15s,border-color .15s" ' +
+      'onmouseover="this.style.boxShadow=\'var(--lc-shadow-sm)\';this.style.borderColor=\'var(--lc-border-2)\'" ' +
+      'onmouseout="this.style.boxShadow=\'none\';this.style.borderColor=\'' + (carencia ? '#fde68a' : 'var(--lc-border)') + '\'">' +
+      '<div style="display:flex;gap:11px;align-items:flex-start;margin-bottom:13px">' +
+        '<div style="width:38px;height:38px;border-radius:11px;flex-shrink:0;display:flex;align-items:center;' +
+          'justify-content:center;font-weight:800;font-size:15px;background:' +
+          (carencia ? 'var(--lc-warning-soft);color:#92400e' : 'var(--lc-primary-softer);color:var(--lc-primary-text)') + '">' +
+          _esc(inicial) + '</div>' +
+        '<div style="min-width:0;flex:1">' +
+          '<div style="font-size:13.5px;font-weight:700;color:var(--lc-ink);line-height:1.35;word-break:break-word">' +
+            _esc(e.nome_fantasia || e.razao_social) + '</div>' +
+          '<div style="font-size:11px;color:var(--lc-muted);margin-top:2px">' + _fmtCnpjC(e.cnpj) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:13px">' +
+        '<span style="padding:2px 9px;border-radius:999px;background:var(--lc-surface-2);color:var(--lc-muted);' +
+          'font-size:10.5px;font-weight:600">' + _esc(e.regime) + '</span>' +
+        (e.homologacao ? '<span style="padding:2px 9px;border-radius:999px;background:var(--lc-warning-soft);' +
+          'color:#92400e;font-size:10.5px;font-weight:700">HOMOLOGAÇÃO</span>' : '') +
+        (e.fechada ? '<span style="padding:2px 9px;border-radius:999px;background:var(--lc-primary-soft);' +
+          'color:var(--lc-primary-text);font-size:10.5px;font-weight:700">FECHADA</span>' : '') +
+        (carencia ? '<span style="padding:2px 9px;border-radius:999px;background:var(--lc-warning-soft);' +
+          'color:#92400e;font-size:10.5px;font-weight:700">' + e.dias_carencia + ' DIAS</span>' : '') +
+      '</div>' +
+      '<div style="padding:11px 0;border-top:1px solid var(--lc-border);display:flex;justify-content:space-between;gap:10px">' +
+        '<div>' +
+          '<div style="font-size:10.5px;color:var(--lc-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700">Receita</div>' +
+          '<div style="font-size:15px;font-weight:800;color:' +
+            (e.receita_bruta == null ? 'var(--lc-muted-2)' : 'var(--lc-ink)') + ';margin-top:1px">' +
+            (e.receita_bruta == null ? '—' : _cMoedaCurta(e.receita_bruta)) + '</div>' +
+        '</div>' +
+        '<div style="text-align:right">' +
+          '<div style="font-size:10.5px;color:var(--lc-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700">Notas</div>' +
+          '<div style="font-size:15px;font-weight:800;color:' +
+            (temAlerta ? '#b45309' : 'var(--lc-ink)') + ';margin-top:1px">' +
+            (e.qtd_notas == null ? '—' : e.qtd_notas) +
+            (e.qtd_rejeitadas ? '<span style="font-size:11px;font-weight:600"> · ' + e.qtd_rejeitadas + ' rej.</span>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;padding-top:11px;border-top:1px solid var(--lc-border)">' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="flex:1" onclick="_empAbrirPainel(' + e.id + ')">' +
+          '<span class="lc-ic" data-lucide="file-text"></span> Painel</button>' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_empAbrirConciliacao(' + e.id + ')" title="Conciliação">' +
+          '<span class="lc-ic" data-lucide="package"></span></button>' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_verNotasDaEmpresa(' + e.id + ')" title="Notas">' +
+          '<span class="lc-ic" data-lucide="receipt"></span></button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function _empLista(emps) {
+    let h = '<div style="background:var(--lc-surface);border:1px solid var(--lc-border);' +
+      'border-radius:var(--lc-radius-lg);overflow:hidden;overflow-x:auto">' +
+      '<table style="width:100%;border-collapse:collapse;min-width:660px">' +
+      '<thead><tr style="background:var(--lc-surface-2)">' +
+        ['Empresa', 'Regime', 'Receita', 'Notas', ''].map((c, i) =>
+          '<th style="padding:11px 14px;text-align:' + (i === 2 || i === 3 ? 'right' : 'left') +
+          ';font-size:11px;color:var(--lc-muted);font-weight:700;text-transform:uppercase;letter-spacing:.03em">' +
+          c + '</th>').join('') +
+      '</tr></thead><tbody>';
+    for (const e of emps) {
+      h += '<tr style="border-top:1px solid var(--lc-border)">' +
+        '<td style="padding:12px 14px;min-width:220px">' +
+          '<div style="font-size:13px;font-weight:700;color:var(--lc-ink);word-break:break-word">' +
+            _esc(e.nome_fantasia || e.razao_social) + '</div>' +
+          '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:1px">' + _fmtCnpjC(e.cnpj) +
+            (e.homologacao ? ' · <span style="color:#b45309;font-weight:700">HOMOLOGAÇÃO</span>' : '') +
+            (e.estado_vinculo === 'carencia' ? ' · <span style="color:#b45309;font-weight:700">' +
+              e.dias_carencia + ' dias</span>' : '') + '</div>' +
+        '</td>' +
+        '<td style="padding:12px 14px;font-size:12px;color:var(--lc-muted)">' + _esc(e.regime) + '</td>' +
+        '<td style="padding:12px 14px;text-align:right;font-size:13px;font-weight:700;color:' +
+          (e.receita_bruta == null ? 'var(--lc-muted-2)' : 'var(--lc-ink)') + '">' +
+          (e.receita_bruta == null ? '—' : _cMoeda(e.receita_bruta)) + '</td>' +
+        '<td style="padding:12px 14px;text-align:right;font-size:13px;color:' +
+          (e.qtd_rejeitadas ? '#b45309' : 'var(--lc-ink-2)') + '">' +
+          (e.qtd_notas == null ? '—' : e.qtd_notas) +
+          (e.qtd_rejeitadas ? ' · ' + e.qtd_rejeitadas + ' rej.' : '') + '</td>' +
+        '<td style="padding:12px 14px;text-align:right;white-space:nowrap">' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_empAbrirPainel(' + e.id + ')">Painel</button>' +
+        '</td>' +
+      '</tr>';
+    }
+    return h + '</tbody></table></div>';
+  }
+
+  let _empTimer = null;
+  function _empBuscar(v) {
+    clearTimeout(_empTimer);
+    _empTimer = setTimeout(() => renderContabEmpresas({ busca: v, pagina: 1 }), 350);
+  }
+  window._empBuscar = _empBuscar;
+
+  function _empTrocarMes(m) {
+    window._contabComp = m;
+    renderContabEmpresas({ pagina: 1 });
+  }
+  window._empTrocarMes = _empTrocarMes;
+
+  function _empAbrirPainel(id) {
+    if (typeof abrirDashboardContabil === 'function') abrirDashboardContabil(id, _cCompAtual());
+  }
+  window._empAbrirPainel = _empAbrirPainel;
+
+  function _empAbrirConciliacao(id) {
+    window._contabEmpresaFoco = id;
+    goTo('contabConciliacaoScreen');
+  }
+  window._empAbrirConciliacao = _empAbrirConciliacao;
+
+  // ════════════════════════════════════════════════════════════════
+  // FECHAMENTO E CONCILIAÇÃO EM TELA CHEIA (v33k.999)
+  // ════════════════════════════════════════════════════════════════
+  // Reaproveitam a lógica que já existia nos modais, mas renderizando
+  // na tela própria — com cabeçalho, seletor de mês e respiro.
+  async function renderContabFechamento() {
+    const alvo = document.getElementById('contabFechamentoConteudo');
+    if (!alvo) return;
+    alvo.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px">' +
+        '<div>' +
+          '<div style="font-size:var(--lc-fs-2xl);font-weight:800;color:var(--lc-ink);letter-spacing:-.6px">Fechamento contábil</div>' +
+          '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:3px">' +
+            'Situação fiscal de cada empresa, mês a mês</div>' +
+        '</div>' +
+      '</div>' +
+      '<div id="fechConteudo"><div style="text-align:center;padding:60px;color:var(--lc-muted)">' +
+      '<span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div></div>';
+    _hidratarIcones(alvo);
+    window._fechCfg = { meses: 6, pagina: 1, busca: '', soAlerta: false };
+    if (typeof _fechCarregar === 'function') await _fechCarregar({});
+  }
+  window.renderContabFechamento = renderContabFechamento;
+
+  async function renderContabConciliacao() {
+    const alvo = document.getElementById('contabConciliacaoConteudo');
+    if (!alvo) return;
+
+    // sem empresa escolhida, mostra a lista para escolher
+    const foco = window._contabEmpresaFoco;
+    if (!foco) {
+      let d;
+      try { d = await _api('/api/contabilidade/visao-geral?competencia=' + _cCompAtual()); }
+      catch (e) { d = null; }
+      const emps = (d && d.empresas) || [];
+      alvo.innerHTML =
+        '<div style="margin-bottom:20px">' +
+          '<div style="font-size:var(--lc-fs-2xl);font-weight:800;color:var(--lc-ink);letter-spacing:-.6px">Conciliação fiscal</div>' +
+          '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:3px">' +
+            'Escolha a empresa para cruzar pedidos e notas</div>' +
+        '</div>' +
+        (emps.length
+          ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:11px">' +
+            emps.map(e => '<button onclick="_contabConcEmpresa(' + e.id + ')" ' +
+              'style="text-align:left;padding:15px 17px;background:var(--lc-surface);border:1px solid var(--lc-border);' +
+              'border-radius:var(--lc-radius-lg);cursor:pointer;transition:border-color .15s" ' +
+              'onmouseover="this.style.borderColor=\'var(--lc-primary)\'" ' +
+              'onmouseout="this.style.borderColor=\'var(--lc-border)\'">' +
+              '<div style="font-size:13.5px;font-weight:700;color:var(--lc-ink)">' +
+                _esc(e.nome_fantasia || e.razao_social) + '</div>' +
+              '<div style="font-size:11px;color:var(--lc-muted);margin-top:2px">' + _fmtCnpjC(e.cnpj) + '</div>' +
+            '</button>').join('') + '</div>'
+          : '<div style="text-align:center;padding:60px;color:var(--lc-muted)">Nenhuma empresa vinculada.</div>');
+      _hidratarIcones(alvo);
+      return;
+    }
+
+    alvo.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px">' +
+        '<div>' +
+          '<div style="font-size:var(--lc-fs-2xl);font-weight:800;color:var(--lc-ink);letter-spacing:-.6px">Conciliação fiscal</div>' +
+          '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:3px">' +
+            'Pedidos do marketplace × notas emitidas</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">' +
+          _cSeletorMes('_contabConcMes') +
+          '<button class="lc-btn lc-btn--ghost" onclick="_contabConcTrocar()">Trocar empresa</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="concCorpo"><div style="text-align:center;padding:60px;color:var(--lc-muted)">' +
+      '<span class="lc-ic" data-lucide="refresh-cw"></span> Cruzando os dados…</div></div>';
+    _hidratarIcones(alvo);
+    window._concCtx = { empresaId: foco, competencia: _cCompAtual(), filtro: 'acao', pagina: 1, busca: '' };
+    if (typeof _concCarregar === 'function') await _concCarregar();
+  }
+  window.renderContabConciliacao = renderContabConciliacao;
+
+  function _contabConcEmpresa(id) {
+    window._contabEmpresaFoco = id;
+    renderContabConciliacao();
+  }
+  window._contabConcEmpresa = _contabConcEmpresa;
+
+  function _contabConcTrocar() {
+    window._contabEmpresaFoco = null;
+    renderContabConciliacao();
+  }
+  window._contabConcTrocar = _contabConcTrocar;
+
+  function _contabConcMes(m) {
+    window._contabComp = m;
+    renderContabConciliacao();
+  }
+  window._contabConcMes = _contabConcMes;
+
+
+
+
 
   // ════════════════════════════════════════════════════════════════
   // IMPORTAR XML (v33k.991) — notas emitidas em outro sistema
@@ -14809,6 +15455,166 @@ window.LC_SVG = {
 </div>
 
 <!-- ═══════════ TELA NOTAS FISCAIS (Expedição NF desmembrada) — v33k.520 ═══════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     ÁREA CONTABILIDADE (v33k.999)
+     Quatro telas próprias, no mesmo padrão do resto do sistema —
+     sidebar, topbar e conteúdo. Antes eram modais empilhados dentro de
+     Notas Fiscais, o que não condizia com o nível das outras áreas.
+     ═══════════════════════════════════════════════════════════════════ -->
+
+<!-- ─── VISÃO GERAL ─────────────────────────────────────────────── -->
+<div class="screen" id="contabHomeScreen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"></div>
+        <div class="sidebar-header-text">
+          <div class="sidebar-title">Lider 10</div>
+          <div class="sidebar-subtitle">Contabilidade</div>
+        </div>
+        <button class="lc-side-toggle" onclick="lcToggleSidebar()" title="Recolher menu" aria-label="Recolher menu"><span class="lc-ic" data-lucide="chevron-left"></span></button>
+      </div>
+      <nav class="sidebar-menu" id="sidebarMenuContabHome"></nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-avatar">C</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name">Contabilidade</div>
+          <div class="sidebar-user-role">Escritório</div>
+        </div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <div class="top-bar">
+        <div class="top-logo">
+          <div class="top-logo-icon"></div>
+          <div class="top-logo-text">Lider 10</div>
+        </div>
+        <div class="top-actions">
+          <div class="user-avatar" onclick="abrirMenuUsuario(this)" style="cursor:pointer" title="Conta">C</div>
+        </div>
+      </div>
+      <div class="content">
+        <div id="contabHomeConteudo"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ─── MINHAS EMPRESAS ─────────────────────────────────────────── -->
+<div class="screen" id="contabEmpresasScreen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"></div>
+        <div class="sidebar-header-text">
+          <div class="sidebar-title">Lider 10</div>
+          <div class="sidebar-subtitle">Contabilidade</div>
+        </div>
+        <button class="lc-side-toggle" onclick="lcToggleSidebar()" title="Recolher menu" aria-label="Recolher menu"><span class="lc-ic" data-lucide="chevron-left"></span></button>
+      </div>
+      <nav class="sidebar-menu" id="sidebarMenuContabEmpresas"></nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-avatar">C</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name">Contabilidade</div>
+          <div class="sidebar-user-role">Escritório</div>
+        </div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <div class="top-bar">
+        <div class="top-logo">
+          <div class="top-logo-icon"></div>
+          <div class="top-logo-text">Lider 10</div>
+        </div>
+        <div class="top-actions">
+          <div class="user-avatar" onclick="abrirMenuUsuario(this)" style="cursor:pointer" title="Conta">C</div>
+        </div>
+      </div>
+      <div class="content">
+        <div id="contabEmpresasConteudo"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ─── FECHAMENTO CONTÁBIL ─────────────────────────────────────── -->
+<div class="screen" id="contabFechamentoScreen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"></div>
+        <div class="sidebar-header-text">
+          <div class="sidebar-title">Lider 10</div>
+          <div class="sidebar-subtitle">Contabilidade</div>
+        </div>
+        <button class="lc-side-toggle" onclick="lcToggleSidebar()" title="Recolher menu" aria-label="Recolher menu"><span class="lc-ic" data-lucide="chevron-left"></span></button>
+      </div>
+      <nav class="sidebar-menu" id="sidebarMenuContabFechamento"></nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-avatar">C</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name">Contabilidade</div>
+          <div class="sidebar-user-role">Escritório</div>
+        </div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <div class="top-bar">
+        <div class="top-logo">
+          <div class="top-logo-icon"></div>
+          <div class="top-logo-text">Lider 10</div>
+        </div>
+        <div class="top-actions">
+          <div class="user-avatar" onclick="abrirMenuUsuario(this)" style="cursor:pointer" title="Conta">C</div>
+        </div>
+      </div>
+      <div class="content">
+        <div id="contabFechamentoConteudo"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ─── CONCILIAÇÃO FISCAL ──────────────────────────────────────── -->
+<div class="screen" id="contabConciliacaoScreen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"></div>
+        <div class="sidebar-header-text">
+          <div class="sidebar-title">Lider 10</div>
+          <div class="sidebar-subtitle">Contabilidade</div>
+        </div>
+        <button class="lc-side-toggle" onclick="lcToggleSidebar()" title="Recolher menu" aria-label="Recolher menu"><span class="lc-ic" data-lucide="chevron-left"></span></button>
+      </div>
+      <nav class="sidebar-menu" id="sidebarMenuContabConciliacao"></nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-avatar">C</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name">Contabilidade</div>
+          <div class="sidebar-user-role">Escritório</div>
+        </div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <div class="top-bar">
+        <div class="top-logo">
+          <div class="top-logo-icon"></div>
+          <div class="top-logo-text">Lider 10</div>
+        </div>
+        <div class="top-actions">
+          <div class="user-avatar" onclick="abrirMenuUsuario(this)" style="cursor:pointer" title="Conta">C</div>
+        </div>
+      </div>
+      <div class="content">
+        <div id="contabConciliacaoConteudo"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
 <div class="screen" id="notasFiscaisScreen">
   <div class="app-layout">
     <aside class="sidebar">
@@ -53018,6 +53824,16 @@ Responda APENAS com JSON válido (sem markdown), formato:
   const ICON_GEAR = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
 
   const menuItems = [
+    // v33k.999: área própria da CONTABILIDADE. Fica no topo porque, para
+    // esse papel, é a única coisa que existe — as outras entradas são
+    // filtradas por podeAcessarTela e nem chegam a ser desenhadas.
+    { id: 'contabilidade', ic: 'briefcase', label: 'Contabilidade', screen: 'contabHomeScreen', children: [
+      { id: 'contabHome', ic: 'house', label: 'Visão geral', screen: 'contabHomeScreen' },
+      { id: 'contabEmpresas', ic: 'building-2', label: 'Minhas empresas', screen: 'contabEmpresasScreen' },
+      { id: 'contabFechamento', ic: 'calendar', label: 'Fechamento contábil', screen: 'contabFechamentoScreen' },
+      { id: 'contabConciliacao', ic: 'package', label: 'Conciliação fiscal', screen: 'contabConciliacaoScreen' },
+      { id: 'contabNotas', ic: 'file-text', label: 'Notas fiscais', screen: 'notasFiscaisScreen' },
+    ] },
     { id: 'home', ic: 'house', label: 'Início', screen: 'homeScreen' },
     { id: 'financial', ic: 'wallet', label: 'Financeiro', screen: 'financialScreen' },
     { id: 'commercial', ic: 'target', label: 'Comercial', screen: 'commercialScreen' },
@@ -53140,7 +53956,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.998-relatorios-pdf';
+  const _DIAG_VERSAO_PAINEL = 'v33k.999-area-contabilidade';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -53785,7 +54601,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // Fase 6 (cadastro de colaboradores). Esta lista é a trava da interface;
     // a trava REAL é a allowlist do backend (util/escopo-contabil.js) — a UI
     // esconde, o backend recusa. Nunca confiar só nesta linha.
-    contabilidade: ['notasFiscaisScreen','loginScreen'],
+    contabilidade: ['contabHomeScreen','contabEmpresasScreen','contabFechamentoScreen',
+                    'contabConciliacaoScreen','notasFiscaisScreen','loginScreen'],
   };
   // Catálogo de telas que um colaborador PODE receber permissão (checklist granular).
   // 'always' = telas sempre liberadas (login, perfil) que não entram no checklist.
@@ -53902,7 +54719,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // v33k.912: contabilidade abre direto em Notas Fiscais — é a única tela
     // dela. Sem esta linha cairia no 'homeScreen' do final, que ela não pode
     // acessar, e o painel abriria travado.
-    if (p === 'contabilidade') return 'notasFiscaisScreen';
+    // v33k.999: a contabilidade agora tem área própria, com visão geral.
+    if (p === 'contabilidade') return 'contabHomeScreen';
     if (p === 'colaborador') {
       // primeira tela que o colaborador tem permissão; senão login
       const perms = permissoesColaborador();
@@ -54696,6 +55514,13 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // v33k.382: se a screen tem uma automação associada, carrega o card no topo dela.
     if (typeof lcSincronizarCardsPagina === 'function') lcSincronizarCardsPagina(screenId);
     if (typeof lcCarregarCardPagina === 'function') lcCarregarCardPagina(screenId);
+    // v33k.999: telas da CONTABILIDADE renderizam ao entrar
+    try {
+      if (screenId === 'contabHomeScreen' && typeof renderContabHome === 'function') renderContabHome();
+      else if (screenId === 'contabEmpresasScreen' && typeof renderContabEmpresas === 'function') renderContabEmpresas({});
+      else if (screenId === 'contabFechamentoScreen' && typeof renderContabFechamento === 'function') renderContabFechamento();
+      else if (screenId === 'contabConciliacaoScreen' && typeof renderContabConciliacao === 'function') renderContabConciliacao();
+    } catch (e) { console.warn('[contab] render:', e); }
     renderSidebars(screenId);
     // v33k.646: em qualquer navegação, checa se o usuário estourou o limite de
     // pedidos do plano. Se sim, a trava (tela cheia) reaparece. Fail-open.
@@ -54736,12 +55561,16 @@ Responda APENAS com JSON válido (sem markdown), formato:
         <span class="sidebar-icon">${LC_ICON('users')}</span>
         <span class="sidebar-label">Administração</span>
       </div>`;
-      ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos'].forEach(id => {
+      ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao'].forEach(id => {
         const el = document.getElementById(id); if (el) el.innerHTML = htmlSuper;
       });
       return;
     }
     const itensVisiveis = menuItems.map(item => {
+      // v33k.999: o grupo Contabilidade só existe para o papel contabilidade.
+      // O admin não tem lista fixa (podeAcessarTela devolve true pra tudo),
+      // então sem este filtro ele veria a área do escritório no menu dele.
+      if (item.id === 'contabilidade' && papelAtual() !== 'contabilidade') return null;
       if (item.children && item.children.length) {
         const filhos = item.children.filter(c => podeAcessarTela(c.screen));
         // grupo só aparece se tiver ao menos um filho acessível
@@ -54779,7 +55608,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         <span class="sidebar-label">${item.label}</span>
       </div>`;
     }).join('');
-    ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos'].forEach(id => {
+    ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.innerHTML = html;
     });
@@ -62558,8 +63387,22 @@ ${JSON.stringify(metricas, null, 2)}`
       // de Notas fica dentro do painel dela, junto de cada empresa.
       if (ferramentas) ferramentas.style.display = 'none';
       // o painel dela ocupa o topo, em container próprio
-      if (painelContab) painelContab.style.display = '';
-      if (typeof renderPainelContabilidade === 'function') renderPainelContabilidade();
+      // v33k.999: a contabilidade tem área própria agora. Aqui ela só vê a
+      // Central de Notas — o painel de empresas mudou para contabEmpresasScreen.
+      if (painelContab) {
+        painelContab.style.display = '';
+        painelContab.innerHTML =
+          '<div style="text-align:center;padding:50px 24px;background:var(--lc-surface);' +
+          'border:1px dashed var(--lc-border-2);border-radius:var(--lc-radius-lg)">' +
+          '<div style="font-weight:700;color:var(--lc-ink);font-size:var(--lc-fs-md)">Notas fiscais</div>' +
+          '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:7px;line-height:1.6">' +
+            'Consulte, imprima e exporte as notas das empresas vinculadas.</div>' +
+          '<button class="lc-btn lc-btn--primary" style="margin-top:16px" ' +
+            'onclick="if(window.abrirCentralNotas)window.abrirCentralNotas()">' +
+            '<span class="lc-ic" data-lucide="file-text"></span> Abrir Central de Notas</button>' +
+          '</div>';
+        _hidratarIcones(painelContab);
+      }
       return;
     }
 
