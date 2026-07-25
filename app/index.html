@@ -4708,6 +4708,198 @@
   window._contabAbrirEmpresa = _contabAbrirEmpresa;
 
   // ════════════════════════════════════════════════════════════════
+  // MEU PERFIL — CONTABILIDADE (v33k.1012)
+  // ════════════════════════════════════════════════════════════════
+  // As quatro telas da contabilidade eram todas de consulta fiscal. Não
+  // havia onde trocar a senha provisória do primeiro acesso nem corrigir
+  // a razão social — o contador dependia de pedir pra alguém.
+  //
+  // Três blocos, com permissões diferentes:
+  //   Meus dados  → qualquer usuário edita o próprio nome
+  //   Segurança   → qualquer usuário troca a própria senha
+  //   O escritório→ SÓ o titular (é o cadastro que amarra as empresas)
+  async function renderContabPerfil() {
+    const alvo = document.getElementById('contabPerfilConteudo');
+    if (!alvo) return;
+    alvo.innerHTML = '<div style="text-align:center;padding:60px;color:var(--lc-muted)">' +
+      '<span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div>';
+    _hidratarIcones(alvo);
+
+    let d;
+    try { d = await _api('/api/contabilidade/me'); }
+    catch (e) { alvo.innerHTML = '<div style="' + card + ';color:#b91c1c">Falha ao carregar: ' + _esc(e.message) + '</div>'; return; }
+    if (!d || !d.ok) {
+      alvo.innerHTML = '<div style="' + card + ';color:#b91c1c">' + _esc((d && d.erro) || 'Não consegui carregar seu perfil.') + '</div>';
+      return;
+    }
+
+    const u = d.usuario || {};
+    const c = d.contabilidade || {};
+    const ehTitular = (u.papel === 'titular');
+    window._cpDados = { usuario: u, contabilidade: c, ehTitular };
+
+    const fmtCnpj = (v) => {
+      const s = String(v || '').replace(/\D/g, '');
+      return s.length === 14
+        ? s.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')
+        : (v || '—');
+    };
+    const fmtTel = (v) => {
+      let s = String(v || '').replace(/\D/g, '');
+      if (s.startsWith('55') && s.length > 11) s = s.slice(2);
+      if (s.length === 11) return s.replace(/^(\d{2})(\d{5})(\d{4})$/, '($1) $2-$3');
+      if (s.length === 10) return s.replace(/^(\d{2})(\d{4})(\d{4})$/, '($1) $2-$3');
+      return v || '';
+    };
+
+    alvo.innerHTML =
+      '<div style="max-width:720px">' +
+
+      // ── quem sou eu ────────────────────────────────────────────
+      '<div style="' + card + '">' +
+        '<div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:3px">Meus dados</div>' +
+        '<div style="font-size:12.5px;color:#64748b;margin-bottom:14px">Como você aparece para a sua equipe</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+          '<div><label style="' + lbl + '">Seu nome</label>' +
+            '<input id="cpNome" value="' + _esc(u.nome || '') + '" style="' + inp + '"></div>' +
+          '<div><label style="' + lbl + '">E-mail de acesso</label>' +
+            '<input value="' + _esc(u.email || '') + '" disabled style="' + inp + ';background:#f1f5f9;color:#64748b"></div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-top:12px">' +
+          '<span style="font-size:11.5px;font-weight:700;color:' + (ehTitular ? '#166534' : '#475569') + ';' +
+            'background:' + (ehTitular ? '#dcfce7' : '#f1f5f9') + ';padding:3px 10px;border-radius:99px">' +
+            (ehTitular ? 'Titular' : 'Colaborador') + '</span>' +
+          '<span style="font-size:12px;color:#94a3b8">' +
+            (ehTitular ? 'Você administra o cadastro do escritório e a equipe.' : 'O titular administra o cadastro do escritório.') + '</span>' +
+          '<div style="flex:1"></div>' +
+          '<button class="lc-btn lc-btn--sm" style="background:#16a34a;color:#fff" onclick="_cpSalvarNome()">Salvar nome</button>' +
+        '</div>' +
+      '</div>' +
+
+      // ── senha ──────────────────────────────────────────────────
+      '<div style="' + card + '">' +
+        '<div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:3px">Segurança</div>' +
+        '<div style="font-size:12.5px;color:#64748b;margin-bottom:14px">Troque a senha do seu acesso. Pedimos a atual para que uma sessão esquecida aberta não vire troca de dono da conta.</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">' +
+          '<div><label style="' + lbl + '">Senha atual</label>' +
+            '<input type="password" id="cpSenhaAtual" autocomplete="current-password" style="' + inp + '"></div>' +
+          '<div><label style="' + lbl + '">Nova senha</label>' +
+            '<input type="password" id="cpSenhaNova" autocomplete="new-password" placeholder="mínimo 6" style="' + inp + '"></div>' +
+          '<div><label style="' + lbl + '">Confirmar</label>' +
+            '<input type="password" id="cpSenhaConf" autocomplete="new-password" style="' + inp + '"></div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:12px;margin-top:12px">' +
+          '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_cpTrocarSenha()">Trocar senha</button>' +
+          '<span id="cpSenhaMsg" style="font-size:12.5px"></span>' +
+        '</div>' +
+      '</div>' +
+
+      // ── o escritório ───────────────────────────────────────────
+      '<div style="' + card + '">' +
+        '<div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:3px">O escritório</div>' +
+        '<div style="font-size:12.5px;color:#64748b;margin-bottom:14px">' +
+          (ehTitular
+            ? 'Estes dados aparecem para as empresas que você atende.'
+            : 'Só o titular pode alterar. Peça a ele se algo estiver errado.') +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+          '<div><label style="' + lbl + '">Razão social</label>' +
+            '<input id="cpRazao" value="' + _esc(c.razao_social || '') + '" ' + (ehTitular ? '' : 'disabled') +
+            ' style="' + inp + (ehTitular ? '' : ';background:#f1f5f9;color:#64748b') + '"></div>' +
+          '<div><label style="' + lbl + '">Nome fantasia</label>' +
+            '<input id="cpFantasia" value="' + _esc(c.nome_fantasia || '') + '" ' + (ehTitular ? '' : 'disabled') +
+            ' style="' + inp + (ehTitular ? '' : ';background:#f1f5f9;color:#64748b') + '"></div>' +
+          '<div><label style="' + lbl + '">E-mail do escritório</label>' +
+            '<input id="cpEmail" value="' + _esc(c.email || '') + '" ' + (ehTitular ? '' : 'disabled') +
+            ' style="' + inp + (ehTitular ? '' : ';background:#f1f5f9;color:#64748b') + '"></div>' +
+          '<div><label style="' + lbl + '">Telefone</label>' +
+            '<input id="cpTelefone" value="' + _esc(fmtTel(c.telefone)) + '" ' + (ehTitular ? '' : 'disabled') +
+            ' style="' + inp + (ehTitular ? '' : ';background:#f1f5f9;color:#64748b') + '"></div>' +
+        '</div>' +
+        '<div style="margin-top:12px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;' +
+          'display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+          '<span class="lc-ic" data-lucide="lock" style="color:#64748b"></span>' +
+          '<div style="flex:1;min-width:180px">' +
+            '<div style="font-size:12.5px;font-weight:600;color:#334155">CNPJ ' + _esc(fmtCnpj(c.cnpj)) + '</div>' +
+            '<div style="font-size:11.5px;color:#94a3b8">Não pode ser alterado — é ele que amarra o vínculo com as empresas que você atende.</div>' +
+          '</div>' +
+        '</div>' +
+        (ehTitular
+          ? '<div style="display:flex;align-items:center;gap:12px;margin-top:12px">' +
+              '<button class="lc-btn lc-btn--sm" style="background:#16a34a;color:#fff" onclick="_cpSalvarEscritorio()">Salvar dados do escritório</button>' +
+              '<span id="cpEscMsg" style="font-size:12.5px"></span>' +
+            '</div>'
+          : '') +
+      '</div>' +
+
+      '<div style="font-size:12px;color:#94a3b8;padding:0 4px 20px">' +
+        'Você atende ' + (d.total_empresas || 0) + ' empresa(s). Para ver quais, use <b>Minhas empresas</b>.' +
+      '</div>' +
+      '</div>';
+    _hidratarIcones(alvo);
+  }
+
+  async function _cpSalvarNome() {
+    const nome = (document.getElementById('cpNome') || {}).value || '';
+    if (String(nome).trim().length < 2) return _toast('Informe o seu nome.', true);
+    const r = await _api('/api/contabilidade/meu-nome', {
+      method: 'PUT', body: JSON.stringify({ nome }),
+    });
+    if (!r || !r.ok) return _toast((r && r.erro) || 'Falha ao salvar', true);
+    _toast('Nome atualizado');
+  }
+
+  async function _cpTrocarSenha() {
+    const msg = document.getElementById('cpSenhaMsg');
+    const põe = (t, cor) => { if (msg) { msg.textContent = t; msg.style.color = cor || '#64748b'; } };
+    const atual = (document.getElementById('cpSenhaAtual') || {}).value || '';
+    const nova = (document.getElementById('cpSenhaNova') || {}).value || '';
+    const conf = (document.getElementById('cpSenhaConf') || {}).value || '';
+
+    if (!atual || !nova || !conf) return põe('Preencha os três campos.', '#b91c1c');
+    if (nova.length < 6) return põe('A nova senha precisa de ao menos 6 caracteres.', '#b91c1c');
+    if (nova !== conf) return põe('A confirmação não bate com a nova senha.', '#b91c1c');
+    if (nova === atual) return põe('A nova senha não pode ser igual à atual.', '#b91c1c');
+
+    põe('Trocando…');
+    const r = await _api('/api/contabilidade/trocar-senha', {
+      method: 'POST', body: JSON.stringify({ senhaAtual: atual, novaSenha: nova }),
+    });
+    if (!r || !r.ok) return põe((r && r.erro) || 'Não consegui trocar a senha.', '#b91c1c');
+    ['cpSenhaAtual', 'cpSenhaNova', 'cpSenhaConf'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    põe('✓ Senha alterada.', '#15803d');
+    _toast('Senha alterada com sucesso');
+  }
+
+  async function _cpSalvarEscritorio() {
+    const msg = document.getElementById('cpEscMsg');
+    const põe = (t, cor) => { if (msg) { msg.textContent = t; msg.style.color = cor || '#64748b'; } };
+    const razaoSocial = (document.getElementById('cpRazao') || {}).value || '';
+    if (String(razaoSocial).trim().length < 2) return põe('A razão social é obrigatória.', '#b91c1c');
+
+    põe('Salvando…');
+    const r = await _api('/api/contabilidade/perfil', {
+      method: 'PUT',
+      body: JSON.stringify({
+        razaoSocial,
+        nomeFantasia: (document.getElementById('cpFantasia') || {}).value || '',
+        email: (document.getElementById('cpEmail') || {}).value || '',
+        telefone: (document.getElementById('cpTelefone') || {}).value || '',
+      }),
+    });
+    if (!r || !r.ok) return põe((r && r.erro) || 'Falha ao salvar.', '#b91c1c');
+    põe('✓ Dados atualizados.', '#15803d');
+    _toast('Dados do escritório atualizados');
+  }
+
+  window.renderContabPerfil = renderContabPerfil;
+  window._cpSalvarNome = _cpSalvarNome;
+  window._cpTrocarSenha = _cpTrocarSenha;
+  window._cpSalvarEscritorio = _cpSalvarEscritorio;
+
+  // ════════════════════════════════════════════════════════════════
   // MINHAS EMPRESAS (v33k.999)
   // ════════════════════════════════════════════════════════════════
   // Preparada para 200+ empresas: paginação de 24, busca com debounce,
@@ -7529,6 +7721,692 @@
   window._gfSetCenario = _gfSetCenario;
   window._gfCopiarParaTodos = _gfCopiarParaTodos;
   window._gfSalvarClasseCompleta = _gfSalvarClasseCompleta;
+
+  // ════════════════════════════════════════════════════════════════
+  // KITS NA NOTA FISCAL (v33k.1010)
+  // ════════════════════════════════════════════════════════════════
+  // Um kit chega do marketplace como UM item. Na nota ele precisa sair
+  // como VÁRIOS — um por componente, com NCM e quantidade próprios.
+  // Aqui você diz de que cada kit é feito.
+  //
+  // O componente pode ser de dois tipos:
+  //   VINCULADO — aponta para uma variação do catálogo pelo SKU dela.
+  //               A nota usa o SKU real, então o cadastro fiscal daquela
+  //               variação (NCM, CEST, origem) resolve sozinho.
+  //   AVULSO    — só descrição + NCM. Funciona para a nota sair certa,
+  //               mas não conversa com o estoque.
+  const _kfState = {
+    kits: [], skus: [], variacoes: [],
+    sel: new Set(), busca: '', filtro: 'todos',
+    pagina: 1, porPagina: 60,
+    edit: null,        // { sku, descricao, itens: [], massa: bool }
+    buscaVar: '',
+  };
+
+  const _kfNorm = (v) => String(v || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+
+  // Índice de variações do catálogo, para o vínculo por SKU.
+  // Mesma fonte da tela de Estoque (produtosErp) — nada de ida ao servidor.
+  function _kfColetarVariacoes() {
+    const out = [];
+    const vistos = new Set();
+    const produtos = (typeof produtosErp !== 'undefined' && Array.isArray(produtosErp)) ? produtosErp : [];
+    produtos.forEach(p => {
+      if (p.status === 'excluido') return;
+      let fotoProd = (p.fotos && p.fotos[0]) || null;
+      if (!fotoProd && Array.isArray(p.cores)) {
+        for (const c of p.cores) { if (c.fotos && c.fotos[0]) { fotoProd = c.fotos[0]; break; } }
+      }
+      (p.variacoes || []).forEach(v => {
+        const sku = String(v.sku || '').trim();
+        if (!sku || vistos.has(_kfNorm(sku))) return;
+        vistos.add(_kfNorm(sku));
+        out.push({
+          sku,
+          produtoId: p.id != null ? p.id : null,
+          variacaoId: v.id != null ? String(v.id) : null,
+          produto: p.nome || sku,
+          variacao: [v.cor, v.tamanho].filter(Boolean).join(' ') || (v.nome || ''),
+          foto: v.foto || fotoProd || null,
+        });
+      });
+    });
+    return out;
+  }
+
+  async function abrirKitsFiscais() {
+    _overlay('kitsFiscaisOverlay',
+      '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="package-search"></span> Kits na Nota</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Um kit vendido sai na nota como vários itens — diga de que cada um é feito</div></div>',
+      '<div id="kfConteudo"><div style="text-align:center;padding:30px;color:#64748b"><span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div></div>',
+      1020);
+
+    _kfState.variacoes = _kfColetarVariacoes();
+    _kfState.skus = (typeof _dfColetarSkus === 'function') ? _dfColetarSkus() : [];
+    _kfState.sel = new Set();
+    _kfState.pagina = 1;
+
+    try {
+      const r = await _api('/api/nfe/kits');
+      _kfState.kits = (r && r.ok && Array.isArray(r.kits)) ? r.kits : [];
+    } catch (e) { _kfState.kits = []; }
+
+    // Um kit pode existir para um SKU que não está no catálogo (variação antiga,
+    // anúncio já removido). Ele PRECISA aparecer, senão vira configuração
+    // invisível que continua valendo na emissão.
+    const noCatalogo = new Set(_kfState.skus.map(s => _kfNorm(s.sku)));
+    _kfState.kits.forEach(k => {
+      if (!noCatalogo.has(_kfNorm(k.sku))) {
+        _kfState.skus.push({ sku: k.sku, nome: k.descricao || k.sku, foto: null, ativo: true, marketplaces: [], _foraDoCatalogo: true });
+      }
+    });
+
+    const el = document.getElementById('kfConteudo');
+    el.innerHTML =
+      '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;color:#1e3a8a;line-height:1.5">' +
+        '<b>Como funciona:</b> escolha o SKU que é kit e liste os componentes. ' +
+        'Vincular o componente a uma variação do catálogo (pelo SKU dela) é o caminho ' +
+        'mais seguro: a nota usa o NCM já cadastrado daquela variação. ' +
+        'Sem vínculo, informe o NCM aqui mesmo.' +
+      '</div>' +
+      '<div id="kfStats"></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' +
+        '<input id="kfBusca" placeholder="🔍 Buscar SKU ou produto…" oninput="_kfSetBusca(this.value)" style="' + inp + ';flex:1;min-width:180px">' +
+        '<div style="display:inline-flex;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">' +
+          '<button id="kfFtTodos" onclick="_kfSetFiltro(\'todos\')" style="padding:8px 14px;border:none;cursor:pointer;font-size:12.5px;font-weight:600;background:#0ea5e9;color:#fff">Todos</button>' +
+          '<button id="kfFtKit" onclick="_kfSetFiltro(\'kit\')" style="padding:8px 14px;border:none;border-left:1px solid #e2e8f0;cursor:pointer;font-size:12.5px;font-weight:600;background:#fff;color:#64748b">Só kits</button>' +
+          '<button id="kfFtSem" onclick="_kfSetFiltro(\'semkit\')" style="padding:8px 14px;border:none;border-left:1px solid #e2e8f0;cursor:pointer;font-size:12.5px;font-weight:600;background:#fff;color:#64748b">Sem kit</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="kfMassa"></div>' +
+      '<div id="kfSelBar"></div>' +
+      '<div id="kfTabela"></div>' +
+      '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:10px">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'kitsFiscaisOverlay\').remove()">Fechar</button>' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfNovoManual()"><span class="lc-ic" data-lucide="plus"></span> SKU que não está na lista</button>' +
+      '</div>';
+    _hidratarIcones(el);
+    _kfRender();
+  }
+
+  function _kfKitDoSku(sku) {
+    const n = _kfNorm(sku);
+    return _kfState.kits.find(k => _kfNorm(k.sku) === n) || null;
+  }
+
+  function _kfFiltrar() {
+    const busca = _kfNorm(_kfState.busca);
+    return _kfState.skus.filter(it => {
+      const kit = _kfKitDoSku(it.sku);
+      if (_kfState.filtro === 'kit' && !kit) return false;
+      if (_kfState.filtro === 'semkit' && kit) return false;
+      if (busca && !_kfNorm(it.sku + ' ' + (it.nome || '')).includes(busca)) return false;
+      return true;
+    });
+  }
+
+  function _kfRender() {
+    const filtrados = _kfFiltrar();
+    const totalKits = _kfState.kits.length;
+    const ativos = _kfState.kits.filter(k => k.ativo).length;
+    const semComp = _kfState.kits.filter(k => !k.itens || !k.itens.length).length;
+
+    const elStats = document.getElementById('kfStats');
+    if (elStats) elStats.innerHTML =
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
+        '<div style="flex:1;min-width:120px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:#0369a1">SKUs no total</div><div style="font-size:20px;font-weight:800;color:#0c4a6e">' + _kfState.skus.length + '</div></div>' +
+        '<div style="flex:1;min-width:120px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:#166534">Kits configurados</div><div style="font-size:20px;font-weight:800;color:#14532d">' + totalKits + '</div></div>' +
+        '<div style="flex:1;min-width:120px;background:#fefce8;border:1px solid #fde047;border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:#a16207">Kits ativos</div><div style="font-size:20px;font-weight:800;color:#854d0e">' + ativos + '</div></div>' +
+        (semComp ? '<div style="flex:1;min-width:120px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:#b91c1c">Sem componente</div><div style="font-size:20px;font-weight:800;color:#7f1d1d">' + semComp + '</div></div>' : '') +
+      '</div>';
+
+    // ── painel de massa (só aparece com seleção) ──
+    const nSel = _kfState.sel.size;
+    const elMassa = document.getElementById('kfMassa');
+    if (elMassa) elMassa.innerHTML = !nSel ? '' :
+      '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px;margin-bottom:12px">' +
+        '<div style="font-weight:700;color:#1e40af;font-size:13px;margin-bottom:4px"><span class="lc-ic" data-lucide="wand-2"></span> ' + nSel + ' SKU(s) selecionado(s)</div>' +
+        '<div style="font-size:11.5px;color:#475569;margin-bottom:10px">Para kits iguais em tamanhos diferentes: monte a composição uma vez e aplique em todos.</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button class="lc-btn lc-btn--sm" style="background:#2563eb;color:#fff" onclick="_kfMassaDefinir()"><span class="lc-ic" data-lucide="wand-2"></span> Definir composição para todos</button>' +
+          (totalKits ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfMassaCopiar()"><span class="lc-ic" data-lucide="copy"></span> Copiar de um kit pronto</button>' : '') +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfMassaAcao(\'ativar\')">Ativar</button>' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfMassaAcao(\'desativar\')">Desativar</button>' +
+          '<div style="flex:1"></div>' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="color:#b91c1c" onclick="_kfMassaAcao(\'remover\')"><span class="lc-ic" data-lucide="trash-2"></span> Deixar de ser kit</button>' +
+        '</div>' +
+      '</div>';
+
+    // ── paginação ──
+    const totalPag = Math.max(1, Math.ceil(filtrados.length / _kfState.porPagina));
+    if (_kfState.pagina > totalPag) _kfState.pagina = totalPag;
+    const ini = (_kfState.pagina - 1) * _kfState.porPagina;
+    const pagina = filtrados.slice(ini, ini + _kfState.porPagina);
+
+    const elSel = document.getElementById('kfSelBar');
+    if (elSel) elSel.innerHTML =
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 10px">' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfSelFiltrados()">Selecionar filtrados (' + filtrados.length + ')</button>' +
+        (nSel ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfLimparSel()">Limpar seleção</button>' : '') +
+        '<div style="flex:1"></div>' +
+        (totalPag > 1 ? (
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" ' + (_kfState.pagina <= 1 ? 'disabled' : '') + ' onclick="_kfPagina(' + (_kfState.pagina - 1) + ')">‹</button>' +
+          '<span style="font-size:12px;color:#64748b">Página ' + _kfState.pagina + '/' + totalPag + '</span>' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" ' + (_kfState.pagina >= totalPag ? 'disabled' : '') + ' onclick="_kfPagina(' + (_kfState.pagina + 1) + ')">›</button>'
+        ) : '') +
+      '</div>';
+
+    const fotoVazia = '<div style="width:34px;height:34px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;color:#cbd5e1;font-size:15px">📦</div>';
+    const linhas = pagina.length ? pagina.map(it => {
+      const kit = _kfKitDoSku(it.sku);
+      const skuJs = _esc(it.sku).replace(/'/g, "\\'");
+      const checked = _kfState.sel.has(it.sku) ? 'checked' : '';
+      const foto = it.foto
+        ? '<img src="' + _esc(it.foto) + '" loading="lazy" style="width:34px;height:34px;border-radius:8px;object-fit:cover;border:1px solid #e2e8f0">'
+        : fotoVazia;
+
+      let selo, composicao;
+      if (!kit) {
+        selo = '<span style="font-size:10.5px;color:#94a3b8">—</span>';
+        composicao = '<span style="font-size:11.5px;color:#94a3b8">não é kit</span>';
+      } else if (!kit.itens.length) {
+        selo = '<span style="font-size:10.5px;font-weight:700;color:#b91c1c;background:#fee2e2;padding:1px 7px;border-radius:99px">vazio</span>';
+        composicao = '<span style="font-size:11.5px;color:#b91c1c">sem componente — sai como item único</span>';
+      } else {
+        selo = kit.ativo
+          ? '<span style="font-size:10.5px;font-weight:700;color:#166534;background:#dcfce7;padding:1px 7px;border-radius:99px">' + kit.itens.length + ' itens</span>'
+          : '<span style="font-size:10.5px;font-weight:700;color:#64748b;background:#f1f5f9;padding:1px 7px;border-radius:99px">desligado</span>';
+        composicao = kit.itens.map(c =>
+          '<span style="display:inline-block;font-size:11px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:1px 6px;margin:1px 3px 1px 0">' +
+          (c.variacaoSku ? '<span style="color:#0369a1">🔗</span> ' : '') +
+          _esc(String(c.quantidade)) + '× ' + _esc((c.descricao || '').slice(0, 26)) + '</span>'
+        ).join('');
+      }
+
+      return '<tr style="border-top:1px solid #f1f5f9">' +
+        '<td style="padding:5px 8px;text-align:center"><input type="checkbox" ' + checked + ' onclick="_kfToggle(\'' + skuJs + '\')" style="width:16px;height:16px"></td>' +
+        '<td style="padding:4px 6px">' + foto + '</td>' +
+        '<td style="padding:5px 8px;font-size:12px;white-space:nowrap">' + _esc(it.sku) +
+          (it._foraDoCatalogo ? '<div style="font-size:10px;color:#b45309">fora do catálogo</div>' : '') + '</td>' +
+        '<td style="padding:5px 8px;font-size:12px;color:#475569">' + _esc((it.nome || '').slice(0, 26)) + '</td>' +
+        '<td style="padding:5px 8px">' + selo + '</td>' +
+        '<td style="padding:5px 8px;line-height:1.7">' + composicao + '</td>' +
+        '<td style="padding:4px 8px;text-align:right;white-space:nowrap">' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfCompor(\'' + skuJs + '\')">' + (kit ? 'Editar' : 'Compor') + '</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('') : '<tr><td colspan="7" style="padding:16px;text-align:center;color:#64748b">Nenhum SKU com esses filtros.</td></tr>';
+
+    const elTab = document.getElementById('kfTabela');
+    if (elTab) elTab.innerHTML =
+      '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">' +
+        '<div style="overflow-x:auto;max-height:46vh;overflow-y:auto">' +
+          '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+            '<thead style="position:sticky;top:0;z-index:1"><tr style="background:#f1f5f9">' +
+              '<th style="padding:7px 8px"><input type="checkbox" onclick="_kfTogglePagina()" style="width:16px;height:16px" title="Selecionar a página"></th>' +
+              '<th style="padding:7px 8px"></th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">SKU vendido</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Produto</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Status</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Sai na nota como</th>' +
+              '<th style="padding:7px 8px"></th>' +
+            '</tr></thead><tbody>' + linhas + '</tbody>' +
+          '</table>' +
+        '</div>' +
+      '</div>';
+    _hidratarIcones(document.getElementById('kfConteudo'));
+  }
+
+  // ── filtros e seleção ──────────────────────────────────────────────
+  function _kfSetBusca(v) { _kfState.busca = v; _kfState.pagina = 1; _kfRender(); }
+  function _kfSetFiltro(f) {
+    _kfState.filtro = f; _kfState.pagina = 1;
+    [['kfFtTodos', 'todos'], ['kfFtKit', 'kit'], ['kfFtSem', 'semkit']].forEach(([id, val]) => {
+      const b = document.getElementById(id);
+      if (!b) return;
+      b.style.background = (f === val) ? '#0ea5e9' : '#fff';
+      b.style.color = (f === val) ? '#fff' : '#64748b';
+    });
+    _kfRender();
+  }
+  function _kfPagina(p) { _kfState.pagina = p; _kfRender(); }
+  function _kfToggle(sku) { if (_kfState.sel.has(sku)) _kfState.sel.delete(sku); else _kfState.sel.add(sku); _kfRender(); }
+  function _kfTogglePagina() {
+    const f = _kfFiltrar();
+    const ini = (_kfState.pagina - 1) * _kfState.porPagina;
+    const pag = f.slice(ini, ini + _kfState.porPagina);
+    const todos = pag.length && pag.every(it => _kfState.sel.has(it.sku));
+    pag.forEach(it => { if (todos) _kfState.sel.delete(it.sku); else _kfState.sel.add(it.sku); });
+    _kfRender();
+  }
+  function _kfSelFiltrados() { _kfFiltrar().forEach(it => _kfState.sel.add(it.sku)); _kfRender(); }
+  function _kfLimparSel() { _kfState.sel = new Set(); _kfRender(); }
+
+  // ── SKU fora da lista ──────────────────────────────────────────────
+  // Um kit pode ser vendido com um SKU que ainda não sincronizou. Em vez de
+  // esperar o catálogo, você digita o SKU e configura agora.
+  async function _kfNovoManual() {
+    const sku = await (typeof lcPrompt === 'function'
+      ? lcPrompt('Digite o SKU exatamente como ele chega no pedido do marketplace.', '',
+          { titulo: 'SKU do kit', placeholder: 'ex: KIT-2CHIN-M' })
+      : Promise.resolve(prompt('SKU do kit (exatamente como chega no pedido):')));
+    const limpo = String(sku || '').trim();
+    if (!limpo) return;
+    if (!_kfState.skus.some(s => _kfNorm(s.sku) === _kfNorm(limpo))) {
+      _kfState.skus.unshift({ sku: limpo, nome: limpo, foto: null, ativo: true, marketplaces: [], _foraDoCatalogo: true });
+    }
+    _kfCompor(limpo);
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // COMPOSITOR — a tela onde o kit é montado
+  // ════════════════════════════════════════════════════════════════
+  function _kfCompor(sku) {
+    const kit = _kfKitDoSku(sku);
+    const info = _kfState.skus.find(s => _kfNorm(s.sku) === _kfNorm(sku));
+    _kfState.edit = {
+      sku,
+      kitId: kit ? kit.id : null,
+      descricao: kit ? (kit.descricao || '') : ((info && info.nome) || ''),
+      ativo: kit ? kit.ativo : true,
+      itens: kit ? kit.itens.map(c => Object.assign({}, c)) : [],
+      massa: false,
+    };
+    _kfAbrirEditor();
+  }
+
+  // Modo massa: mesma tela, aplicada a todos os selecionados de uma vez.
+  function _kfMassaDefinir() {
+    const skus = Array.from(_kfState.sel);
+    if (!skus.length) return;
+    _kfState.edit = { sku: null, kitId: null, descricao: '', ativo: true, itens: [], massa: true, skus };
+    _kfAbrirEditor();
+  }
+
+  function _kfAbrirEditor() {
+    const e = _kfState.edit;
+    const titulo = e.massa
+      ? 'Composição para ' + e.skus.length + ' SKUs'
+      : 'Composição de ' + e.sku;
+    _overlay('kfEditorOverlay',
+      '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="package-search"></span> ' + _esc(titulo) + '</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">O que sai na nota quando este SKU é vendido</div></div>',
+      '<div id="kfEdConteudo"></div>', 880);
+    _kfRenderEditor();
+  }
+
+  function _kfRenderEditor() {
+    const e = _kfState.edit;
+    const el = document.getElementById('kfEdConteudo');
+    if (!e || !el) return;
+
+    const avisoMassa = e.massa
+      ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;color:#92400e">' +
+        '<b>Atenção:</b> esta composição substitui a de todos os ' + e.skus.length + ' SKUs selecionados. ' +
+        'Cada um recebe uma cópia própria — editar um depois não mexe nos outros.</div>'
+      : '';
+
+    const linhas = e.itens.length ? e.itens.map((c, i) => {
+      const vinculado = !!c.variacaoSku;
+      return '<tr style="border-top:1px solid #f1f5f9">' +
+        '<td style="padding:6px 6px;font-size:11px;color:#94a3b8;text-align:center">' + (i + 1) + '</td>' +
+        '<td style="padding:5px 6px">' +
+          '<input value="' + _esc(c.descricao || '') + '" onchange="_kfSetItem(' + i + ',\'descricao\',this.value)" placeholder="Como sai na nota" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:12.5px">' +
+          (vinculado
+            ? '<div style="font-size:10.5px;color:#0369a1;margin-top:3px"><span class="lc-ic" data-lucide="link"></span> ' + _esc(c.variacaoSku) + ' — usa o NCM cadastrado desta variação</div>'
+            : '<div style="font-size:10.5px;color:#94a3b8;margin-top:3px">componente avulso — não movimenta estoque</div>') +
+        '</td>' +
+        '<td style="padding:5px 6px"><input value="' + _esc(c.ncm || '') + '" onchange="_kfSetItem(' + i + ',\'ncm\',this.value)" placeholder="' + (vinculado ? 'do cadastro' : 'NCM') + '" style="width:88px;padding:6px;border:1px solid ' + (vinculado || c.ncm ? '#cbd5e1' : '#fcd34d') + ';border-radius:6px;font-size:12px"></td>' +
+        '<td style="padding:5px 6px"><input value="' + _esc(c.unidade || 'PAR') + '" onchange="_kfSetItem(' + i + ',\'unidade\',this.value)" style="width:52px;padding:6px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
+        '<td style="padding:5px 6px"><input type="number" min="0.001" step="1" value="' + _esc(String(c.quantidade != null ? c.quantidade : 1)) + '" onchange="_kfSetItem(' + i + ',\'quantidade\',this.value)" style="width:62px;padding:6px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
+        '<td style="padding:5px 6px;text-align:right"><button class="lc-btn lc-btn--sm lc-btn--ghost" style="color:#b91c1c" onclick="_kfRemItem(' + i + ')">✕</button></td>' +
+      '</tr>';
+    }).join('') : '<tr><td colspan="6" style="padding:18px;text-align:center;color:#64748b;font-size:12.5px">Nenhum componente ainda. Adicione abaixo.</td></tr>';
+
+    el.innerHTML =
+      avisoMassa +
+      (!e.massa ? '<div style="' + card + ';padding:12px">' +
+        '<label style="' + lbl + '">Nome do kit (só para você se achar na lista)</label>' +
+        '<input id="kfEdDesc" value="' + _esc(e.descricao || '') + '" onchange="_kfSetKitDesc(this.value)" placeholder="ex: Kit 2 chinelos masculino" style="' + inp + '">' +
+      '</div>' : '') +
+
+      '<div style="' + card + ';padding:0;overflow:hidden">' +
+        '<div style="padding:11px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:700;font-size:13px;color:#334155">Componentes — o que sai na nota</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+          '<thead><tr style="background:#fff">' +
+            '<th style="padding:6px"></th>' +
+            '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Descrição</th>' +
+            '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">NCM</th>' +
+            '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Un</th>' +
+            '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Qtd</th>' +
+            '<th style="padding:6px"></th>' +
+          '</tr></thead><tbody>' + linhas + '</tbody>' +
+        '</table>' +
+      '</div>' +
+
+      // ── vínculo por SKU da variação ──
+      '<div style="' + card + '">' +
+        '<label style="' + lbl + '"><span class="lc-ic" data-lucide="link"></span> Vincular uma variação do catálogo (pelo SKU)</label>' +
+        '<input id="kfBuscaVar" value="' + _esc(_kfState.buscaVar) + '" oninput="_kfBuscarVar(this.value)" placeholder="Digite o SKU da variação — ex: 888-INF-BCO-AZ-29" style="' + inp + '">' +
+        '<div id="kfResultadosVar" style="margin-top:8px"></div>' +
+        '<div style="display:flex;gap:8px;margin-top:10px;align-items:center">' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfAddAvulso()"><span class="lc-ic" data-lucide="plus"></span> Componente avulso (só descrição e NCM)</button>' +
+          '<div style="font-size:11.5px;color:#94a3b8">Use quando o item não existe no catálogo</div>' +
+        '</div>' +
+      '</div>' +
+
+      // ── simulador ──
+      '<div style="' + card + ';background:#f8fafc">' +
+        '<label style="' + lbl + '">Conferir o rateio</label>' +
+        '<div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">' +
+          '<div style="flex:1;min-width:130px"><span style="font-size:11.5px;color:#64748b">Valor do kit vendido (R$)</span>' +
+            '<input id="kfSimValor" type="number" step="0.01" placeholder="89,90" style="' + inp + '"></div>' +
+          '<div style="width:100px"><span style="font-size:11.5px;color:#64748b">Qtd vendida</span>' +
+            '<input id="kfSimQtd" type="number" min="1" step="1" value="1" style="' + inp + '"></div>' +
+          '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_kfSimular()">Ver como sai na nota</button>' +
+        '</div>' +
+        '<div id="kfSimResultado" style="margin-top:10px"></div>' +
+        (e.massa || !e.kitId ? '<div style="font-size:11.5px;color:#94a3b8;margin-top:8px">Salve primeiro — a conferência usa a composição já gravada.</div>' : '') +
+      '</div>' +
+
+      '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:4px">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'kfEditorOverlay\').remove()">Cancelar</button>' +
+        '<div style="display:flex;gap:8px">' +
+          (e.kitId && !e.massa ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="color:#b91c1c" onclick="_kfExcluir(' + e.kitId + ')"><span class="lc-ic" data-lucide="trash-2"></span> Deixar de ser kit</button>' : '') +
+          '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_kfSalvar()"><span class="lc-ic" data-lucide="save"></span> ' + (e.massa ? 'Aplicar aos ' + e.skus.length + ' SKUs' : 'Salvar composição') + '</button>' +
+        '</div>' +
+      '</div>';
+    _hidratarIcones(el);
+    if (_kfState.buscaVar) _kfBuscarVar(_kfState.buscaVar, true);
+  }
+
+  // Busca no índice de variações. Prioriza quem COMEÇA com o texto —
+  // digitando o SKU inteiro, a variação exata vem primeiro.
+  function _kfBuscarVar(q, manterFoco) {
+    _kfState.buscaVar = q;
+    const alvo = document.getElementById('kfResultadosVar');
+    if (!alvo) return;
+    const termo = _kfNorm(q);
+    if (termo.length < 2) { alvo.innerHTML = ''; return; }
+
+    const achados = _kfState.variacoes
+      .map(v => {
+        const sku = _kfNorm(v.sku);
+        const nome = _kfNorm(v.produto + ' ' + v.variacao);
+        let peso = -1;
+        if (sku === termo) peso = 0;
+        else if (sku.startsWith(termo)) peso = 1;
+        else if (sku.includes(termo)) peso = 2;
+        else if (nome.includes(termo)) peso = 3;
+        return { v, peso };
+      })
+      .filter(x => x.peso >= 0)
+      .sort((a, b) => a.peso - b.peso)
+      .slice(0, 8);
+
+    if (!achados.length) {
+      alvo.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 2px">Nenhuma variação com esse SKU. ' +
+        'Se o item não está no catálogo, use o componente avulso.</div>';
+      return;
+    }
+    alvo.innerHTML = achados.map(({ v }) => {
+      const jaTem = (_kfState.edit.itens || []).some(c => _kfNorm(c.variacaoSku) === _kfNorm(v.sku));
+      return '<div style="display:flex;align-items:center;gap:9px;padding:7px 9px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:5px;background:#fff">' +
+        (v.foto ? '<img src="' + _esc(v.foto) + '" loading="lazy" style="width:30px;height:30px;border-radius:6px;object-fit:cover">' : '<div style="width:30px;height:30px;border-radius:6px;background:#f1f5f9"></div>') +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:12.5px;font-weight:600;color:#0f172a">' + _esc(v.sku) + '</div>' +
+          '<div style="font-size:11px;color:#64748b">' + _esc((v.produto || '').slice(0, 40)) + (v.variacao ? ' · ' + _esc(v.variacao) : '') + '</div>' +
+        '</div>' +
+        (jaTem
+          ? '<span style="font-size:11px;color:#16a34a;font-weight:600">já está</span>'
+          : '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_kfAddVariacao(\'' + _esc(v.sku).replace(/'/g, "\\'") + '\')">Adicionar</button>') +
+      '</div>';
+    }).join('');
+    if (manterFoco) { const i = document.getElementById('kfBuscaVar'); if (i) i.focus(); }
+  }
+
+  function _kfAddVariacao(sku) {
+    const v = _kfState.variacoes.find(x => _kfNorm(x.sku) === _kfNorm(sku));
+    if (!v) return;
+    _kfState.edit.itens.push({
+      descricao: (v.produto + (v.variacao ? ' ' + v.variacao : '')).slice(0, 120),
+      ncm: '', cest: '', unidade: 'PAR', quantidade: 1,
+      variacaoSku: v.sku, produtoId: v.produtoId, variacaoId: v.variacaoId,
+    });
+    _kfState.buscaVar = '';
+    _kfRenderEditor();
+    _kfAvisarNcmFaltando();
+  }
+
+  function _kfAddAvulso() {
+    _kfState.edit.itens.push({ descricao: '', ncm: '', cest: '', unidade: 'PAR', quantidade: 1, variacaoSku: null, produtoId: null, variacaoId: null });
+    _kfRenderEditor();
+  }
+
+  function _kfSetItem(i, campo, valor) {
+    const c = _kfState.edit.itens[i];
+    if (!c) return;
+    if (campo === 'quantidade') c.quantidade = Number(valor) || 1;
+    else if (campo === 'ncm') c.ncm = String(valor || '').replace(/\D/g, '');
+    else c[campo] = valor;
+  }
+
+  function _kfRemItem(i) { _kfState.edit.itens.splice(i, 1); _kfRenderEditor(); }
+
+  // Handlers inline (onclick/onchange) rodam no escopo GLOBAL — não enxergam
+  // as variáveis deste bloco. Por isso todo acesso ao estado passa por função
+  // exposta no window, nunca por `_kfState.x = ...` escrito dentro do HTML.
+  function _kfSetKitDesc(v) { if (_kfState.edit) _kfState.edit.descricao = v; }
+
+  // Vincular a variação não garante que ela TEM NCM cadastrado. Se não tiver,
+  // a nota não sai — melhor avisar aqui do que na hora de emitir.
+  async function _kfAvisarNcmFaltando() {
+    const skus = (_kfState.edit.itens || []).map(c => c.variacaoSku).filter(Boolean);
+    if (!skus.length) return;
+    try {
+      const r = await _api('/api/nfe/produtos-fiscal/status', { method: 'POST', body: JSON.stringify({ skus }) });
+      if (!r || !r.ok) return;
+      const semNcm = skus.filter(s => !(r.fiscais && r.fiscais[s] && r.fiscais[s].ncm));
+      const alvo = document.getElementById('kfResultadosVar');
+      if (semNcm.length && alvo) {
+        alvo.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 11px;font-size:12px;color:#92400e">' +
+          '<b>' + semNcm.length + ' variação(ões) sem NCM cadastrado:</b> ' + _esc(semNcm.slice(0, 4).join(', ')) +
+          '. Cadastre em <b>NCM dos Produtos</b> ou digite o NCM na linha do componente — sem ele a nota não sai.</div>';
+      }
+    } catch (_) { /* silencioso: é só um aviso */ }
+  }
+
+  async function _kfSalvar() {
+    const e = _kfState.edit;
+    if (!e) return;
+    if (!e.itens.length) return _toast('Adicione pelo menos um componente.', true);
+
+    const itens = e.itens.map((c, i) => ({
+      ordem: i, descricao: c.descricao, ncm: c.ncm, cest: c.cest,
+      unidade: c.unidade, quantidade: c.quantidade,
+      variacaoSku: c.variacaoSku || null, produtoId: c.produtoId || null, variacaoId: c.variacaoId || null,
+    }));
+
+    _toast('Salvando…');
+    let r;
+    if (e.massa) {
+      r = await _api('/api/nfe/kits/em-massa', {
+        method: 'POST', body: JSON.stringify({ acao: 'definir', skus: e.skus, itens }),
+      });
+    } else {
+      r = await _api('/api/nfe/kits', {
+        method: 'POST', body: JSON.stringify({ sku: e.sku, descricao: e.descricao, ativo: e.ativo !== false, itens }),
+      });
+    }
+    if (!r || !r.ok) return _toast((r && r.erro) || 'Falha ao salvar', true);
+
+    _toast(e.massa ? (r.afetados + ' kit(s) configurado(s)') : 'Composição salva');
+    const ov = document.getElementById('kfEditorOverlay');
+    if (ov) ov.remove();
+    await _kfRecarregar();
+  }
+
+  async function _kfExcluir(kitId) {
+    const ok = (typeof lcConfirm === 'function')
+      ? await lcConfirm('Este SKU volta a sair na nota como um item único. As notas já emitidas não mudam.',
+          { titulo: 'Deixar de ser kit?', perigo: true, okLabel: 'Sim, remover' })
+      : confirm('Deixar de ser kit?');
+    if (!ok) return;
+    const r = await _api('/api/nfe/kits/' + kitId, { method: 'DELETE' });
+    if (!r || !r.ok) return _toast((r && r.erro) || 'Falha ao remover', true);
+    _toast('Kit removido');
+    const ov = document.getElementById('kfEditorOverlay');
+    if (ov) ov.remove();
+    await _kfRecarregar();
+  }
+
+  async function _kfSimular() {
+    const e = _kfState.edit;
+    const alvo = document.getElementById('kfSimResultado');
+    if (!e || !alvo) return;
+    if (e.massa || !e.sku) return _toast('A conferência é por kit — salve e abra um deles.', true);
+
+    const valor = Number((document.getElementById('kfSimValor') || {}).value || 0);
+    const qtd = Number((document.getElementById('kfSimQtd') || {}).value || 1) || 1;
+    if (!(valor > 0)) return _toast('Informe o valor do kit vendido.', true);
+
+    alvo.innerHTML = '<div style="font-size:12px;color:#64748b">Calculando…</div>';
+    const r = await _api('/api/nfe/kits/simular', {
+      method: 'POST', body: JSON.stringify({ sku: e.sku, valorUnitario: valor, quantidade: qtd }),
+    });
+    if (!r || !r.ok) { alvo.innerHTML = ''; return _toast((r && r.erro) || 'Falha na conferência', true); }
+
+    if (!r.expandido) {
+      alvo.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:12.5px;color:#92400e">' + _esc(r.aviso || '') + '</div>';
+      return;
+    }
+    const bate = r.conferencia && r.conferencia.ok;
+    alvo.innerHTML =
+      '<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+          '<thead><tr style="background:#f1f5f9">' +
+            '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">SKU na nota</th>' +
+            '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Descrição</th>' +
+            '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">NCM</th>' +
+            '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#475569">Qtd</th>' +
+            '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#475569">Valor</th>' +
+          '</tr></thead><tbody>' +
+          r.linhas.map(l => '<tr style="border-top:1px solid #f1f5f9">' +
+            '<td style="padding:5px 8px">' + (l.vinculado ? '<span style="color:#0369a1">🔗</span> ' : '') + _esc(l.sku) + '</td>' +
+            '<td style="padding:5px 8px;color:#475569">' + _esc((l.descricao || '').slice(0, 34)) + '</td>' +
+            '<td style="padding:5px 8px;color:#64748b">' + _esc(l.ncm || 'do cadastro') + '</td>' +
+            '<td style="padding:5px 8px;text-align:right">' + _esc(String(l.quantidade)) + '</td>' +
+            '<td style="padding:5px 8px;text-align:right">R$ ' + Number(l.valorTotal).toFixed(2).replace('.', ',') + '</td>' +
+          '</tr>').join('') +
+          '</tbody></table>' +
+      '</div>' +
+      '<div style="margin-top:8px;padding:9px 11px;border-radius:8px;font-size:12.5px;' +
+        (bate ? 'background:#f0fdf4;border:1px solid #bbf7d0;color:#166534' : 'background:#fef2f2;border:1px solid #fecaca;color:#b91c1c') + '">' +
+        (bate
+          ? 'Soma dos itens = R$ ' + Number(r.total).toFixed(2).replace('.', ',') + ' — bate com o valor do pedido.'
+          : 'Divergência de ' + (r.conferencia ? r.conferencia.diferenca_centavos : '?') + ' centavo(s). Não emita assim.') +
+      '</div>';
+  }
+
+  // ── ações em massa ────────────────────────────────────────────────
+  async function _kfMassaAcao(acao) {
+    const skus = Array.from(_kfState.sel);
+    if (!skus.length) return;
+    const rotulos = { ativar: 'Ativar', desativar: 'Desativar', remover: 'Deixar de ser kit' };
+    const detalhe = acao === 'remover'
+      ? 'Estes SKUs voltam a sair na nota como item único. As notas já emitidas não mudam.'
+      : 'A composição é preservada — só liga/desliga a explosão na emissão.';
+    const ok = (typeof lcConfirm === 'function')
+      ? await lcConfirm(detalhe, {
+          titulo: rotulos[acao] + ' ' + skus.length + ' SKU(s)?',
+          perigo: acao === 'remover',
+          okLabel: acao === 'remover' ? 'Sim, remover' : 'Confirmar',
+        })
+      : confirm(rotulos[acao] + ' ' + skus.length + ' SKU(s)?');
+    if (!ok) return;
+
+    const r = await _api('/api/nfe/kits/em-massa', { method: 'POST', body: JSON.stringify({ acao, skus }) });
+    if (!r || !r.ok) return _toast((r && r.erro) || 'Falha na ação em massa', true);
+    _toast(r.afetados + ' kit(s) atualizado(s)' + (r.aviso ? ' — ' + r.aviso : ''));
+    _kfState.sel = new Set();
+    await _kfRecarregar();
+  }
+
+  async function _kfMassaCopiar() {
+    const skus = Array.from(_kfState.sel);
+    if (!skus.length) return;
+    const comItens = _kfState.kits.filter(k => k.itens && k.itens.length);
+    if (!comItens.length) return _toast('Nenhum kit pronto para servir de modelo.', true);
+
+    _overlay('kfCopiarOverlay',
+      '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="copy"></span> Copiar composição</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Para os ' + skus.length + ' SKUs selecionados</div></div>',
+      '<div style="' + card + '">' +
+        '<label style="' + lbl + '">Kit modelo</label>' +
+        '<select id="kfModeloSel" style="' + inp + '">' +
+          comItens.map(k => '<option value="' + k.id + '">' + _esc(k.sku) + ' — ' + k.itens.length + ' componente(s)</option>').join('') +
+        '</select>' +
+        '<div style="font-size:11.5px;color:#64748b;margin-top:8px">Cada SKU recebe uma cópia própria dos componentes. Editar um depois não mexe nos outros.</div>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'kfCopiarOverlay\').remove()">Cancelar</button>' +
+        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_kfConfirmarCopia()">Copiar</button>' +
+      '</div>', 560);
+  }
+
+  async function _kfConfirmarCopia() {
+    const skus = Array.from(_kfState.sel);
+    const modeloKitId = Number((document.getElementById('kfModeloSel') || {}).value || 0);
+    if (!modeloKitId) return _toast('Escolha o kit modelo.', true);
+    const r = await _api('/api/nfe/kits/em-massa', {
+      method: 'POST', body: JSON.stringify({ acao: 'copiar', skus, modeloKitId }),
+    });
+    if (!r || !r.ok) return _toast((r && r.erro) || 'Falha ao copiar', true);
+    _toast(r.afetados + ' kit(s) configurado(s)');
+    const ov = document.getElementById('kfCopiarOverlay');
+    if (ov) ov.remove();
+    _kfState.sel = new Set();
+    await _kfRecarregar();
+  }
+
+  async function _kfRecarregar() {
+    try {
+      const r = await _api('/api/nfe/kits');
+      _kfState.kits = (r && r.ok && Array.isArray(r.kits)) ? r.kits : [];
+    } catch (_) {}
+    const noCatalogo = new Set(_kfState.skus.map(s => _kfNorm(s.sku)));
+    _kfState.kits.forEach(k => {
+      if (!noCatalogo.has(_kfNorm(k.sku))) {
+        _kfState.skus.push({ sku: k.sku, nome: k.descricao || k.sku, foto: null, ativo: true, marketplaces: [], _foraDoCatalogo: true });
+      }
+    });
+    _kfRender();
+  }
+
+  window.abrirKitsFiscais = abrirKitsFiscais;
+  window._kfSetBusca = _kfSetBusca;
+  window._kfSetFiltro = _kfSetFiltro;
+  window._kfPagina = _kfPagina;
+  window._kfToggle = _kfToggle;
+  window._kfTogglePagina = _kfTogglePagina;
+  window._kfSelFiltrados = _kfSelFiltrados;
+  window._kfLimparSel = _kfLimparSel;
+  window._kfCompor = _kfCompor;
+  window._kfNovoManual = _kfNovoManual;
+  window._kfBuscarVar = _kfBuscarVar;
+  window._kfAddVariacao = _kfAddVariacao;
+  window._kfAddAvulso = _kfAddAvulso;
+  window._kfSetItem = _kfSetItem;
+  window._kfRemItem = _kfRemItem;
+  window._kfSetKitDesc = _kfSetKitDesc;
+  window._kfSalvar = _kfSalvar;
+  window._kfExcluir = _kfExcluir;
+  window._kfSimular = _kfSimular;
+  window._kfMassaDefinir = _kfMassaDefinir;
+  window._kfMassaAcao = _kfMassaAcao;
+  window._kfMassaCopiar = _kfMassaCopiar;
+  window._kfConfirmarCopia = _kfConfirmarCopia;
 
   window.abrirDadosFiscaisProdutos = abrirDadosFiscaisProdutos;
   window._dfSetBusca = _dfSetBusca;
@@ -14218,6 +15096,17 @@ window.LC_SVG = {
   <button onclick="voltarAoAdmin()" style="margin-left:12px;background:#fff;color:#b45309;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer">↩ Voltar ao admin</button>
 </div>
 
+<!-- v33k.1013: aviso de contexto do Super Admin.
+     O superadmin agora alcança todas as telas, mas `resolverEscopo` devolve
+     donoId = null para ele: LÊ de todas as contas e não pertence a nenhuma.
+     Ler assim é o esperado. GRAVAR assim é o que produz registro sem dono —
+     a origem dos produtos órfãos que já precisaram de ferramenta de conserto.
+     A barra existe para lembrar disso na hora certa, sem travar nada. -->
+<div id="superadminBar" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99997;background:#1e293b;color:#fff;padding:7px 16px;font-size:12.5px;font-weight:600;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.2)">
+  <span>Super Admin — você está vendo dados de <b>todas as contas</b>. Para criar ou editar algo dentro de uma conta, use <b>Entrar como</b> na Administração.</span>
+  <button onclick="superadminBarOcultar()" style="margin-left:12px;background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:6px;padding:3px 10px;font-weight:700;cursor:pointer">ok, entendi</button>
+</div>
+
 <!-- Barra de bloqueio por inadimplência (Fatia 4) -->
 <div id="bloqueioBar" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99998;background:#dc2626;color:#fff;padding:10px 16px;font-size:13px;font-weight:600;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.25)">
   <span class="lc-ic" data-lucide="alert-triangle" style="vertical-align:middle"></span>
@@ -15653,6 +16542,47 @@ window.LC_SVG = {
   </div>
 </div>
 
+<!-- ─── PERFIL DA CONTABILIDADE (v33k.1012) ─────────────────────── -->
+<!-- Faltava: a contabilidade entrava com senha provisória e não tinha
+     onde trocar, nem onde corrigir a razão social. As quatro telas dela
+     eram só de consulta fiscal — nada sobre a própria conta. -->
+<div class="screen" id="contabPerfilScreen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"></div>
+        <div class="sidebar-header-text">
+          <div class="sidebar-title">Lider 10</div>
+          <div class="sidebar-subtitle">Contabilidade</div>
+        </div>
+        <button class="lc-side-toggle" onclick="lcToggleSidebar()" title="Recolher menu" aria-label="Recolher menu"><span class="lc-ic" data-lucide="chevron-left"></span></button>
+      </div>
+      <nav class="sidebar-menu" id="sidebarMenuContabPerfil"></nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-avatar">C</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name">Contabilidade</div>
+          <div class="sidebar-user-role">Escritório</div>
+        </div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <div class="top-bar">
+        <div class="top-logo">
+          <div class="top-logo-icon"></div>
+          <div class="top-logo-text">Lider 10</div>
+        </div>
+        <div class="top-actions">
+          <div class="user-avatar" onclick="abrirMenuUsuario(this)" style="cursor:pointer" title="Conta">C</div>
+        </div>
+      </div>
+      <div class="content">
+        <div id="contabPerfilConteudo"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
 <!-- ─── FECHAMENTO CONTÁBIL ─────────────────────────────────────── -->
 <div class="screen" id="contabFechamentoScreen">
   <div class="app-layout">
@@ -15824,6 +16754,11 @@ window.LC_SVG = {
             <span style="display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;background:#ede9fe;color:#6d28d9;flex-shrink:0"><span class="lc-ic" data-lucide="package-search"></span></span>
             <span><span style="display:block;font-size:13.5px;font-weight:700;color:var(--lc-ink)">NCM dos Produtos</span>
             <span style="display:block;font-size:11.5px;color:var(--lc-muted)">Código fiscal de cada produto</span></span>
+          </button>
+          <button data-nf-tool="kits" onclick="abrirKitsFiscais()" title="Um kit vendido como um item só precisa sair na nota como vários. Aqui você diz de que cada kit é feito." style="display:flex;align-items:center;gap:10px;text-align:left;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:12px;padding:12px 14px;cursor:pointer;transition:box-shadow .15s,border-color .15s" onmouseover="this.style.borderColor='#0d9488';this.style.boxShadow='0 2px 8px rgba(13,148,136,.12)'" onmouseout="this.style.borderColor='var(--lc-border)';this.style.boxShadow='none'">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;background:#ccfbf1;color:#0f766e;flex-shrink:0"><span class="lc-ic" data-lucide="package-search"></span></span>
+            <span><span style="display:block;font-size:13.5px;font-weight:700;color:var(--lc-ink)">Kits na Nota</span>
+            <span style="display:block;font-size:11.5px;color:var(--lc-muted)">1 kit vendido = vários itens na NF</span></span>
           </button>
           <button data-nf-tool="notas" onclick="abrirCentralNotas()" title="Todas as NF-e já emitidas: baixar DANFE e XML, cancelar ou devolver" style="display:flex;align-items:center;gap:10px;text-align:left;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:12px;padding:12px 14px;cursor:pointer;transition:box-shadow .15s,border-color .15s" onmouseover="this.style.borderColor='#16a34a';this.style.boxShadow='0 2px 8px rgba(22,163,74,.12)'" onmouseout="this.style.borderColor='var(--lc-border)';this.style.boxShadow='none'">
             <span style="display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;background:#dcfce7;color:#15803d;flex-shrink:0"><span class="lc-ic" data-lucide="file-check-2"></span></span>
@@ -53977,6 +54912,10 @@ Responda APENAS com JSON válido (sem markdown), formato:
   const ICON_GEAR = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
 
   const menuItems = [
+    // v33k.1013: a Administração vira item de menu. Antes o superadmin tinha
+    // um menu de UM item só, montado à parte em renderSidebars; ao abrir o
+    // resto do sistema para ele, o atalho precisa viver junto dos outros.
+    { id: 'administracao', ic: 'shield-check', label: 'Administração', screen: 'admScreen' },
     // v33k.999: área própria da CONTABILIDADE. Fica no topo porque, para
     // esse papel, é a única coisa que existe — as outras entradas são
     // filtradas por podeAcessarTela e nem chegam a ser desenhadas.
@@ -53986,6 +54925,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       { id: 'contabFechamento', ic: 'calendar', label: 'Fechamento contábil', screen: 'contabFechamentoScreen' },
       { id: 'contabConciliacao', ic: 'package', label: 'Conciliação fiscal', screen: 'contabConciliacaoScreen' },
       { id: 'contabNotas', ic: 'file-text', label: 'Notas fiscais', screen: 'contabNotasScreen' },
+      { id: 'contabPerfil', ic: 'user', label: 'Meu perfil', screen: 'contabPerfilScreen' },
     ] },
     { id: 'home', ic: 'house', label: 'Início', screen: 'homeScreen' },
     { id: 'financial', ic: 'wallet', label: 'Financeiro', screen: 'financialScreen' },
@@ -54109,7 +55049,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1006-crons-catalogo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1013-superadmin';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -54736,8 +55676,15 @@ Responda APENAS com JSON válido (sem markdown), formato:
   function lojasDoUsuario() { return (_usuarioLogado && Array.isArray(_usuarioLogado.lojas)) ? _usuarioLogado.lojas : []; }
   // telas permitidas por papel
   const TELAS_POR_PAPEL = {
-    // super admin: SOMENTE a tela de administração (gestão de usuários + métricas)
-    superadmin: ['admScreen','settingsScreen','loginScreen'],
+    // v33k.1013: super admin = dono do sistema, alcança TUDO (mesma regra do
+    // admin). Antes ficava preso a três telas, o que o obrigava a usar
+    // "Entrar como" só para conferir uma tela de dados.
+    //
+    // Cuidado que vale registrar: `resolverEscopo` devolve donoId=null para
+    // superadmin — ele LÊ de todo mundo, mas não "é" ninguém. Por isso o
+    // aviso do topo recomenda "Entrar como" na hora de CRIAR ou EDITAR:
+    // gravar sem dono é a origem dos produtos órfãos que já tivemos.
+    superadmin: null,
     admin: null, // null = todas (inclui admScreen p/ gerenciar colaboradores dele)
     // colaborador: definido individualmente por permissões (ver PERMISSOES_DISPONIVEIS)
     colaborador: [],
@@ -54759,7 +55706,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // Enquanto estava liberada, o grupo "Operações" aparecia no menu dela
     // com uma única entrada redundante.
     contabilidade: ['contabHomeScreen','contabEmpresasScreen','contabFechamentoScreen',
-                    'contabConciliacaoScreen','contabNotasScreen','loginScreen'],
+                    'contabConciliacaoScreen','contabNotasScreen','contabPerfilScreen','loginScreen'],
   };
   // Catálogo de telas que um colaborador PODE receber permissão (checklist granular).
   // 'always' = telas sempre liberadas (login, perfil) que não entram no checklist.
@@ -54941,6 +55888,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     }
     // barra de bloqueio por inadimplência (Fatia 4)
     if (typeof atualizarBarraBloqueio === 'function') atualizarBarraBloqueio();
+    // v33k.1013: aviso de contexto do superadmin nas telas de dados
+    if (typeof atualizarBarraSuperadmin === 'function') atualizarBarraSuperadmin();
     // badge do papel no perfil (se existir)
     const badge = document.getElementById('papelBadge');
     if (badge) badge.textContent = p === 'superadmin' ? 'Super Admin' : (p === 'admin' ? 'Usuário' : (p === 'colaborador' ? 'Subusuário' : (p === 'cliente' ? 'Cliente' : (p === 'contabilidade' ? 'Contabilidade' : 'Demonstração'))));
@@ -55197,6 +56146,21 @@ Responda APENAS com JSON válido (sem markdown), formato:
         body: JSON.stringify({ cnpj, razaoSocial, nome, email, telefone, senha }),
       });
       const data = await resp.json();
+      // v33k.1007: CNPJ já cadastrado não é erro de preenchimento — é um
+      // caminho diferente. Em vez de deixar a pessoa relendo o formulário,
+      // levamos direto ao login com o e-mail dela já preenchido.
+      if (data && data.ja_cadastrada) {
+        if (erroEl) {
+          erroEl.style.display = 'block';
+          erroEl.innerHTML = _esc(data.erro || 'Este CNPJ já tem conta.') +
+            '<div style="margin-top:10px">' +
+              '<button onclick="_contabIrParaLogin()" style="padding:8px 16px;background:#22b306;' +
+              'border:none;border-radius:8px;color:#fff;font-weight:700;font-size:13px;cursor:pointer">' +
+              'Fazer login</button></div>';
+        }
+        if (btn) { btn.disabled = false; btn.textContent = 'Criar conta de contabilidade'; }
+        return;
+      }
       if (!data.ok || !data.token) return mostraErro(data.erro || 'Não consegui criar a conta.');
       aplicarSessaoContabilidade(data);
     } catch (e) {
@@ -55204,6 +56168,20 @@ Responda APENAS com JSON válido (sem markdown), formato:
     }
   }
   window.cadastrarContabilidade = cadastrarContabilidade;
+
+  // Leva ao login já com o e-mail digitado no cadastro — a pessoa não
+  // precisa redigitar nem lembrar qual e-mail usou.
+  function _contabIrParaLogin() {
+    const email = (document.getElementById('contabEmail') || {}).value || '';
+    mostrarCadastroContabilidade(false);
+    setTimeout(() => {
+      const campo = document.getElementById('email');
+      if (campo && email) campo.value = email;
+      const senha = document.getElementById('senha');
+      if (senha) senha.focus();
+    }, 120);
+  }
+  window._contabIrParaLogin = _contabIrParaLogin;
 
   // Hidrata a sessão de contabilidade. Usado pelo cadastro E pelo login
   // (quando o backend responde tipo:'contabilidade').
@@ -55643,7 +56621,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         }, 40);
       }
     }
-    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); }
+    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); }
     else if (typeof window.admSaudePararAuto === 'function') { window.admSaudePararAuto(); }
     if (screenId === 'produtosScreen') {
       // v32i.1: carrega página 1 do backend (paginação). Se já tem itens carregados
@@ -55678,8 +56656,12 @@ Responda APENAS com JSON válido (sem markdown), formato:
       else if (screenId === 'contabFechamentoScreen' && typeof renderContabFechamento === 'function') renderContabFechamento();
       else if (screenId === 'contabConciliacaoScreen' && typeof renderContabConciliacao === 'function') renderContabConciliacao();
       else if (screenId === 'contabNotasScreen' && typeof renderContabNotas === 'function') renderContabNotas();
+      else if (screenId === 'contabPerfilScreen' && typeof renderContabPerfil === 'function') renderContabPerfil();
     } catch (e) { console.warn('[contab] render:', e); }
     renderSidebars(screenId);
+    // v33k.1013: o aviso do superadmin acompanha a navegação (aplicarPermissoesUI
+    // só roda ao entrar em Configurações, então não serviria sozinho aqui).
+    if (typeof atualizarBarraSuperadmin === 'function') atualizarBarraSuperadmin();
     // v33k.646: em qualquer navegação, checa se o usuário estourou o limite de
     // pedidos do plano. Se sim, a trava (tela cheia) reaparece. Fail-open.
     if (screenId !== 'loginScreen') { try { verificarTravaLimitePedidos(); } catch(e){} }
@@ -55713,18 +56695,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const parentId = _screenParent[activeScreen]; // se a tela ativa é filha de algum grupo
     // OCULTAÇÃO POR PAPEL: remove itens/telas que o papel não pode acessar.
     // Não gera o botão — para o usuário, é como se a área não existisse.
-    // Super admin: menu reduzido a um único item (Administração).
-    if (papelAtual() === 'superadmin') {
-      const htmlSuper = `<div class="sidebar-item ${activeScreen==='admScreen'?'active':''}" data-tip="Administração" onclick="goTo('admScreen')">
-        <span class="sidebar-icon">${LC_ICON('users')}</span>
-        <span class="sidebar-label">Administração</span>
-      </div>`;
-      ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao','sidebarMenuContabNotas'].forEach(id => {
-        const el = document.getElementById(id); if (el) el.innerHTML = htmlSuper;
-      });
-      return;
-    }
     const itensVisiveis = menuItems.map(item => {
+      // v33k.1013: Administração é do superadmin. O admin continua ALCANÇANDO
+      // a admScreen (papel sem lista fixa) — só não ganha o atalho no menu,
+      // porque para ele o caminho é Configurações › Usuários.
+      if (item.id === 'administracao' && papelAtual() !== 'superadmin') return null;
       // v33k.999: o grupo Contabilidade só existe para o papel contabilidade.
       // O admin não tem lista fixa (podeAcessarTela devolve true pra tudo),
       // então sem este filtro ele veria a área do escritório no menu dele.
@@ -55766,7 +56741,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         <span class="sidebar-label">${item.label}</span>
       </div>`;
     }).join('');
-    ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao','sidebarMenuContabNotas'].forEach(id => {
+    ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao','sidebarMenuContabNotas','sidebarMenuContabPerfil'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.innerHTML = html;
     });
@@ -68982,6 +69957,12 @@ ${JSON.stringify(metricas, null, 2)}`
       const btnRodar = (s.tipo === 'auditar_promocoes_ml')
         ? '<button class="auto-etapa-rodar" onclick="_mlRodarAuditoriaAgora(this)" title="Rodar esta auditoria agora em todas as suas lojas ML"><span class="lc-ic" data-lucide="play"></span> Rodar agora</button>'
         : '';
+      // v33k.1011: as etapas com rastro ganham o botão de histórico. Por ora só
+      // a etiqueta — instrumentar as outras é o próximo passo, e prefiro uma
+      // instrumentada de verdade a quatro pela metade.
+      const btnRastro = (s.tipo === 'etiqueta_whatsapp')
+        ? '<button class="auto-etapa-rodar" onclick="autoAbrirRastro(\'' + s.tipo + '\')" title="Ver o que a automação fez em cada horário de corte"><span class="lc-ic" data-lucide="history"></span> Rastro</button>'
+        : '';
       return '<div class="auto-etapa' + (on ? ' on' : '') + '" data-etapa="' + s.tipo + '">' +
         '<div class="auto-etapa-num">' + (numForcado != null ? numForcado : inf.n) + '</div>' +
         '<div class="auto-etapa-ic"><span class="lc-ic" data-lucide="' + inf.icone + '"></span></div>' +
@@ -68990,6 +69971,7 @@ ${JSON.stringify(metricas, null, 2)}`
           '<div class="auto-etapa-sub">' + escapeHtml(inf.quando) + '</div>' +
         '</div>' +
         btnRodar +
+        btnRastro +
         '<button class="auto-etapa-contas" onclick="autoEtapaVerContas(\'' + s.tipo + '\')" title="Escolher em quais contas esta etapa roda">' +
           '<span class="lc-ic" data-lucide="store"></span> Contas' +
         '</button>' +
@@ -69254,6 +70236,165 @@ ${JSON.stringify(metricas, null, 2)}`
   };
 
   // abre a aba Contas JÁ NA ETAPA escolhida (cada etapa tem sua própria lista)
+  // ════════════════════════════════════════════════════════════════
+  // RASTRO DA AUTOMAÇÃO (v33k.1011)
+  // ════════════════════════════════════════════════════════════════
+  // Mostra o que a automação pensou em cada passagem: quantos pedidos
+  // achou, quais mandou, quais deixou de fora e por quê. Serve pra
+  // responder na tela o que antes exigia script de diagnóstico.
+  const _rastroState = { tipo: 'etiqueta_whatsapp', dias: 7, soAgiu: false, itens: [], abertos: {} };
+
+  async function _rastroFetch(qs) {
+    const backend = (typeof getBackendUrl === 'function') ? getBackendUrl() : '';
+    const token = localStorage.getItem('lider_token_login') || '';
+    const apiTok = (typeof getApiToken === 'function') ? getApiToken() : '';
+    const r = await fetch(backend + '/api/expedicao/automacao-log' + qs, {
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'x-api-token': apiTok,
+        'Content-Type': 'application/json',
+      },
+    });
+    return await r.json().catch(() => ({ ok: false, erro: 'resposta inválida' }));
+  }
+
+  async function autoAbrirRastro(tipo) {
+    _rastroState.tipo = tipo || 'etiqueta_whatsapp';
+    _rastroState.abertos = {};
+    const titulo = (_ETAPA_INFO[_rastroState.tipo] || {}).titulo || _rastroState.tipo;
+    if (typeof window._overlay === 'function') {
+      window._overlay('rastroOverlay',
+        '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="history"></span> Rastro — ' +
+        escapeHtml(titulo) + '</h2>' +
+        '<div style="font-size:12px;opacity:.9;margin-top:2px">O que a automação fez, e o que deixou de fazer</div></div>',
+        '<div id="rastroConteudo"><div style="text-align:center;padding:30px;color:#64748b">Carregando…</div></div>',
+        880);
+    }
+    await _rastroCarregar();
+  }
+
+  async function _rastroCarregar() {
+    const el = document.getElementById('rastroConteudo');
+    if (!el) return;
+    el.innerHTML = '<div style="text-align:center;padding:30px;color:#64748b">Carregando…</div>';
+    const qs = '?tipo=' + encodeURIComponent(_rastroState.tipo) +
+      '&dias=' + _rastroState.dias + '&limit=80' +
+      (_rastroState.soAgiu ? '&soAgiu=true' : '');
+    let d;
+    try { d = await _rastroFetch(qs); }
+    catch (e) { el.innerHTML = '<div style="padding:20px;color:#b91c1c">Falhou: ' + escapeHtml(e.message) + '</div>'; return; }
+
+    if (d && d.aviso === 'migracao_pendente') {
+      el.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:14px;color:#92400e;font-size:13px">' +
+        '<b>A tabela do rastro ainda não existe.</b><br>Rode a migração <code>MIGRACAO_v1011_AUTOMACAO_LOG.sql</code> no Supabase. ' +
+        'Até lá a automação funciona normalmente — só não registra o que fez.</div>';
+      return;
+    }
+    if (!d || !d.ok) {
+      el.innerHTML = '<div style="padding:20px;color:#b91c1c">' + escapeHtml((d && d.erro) || 'erro') + '</div>';
+      return;
+    }
+    _rastroState.itens = d.itens || [];
+    _rastroRender();
+  }
+
+  function _rastroRender() {
+    const el = document.getElementById('rastroConteudo');
+    if (!el) return;
+    const itens = _rastroState.itens;
+
+    const filtros =
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">' +
+        '<span style="font-size:12.5px;color:#64748b">Período:</span>' +
+        [[1, 'Hoje'], [7, '7 dias'], [30, '30 dias']].map(([d, r]) =>
+          '<button onclick="_rastroSetDias(' + d + ')" style="padding:6px 12px;border:1px solid ' +
+          (_rastroState.dias === d ? '#0ea5e9' : '#e2e8f0') + ';background:' +
+          (_rastroState.dias === d ? '#0ea5e9' : '#fff') + ';color:' +
+          (_rastroState.dias === d ? '#fff' : '#64748b') +
+          ';border-radius:8px;cursor:pointer;font-size:12.5px;font-weight:600">' + r + '</button>').join('') +
+        '<div style="flex:1"></div>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:#475569;cursor:pointer">' +
+          '<input type="checkbox" ' + (_rastroState.soAgiu ? 'checked' : '') + ' onchange="_rastroSetSoAgiu(this.checked)"> ' +
+          'só quando fez algo</label>' +
+      '</div>';
+
+    if (!itens.length) {
+      el.innerHTML = filtros +
+        '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:22px;text-align:center;color:#64748b;font-size:13px">' +
+        'Nenhum registro no período.<br>' +
+        '<span style="font-size:12px">A automação só registra dentro da janela de corte — fora dela não há o que contar.</span></div>';
+      return;
+    }
+
+    const cards = itens.map((it) => {
+      const dt = new Date(it.criado_em);
+      const quando = dt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit' }) ;
+      const hora = dt.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+      const evs = (it.detalhe && Array.isArray(it.detalhe.eventos)) ? it.detalhe.eventos : [];
+      const aberto = !!_rastroState.abertos[it.id];
+
+      const cor = it.falhas > 0 ? '#b91c1c' : (it.processados > 0 ? '#166534' : '#64748b');
+      const fundo = it.falhas > 0 ? '#fef2f2' : (it.processados > 0 ? '#f0fdf4' : '#f8fafc');
+      const borda = it.falhas > 0 ? '#fecaca' : (it.processados > 0 ? '#bbf7d0' : '#e2e8f0');
+
+      const pill = (rotulo, valor, destaque) =>
+        '<span style="font-size:11.5px;color:' + (destaque || '#475569') + ';background:#fff;border:1px solid #e2e8f0;' +
+        'border-radius:99px;padding:2px 9px;margin-right:5px">' + rotulo + ' <b>' + valor + '</b></span>';
+
+      const detalhe = !aberto ? '' :
+        '<div style="margin-top:10px;border-top:1px solid ' + borda + ';padding-top:9px">' +
+          (evs.length ? evs.map(e => {
+            if (e.t === 'nota') {
+              return '<div style="font-size:12px;color:#475569;padding:3px 0">· ' + escapeHtml(e.texto || '') + '</div>';
+            }
+            const icone = e.situacao === 'enviado' ? '✓' : (e.situacao === 'falhou' ? '✕' : '–');
+            const c = e.situacao === 'enviado' ? '#166534' : (e.situacao === 'falhou' ? '#b91c1c' : '#94a3b8');
+            return '<div style="font-size:12px;padding:3px 0;display:flex;gap:8px">' +
+              '<span style="color:' + c + ';font-weight:700;width:12px">' + icone + '</span>' +
+              '<span style="font-family:ui-monospace,monospace;color:#0f172a">' + escapeHtml(e.sn || '') + '</span>' +
+              '<span style="color:#64748b;flex:1">' + escapeHtml(e.motivo || '') + '</span>' +
+            '</div>';
+          }).join('') : '<div style="font-size:12px;color:#94a3b8">sem detalhe registrado</div>') +
+          ((it.detalhe && it.detalhe.truncados)
+            ? '<div style="font-size:11.5px;color:#94a3b8;margin-top:6px">+ ' + it.detalhe.truncados + ' evento(s) não registrados (limite por execução)</div>'
+            : '') +
+        '</div>';
+
+      return '<div style="background:' + fundo + ';border:1px solid ' + borda + ';border-radius:10px;padding:11px 13px;margin-bottom:8px">' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+          '<span style="font-size:13px;font-weight:700;color:#0f172a">' + quando + ' ' + hora + '</span>' +
+          (it.contexto ? '<span style="font-size:11.5px;color:#0369a1;background:#e0f2fe;border-radius:99px;padding:2px 9px">corte ' + escapeHtml(it.contexto) + '</span>' : '') +
+          '<span style="font-size:12.5px;color:' + cor + ';font-weight:600">' + escapeHtml(it.resultado || '') + '</span>' +
+          '<div style="flex:1"></div>' +
+          (evs.length ? '<button onclick="_rastroToggle(' + it.id + ')" style="background:none;border:none;color:#0369a1;cursor:pointer;font-size:12px;font-weight:600">' +
+            (aberto ? 'ocultar' : 'ver ' + evs.length + ' detalhe(s)') + '</button>' : '') +
+        '</div>' +
+        '<div style="margin-top:7px">' +
+          pill('encontrados', it.candidatos) +
+          pill('enviados', it.processados, it.processados ? '#166534' : '#475569') +
+          (it.falhas ? pill('falhas', it.falhas, '#b91c1c') : '') +
+          '<span style="font-size:11px;color:#94a3b8">' + (it.duracao_ms || 0) + 'ms</span>' +
+        '</div>' +
+        detalhe +
+      '</div>';
+    }).join('');
+
+    el.innerHTML = filtros + cards;
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(el); } catch (e) {} }
+  }
+
+  function _rastroSetDias(d) { _rastroState.dias = d; _rastroCarregar(); }
+  function _rastroSetSoAgiu(v) { _rastroState.soAgiu = !!v; _rastroCarregar(); }
+  function _rastroToggle(id) {
+    _rastroState.abertos[id] = !_rastroState.abertos[id];
+    _rastroRender();
+  }
+
+  window.autoAbrirRastro = autoAbrirRastro;
+  window._rastroSetDias = _rastroSetDias;
+  window._rastroSetSoAgiu = _rastroSetSoAgiu;
+  window._rastroToggle = _rastroToggle;
+
   function autoEtapaVerContas(tipo) {
     _autoModalTipo = tipo;               // a aba Contas lê daqui
     autoTrocarAba('contas');
@@ -71829,6 +72970,13 @@ ${JSON.stringify(metricas, null, 2)}`
 
   function irParaConfigPerfil() {
     const m = document.getElementById('lcUserMenu'); if (m) m.classList.remove('aberto');
+    // v33k.1012: a contabilidade não tem acesso a settingsScreen (não está na
+    // allowlist dela). O botão "Meu perfil" do menu levava a uma tela bloqueada
+    // — era por isso que o contador não conseguia trocar a própria senha.
+    if (typeof papelAtual === 'function' && papelAtual() === 'contabilidade') {
+      goTo('contabPerfilScreen');
+      return;
+    }
     goTo('settingsScreen');
     setTimeout(() => {
       const btn = document.querySelector('.settings-tab[data-tab="profile"]');
@@ -80877,13 +82025,29 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     <!-- v33k.624: o bloco "Usuários do sistema" foi movido pra aba Usuários em
          Configurações. Aqui fica só o atalho, pra o super admin chegar lá. -->
     <div class="transactions-card" style="margin-bottom:14px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
         <div>
           <h3 style="margin:0">Usuários do sistema</h3>
-          <div style="font-size:12px;color:#6b7280">Criar, editar e definir acessos — agora em Configurações › Usuários.</div>
+          <div style="font-size:12px;color:#6b7280">Quem tem acesso e quando entrou pela última vez. Para criar e editar, use a gestão completa.</div>
         </div>
-        <button class="primary-btn" onclick="goTo('settingsScreen'); setTimeout(function(){ var b=document.querySelector('.settings-tab[data-tab=&quot;usuarios&quot;]'); if(b) b.click(); }, 60)">Abrir gestão de usuários →</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="toolbar-btn" data-superadmin-only style="display:none;background:#4f46e5;color:#fff;font-weight:700" onclick="verAtividadeGeral()">📊 Ver atividade</button>
+          <button class="primary-btn" onclick="goTo('settingsScreen'); setTimeout(function(){ var b=document.querySelector('.settings-tab[data-tab=&quot;usuarios&quot;]'); if(b) b.click(); }, 60)">Gestão completa →</button>
+        </div>
       </div>
+      <div id="admUsuariosResumo"><em style="color:#9ca3af;font-size:13px">Carregando...</em></div>
+    </div>
+
+    <!-- ESCRITÓRIOS CONTÁBEIS (v33k.1012) — tabela própria, não aparecem na lista acima -->
+    <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div>
+          <h3 style="margin:0">🏛️ Escritórios contábeis</h3>
+          <div style="font-size:12px;color:#6b7280">Contas de contabilidade e seus usuários. Ficam em cadastro separado, por isso não entram na lista acima.</div>
+        </div>
+        <button class="toolbar-btn" style="font-size:12px" onclick="renderAdmContabilidades()">↻ Atualizar</button>
+      </div>
+      <div id="admContabLista"><em style="color:#9ca3af;font-size:13px">Carregando...</em></div>
     </div>
 
     </div>
@@ -80898,6 +82062,172 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // colaborador) NÃO mudam; só o rótulo exibido ao super admin.
   const ADM_PAPEL_LABEL = { superadmin:'Super Admin', admin:'Usuário', colaborador:'Subusuário', cliente:'Cliente', marketplace:'Marketplace', demo:'Demonstração' };
   const ADM_PAPEL_COR = { superadmin:'#7c3aed', admin:'#16a34a', colaborador:'#2563eb', cliente:'#0891b2', marketplace:'#0d9488', demo:'#9ca3af' };
+
+  // ═══ RESUMO DE USUÁRIOS NA TELA SUPER ADM (v33k.1012) ═══
+  // A v624 moveu a gestão pra Configurações › Usuários e deixou aqui só um
+  // atalho. Perdeu-se a visão rápida de quem está no sistema, que é o que
+  // se procura ao abrir a tela de administração. Voltou — em modo consulta,
+  // com a edição continuando num lugar só (Configurações).
+  function renderAdmUsuariosResumo() {
+    const cont = document.getElementById('admUsuariosResumo');
+    if (!cont) return;
+    const lista = Array.isArray(_admUsuarios) ? _admUsuarios : [];
+    if (!lista.length) {
+      cont.innerHTML = '<em style="color:#9ca3af;font-size:13px">Nenhum usuário carregado.</em>';
+      return;
+    }
+
+    const ativos = lista.filter(u => u.ativo !== false);
+    const inativos = lista.length - ativos.length;
+    const porPapel = {};
+    lista.forEach(u => { porPapel[u.papel] = (porPapel[u.papel] || 0) + 1; });
+
+    const soAtivos = !!window._admResumoSoAtivos;
+    const visiveis = (soAtivos ? ativos : lista).slice().sort((a, b) => {
+      const ua = a.ultimo_acesso || '', ub = b.ultimo_acesso || '';
+      return String(ub).localeCompare(String(ua));   // quem entrou mais recente primeiro
+    });
+
+    const quando = (iso) => {
+      if (!iso) return 'nunca entrou';
+      const dif = Date.now() - new Date(iso).getTime();
+      const h = dif / 3600000;
+      if (h < 1) return 'agora há pouco';
+      if (h < 24) return Math.floor(h) + 'h atrás';
+      const d = Math.floor(h / 24);
+      if (d < 30) return d + ' dia(s) atrás';
+      return new Date(iso).toLocaleDateString('pt-BR');
+    };
+
+    cont.innerHTML =
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' +
+        '<span style="font-size:12px;color:#374151"><b>' + ativos.length + '</b> ativos' +
+          (inativos ? ' · <b>' + inativos + '</b> inativos' : '') + '</span>' +
+        '<span style="font-size:11.5px;color:#9ca3af">' +
+          Object.entries(porPapel).map(([k, v]) => (ADM_PAPEL_LABEL[k] || k) + ': ' + v).join(' · ') + '</span>' +
+        '<div style="flex:1"></div>' +
+        '<label style="font-size:12px;color:#374151;display:flex;align-items:center;gap:5px;cursor:pointer">' +
+          '<input type="checkbox" ' + (soAtivos ? 'checked' : '') + ' onchange="_admResumoToggleAtivos(this.checked)"> só ativos</label>' +
+      '</div>' +
+      '<div style="border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">' +
+        '<div style="max-height:280px;overflow-y:auto">' +
+          '<table style="width:100%;border-collapse:collapse;font-size:12.5px">' +
+            '<thead style="position:sticky;top:0"><tr style="background:#f9fafb">' +
+              '<th style="padding:7px 10px;text-align:left;font-size:11px;color:#6b7280">Nome</th>' +
+              '<th style="padding:7px 10px;text-align:left;font-size:11px;color:#6b7280">E-mail</th>' +
+              '<th style="padding:7px 10px;text-align:left;font-size:11px;color:#6b7280">Tipo</th>' +
+              '<th style="padding:7px 10px;text-align:left;font-size:11px;color:#6b7280">Último acesso</th>' +
+            '</tr></thead><tbody>' +
+            visiveis.map(u => {
+              const inativo = u.ativo === false;
+              return '<tr style="border-top:1px solid #f3f4f6' + (inativo ? ';opacity:.55' : '') + '">' +
+                '<td style="padding:6px 10px;color:#111827">' + escapeHtml(u.nome || '—') +
+                  (inativo ? ' <span style="font-size:10.5px;color:#b91c1c">(inativo)</span>' : '') + '</td>' +
+                '<td style="padding:6px 10px;color:#6b7280">' + escapeHtml(u.email || '') + '</td>' +
+                '<td style="padding:6px 10px"><span style="background:' + (ADM_PAPEL_COR[u.papel] || '#6b7280') +
+                  ';color:#fff;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:700">' +
+                  (ADM_PAPEL_LABEL[u.papel] || u.papel) + '</span></td>' +
+                '<td style="padding:6px 10px;color:#6b7280">' + quando(u.ultimo_acesso) + '</td>' +
+              '</tr>';
+            }).join('') +
+          '</tbody></table>' +
+        '</div>' +
+      '</div>';
+  }
+  window.renderAdmUsuariosResumo = renderAdmUsuariosResumo;
+  window._admResumoToggleAtivos = function (v) {
+    window._admResumoSoAtivos = !!v;
+    renderAdmUsuariosResumo();
+  };
+
+  // ═══ ESCRITÓRIOS CONTÁBEIS (v33k.1012) ═══
+  // A contabilidade mora em tabelas próprias (`contabilidades` e
+  // `contabilidade_usuarios`), separadas de `usuarios` de propósito — o JWT
+  // dela não carrega usuario_id. Por isso ela nunca aparecia na lista de
+  // usuários. Não misturei as duas: são entidades diferentes, e juntar
+  // criaria mais confusão do que resolve. Aqui é a lista própria delas.
+  async function renderAdmContabilidades() {
+    const cont = document.getElementById('admContabLista');
+    if (!cont) return;
+    if (papelAtual() !== 'superadmin') return;
+    cont.innerHTML = '<em style="color:#9ca3af;font-size:13px">Carregando escritórios…</em>';
+    let r;
+    try {
+      r = await (await fetch(BACKEND_URL + '/api/auth/contabilidades', {
+        headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken() },
+      })).json();
+    } catch (e) {
+      cont.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro ao carregar escritórios</span>';
+      return;
+    }
+    if (!r || !r.ok) {
+      cont.innerHTML = '<span style="color:#dc2626;font-size:12px">' + escapeHtml((r && r.erro) || 'erro') + '</span>';
+      return;
+    }
+    const lista = r.contabilidades || [];
+    if (!lista.length) {
+      cont.innerHTML = '<em style="color:#9ca3af;font-size:13px">Nenhum escritório contábil cadastrado ainda.</em>';
+      return;
+    }
+
+    const fmtCnpj = (v) => {
+      const s = String(v || '').replace(/\D/g, '');
+      return s.length === 14 ? s.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') : (v || '—');
+    };
+    const quando = (iso) => {
+      if (!iso) return 'nunca entrou';
+      const h = (Date.now() - new Date(iso).getTime()) / 3600000;
+      if (h < 1) return 'agora há pouco';
+      if (h < 24) return Math.floor(h) + 'h atrás';
+      const d = Math.floor(h / 24);
+      return d < 30 ? (d + ' dia(s) atrás') : new Date(iso).toLocaleDateString('pt-BR');
+    };
+
+    const totalUsu = lista.reduce((n, c) => n + (c.usuarios || []).length, 0);
+    cont.innerHTML =
+      '<div style="font-size:12px;color:#374151;margin-bottom:10px"><b>' + lista.length + '</b> escritório(s) · <b>' +
+        totalUsu + '</b> usuário(s) de contabilidade</div>' +
+      lista.map(c => {
+        const usus = c.usuarios || [];
+        const inativo = c.ativo === false;
+        return '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:11px 13px;margin-bottom:8px' +
+          (inativo ? ';opacity:.6' : '') + '">' +
+          '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+            '<div style="flex:1;min-width:200px">' +
+              '<div style="font-size:13.5px;font-weight:700;color:#111827">' +
+                escapeHtml(c.nome_fantasia || c.razao_social || '—') +
+                (inativo ? ' <span style="font-size:11px;color:#b91c1c">(inativo)</span>' : '') + '</div>' +
+              '<div style="font-size:11.5px;color:#6b7280">' + escapeHtml(fmtCnpj(c.cnpj)) +
+                ' · ' + escapeHtml(c.email || '') + '</div>' +
+            '</div>' +
+            '<span style="font-size:11.5px;color:#0369a1;background:#e0f2fe;border-radius:20px;padding:2px 10px;font-weight:700">' +
+              c.empresas + ' empresa(s)</span>' +
+            (c.empresas_carencia
+              ? '<span style="font-size:11.5px;color:#b45309;background:#fef3c7;border-radius:20px;padding:2px 10px;font-weight:700" ' +
+                'title="Vínculo encerrado, mas com 30 dias para o contador fechar a competência">' +
+                c.empresas_carencia + ' em carência</span>'
+              : '') +
+            '<button class="toolbar-btn" style="font-size:11px;background:#b45309;color:#fff" ' +
+              'onclick="impersonarContabilidade(' + c.id + ')" title="Ver o sistema como este escritório vê">👁 Entrar como</button>' +
+          '</div>' +
+          (usus.length
+            ? '<div style="margin-top:9px;border-top:1px solid #f3f4f6;padding-top:8px">' +
+              usus.map(u => '<div style="display:flex;gap:8px;align-items:center;font-size:12px;padding:2px 0' +
+                (u.ativo === false ? ';opacity:.55' : '') + '">' +
+                '<span style="font-size:10.5px;font-weight:700;color:' + (u.papel === 'titular' ? '#166534' : '#475569') +
+                  ';background:' + (u.papel === 'titular' ? '#dcfce7' : '#f3f4f6') + ';padding:1px 7px;border-radius:20px">' +
+                  (u.papel === 'titular' ? 'titular' : 'colab.') + '</span>' +
+                '<span style="color:#111827">' + escapeHtml(u.nome || '') + '</span>' +
+                '<span style="color:#9ca3af">' + escapeHtml(u.email || '') + '</span>' +
+                '<div style="flex:1"></div>' +
+                '<span style="color:#6b7280;font-size:11.5px">' + quando(u.ultimo_acesso) + '</span>' +
+              '</div>').join('') +
+            '</div>'
+            : '<div style="margin-top:8px;font-size:11.5px;color:#b91c1c">Sem usuário cadastrado — ninguém consegue entrar neste escritório.</div>') +
+        '</div>';
+      }).join('');
+  }
+  window.renderAdmContabilidades = renderAdmContabilidades;
 
   async function renderAdmUsuarios() {
     const cont = document.getElementById('admUsuariosLista');
@@ -80919,6 +82249,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const filtros = document.getElementById('admUsuariosFiltros');
     if (filtros) filtros.style.display = (_admUsuarios.length > 4) ? 'flex' : 'none';
     renderListaAdmUsuarios();
+    // v33k.1012: a MESMA carga alimenta o resumo da tela Super ADM — nada de
+    // segunda ida ao servidor nem de segunda fonte de verdade.
+    if (typeof renderAdmUsuariosResumo === 'function') renderAdmUsuariosResumo();
   }
   window.renderAdmUsuarios = renderAdmUsuarios;
 
@@ -81897,6 +83230,34 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   window.impersonarUsuario = impersonarUsuario;
 
+  // v33k.1013 — entrar como um ESCRITÓRIO CONTÁBIL.
+  // As telas da contabilidade dependem de um token do tipo próprio (com
+  // contabilidade_id); um token de superadmin não as abre. Em vez de afrouxar
+  // essa separação — que é o que segura o isolamento entre escritórios —
+  // reusamos o mesmo caminho de impersonação já usado para usuários.
+  async function impersonarContabilidade(id) {
+    if (!await lcConfirm('Entrar como este escritório contábil?\n\nVocê vai ver exatamente o que o contador vê, incluindo as empresas que ele atende. Use a barra no topo pra voltar ao seu acesso.')) return;
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/contabilidades/' + id + '/impersonar', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+      })).json();
+      if (!r.ok || !r.token) { showToast('Erro: ' + (r.erro || 'não foi possível'), true); return; }
+      if (!localStorage.getItem('lider_token_admin_real')) {
+        localStorage.setItem('lider_token_admin_real', getTokenLogin());
+        localStorage.setItem('lider_usuario_admin_real', localStorage.getItem('lider_usuario') || '');
+      }
+      setTokenLogin(r.token);
+      if (r.usuario) { localStorage.setItem('lider_usuario', JSON.stringify(r.usuario)); _usuarioLogado = r.usuario; }
+      // mesma limpeza do login normal: dados do superadmin não podem sobrar
+      // na sessão do escritório
+      try { limparDadosOperacionais(); } catch (e) {}
+      mostrarBarraImpersonacao((r.contabilidade && (r.contabilidade.nome_fantasia || r.contabilidade.razao_social)) || 'escritório contábil');
+      location.reload();
+    } catch (e) { showToast('Erro: ' + e.message, true); }
+  }
+  window.impersonarContabilidade = impersonarContabilidade;
+
   // ═══ MIGRAÇÃO DE LOJA entre usuários (SUPERADMIN) ═══
   async function abrirMigrarLojaModal(origemId) {
     const origem = _admUsuarios.find(x => x.id === origemId);
@@ -82092,6 +83453,39 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // empurra o conteúdo pra baixo pra não ficar atrás da barra
     document.body.style.paddingTop = '40px';
   }
+
+  // v33k.1013 — aviso de contexto do Super Admin.
+  // Some nas telas onde estar sem dono é o normal (Administração e
+  // Configurações) e durante impersonação, quando ele JÁ está dentro de uma
+  // conta específica. Dispensável com um clique, por sessão.
+  function atualizarBarraSuperadmin() {
+    const bar = document.getElementById('superadminBar');
+    if (!bar) return;
+    const ehSuper = (typeof papelAtual === 'function') && papelAtual() === 'superadmin';
+    const impersonando = !!localStorage.getItem('lider_token_admin_real');
+    const dispensada = sessionStorage.getItem('lc_super_bar_off') === '1';
+    // a tela ativa vem do DOM — não existe variável global com esse estado
+    const elAtiva = document.querySelector('.screen.active');
+    const telaAtual = elAtiva ? elAtiva.id : '';
+    const telaNeutra = (telaAtual === 'admScreen' || telaAtual === 'settingsScreen' || telaAtual === 'loginScreen');
+
+    if (ehSuper && !impersonando && !dispensada && !telaNeutra) {
+      bar.style.display = 'block';
+      if (!document.body.style.paddingTop) document.body.style.paddingTop = '38px';
+    } else {
+      bar.style.display = 'none';
+      const outra = ['impersonarBar', 'bloqueioBar'].some(id => {
+        const el = document.getElementById(id);
+        return el && el.style.display === 'block';
+      });
+      if (!outra) document.body.style.paddingTop = '';
+    }
+  }
+  window.atualizarBarraSuperadmin = atualizarBarraSuperadmin;
+  window.superadminBarOcultar = function () {
+    sessionStorage.setItem('lc_super_bar_off', '1');
+    atualizarBarraSuperadmin();
+  };
 
   // Mostra/esconde a barra vermelha de bloqueio por inadimplência.
   function atualizarBarraBloqueio() {
