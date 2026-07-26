@@ -1753,19 +1753,39 @@
     const itens = ctx.itens || [];
     let salvos = 0;
     let invalidos = 0;
+    const falhas = [];
     for (let i = 0; i < itens.length; i++) {
       const ncmEl = document.getElementById('dpNcm' + i);
       const ncm = ncmEl ? ncmEl.value.replace(/\D/g, '') : '';
       if (!ncm) continue;                     // vazio: ignora (não é erro)
       if (ncm.length !== 8) { invalidos++; continue; }  // NCM tem exatamente 8 dígitos
-      await _api('/api/nfe/produtos-fiscal', { method: 'POST', body: JSON.stringify({ sku: itens[i].sku, ncm, descricao: itens[i].descricao }) });
+      // ★ v33k.1068: a RESPOSTA precisa ser conferida.
+      // Antes o resultado era ignorado: qualquer falha (sessão expirada, erro do
+      // banco) ainda contava como salvo, a tela dizia "N NCM(s) salvo(s)" e o
+      // fluxo seguia direto pra emissão, que era recusada por falta do mesmo NCM
+      // que o usuário acabara de digitar. Foi assim que um cliente novo levou
+      // "salvo" e "recusado" na mesma tela.
+      let resp = null;
+      try {
+        resp = await _api('/api/nfe/produtos-fiscal', { method: 'POST', body: JSON.stringify({ sku: itens[i].sku, ncm, descricao: itens[i].descricao }) });
+      } catch (e) {
+        resp = { ok: false, erro: e.message };
+      }
+      if (!resp || resp.ok !== true) {
+        falhas.push({ sku: itens[i].sku, erro: (resp && resp.erro) || 'falha ao salvar' });
+        continue;
+      }
       itens[i].ncm = ncm;
       itens[i].temCadastroFiscal = true;
       salvos++;
     }
     if (invalidos) _toast(invalidos + ' NCM(s) com dígitos ≠ 8, o NCM precisa ter 8 dígitos', true);
-    if (salvos) _toast(salvos + ' NCM(s) salvo(s)');
-    return { salvos, invalidos };
+    if (falhas.length) {
+      _toast('Não consegui salvar ' + falhas.length + ' NCM(s): ' + _esc(falhas[0].erro), true);
+    } else if (salvos) {
+      _toast(salvos + ' NCM(s) salvo(s)');
+    }
+    return { salvos, invalidos, falhas };
   }
 
   // Persiste as correções do destinatário (override reaplicado em toda etapa).
@@ -1801,8 +1821,41 @@
     const ctx = window._dpCtx || {};
     const msg = document.getElementById('dpMsg');
     // 1) NCMs no banco  2) correções persistidas (que já resolve o IBGE via CEP)
-    await _dpSalvarNcms();
-    await _dpSalvarCorrecoes(true);
+    const rNcm = await _dpSalvarNcms();
+    // ★ v33k.1068: NÃO emite se o cadastro fiscal não foi gravado. Emitir logo
+    // depois de uma falha de salvamento produz a pior sequência possível pro
+    // usuário: "salvo" seguido de "recusado por falta de NCM", com ele achando
+    // que o sistema perdeu o que acabou de digitar.
+    if (rNcm && rNcm.falhas && rNcm.falhas.length) {
+      const m = document.getElementById('dpMsg');
+      if (m) {
+        m.innerHTML = '<span class="lc-ic" data-lucide="x"></span> Não emiti: ' + rNcm.falhas.length +
+          ' NCM(s) não foram salvos (' + _esc(rNcm.falhas[0].erro) + '). Corrija e tente de novo.';
+        m.style.color = '#b91c1c';
+        _hidratarIcones(m);
+      }
+      return;
+    }
+    if (rNcm && rNcm.invalidos) {
+      const m = document.getElementById('dpMsg');
+      if (m) {
+        m.innerHTML = '<span class="lc-ic" data-lucide="x"></span> Não emiti: ' + rNcm.invalidos +
+          ' NCM(s) com formato inválido. O NCM tem exatamente 8 dígitos.';
+        m.style.color = '#b91c1c';
+        _hidratarIcones(m);
+      }
+      return;
+    }
+    const okCorr = await _dpSalvarCorrecoes(true);
+    if (okCorr === false) {
+      const m = document.getElementById('dpMsg');
+      if (m) {
+        m.innerHTML = '<span class="lc-ic" data-lucide="x"></span> Não emiti: as correções do pedido não foram salvas.';
+        m.style.color = '#b91c1c';
+        _hidratarIcones(m);
+      }
+      return;
+    }
     // 3) monta o contexto de emissão no formato que _executarEmissao espera
     const destinatario = _dpColetarDestinatario();
     const ctxEmissao = { lojaId: ctx.lojaId, orderSn: ctx.orderSn, empresa: ctx.empresa, itens: ctx.itens, marketplace: ctx.marketplace || 'shopee', codigoMunicipio: ctx.codigoMunicipio };
@@ -1928,6 +1981,7 @@
     const itens = ctx.itens || [];
     let salvos = 0;
     let invalidos = 0;
+    const falhas = [];
     for (let i = 0; i < itens.length; i++) {
       const ncmEl = document.getElementById('rpNcm' + i);
       const ncm = ncmEl ? ncmEl.value.replace(/\D/g, '') : '';
@@ -55996,7 +56050,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1064-tiktok-na-tela';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1069-ml-sku-fallback';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -56022,7 +56076,10 @@ Responda APENAS com JSON válido (sem markdown), formato:
     } else {
       linhas.push('  STATUS:    presente');
       linhas.push('  Tamanho:   ' + apiTok.length + ' chars');
-      linhas.push('  Comeco:    ' + apiTok.slice(0, 8) + '...');
+      // v33k.1065: NÃO imprimimos mais nenhum trecho do token. Este texto existe
+      // pra ser copiado e colado em chat; oito caracteres do token de acesso
+      // não deveriam viajar por aí, mesmo pra superadmin.
+      linhas.push('  Valor:     (oculto por segurança)');
     }
     linhas.push('');
     
@@ -56162,7 +56219,32 @@ Responda APENAS com JSON válido (sem markdown), formato:
     el.textContent = linhas.join('\n');
   }
   
+  // v33k.1065: o diagnóstico é FERRAMENTA INTERNA e passou a exigir papel.
+  // Antes abria pra qualquer usuário logado, por ?diag=1 na URL ou Ctrl+Shift+D,
+  // sem checagem nenhuma. Ele imprime o começo do token da API, a URL do
+  // backend e a lista COMPLETA de lojas com os ids internos, num texto feito
+  // pra ser copiado e colado em conversa. Num sistema multi-inquilino isso é
+  // exposição, não conveniência.
+  //
+  // Pra liberar também pra admin (o dono da conta), troque a linha abaixo por:
+  //   const PAPEIS_DIAG = ['superadmin', 'admin'];
+  const PAPEIS_DIAG = ['superadmin'];
+  function podeVerDiagnostico() {
+    try {
+      // Exige usuário REALMENTE carregado. `papelAtual()` devolve 'admin' como
+      // padrão quando ainda não há sessão em memória, e o ?diag=1 dispara 800ms
+      // após o load: sem esta checagem, ampliar PAPEIS_DIAG pra 'admin' abriria
+      // a tela na janela em que ninguém está autenticado ainda.
+      if (typeof _usuarioLogado === 'undefined' || !_usuarioLogado || !_usuarioLogado.papel) return false;
+      return PAPEIS_DIAG.includes(_usuarioLogado.papel);
+    } catch (_) { return false; }
+  }
+
   function abrirDiagnostico() {
+    if (!podeVerDiagnostico()) {
+      // silencioso de propósito: quem não pode ver não precisa saber que existe
+      return;
+    }
     document.getElementById('diagOverlay').classList.add('active');
     rodarDiagnostico();
   }
