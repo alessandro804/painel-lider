@@ -31452,6 +31452,8 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
 
   async function acaoLojaSincronizar(lojaLocalId, opts) {
+    // v33k.1031: sincronizar traz pedido novo — é o que o limite impede
+    if (typeof recursoBloqueado === 'function' && recursoBloqueado('sincronizar')) return;
     const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
     if (!loja) return;
     const lojaIdBanco = await garantirLojaNoBanco(loja);
@@ -43086,6 +43088,11 @@ REGRAS DURAS:
 
   async function exportarProdutoMarketplace(produtoId, marketplace, opts) {
     opts = opts || {};
+    // v33k.1031: publicar/alterar no marketplace é ação de saída — trava.
+    // Editar no painel continua liberado: ela organiza a casa, nada sai daqui.
+    if (typeof recursoBloqueado === 'function' && recursoBloqueado('publicar', { silencioso: !!opts.silencioso })) {
+      return { ok: false, erro: 'Limite do plano atingido — publicação pausada.', motivo: 'limite_pedidos' };
+    }
     // 1. Sincroniza o cache com o backend antes de exportar — MAS NÃO em modo silencioso
     // (modo silencioso é usado em fluxos como duplicação em massa onde acabamos de
     // criar a cópia localmente e o reload sobrescreveria nosso array)
@@ -55688,7 +55695,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1028-familia-mlu';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1031-travas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -56418,8 +56425,17 @@ Responda APENAS com JSON válido (sem markdown), formato:
     } catch(e) {}
     return [];
   }
+  // v33k.1031: no limite do plano, Lucro e Ads não abrem nem para ver — são
+  // os relatórios que o plano vende. O resto do sistema continua navegável:
+  // a pessoa precisa alcançar Configurações, Notas Fiscais e os downloads.
+  const TELAS_FECHADAS_NO_LIMITE = ['lucroScreen', 'adsScreen'];
+
   function podeAcessarTela(screenId) {
     if (TELAS_SEMPRE_LIBERADAS.includes(screenId)) return true;
+    if (TELAS_FECHADAS_NO_LIMITE.includes(screenId) &&
+        typeof _travaLimiteAtiva !== 'undefined' && _travaLimiteAtiva === true) {
+      return false;
+    }
     // BLOQUEIO POR INADIMPLÊNCIA (Fatia 4): marketplace com assinatura vencida
     // só acessa Configurações (onde fica a tela de Planos pra regularizar).
     if (typeof acessoBloqueado === 'function' && acessoBloqueado()) {
@@ -69931,6 +69947,13 @@ ${JSON.stringify(metricas, null, 2)}`
   let _autoModalMestre = null;   // qual card mestre está aberto (as abas dependem disso)
 
   async function toggleAutomacaoCard(tipo, ativo, el) {
+    // v33k.1031: ligar automação no limite é o caso mais claro de trava —
+    // ela roda sozinha e continuaria consumindo plano sem ninguém clicar.
+    // Desligar continua permitido: reduzir consumo nunca deve ser impedido.
+    if (ativo && typeof recursoBloqueado === 'function' && recursoBloqueado('automacao')) {
+      if (el) { try { el.checked = false; } catch (e) {} }
+      return;
+    }
     const card = el.closest('.lc-auto-card');
     if (card) card.classList.toggle('is-on', ativo);
     const st = card ? card.querySelector('[data-auto-status="' + tipo + '"]') : null;
@@ -73730,34 +73753,113 @@ ${JSON.stringify(metricas, null, 2)}`
   // Aparece quando o usuário passou do limite do plano + a margem de segurança.
   // Só tem UMA saída: fazer upgrade. Não dá pra fechar nem clicar fora.
   let _travaLimiteAtiva = false;
-  function mostrarTravaLimitePedidos(usados, limite) {
-    if (_travaLimiteAtiva) return; // já está na tela
-    if (document.getElementById('lcTravaLimiteOverlay')) return;
-    _travaLimiteAtiva = true;
-    const ov = document.createElement('div');
-    ov.id = 'lcTravaLimiteOverlay';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:linear-gradient(135deg,#1e1b4b,#312e81);display:flex;align-items:center;justify-content:center;padding:20px';
-    ov.innerHTML =
-      '<div style="max-width:460px;width:100%;background:#fff;border-radius:20px;padding:34px 28px;text-align:center;box-shadow:0 30px 80px rgba(0,0,0,.4)">'
-      + '<div style="font-size:46px;margin-bottom:6px">🚦</div>'
-      + '<div style="font-size:21px;font-weight:800;color:#1e2a47;margin-bottom:10px">Você atingiu o limite de pedidos do seu plano</div>'
-      + '<div style="font-size:14px;color:#6b7280;line-height:1.6;margin-bottom:8px">Seu plano permite <strong>' + Number(limite).toLocaleString('pt-BR') + '</strong> pedidos por ciclo e você já registrou <strong>' + Number(usados).toLocaleString('pt-BR') + '</strong>.</div>'
-      + '<div style="font-size:14px;color:#6b7280;line-height:1.6;margin-bottom:22px">Para continuar operando — inclusive a emissão de notas fiscais — faça upgrade para um plano com mais capacidade.</div>'
-      + '<button onclick="lcIrUpgradeDaTrava()" style="width:100%;padding:14px;border:none;border-radius:12px;background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;font-size:16px;font-weight:800;cursor:pointer">⬆ Fazer upgrade agora</button>'
-      + '<div style="font-size:12px;color:#9ca3af;margin-top:14px">Precisa de ajuda? Fale com a gente pelo WhatsApp de vendas.</div>'
-      + '</div>';
-    document.body.appendChild(ov);
-    // bloqueia rolagem do fundo
-    try { document.body.style.overflow = 'hidden'; } catch(e){}
+  // ═══════════════════════════════════════════════════════════════════
+  // O QUE TRAVA NO LIMITE DO PLANO (v33k.1031)
+  // ═══════════════════════════════════════════════════════════════════
+  // Critério único, para não virar decisão nova a cada tela:
+  //
+  //   TRAVA o que cria trabalho novo ou consome plano.
+  //   LIBERA o que lê, o que exporta os dados dela, e o que resolve.
+  //
+  // Na prática:
+  //   travado  → automações, sincronizar, publicar/alterar no marketplace,
+  //              emitir NF (já era, desde a v646), telas de Lucro e Ads
+  //   liberado → navegar, ler, baixar XML/DANFE/planilhas, Configurações
+  //              inteiras (planos, empresa, certificado, NCM), editar no painel
+  //
+  // Baixar os dados fica liberado de propósito. Com a emissão travada, é por
+  // ali que o contador dela emite por fora — reter isso deixaria a pessoa em
+  // falta com o fisco por uma régua comercial nossa.
+  const _LIM_MOTIVOS = {
+    sincronizar: 'Sincronizar traz pedidos novos — e é justamente o que o plano não comporta agora.',
+    publicar: 'Publicar e alterar anúncios no marketplace está pausado até o upgrade.',
+    automacao: 'As automações ficam pausadas no limite: elas rodam sozinhas e continuariam consumindo o plano.',
+    emitir_nf: 'A emissão de notas está pausada até o upgrade.',
+    tela: 'Esta tela faz parte dos recursos do plano.',
+  };
+
+  function _limAtivo() {
+    return typeof _travaLimiteAtiva !== 'undefined' && _travaLimiteAtiva === true;
   }
+
+  // Retorna true se a ação deve ser IMPEDIDA (e já explica pra pessoa).
+  function recursoBloqueado(acao, opts) {
+    if (!_limAtivo()) return false;
+    const motivo = _LIM_MOTIVOS[acao] || _LIM_MOTIVOS.tela;
+    if (!(opts && opts.silencioso)) {
+      const jaTem = document.getElementById('limAvisoOverlay');
+      if (jaTem) jaTem.remove();
+      const ov = document.createElement('div');
+      ov.id = 'limAvisoOverlay';
+      ov.className = 'overlay active';
+      ov.onclick = (ev) => { if (ev.target.id === 'limAvisoOverlay') ov.remove(); };
+      ov.innerHTML =
+        '<div class="modal" style="max-width:420px;width:92%">' +
+          '<div style="padding:22px 24px;text-align:center">' +
+            '<div style="font-size:34px;margin-bottom:8px">🚦</div>' +
+            '<div style="font-size:16px;font-weight:800;color:#1e2a47;margin-bottom:8px">Recurso pausado pelo limite do plano</div>' +
+            '<div style="font-size:13.5px;color:#6b7280;line-height:1.6;margin-bottom:6px">' + motivo + '</div>' +
+            '<div style="font-size:12.5px;color:#6b7280;line-height:1.6;margin-bottom:18px">' +
+              'Você continua podendo navegar, consultar e <b>baixar seus dados</b> normalmente.' +
+            '</div>' +
+            '<button onclick="document.getElementById(\'limAvisoOverlay\').remove(); lcIrUpgradeDaTrava();" ' +
+              'style="width:100%;padding:12px;border:none;border-radius:10px;background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;font-size:14.5px;font-weight:800;cursor:pointer">Ver planos</button>' +
+            '<button onclick="document.getElementById(\'limAvisoOverlay\').remove()" ' +
+              'style="width:100%;padding:10px;margin-top:8px;border:none;border-radius:10px;background:none;color:#6b7280;font-size:13px;cursor:pointer">Fechar</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(ov);
+    }
+    return true;
+  }
+  window.recursoBloqueado = recursoBloqueado;
+
+  // v33k.1030: deixou de ser tela cheia.
+  //
+  // O bloqueio total impedia a pessoa de fazer o que ela PRECISA fazer para
+  // resolver: ver os planos, exportar as notas fiscais do período, conferir a
+  // própria conta. Pior — o botão "ver planos" caía num laço: a verificação
+  // roda a cada navegação, então ir para Planos repunha o overlay na hora.
+  //
+  // Agora é uma faixa fixa no topo. Informa, não sequestra. Quem está no
+  // limite continua operando o que já tem; o que consome plano é que trava,
+  // no ponto em que a ação acontece.
+  function mostrarTravaLimitePedidos(usados, limite) {
+    _travaLimiteAtiva = true;
+    // some com o overlay antigo, se a pessoa estava com a aba aberta na virada
+    const velho = document.getElementById('lcTravaLimiteOverlay');
+    if (velho) { velho.remove(); try { document.body.style.overflow = ''; } catch (e) {} }
+
+    let bar = document.getElementById('lcLimiteBar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'lcLimiteBar';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99996;background:linear-gradient(90deg,#c2410c,#ea580c);color:#fff;padding:8px 16px;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.25)';
+      document.body.appendChild(bar);
+    }
+    bar.innerHTML =
+      '<span>🚦 Limite do plano atingido — <b>' + Number(usados).toLocaleString('pt-BR') + '</b> de <b>' +
+      Number(limite).toLocaleString('pt-BR') + '</b> pedidos do ciclo. Novos pedidos não entram até o upgrade.</span>' +
+      '<button onclick="lcIrUpgradeDaTrava()" style="background:#fff;color:#c2410c;border:none;border-radius:8px;padding:5px 14px;font-weight:800;cursor:pointer;font-size:12.5px">Ver planos</button>';
+    if (!document.body.style.paddingTop) document.body.style.paddingTop = '38px';
+  }
+  function esconderTravaLimitePedidos() {
+    _travaLimiteAtiva = false;
+    const bar = document.getElementById('lcLimiteBar');
+    if (bar) bar.remove();
+    const outra = ['impersonarBar', 'bloqueioBar', 'superadminBar'].some(id => {
+      const el = document.getElementById(id);
+      return el && el.style.display === 'block';
+    });
+    if (!outra) document.body.style.paddingTop = '';
+  }
+  window.esconderTravaLimitePedidos = esconderTravaLimitePedidos;
   window.mostrarTravaLimitePedidos = mostrarTravaLimitePedidos;
 
   function lcIrUpgradeDaTrava() {
-    // leva pra tela de planos, mas mantém a trava (só sai do bloqueio ao dar upgrade)
-    const ov = document.getElementById('lcTravaLimiteOverlay');
-    if (ov) ov.remove();
-    _travaLimiteAtiva = false;
-    try { document.body.style.overflow = ''; } catch(e){}
+    // v33k.1030: a faixa continua no topo — não há mais o que desmontar, e é
+    // exatamente isso que quebra o laço: antes a navegação repunha o overlay
+    // que este botão acabara de fechar, e a pessoa voltava pra tela azul.
     if (typeof irParaPlanos === 'function') irParaPlanos();
   }
   window.lcIrUpgradeDaTrava = lcIrUpgradeDaTrava;
@@ -73772,6 +73874,9 @@ ${JSON.stringify(metricas, null, 2)}`
       }).then(x => x.json());
       if (r && r.ok && r.bloqueado === true) {
         mostrarTravaLimitePedidos(r.usados || 0, r.limite || 0);
+      } else if (r && r.ok && r.bloqueado === false) {
+        // fez upgrade ou o ciclo virou: a faixa some sozinha
+        if (typeof esconderTravaLimitePedidos === 'function') esconderTravaLimitePedidos();
       }
     } catch (e) { /* fail-open: nunca trava por erro */ }
   }
