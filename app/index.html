@@ -1765,19 +1765,24 @@
   // deixando origem e unidade no padrão silencioso. Era o segundo caminho de
   // cadastro fiscal da mesma tela, com os mesmos bugs em dobro (ignorava a
   // resposta da API, corrigido na v1068 só aqui e não no outro modal).
-  // Agora o cadastro fiscal tem UM caminho: _abrirModalProdutoFaltante.
+  // Agora o cadastro fiscal tem UM caminho: _abrirModalNcmEmMassa (Tributação).
 
   // v33k.1080: abre o cadastro fiscal COMPLETO a partir do modal de detalhes.
   // Espelha o _rpAbrirFiscal da revisão: mesmo modal, mesmo cadastro, só muda
   // de onde foi chamado.
+  // v33k.1081: TODO cadastro fiscal passa pelo modal de Tributação, o mesmo do
+  // lote, mesmo quando é um pedido só. Ele tem tabela, foto do produto, sugestão
+  // por IA, busca de NCM, edição em massa por coluna e a contagem de pedidos
+  // afetados. Manter um modal simplificado ao lado dele era ter duas telas pro
+  // mesmo cadastro, cada uma com seus bugs (foi assim que o "salvei o NCM e a
+  // NF recusou" sobreviveu à correção da v1068, que só pegou um dos caminhos).
   function _dpAbrirFiscal(indice) {
     const ctx = window._dpCtx || {};
     const it = (ctx.itens || [])[indice];
-    if (!it) return;
-    window._pfRetorno = { tipo: 'detalhes', indice };
-    _abrirModalProdutoFaltante(
-      [{ sku: it.sku, descricao: it.descricao, ncm: it.ncm || '', cest: it.cest || '' }],
-      ctx, null, document.getElementById('dpMsg')
+    if (!it || !ctx.orderSn) return;
+    _abrirModalNcmEmMassa(
+      [{ sku: it.sku, descricao: it.descricao || '', foto: it.foto || null, pedidos: [ctx.orderSn] }],
+      [ctx.orderSn]
     );
   }
   window._dpAbrirFiscal = _dpAbrirFiscal;
@@ -1946,7 +1951,7 @@
 
   // Salva os NCMs digitados na revisão (aprende p/ próximas vendas)
   // v33k.909: abre o modal fiscal COMPLETO a partir da revisão do pedido.
-  // Reaproveita `_abrirModalProdutoFaltante` (NCM, CEST, origem, unidade) em vez
+  // Reaproveita o modal de Tributação (o mesmo do lote) em vez
   // de duplicar formulário, é o mesmo cadastro, só muda de onde foi chamado.
   // Ao salvar, volta pra revisão com o NCM já preenchido na tabela.
   function _rpAbrirFiscal(indice) {
@@ -1954,11 +1959,10 @@
     const itens = ctx.itens || [];
     const it = itens[indice];
     if (!it) return;
-    // guarda o retorno: depois de salvar, reabrimos a revisão
-    window._pfRetorno = { tipo: 'revisao', indice };
-    _abrirModalProdutoFaltante(
-      [{ sku: it.sku, descricao: it.descricao, ncm: it.ncm || '', cest: it.cest || '' }],
-      ctx, ctx.destinatario || null, null
+    // v33k.1081: mesmo modal de Tributação do lote (ver _dpAbrirFiscal).
+    _abrirModalNcmEmMassa(
+      [{ sku: it.sku, descricao: it.descricao || '', foto: it.foto || null, pedidos: [ctx.orderSn] }],
+      ctx.orderSn ? [ctx.orderSn] : []
     );
   }
   window._rpAbrirFiscal = _rpAbrirFiscal;
@@ -2510,8 +2514,13 @@
     }
     // PENDÊNCIA DE NCM → abre modal SÓ de produto
     if (r.pendenteFiscal) {
-      if (!msgEl) _toast('Faltam NCMs, preencha os produtos.', true);
-      _abrirModalProdutoFaltante(r.pendentes || [], ctx, destinatario, msgEl);
+      // v33k.1081: mesmo modal do lote, mesmo com um pedido só.
+      if (!msgEl) _toast('Faltam dados fiscais, preencha para emitir.', true);
+      const pend = (r.pendentes || []).map(p => ({
+        sku: p.sku, descricao: p.descricao || '', foto: p.foto || null,
+        pedidos: ctx.orderSn ? [ctx.orderSn] : [],
+      }));
+      _abrirModalNcmEmMassa(pend, ctx.orderSn ? [ctx.orderSn] : []);
       return;
     }
     // DESTINATÁRIO INCOMPLETO → abre a revisão pra completar (tem CEP-autofill)
@@ -2620,122 +2629,16 @@
   }
 
   // MODAL SÓ DE PRODUTO (quando falta NCM ao emitir direto)
-  function _abrirModalProdutoFaltante(pendentes, ctx, destinatario, msgOrigem) {
-    _overlay('produtoFaltanteOverlay',
-      '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="package"></span> Dados do produto necessários</h2>' +
-      '<div style="font-size:12px;opacity:.9;margin-top:2px">Preencha os dados fiscais para emitir</div></div>',
-      '', 560);
-    const linhas = pendentes.map((p, i) =>
-      '<div style="' + card + '">' +
-        '<div style="font-weight:600;color:#0f172a;font-size:13px;margin-bottom:8px">' + _esc(p.sku) + '</div>' +
-        '<div style="font-size:12px;color:#64748b;margin-bottom:8px">' + _esc((p.descricao || '').slice(0, 60)) + '</div>' +
-        // v33k.908: além de NCM/CEST, ORIGEM e UNIDADE. Os dois já existiam na
-        // tabela `nfe_produtos_fiscal` e o backend assumia padrão silencioso
-        // (unidade 'UN', origem 0) quando não vinham. Agora o usuário vê e edita
-        // na hora de emitir, mercadoria importada precisa de origem 1/2, senão
-        // o CSOSN sai errado na nota.
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">' +
-          '<div><label style="' + lbl + '">NCM *</label><input id="pfNcm' + i + '" style="' + inp + '" placeholder="Ex: 64039990" value="' + _esc(p.ncm || '') + '"></div>' +
-          '<div><label style="' + lbl + '">CEST (opcional)</label><input id="pfCest' + i + '" style="' + inp + '" value="' + _esc(p.cest || '') + '"></div>' +
-        '</div>' +
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
-          '<div><label style="' + lbl + '">Origem *</label><select id="pfOrigem' + i + '" style="' + inp + '">' +
-            '<option value="0">0 - Nacional</option>' +
-            '<option value="1">1 - Estrangeira (importação direta)</option>' +
-            '<option value="2">2 - Estrangeira (mercado interno)</option>' +
-            '<option value="3">3 - Nacional (importação &gt; 40%)</option>' +
-            '<option value="4">4 - Nacional (processos básicos)</option>' +
-            '<option value="5">5 - Nacional (importação &lt;= 40%)</option>' +
-            '<option value="6">6 - Estrangeira (imp. direta, sem similar)</option>' +
-            '<option value="7">7 - Estrangeira (merc. interno, sem similar)</option>' +
-            '<option value="8">8 - Nacional (importação &gt; 70%)</option>' +
-          '</select></div>' +
-          '<div><label style="' + lbl + '">Unidade *</label><input id="pfUn' + i + '" style="' + inp + '" placeholder="UN" value="UN" maxlength="6"></div>' +
-        '</div>' +
-      '</div>').join('');
-    document.getElementById('produtoFaltanteOverlayBody').innerHTML =
-      '<div style="display:flex;gap:10px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:12.5px;color:#92400e;margin-bottom:14px">' +
-        '<span><span class="lc-ic" data-lucide="triangle-alert"></span></span><div>Estes produtos não têm cadastro fiscal. Preencha para emitir (salva para as próximas vendas).</div></div>' +
-      linhas +
-      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
-        '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'produtoFaltanteOverlay\').remove()">Cancelar</button>' +
-        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_pfSalvarEEmitir()">💾 Salvar e emitir</button>' +
-      '</div>';
-    _hidratarIcones(document.getElementById('produtoFaltanteOverlay'));
-    window._pfCtx = { pendentes, ctx, destinatario, msgOrigem: msgOrigem ? msgOrigem.id : null };
-  }
+  // v33k.1081: _abrirModalProdutoFaltante REMOVIDO.
+  // Era o terceiro modal de cadastro fiscal do sistema (junto do NCM avulso e
+  // do modal de Tributação). Três telas pro mesmo cadastro significavam três
+  // lugares pra o mesmo bug: a correção da v1068 pegou só um deles, e o
+  // "salvei o NCM e a NF recusou" continuou vivo pelos outros.
+  // Agora existe UM: _abrirModalNcmEmMassa (Tributação), usado tanto no lote
+  // quanto num pedido só.
 
-  async function _pfSalvarEEmitir() {
-    const { pendentes, ctx, destinatario } = window._pfCtx || {};
-    if (!pendentes) return;
-    for (let i = 0; i < pendentes.length; i++) {
-      const ncm = (document.getElementById('pfNcm' + i) || {}).value || '';
-      const cest = (document.getElementById('pfCest' + i) || {}).value || '';
-      const origem = (document.getElementById('pfOrigem' + i) || {}).value || '0';
-      const unidade = ((document.getElementById('pfUn' + i) || {}).value || 'UN').trim().toUpperCase();
-      if (!ncm.replace(/\D/g, '')) { _toast('Preencha o NCM de ' + pendentes[i].sku, true); return; }
-      if (ncm.replace(/\D/g, '').length !== 8) { _toast('O NCM de ' + pendentes[i].sku + ' precisa ter 8 dígitos', true); return; }
-      if (!unidade) { _toast('Preencha a unidade de ' + pendentes[i].sku, true); return; }
-      // ★ v33k.1080: a RESPOSTA precisa ser conferida.
-      // Este modal tinha o MESMO defeito que o outro (corrigido na v1068):
-      // ignorava o retorno e dizia "Produtos salvos" mesmo quando a gravação
-      // falhava. O usuário preenchia o NCM, via "salvo", e a emissão continuava
-      // acusando NCM não cadastrado. Corrigir só um dos dois modais deixou o
-      // bug vivo pela metade.
-      let resp = null;
-      try {
-        resp = await _api('/api/nfe/produtos-fiscal', {
-          method: 'POST',
-          body: JSON.stringify({
-            sku: pendentes[i].sku,
-            ncm: ncm.replace(/\D/g, ''),
-            cest: cest.replace(/\D/g, ''),
-            descricao: pendentes[i].descricao,
-            origem, unidade,
-          }),
-        });
-      } catch (e) { resp = { ok: false, erro: e.message }; }
-      if (!resp || resp.ok !== true) {
-        _toast('Não consegui salvar ' + pendentes[i].sku + ': ' + ((resp && resp.erro) || 'falha'), true);
-        return;   // não fecha o modal nem segue pra emissão
-      }
-    }
-    _toast('Produtos salvos');
-    document.getElementById('produtoFaltanteOverlay').remove();
-    // v33k.909: quando o modal foi aberto A PARTIR DA REVISÃO, não emitimos -
-    // devolvemos o usuário pra revisão com o cadastro já resolvido. Emitir na
-    // hora atropelaria a conferência de destinatário que ele estava fazendo.
-    const _ret = window._pfRetorno;
-    window._pfRetorno = null;
-    // v33k.1080: veio do modal de detalhes → atualiza a linha e reabre lá,
-    // sem emitir (mesma regra da revisão: não atropelar a conferência).
-    if (_ret && _ret.tipo === 'detalhes') {
-      const c = window._dpCtx || {};
-      const it = (c.itens || [])[_ret.indice];
-      if (it) {
-        const ncmSalvo = ((document.getElementById('pfNcm0') || {}).value || '').replace(/\D/g, '');
-        if (ncmSalvo) { it.ncm = ncmSalvo; it.temCadastroFiscal = true; }
-      }
-      if (typeof abrirDetalhesPedido === 'function' && c.lojaId && c.orderSn) {
-        try { abrirDetalhesPedido(c.lojaId, c.orderSn); } catch (_) {}
-      }
-      return;
-    }
-    if (_ret && _ret.tipo === 'revisao') {
-      const c = window._enfCtx || {};
-      const it = (c.itens || [])[_ret.indice];
-      if (it) {
-        const ncmSalvo = ((document.getElementById('pfNcm0') || {}).value || '').replace(/\D/g, '');
-        if (ncmSalvo) it.ncm = ncmSalvo;
-      }
-      if (typeof abrirRevisaoPedido === 'function' && c.lojaId && c.orderSn) {
-        await abrirRevisaoPedido(c.lojaId, c.orderSn);
-      }
-      return;
-    }
-    const msgEl = window._pfCtx.msgOrigem ? document.getElementById(window._pfCtx.msgOrigem) : null;
-    await _executarEmissao(ctx, destinatario, msgEl);
-  }
+  // (o salvamento daquele modal saiu junto: quem grava agora é o de Tributação)
+
 
   window.abrirRevisaoPedido = abrirRevisaoPedido;
   window.emitirDireto = emitirDireto;
@@ -2755,7 +2658,6 @@
   window._buscarCep = _buscarCep;
   window._rpSalvarNcms = _rpSalvarNcms;
   window._rpEmitirDaRevisao = _rpEmitirDaRevisao;
-  window._pfSalvarEEmitir = _pfSalvarEEmitir;
 
   // MODAL DE CLASSE FALTANTE (quando a empresa não tem classe ao emitir)
   function _abrirModalClasseFaltante(empresaId, ctx, destinatario, msgOrigem) {
@@ -56073,7 +55975,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1080-cadastro-fiscal-unico';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1081-tributacao-unica';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
