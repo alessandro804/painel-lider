@@ -55695,7 +55695,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1031-travas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1033-reset-contagem';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -56425,17 +56425,61 @@ Responda APENAS com JSON válido (sem markdown), formato:
     } catch(e) {}
     return [];
   }
-  // v33k.1031: no limite do plano, Lucro e Ads não abrem nem para ver — são
-  // os relatórios que o plano vende. O resto do sistema continua navegável:
-  // a pessoa precisa alcançar Configurações, Notas Fiscais e os downloads.
-  const TELAS_FECHADAS_NO_LIMITE = ['lucroScreen', 'adsScreen'];
+  // v33k.1032: Lucro e Ads continuam no menu e ABREM. Bloquear o acesso
+  // sumia com elas da navegação — a pessoa nem sabia que existiam, e some do
+  // radar justamente o recurso que a gente quer que ela assine.
+  // Agora a tela abre e mostra o convite de assinatura no lugar do conteúdo.
+  const TELAS_COM_PAYWALL_NO_LIMITE = ['lucroScreen', 'adsScreen'];
+
+  // v33k.1032: cobre o conteúdo da tela com o convite de assinatura, em vez de
+  // impedir a entrada. A tela continua no menu, a pessoa vê que o recurso
+  // existe e o que precisa fazer para ter — some do radar não vende nada.
+  //
+  // Esconde os filhos em vez de apagar: quando o plano volta, o conteúdo é
+  // restaurado sem precisar re-renderizar a tela inteira.
+  function _aplicarPaywall(screenId) {
+    const tela = document.getElementById(screenId);
+    if (!tela) return;
+    const alvo = tela.querySelector('.content') || tela;
+    const bloqueia = TELAS_COM_PAYWALL_NO_LIMITE.includes(screenId) &&
+      typeof _travaLimiteAtiva !== 'undefined' && _travaLimiteAtiva === true;
+    const existente = alvo.querySelector(':scope > .lc-paywall');
+
+    if (!bloqueia) {
+      if (existente) {
+        existente.remove();
+        Array.from(alvo.children).forEach(c => {
+          if (c.dataset && c.dataset.paywallOculto) { c.style.display = ''; delete c.dataset.paywallOculto; }
+        });
+      }
+      return;
+    }
+    if (existente) return;
+
+    Array.from(alvo.children).forEach(c => {
+      if (c.style.display !== 'none') { c.dataset.paywallOculto = '1'; c.style.display = 'none'; }
+    });
+    const nome = screenId === 'lucroScreen' ? 'Lucro' : 'Ads';
+    const div = document.createElement('div');
+    div.className = 'lc-paywall';
+    div.innerHTML =
+      '<div style="max-width:460px;margin:52px auto;text-align:center;background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:34px 28px">' +
+        '<div style="font-size:40px;margin-bottom:10px">🔒</div>' +
+        '<div style="font-size:19px;font-weight:800;color:#1e2a47;margin-bottom:10px">' + nome + ' faz parte do seu plano</div>' +
+        '<div style="font-size:13.5px;color:#6b7280;line-height:1.65;margin-bottom:20px">' +
+          'Você atingiu a quantidade máxima de pedidos do ciclo. Renove ou faça upgrade ' +
+          'para voltar a acompanhar ' + nome.toLowerCase() + '.<br><br>' +
+          'Enquanto isso, continua podendo navegar pelo sistema, consultar suas notas fiscais ' +
+          'e <b>baixar seus dados</b> normalmente.' +
+        '</div>' +
+        '<button onclick="lcIrUpgradeDaTrava()" style="width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;font-size:15px;font-weight:800;cursor:pointer">↑ Ver planos</button>' +
+      '</div>';
+    alvo.appendChild(div);
+  }
+  window._aplicarPaywall = _aplicarPaywall;
 
   function podeAcessarTela(screenId) {
     if (TELAS_SEMPRE_LIBERADAS.includes(screenId)) return true;
-    if (TELAS_FECHADAS_NO_LIMITE.includes(screenId) &&
-        typeof _travaLimiteAtiva !== 'undefined' && _travaLimiteAtiva === true) {
-      return false;
-    }
     // BLOQUEIO POR INADIMPLÊNCIA (Fatia 4): marketplace com assinatura vencida
     // só acessa Configurações (onde fica a tela de Planos pra regularizar).
     if (typeof acessoBloqueado === 'function' && acessoBloqueado()) {
@@ -57317,6 +57361,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // v33k.1013: o aviso do superadmin acompanha a navegação (aplicarPermissoesUI
     // só roda ao entrar em Configurações, então não serviria sozinho aqui).
     if (typeof atualizarBarraSuperadmin === 'function') atualizarBarraSuperadmin();
+    // v33k.1032: Lucro e Ads abrem, mas com o convite no lugar do conteúdo
+    if (typeof _aplicarPaywall === 'function') _aplicarPaywall(screenId);
     // v33k.646: em qualquer navegação, checa se o usuário estourou o limite de
     // pedidos do plano. Se sim, a trava (tela cheia) reaparece. Fail-open.
     if (screenId !== 'loginScreen') { try { verificarTravaLimitePedidos(); } catch(e){} }
@@ -73834,13 +73880,14 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!bar) {
       bar = document.createElement('div');
       bar.id = 'lcLimiteBar';
-      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99996;background:linear-gradient(90deg,#c2410c,#ea580c);color:#fff;padding:8px 16px;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.25)';
+      // mesmo padrão da barra de impersonação: presente, discreta, com uma ação
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#c2410c;color:#fff;padding:8px 16px;font-size:13px;font-weight:600;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.2)';
       document.body.appendChild(bar);
     }
     bar.innerHTML =
-      '<span>🚦 Limite do plano atingido — <b>' + Number(usados).toLocaleString('pt-BR') + '</b> de <b>' +
-      Number(limite).toLocaleString('pt-BR') + '</b> pedidos do ciclo. Novos pedidos não entram até o upgrade.</span>' +
-      '<button onclick="lcIrUpgradeDaTrava()" style="background:#fff;color:#c2410c;border:none;border-radius:8px;padding:5px 14px;font-weight:800;cursor:pointer;font-size:12.5px">Ver planos</button>';
+      '<span>Plano no limite — ' + Number(usados).toLocaleString('pt-BR') + ' de ' +
+      Number(limite).toLocaleString('pt-BR') + ' pedidos do ciclo</span>' +
+      '<button onclick="lcIrUpgradeDaTrava()" style="margin-left:12px;background:#fff;color:#c2410c;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer">↑ Renovar plano</button>';
     if (!document.body.style.paddingTop) document.body.style.paddingTop = '38px';
   }
   function esconderTravaLimitePedidos() {
