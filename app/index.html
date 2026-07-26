@@ -17767,10 +17767,25 @@ window.LC_SVG = {
         <option value="ended">Encerrados</option>
         <option value="_problemas">⚠ Só problemas</option>
       </select>
+      <select id="adsFiltroAcos" onchange="adsAplicarFiltros()" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+        <option value="">ACOS: todos</option>
+        <option value="alto">ACOS alto (acima de 15%)</option>
+        <option value="medio">ACOS médio (8% a 15%)</option>
+        <option value="baixo">ACOS baixo (até 8%)</option>
+        <option value="sem">Sem receita (ACOS indefinido)</option>
+      </select>
+      <select id="adsFiltroRoas" onchange="adsAplicarFiltros()" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+        <option value="">ROAS: todos</option>
+        <option value="bom">ROAS bom (7x ou mais)</option>
+        <option value="ok">ROAS ok (3x a 7x)</option>
+        <option value="ruim">ROAS ruim (abaixo de 3x)</option>
+      </select>
       <select id="adsOrdenar" onchange="adsAplicarFiltros()" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
         <option value="gasto">Ordenar: maior gasto</option>
         <option value="receita">Maior receita</option>
         <option value="acos_desc">Maior ACOS</option>
+        <option value="roas_desc">Maior ROAS</option>
+        <option value="roas_asc">Menor ROAS</option>
         <option value="acos_asc">Menor ACOS</option>
         <option value="vendas">Mais vendas</option>
       </select>
@@ -21688,7 +21703,14 @@ window.LC_SVG = {
     if (typeof raw === 'number') return isNaN(raw) ? 0 : raw;
     let s = String(raw).trim();
     if (!s) return 0;
-    s = s.replace(/[^\d.]/g, ''); // remove "R$", espaços, etc.
+    // v33k.1062 BUG DE PRODUÇÃO: esta linha removia também a VÍRGULA, e a linha
+    // seguinte perguntava se havia vírgula, que nunca havia. Resultado:
+    //   "199,90"   virava 19990    (cem vezes maior)
+    //   "R$ 59,90" virava 5990
+    //   "1.299,90" virava 1,2999
+    // O placeholder do campo é "199,90", ou seja, o formato que quebrava era
+    // exatamente o que a tela pedia pra digitar.
+    s = s.replace(/[^\d.,]/g, ''); // tira "R$" e espaços, PRESERVA . e ,
     if (!s) return 0;
     const temVirgula = s.includes(',');
     const temPonto = s.includes('.');
@@ -29575,7 +29597,7 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   // ================= TELA ADS (Shopee) =================
   let _adsSubaba = 'resumo';
-  let _adsResumoOrdem = 'receita'; // receita | acos | gasto | saldo
+  let _adsResumoOrdem = 'receita'; // receita | acos | roas | gasto | saldo
 
   let _adsCacheLojas = [];
   let _adsSelComp = null;
@@ -29710,7 +29732,12 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (btnRec) btnRec.style.display = loja ? '' : 'none';
     // barra de filtros só aparece na aba Anúncios
     const filtros = document.getElementById('adsFiltrosAnuncios');
-    if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && loja) ? 'flex' : 'none';
+    // v33k.1063: a barra some quando NÃO há nenhuma loja escolhida. Antes exigia
+    // `loja` (o hidden select), que fica vazio com seleção múltipla: desde que a
+    // aba passou a aceitar várias lojas, a busca e os filtros sumiam justamente
+    // quando havia mais anúncios pra filtrar.
+    const _temSel = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal().length : 0) > 0 || !!loja;
+    if (filtros) filtros.style.display = (_adsSubaba === 'anuncios' && _temSel) ? 'flex' : 'none';
     cont.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px">Carregando…</div>';
     try {
       if (_adsSubaba === 'anuncios') { await renderAdsAnuncios(cont, meuToken); return; }
@@ -30568,6 +30595,26 @@ Retorne JSON: {"ID": "valor", ...}`;
     return '#dc2626';
   }
 
+  // ROAS = receita paga ÷ gasto em Ads. É o inverso do ACOS, mas o lojista
+  // pensa nos dois: ACOS responde "quanto da venda foi pra Ads" e ROAS
+  // responde "cada real investido voltou quanto". Sem gasto não existe ROAS
+  // (divisão por zero), então devolvemos null em vez de Infinity.
+  function adsRoasDe(a) {
+    const gasto = Number(a && a.gastoAds) || 0;
+    if (gasto <= 0) return null;
+    const rec = Number(a && a.receitaPaga) || 0;
+    return Math.round((rec / gasto) * 100) / 100;
+  }
+
+  // Cor do ROAS: abaixo de 3x ruim, 3x a 7x na média, acima de 7x excelente.
+  // São os mesmos cortes do ACOS vistos do outro lado (ACOS 15% ≈ ROAS 6,7x).
+  function corRoas(r) {
+    if (r === null || r === undefined) return '#9ca3af';
+    if (r < 3) return '#dc2626';
+    if (r <= 7) return '#ca8a04';
+    return '#16a34a';
+  }
+
   // Taxa de conversão do Ads = vendas por Ads ÷ cliques × 100.
   // < 1% ruim (vermelho), 1–2% média (amarelo), > 2% excelente (verde).
   function corConversao(c) {
@@ -30882,12 +30929,33 @@ Retorne JSON: {"ID": "valor", ...}`;
       lista = lista.filter(a => a.status === status);
     }
 
+    // v33k.1063: filtros de eficiência. ROAS = receita paga ÷ gasto em Ads,
+    // calculado aqui a partir dos mesmos números do card (não vem do backend).
+    const fAcos = document.getElementById('adsFiltroAcos')?.value || '';
+    if (fAcos === 'sem') lista = lista.filter(a => a.acos === null || a.acos === undefined);
+    else if (fAcos === 'alto') lista = lista.filter(a => a.acos != null && a.acos > 15);
+    else if (fAcos === 'medio') lista = lista.filter(a => a.acos != null && a.acos > 8 && a.acos <= 15);
+    else if (fAcos === 'baixo') lista = lista.filter(a => a.acos != null && a.acos <= 8);
+
+    const fRoas = document.getElementById('adsFiltroRoas')?.value || '';
+    if (fRoas) {
+      lista = lista.filter(a => {
+        const r = adsRoasDe(a);
+        if (r === null) return false;   // sem gasto não tem ROAS: fica de fora
+        if (fRoas === 'bom') return r >= 7;
+        if (fRoas === 'ok') return r >= 3 && r < 7;
+        return r < 3;
+      });
+    }
+
     const ord = {
       gasto: (a, b) => b.gastoAds - a.gastoAds,
       receita: (a, b) => b.receitaPaga - a.receitaPaga,
       vendas: (a, b) => (b.unidades || 0) - (a.unidades || 0),
       acos_desc: (a, b) => (b.acos ?? -1) - (a.acos ?? -1),
       acos_asc: (a, b) => (a.acos ?? Infinity) - (b.acos ?? Infinity),
+      roas_desc: (a, b) => (adsRoasDe(b) ?? -1) - (adsRoasDe(a) ?? -1),
+      roas_asc: (a, b) => (adsRoasDe(a) ?? Infinity) - (adsRoasDe(b) ?? Infinity),
     }[ordem] || ((a, b) => b.gastoAds - a.gastoAds);
     lista.sort(ord);
 
@@ -30972,6 +31040,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   function cardAnuncio(a) {
     const acosCor = corAcos(a.acos);
     const acosTxt = a.acos === null ? '—' : a.acos + '%';
+    const _roasCard = adsRoasDe(a);   // null quando não houve gasto
     // inicial do produto pro placeholder (mais limpo que o emoji de caixa)
     const inicial = escapeHtml((String(a.nome || 'A').trim()[0] || 'A').toUpperCase());
     const placeholderThumb = '<div id="adsAnFoto-' + a.itemId + '" data-foto="0" style="width:72px;height:72px;border-radius:12px;background:linear-gradient(135deg,#eef2f7,#e2e8f0);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px;font-weight:800;color:#94a3b8">' + inicial + '</div>';
@@ -31030,6 +31099,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         metrica('Vendas', String(a.unidades || 0)) +
         metrica('Investimento em Ads', fmtBRL(a.gastoAds)) +
         metrica('ACOS', acosTxt, acosCor) +
+        metrica('ROAS', _roasCard === null ? '—' : (_roasCard.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + 'x'), corRoas(_roasCard)) +
         metrica('Conversão', (a.conversao === null || a.conversao === undefined) ? '—' : a.conversao + '%', corConversao(a.conversao)) +
       '</div>' +
       (acoes ? '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;justify-content:flex-end">' + acoes + '</div>' : '') +
@@ -31461,6 +31531,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     const cmp = {
       receita: (a, b) => (b.receitaPaga || 0) - (a.receitaPaga || 0),
       acos:    (a, b) => (b.acos || 0) - (a.acos || 0),
+      roas:    (a, b) => (adsRoasDe({ gastoAds: b.gastoAds, receitaPaga: b.receitaPaga }) ?? -1)
+                       - (adsRoasDe({ gastoAds: a.gastoAds, receitaPaga: a.receitaPaga }) ?? -1),
       gasto:   (a, b) => (b.gastoAds || 0) - (a.gastoAds || 0),
       saldo:   (a, b) => (b.saldoAds || 0) - (a.saldoAds || 0),
     }[_adsResumoOrdem] || ((a, b) => (b.receitaPaga || 0) - (a.receitaPaga || 0));
@@ -31482,7 +31554,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       '</div>' +
       '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
         '<span style="font-size:11px;color:#94a3b8;font-weight:600;margin-right:2px">Ordenar:</span>' +
-        chip('Receita', 'receita') + chip('ACOS', 'acos') + chip('Gasto Ads', 'gasto') + chip('Saldo', 'saldo') +
+        chip('Receita', 'receita') + chip('ACOS', 'acos') + chip('ROAS', 'roas') + chip('Gasto Ads', 'gasto') + chip('Saldo', 'saldo') +
       '</div>' +
     '</div>';
 
@@ -31495,6 +31567,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       const mktLabel = l.ehML ? 'Mercado Livre' : 'Shopee';
       const mktCor = l.ehML ? '#2d3277' : '#ee4d2d';
       const acosTxt = l.acos === null ? '—' : (String(l.acos).replace('.', ',') + '%');
+      const _roasLoja = adsRoasDe({ gastoAds: l.gastoAds, receitaPaga: l.receitaPaga });
       const sync = l.ultimaSync ? ('Última sincronização: ' + new Date(l.ultimaSync).toLocaleString('pt-BR')) : 'Sem sincronização';
 
       // selo "Ads não conectado" pra ML (ainda sem ETL de gasto)
@@ -31515,6 +31588,12 @@ Retorne JSON: {"ID": "valor", ...}`;
           '<div style="text-align:center;flex-shrink:0">' +
             '<div style="font-size:30px;font-weight:900;line-height:1;color:' + corAcos(l.acos) + '">' + acosTxt + '</div>' +
             '<div style="font-size:10px;color:#94a3b8;margin-top:2px;font-weight:600">ACOS</div>' +
+            // v33k.1063: ROAS ao lado do ACOS, calculado dos mesmos números da
+            // loja (receita paga ÷ gasto). Menor, porque o ACOS segue sendo o
+            // indicador que o motor persegue.
+            '<div style="font-size:13px;font-weight:800;line-height:1;margin-top:6px;color:' + corRoas(_roasLoja) + '">' +
+              (_roasLoja === null ? '—' : (_roasLoja.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + 'x')) + '</div>' +
+            '<div style="font-size:10px;color:#94a3b8;font-weight:600">ROAS</div>' +
           '</div>' +
         '</div>' +
 
@@ -55917,7 +55996,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1060-tpag';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1064-tiktok-na-tela';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -80034,7 +80113,13 @@ ${JSON.stringify(metricas, null, 2)}`
         const cIn = document.getElementById('demandaCoresInput'); if (cIn) cIn.value = d.coresInput || '';
         const tIn = document.getElementById('demandaTamanhosInput'); if (tIn) tIn.value = d.tamanhosInput || '';
         const skIn = document.getElementById('demandaSkuPai'); if (skIn) skIn.value = d.skuPai || '';
-        const pbIn = document.getElementById('demandaPrecoBase'); if (pbIn) pbIn.value = d.precoBase || '';
+        // v33k.1062: máscara de dinheiro no preço base. `_parsePrecoBR` (corrigido
+    // nesta mesma versão) entende "R$ 59,90", então quem lê continua funcionando.
+    const pbIn = document.getElementById('demandaPrecoBase');
+    if (pbIn) { mascaraMoeda(pbIn); porMoeda(pbIn, _parsePrecoBR(d.precoBase) || ''); }
+    // estoque é contagem: só dígitos, sem vírgula nem centavo
+    const esIn = document.getElementById('demandaEstoqueDefault');
+    if (esIn) mascaraSomenteDigitos(esIn, 6);
         const edIn = document.getElementById('demandaEstoqueDefault'); if (edIn) edIn.value = d.estoqueDefault || '10';
         window._demandaFotosPorCor = d.fotosPorCor ? JSON.parse(JSON.stringify(d.fotosPorCor)) : {};
         renderUploadFotosPorCor();
