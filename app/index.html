@@ -28984,13 +28984,13 @@ Retorne JSON: {"ID": "valor", ...}`;
         dotCor = '#f59e0b'; dotLabel = 'Token expirado'; tokenExpirado = true;
         expiraTxt = 'Token venceu — reconecte para atualizar';
       } else {
+        // v33k.1034: a contagem regressiva do token saiu. Ela renova sozinha —
+        // avisar de hora em hora quanto falta só cria preocupação com algo que
+        // a pessoa não controla e não precisa fazer nada a respeito.
+        // O que ela precisa saber continua aparecendo: quando o token VENCE de
+        // verdade, o card fica amarelo e diz para reconectar.
         dotCor = '#22c55e'; dotLabel = 'Conectada';
-        if (expiraEm) {
-          const horas = Math.floor(minutosRest / 60), mins = minutosRest % 60;
-          expiraTxt = `Token renova sozinho · expira em ${horas}h ${mins}min`;
-        } else {
-          expiraTxt = 'Token sem expiração definida';
-        }
+        expiraTxt = '';
       }
     }
 
@@ -29087,7 +29087,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           </div>
           <button onclick="abrirAjustesLoja('${loja.id}')" title="Ajustes da loja (imposto, ACOS, NF, CNPJ)" style="flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;background:#eef2ff;border:1px solid #c7d2fe;color:#4f46e5;font-size:11px;font-weight:700;padding:6px 10px;border-radius:9px;cursor:pointer" onmouseover="this.style.background='#e0e7ff'" onmouseout="this.style.background='#eef2ff'">⚙️ Ajustes</button>
         </div>
-        <div style="font-size:11px;color:#94a3b8;line-height:1.5;margin-bottom:12px">${expiraTxt}</div>
+        ${expiraTxt ? `<div style="font-size:11px;color:#94a3b8;line-height:1.5;margin-bottom:12px">${expiraTxt}</div>` : ''}
 
         ${(function () {
           // v33k.900: o vínculo cliente↔loja é recurso EXCLUSIVO de agência —
@@ -29142,26 +29142,9 @@ Retorne JSON: {"ID": "valor", ...}`;
       return new Date(s.expiraEm) < new Date();
     }).length;
     
-    const saudaveis = conectadas - expiradas;
-    
-    // Próxima a expirar
-    let proxima = null;
-    lojasErp.forEach(l => {
-      const s = statusPorLojaId[l.idBanco];
-      if (s && s.conectada && s.expiraEm) {
-        const exp = new Date(s.expiraEm);
-        if (exp > new Date()) {
-          if (!proxima || exp < proxima.exp) proxima = { exp, nome: l.nome };
-        }
-      }
-    });
-    let proximaTxt = '—';
-    if (proxima) {
-      const min = Math.floor((proxima.exp - new Date()) / 60000);
-      const h = Math.floor(min/60);
-      const m = min%60;
-      proximaTxt = h + 'h ' + m + 'min';
-    }
+    // v33k.1034: o cálculo de "próxima renovação" saiu junto com o card.
+    // `expiradas` continua — ele diz o que a pessoa PRECISA fazer (reconectar),
+    // e é a única informação de token que muda o comportamento dela.
     
     // v33k.638: mostra o uso vs. limite do plano (transparência)
     var _limiteLojas = (typeof planoLimiteLojas === 'function') ? planoLimiteLojas() : null;
@@ -29177,20 +29160,16 @@ Retorne JSON: {"ID": "valor", ...}`;
         <div class="stat-trend-v2${_noLimite ? ' down' : ''}">${_usoTxt}${_noLimite ? ' · limite atingido' : ''}</div>
       </div>
       <div class="stat-card-v2">
-        <div class="stat-label-v2">Tokens Saudáveis</div>
-        <div class="stat-value-v2">${saudaveis}</div>
-        <div class="stat-trend-v2 ${expiradas > 0 ? 'down' : 'up'}">${expiradas} expirado(s)</div>
-      </div>
-      <div class="stat-card-v2">
         <div class="stat-label-v2">Marketplaces Ativos</div>
         <div class="stat-value-v2">${new Set(lojasErp.filter(l => statusPorLojaId[l.idBanco]?.conectada).map(l => l.marketplace)).size}</div>
         <div class="stat-trend-v2">De 4 disponíveis</div>
       </div>
+      ${expiradas > 0 ? `
       <div class="stat-card-v2">
-        <div class="stat-label-v2">Próxima Renovação</div>
-        <div class="stat-value-v2" style="font-size:20px">${proximaTxt}</div>
-        <div class="stat-trend-v2">${proxima ? proxima.nome : 'Nenhuma loja ativa'}</div>
-      </div>
+        <div class="stat-label-v2">Precisam reconectar</div>
+        <div class="stat-value-v2">${expiradas}</div>
+        <div class="stat-trend-v2 down">clique em Reconectar na loja</div>
+      </div>` : ''}
     `;
   }
 
@@ -46014,6 +45993,10 @@ São o mesmo produto?`;
           categoryIdMl: anuncio.categoryIdMl || anuncio.categoria || null,
           // v32c: campos específicos Shopee preservados
           categoryIdShopee: anuncio.categoryIdShopee || null,
+          // v33k.1035: idem TikTok. Sem isso, reexportar o produto chamaria o
+          // Recommend Category de novo e podia mudar a categoria do anúncio.
+          categoryIdTiktok: anuncio.categoryIdTiktok || null,
+          atributosTikTok: anuncio.atributosTikTok || null,
           esquemaVariacoes: anuncio.esquemaVariacoes ? JSON.parse(JSON.stringify(anuncio.esquemaVariacoes)) : null,
           atributosMl: anuncio.atributosMl || {},
           preco: anuncio.preco || 0,
@@ -46149,6 +46132,14 @@ São o mesmo produto?`;
       // Enriquece categoria/atributos se vieram do anuncio e produto nao tinha
       if (!produtoInterno.categoryIdMl && anuncio.categoryIdMl) {
         produtoInterno.categoryIdMl = anuncio.categoryIdMl;
+      }
+      // v33k.1035: mesma ideia pro TikTok. Só preenche o que está vazio —
+      // cadastro local feito à mão continua mandando.
+      if (!produtoInterno.categoryIdTiktok && anuncio.categoryIdTiktok) {
+        produtoInterno.categoryIdTiktok = anuncio.categoryIdTiktok;
+      }
+      if (!produtoInterno.atributosTikTok && anuncio.atributosTikTok) {
+        produtoInterno.atributosTikTok = anuncio.atributosTikTok;
       }
       if (anuncio.atributosMl && Object.keys(anuncio.atributosMl).length > 0) {
         if (!produtoInterno.atributosMl) produtoInterno.atributosMl = {};
@@ -55695,7 +55686,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1033-reset-contagem';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1035-tiktok-produtos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
