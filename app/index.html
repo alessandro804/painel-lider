@@ -30577,47 +30577,224 @@ Retorne JSON: {"ID": "valor", ...}`;
     return '#16a34a';
   }
 
-  // ---- Sub-aba ANÚNCIOS (cards com foto + filtros client-side) ----
-  let _adsAnunciosCache = [];
+  // ═══════════════════════════════════════════════════════════════
+  // MÁSCARAS DE CAMPO (v33k.1059)
+  // ═══════════════════════════════════════════════════════════════
+  // Dinheiro preenche DA DIREITA PRA ESQUERDA, como maquininha:
+  //   digita 5 → R$ 0,05 · 9 → R$ 0,59 · 9 → R$ 5,99 · 0 → R$ 59,90
+  //
+  // ⚠️ O PERIGO AQUI NÃO É A MÁSCARA, É A LEITURA.
+  // O campo passa a exibir "R$ 59,90". Qualquer código que faça
+  // parseFloat(el.value) nesse texto devolve NaN (ou 59, se sobrar dígito),
+  // e o preço vai ERRADO pro marketplace, calado. Por isso:
+  //   1) o valor numérico fica em el.dataset.num, que é a fonte de verdade;
+  //   2) quem lê usa lerMoeda(el), NUNCA parseFloat(el.value);
+  //   3) quem escreve usa porMoeda(el, valor), pra máscara e dataset casarem.
+  // Converter um campo sem converter os leitores dele é trocar um incômodo
+  // de digitação por um erro de preço.
+  function _soDigitosStr(v) { return String(v == null ? '' : v).replace(/\D/g, ''); }
 
-  async function renderAdsAnuncios(cont, meuToken) {
-    const { dias, loja } = adsParams();
-    const headers = { 'x-api-token': getApiToken() };
+  function fmtMoedaBR(n) {
+    return 'R$ ' + (Number(n) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
 
-    if (!loja) {
-      _adsAnunciosCache = [];
-      cont.innerHTML = '<div style="padding:24px;text-align:center;color:#6b7280;background:#f9fafb;border-radius:10px">' +
-        'Escolha uma loja no filtro acima para ver os anúncios.<br>' +
-        '<span style="font-size:12px;color:#9ca3af">(O resumo de todas as lojas fica na aba "Resumo por loja".)</span></div>';
+  // Lê o valor numérico de um campo com máscara de dinheiro.
+  // Aceita também campo ainda não convertido (número puro) pra não quebrar
+  // durante a migração gradual.
+  function lerMoeda(el) {
+    if (!el) return 0;
+    if (el.dataset && el.dataset.num !== undefined && el.dataset.num !== '') return Number(el.dataset.num) || 0;
+    const txt = String(el.value == null ? '' : el.value).trim();
+    if (!txt) return 0;
+    if (/^[0-9]+([.][0-9]+)?$/.test(txt)) return Number(txt) || 0;   // campo antigo, número puro
+    const d = _soDigitosStr(txt);
+    return d ? (parseInt(d, 10) / 100) : 0;
+  }
+
+  // Escreve um valor numérico num campo com máscara.
+  function porMoeda(el, valor) {
+    if (!el) return;
+    const n = Number(valor);
+    if (!Number.isFinite(n) || valor === '' || valor === null || valor === undefined) {
+      el.value = ''; if (el.dataset) el.dataset.num = '';
       return;
     }
+    if (el.dataset) el.dataset.num = String(n);
+    el.value = fmtMoedaBR(n);
+  }
+
+  // Liga a máscara de dinheiro num campo. Idempotente: chamar duas vezes
+  // não duplica o listener.
+  function mascaraMoeda(el) {
+    if (!el || el.dataset._mascara === 'moeda') return;
+    if (el.type === 'number') el.type = 'text';       // number não aceita "R$"
+    el.setAttribute('inputmode', 'decimal');
+    el.dataset._mascara = 'moeda';
+    if (el.value !== '' && el.value != null) porMoeda(el, lerMoeda(el));  // formata o que já estava lá
+    const aplicar = () => {
+      const d = _soDigitosStr(el.value).replace(/^0+(?=\d)/, '');  // tira zero à esquerda
+      if (!d) { el.value = ''; el.dataset.num = ''; return; }
+      const n = parseInt(d.slice(0, 12), 10) / 100;                // teto: evita estouro
+      el.dataset.num = String(n);
+      el.value = fmtMoedaBR(n);
+      // cursor sempre no fim: a digitação é da direita pra esquerda
+      try { const f = el.value.length; el.setSelectionRange(f, f); } catch (_) {}
+    };
+    el.addEventListener('input', aplicar);
+    el.addEventListener('focus', () => { try { const f = el.value.length; el.setSelectionRange(f, f); } catch (_) {} });
+  }
+
+  // Só dígitos (EAN, código, quantidade inteira).
+  function mascaraSomenteDigitos(el, maxLen) {
+    if (!el || el.dataset._mascara === 'digitos') return;
+    if (el.type === 'number') el.type = 'text';
+    el.setAttribute('inputmode', 'numeric');
+    el.dataset._mascara = 'digitos';
+    el.addEventListener('input', () => {
+      let d = _soDigitosStr(el.value);
+      if (maxLen) d = d.slice(0, maxLen);
+      if (el.value !== d) el.value = d;
+    });
+  }
+
+  // Número decimal (peso, dimensão): dígitos e UMA vírgula/ponto.
+  // Não é dinheiro, então NÃO preenche da direita pra esquerda: peso 0,45 se
+  // digita como 0,45 mesmo.
+  function mascaraDecimal(el, casas) {
+    if (!el || el.dataset._mascara === 'decimal') return;
+    if (el.type === 'number') el.type = 'text';
+    el.setAttribute('inputmode', 'decimal');
+    el.dataset._mascara = 'decimal';
+    const max = casas == null ? 3 : casas;
+    el.addEventListener('input', () => {
+      let v = String(el.value).replace(/[^0-9.,]/g, '').replace(/\./g, ',');
+      const partes = v.split(',');
+      v = partes.shift() + (partes.length ? ',' + partes.join('').slice(0, max) : '');
+      if (el.value !== v) el.value = v;
+    });
+  }
+
+  // Lê decimal aceitando vírgula.
+  function lerDecimal(el) {
+    if (!el) return 0;
+    const n = parseFloat(String(el.value == null ? '' : el.value).replace(',', '.'));
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  window.lerMoeda = lerMoeda; window.porMoeda = porMoeda; window.fmtMoedaBR = fmtMoedaBR;
+  window.mascaraMoeda = mascaraMoeda; window.mascaraSomenteDigitos = mascaraSomenteDigitos;
+  window.mascaraDecimal = mascaraDecimal; window.lerDecimal = lerDecimal;
+
+  // ---- Sub-aba ANÚNCIOS (cards com foto + filtros client-side) ----
+  let _adsAnunciosCache = [];
+  // Aviso fixo no topo da lista (teto de lojas, loja que não respondeu).
+  // Declarado aqui de propósito: usar sem declarar foi exatamente o que
+  // derrubou o fluxo de criar anúncio (_cacheShopeeCategorias, v33k.1057).
+  let _adsAvisoTopo = '';
+
+  // Limite de lojas por render. Cada loja é uma chamada; sem teto, marcar
+  // "todas as contas" com 33 lojas dispararia 33 requisições de uma vez.
+  const ADS_MAX_LOJAS = 12;
+
+  async function renderAdsAnuncios(cont, meuToken) {
+    const { dias } = adsParams();
+    const headers = { 'x-api-token': getApiToken() };
+
+    // v33k.1058: a aba passou a aceitar VÁRIAS lojas.
+    // Antes lia o hidden <select adsLojaFiltro>, que por desenho (v33k.373) só
+    // recebe valor quando existe EXATAMENTE uma loja selecionada. Com 2 ou mais
+    // contas marcadas ele fica vazio e a tela pedia "escolha uma loja no filtro
+    // acima", mesmo com o filtro preenchido. Não era erro do usuário: a aba
+    // simplesmente não sabia trabalhar com seleção múltipla.
+    const selecionadas = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : [])
+      .map(String).filter(Boolean);
+    const lojaUnica = document.getElementById('adsLojaFiltro')?.value || '';
+    let alvos = selecionadas.length ? selecionadas : (lojaUnica ? [lojaUnica] : []);
+
+    if (!alvos.length) {
+      _adsAnunciosCache = [];
+      cont.innerHTML = '<div style="padding:24px;text-align:center;color:#6b7280;background:#f9fafb;border-radius:10px">' +
+        'Selecione ao menos uma loja no filtro acima para ver os anúncios.</div>';
+      return;
+    }
+
+    let avisoTeto = '';
+    if (alvos.length > ADS_MAX_LOJAS) {
+      // corta, mas AVISA: truncar calado é como o número da tela mente.
+      avisoTeto = '<div style="padding:10px 12px;margin-bottom:10px;background:#fffbeb;border:1px solid #fde68a;' +
+        'border-radius:8px;font-size:12px;color:#92400e">Mostrando as ' + ADS_MAX_LOJAS + ' primeiras de ' +
+        alvos.length + ' lojas selecionadas. Reduza a seleção para ver as demais.</div>';
+      alvos = alvos.slice(0, ADS_MAX_LOJAS);
+    }
+
+    const nomePorLoja = {};
+    (_adsCacheLojas && _adsCacheLojas.length ? _adsCacheLojas
+      : lojasErp.map(l => ({ id: l.idBanco, nome: l.nome }))).forEach(l => {
+        if (l && l.id != null) nomePorLoja[String(l.id)] = l.nome || ('Loja ' + l.id);
+      });
 
     // JANELA (v33k.471): manda desde/ate quando o usuário escolheu período custom
     // (ex.: só 07-07). Antes convertíamos pra "dias" via getPeriodoDias, que tinha
     // off-by-one (07-07 virava 2 dias) E perdia a data exata (janelaDiasBR conta de
     // ontem pra trás). Com desde/ate o backend usa o intervalo EXATO, o gasto por
     // anúncio passa a bater com a Shopee no período selecionado.
-    let _adsUrl = BACKEND_URL + '/api/ads/loja/' + loja + '/anuncios';
     const _pg = (typeof getPeriodoGlobal === 'function') ? getPeriodoGlobal() : null;
-    if (_pg && _pg.custom && _pg.custom.desde && _pg.custom.ate) {
-      _adsUrl += '?desde=' + encodeURIComponent(_pg.custom.desde) + '&ate=' + encodeURIComponent(_pg.custom.ate);
-    } else {
-      _adsUrl += '?dias=' + dias;
+    const _sufixo = (_pg && _pg.custom && _pg.custom.desde && _pg.custom.ate)
+      ? ('?desde=' + encodeURIComponent(_pg.custom.desde) + '&ate=' + encodeURIComponent(_pg.custom.ate))
+      : ('?dias=' + dias);
+
+    // uma chamada por loja, em blocos, pra não disparar tudo de uma vez
+    const juntos = [];
+    const semAdsEm = [];
+    const errosEm = [];
+    const LOTE = 4;
+    for (let i = 0; i < alvos.length; i += LOTE) {
+      const fatia = alvos.slice(i, i + LOTE);
+      const resps = await Promise.all(fatia.map(async (id) => {
+        try {
+          const r = await fetch(BACKEND_URL + '/api/ads/loja/' + id + '/anuncios' + _sufixo, { headers })
+            .then(x => x.json());
+          return { id, r };
+        } catch (e) { return { id, r: { ok: false, erro: e.message } }; }
+      }));
+      if (meuToken != null && meuToken !== _adsRenderToken) return; // outro render assumiu
+      resps.forEach(({ id, r }) => {
+        if (!r || !r.ok) {
+          if (r && r.semAds) semAdsEm.push(id);
+          else errosEm.push({ id, erro: (r && r.erro) || 'falha' });
+          return;
+        }
+        (r.anuncios || []).forEach(a => {
+          a.lojaId = String(id);
+          a.lojaNome = nomePorLoja[String(id)] || ('Loja ' + id);
+          juntos.push(a);
+        });
+      });
     }
-    const r = await fetch(_adsUrl, { headers }).then(x => x.json());
-    if (meuToken != null && meuToken !== _adsRenderToken) return; // outro render assumiu
-    if (!r.ok) {
-      if (r.semAds) { cont.innerHTML = blocoSemAds(); return; }
-      cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + (r.erro || 'falha') + '</div>';
-      return;
-    }
-    if (!r.anuncios || r.anuncios.length === 0) {
+
+    // Todas sem Ads: mostra o bloco explicativo, não um vazio seco.
+    if (!juntos.length && semAdsEm.length === alvos.length) { cont.innerHTML = blocoSemAds(); return; }
+
+    if (!juntos.length) {
       _adsAnunciosCache = [];
-      cont.innerHTML = blocoVazio('Nenhum anúncio com dados nesse período.', loja);
+      const detalhe = errosEm.length
+        ? '<div style="margin-top:8px;font-size:12px;color:#b91c1c">' + errosEm.length +
+          ' loja(s) com erro: ' + escapeHtml(errosEm.slice(0, 3).map(e => (nomePorLoja[e.id] || e.id) + ' (' + e.erro + ')').join(', ')) + '</div>'
+        : '';
+      cont.innerHTML = avisoTeto + blocoVazio('Nenhum anúncio com dados nesse período.', alvos.length === 1 ? alvos[0] : '') + detalhe;
       return;
     }
 
-    _adsAnunciosCache = r.anuncios;
+    // Loja com erro não pode sumir calada: o total na tela ficaria menor sem motivo.
+    if (errosEm.length) {
+      avisoTeto += '<div style="padding:10px 12px;margin-bottom:10px;background:#fef2f2;border:1px solid #fecaca;' +
+        'border-radius:8px;font-size:12px;color:#b91c1c">' + errosEm.length +
+        ' loja(s) não responderam e ficaram de fora: ' +
+        escapeHtml(errosEm.slice(0, 3).map(e => nomePorLoja[e.id] || e.id).join(', ')) + '</div>';
+    }
+    _adsAvisoTopo = avisoTeto;
+
+    _adsAnunciosCache = juntos;
     adsDesenharAnuncios();
     // corrige os status (selo ativo/pausado) com a verdade ao vivo da Shopee,
     // porque o ETL (ads_diario) pode estar defasado.
@@ -30629,30 +30806,47 @@ Retorne JSON: {"ID": "valor", ...}`;
   let _adsStatusToken = 0;
   async function adsCorrigirStatusAoVivo() {
     const meu = ++_adsStatusToken;
-    const loja = document.getElementById('adsLojaFiltro')?.value || '';
-    if (!loja || !_adsAnunciosCache.length) return;
-    const itemIds = _adsAnunciosCache.map(a => String(a.itemId)).filter(Boolean);
-    if (!itemIds.length) return;
+    if (!_adsAnunciosCache.length) return;
+    // v33k.1058: agrupa por loja. Antes usava o hidden select (uma loja só), então
+    // com seleção múltipla o status ao vivo corrigiria os anúncios da loja errada,
+    // ou de nenhuma. Cada item vai pra chamada da SUA loja.
+    const porLoja = {};
+    _adsAnunciosCache.forEach(a => {
+      const lj = String(a.lojaId || document.getElementById('adsLojaFiltro')?.value || '');
+      const it = String(a.itemId || '');
+      if (!lj || !it) return;
+      (porLoja[lj] = porLoja[lj] || []).push(it);
+    });
+    if (!Object.keys(porLoja).length) return;
     try {
       // v33k.347: o backend corrige no MÁXIMO 60 itens por chamada. Antes o front
       // mandava TODOS de uma vez, então anúncios além do 60º nunca tinham o status
       // corrigido ao vivo, ficavam presos no status defasado do ETL (aparecendo
       // "pausado" mesmo já ativos). Agora paginamos em lotes de 60 e mesclamos.
       const LOTE = 60;
+      // status por LOJA: o mesmo itemId pode existir em lojas diferentes, então
+      // a chave do mapa precisa carregar a loja junto, senão uma sobrescreve a
+      // outra e o selo sai trocado.
       const statusMerged = {};
-      for (let i = 0; i < itemIds.length; i += LOTE) {
-        const fatia = itemIds.slice(i, i + LOTE);
-        const r = await fetch(BACKEND_URL + '/api/ads/loja/' + loja + '/status-ao-vivo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-          body: JSON.stringify({ itemIds: fatia }),
-        }).then(x => x.json());
-        if (meu !== _adsStatusToken || _adsSubaba !== 'anuncios') return; // trocou de tela/loja
-        if (r && r.ok && r.status) Object.assign(statusMerged, r.status);
+      for (const lj of Object.keys(porLoja)) {
+        const ids = porLoja[lj];
+        for (let i = 0; i < ids.length; i += LOTE) {
+          const fatia = ids.slice(i, i + LOTE);
+          const r = await fetch(BACKEND_URL + '/api/ads/loja/' + lj + '/status-ao-vivo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+            body: JSON.stringify({ itemIds: fatia }),
+          }).then(x => x.json()).catch(() => null);
+          if (meu !== _adsStatusToken || _adsSubaba !== 'anuncios') return; // trocou de tela/loja
+          if (r && r.ok && r.status) {
+            Object.keys(r.status).forEach(it => { statusMerged[lj + '|' + it] = r.status[it]; });
+          }
+        }
       }
       let mudou = false;
       _adsAnunciosCache.forEach(a => {
-        const novo = statusMerged[String(a.itemId)];
+        const lj = String(a.lojaId || document.getElementById('adsLojaFiltro')?.value || '');
+        const novo = statusMerged[lj + '|' + String(a.itemId)];
         // só corrige quando o backend tem resposta definitiva e difere do atual
         if (novo !== undefined && novo !== null && novo !== a.status) {
           a.status = novo; mudou = true;
@@ -30699,7 +30893,11 @@ Retorne JSON: {"ID": "valor", ...}`;
 
     // contador
     const cont2 = document.getElementById('adsContador');
-    if (cont2) cont2.textContent = lista.length + ' de ' + _adsAnunciosCache.length + ' anúncios';
+    if (cont2) {
+      const nLojas = new Set(_adsAnunciosCache.map(a => String(a.lojaId || ''))).size;
+      cont2.textContent = lista.length + ' de ' + _adsAnunciosCache.length + ' anúncios' +
+        (nLojas > 1 ? (' · ' + nLojas + ' lojas') : '');
+    }
 
     // aviso se ninguém tem gasto
     const algumGasto = _adsAnunciosCache.some(a => a.gastoAds > 0);
@@ -30710,11 +30908,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
 
     if (lista.length === 0) {
-      cont.innerHTML = aviso + '<div style="padding:24px;text-align:center;color:#9ca3af;background:#f9fafb;border-radius:10px">Nenhum anúncio com esses filtros.</div>';
+      cont.innerHTML = (_adsAvisoTopo || '') + aviso + '<div style="padding:24px;text-align:center;color:#9ca3af;background:#f9fafb;border-radius:10px">Nenhum anúncio com esses filtros.</div>';
       return;
     }
 
-    let html = aviso + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px">';
+    let html = (_adsAvisoTopo || '') + aviso + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px">';
     lista.forEach(a => { html += cardAnuncio(a); });
     html += '</div>';
     html += '<div style="font-size:10px;color:#9ca3af;margin-top:12px">ACOS = gasto em Ads ÷ receita paga × 100 (só pedidos pagos). "—" = sem receita no período. &nbsp;·&nbsp; Conversão = vendas por Ads ÷ cliques × 100 (abaixo de 1% ruim, 1–2% na média, acima de 2% excelente).</div>';
@@ -30785,8 +30983,17 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (a.gastouSemVender) alerta = '<span style="font-size:10px;background:#fef2f2;color:#b91c1c;padding:2px 7px;border-radius:5px">gastou s/ vender</span>';
     else if (a.vendeuSemAnunciar) alerta = '<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;padding:2px 7px;border-radius:5px">vendeu s/ anunciar</span>';
 
-    const loja = document.getElementById('adsLojaFiltro')?.value || '';
+    // v33k.1058: a loja vem DO ANÚNCIO, não do filtro. Com seleção múltipla, ler
+    // o hidden select faria os botões (pausar, ativar, ROAS) agirem na loja
+    // errada, ou em nenhuma, porque ele fica vazio quando há mais de uma
+    // selecionada. O fallback cobre o caso de cache antigo sem lojaId.
+    const loja = String(a.lojaId || document.getElementById('adsLojaFiltro')?.value || '');
     const nomeEsc = (a.nome || ('Item ' + a.itemId)).replace(/'/g, "\\'").replace(/"/g, '');
+    // selo da loja: só faz sentido quando há mais de uma na lista
+    const _nLojasCard = new Set(_adsAnunciosCache.map(x => String(x.lojaId || ''))).size;
+    const seloLoja = (_nLojasCard > 1 && a.lojaNome)
+      ? '<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 7px;border-radius:5px;font-weight:700">' + escapeHtml(a.lojaNome) + '</span>'
+      : '';
 
     // ações conforme status
     let acoes = '';
@@ -30811,7 +31018,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         '<div style="flex:1;min-width:0">' +
           '<div style="font-weight:700;color:#1e293b;font-size:14px;line-height:1.3;margin-bottom:3px">' + escapeHtml(a.nome || ('Item ' + a.itemId)) + '</div>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-            '<span style="font-size:11px;color:#3b82f6;font-weight:600">' + a.itemId + '</span>' + alerta +
+            '<span style="font-size:11px;color:#3b82f6;font-weight:600">' + a.itemId + '</span>' + seloLoja + alerta +
           '</div>' +
         '</div>' +
         '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0">' +
@@ -35361,7 +35568,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     // Campos
     document.getElementById('v31EditTitulo').value = perso.titulo || '';
     document.getElementById('v31EditDescricao').value = perso.descricao || '';
-    document.getElementById('v31EditPreco').value = perso.preco || '';
+    mascaraMoeda(document.getElementById('v31EditPreco'));
+    porMoeda(document.getElementById('v31EditPreco'), perso.preco || '');
     
     document.getElementById('v31EditTituloHerda').textContent = 
       perso.titulo ? '' : ('Herda: "' + (p.nome || '').slice(0,60) + '"');
@@ -35705,7 +35913,8 @@ Retorne JSON: {"ID": "valor", ...}`;
   function v31ColetarPersonalizado() {
     const titulo = document.getElementById('v31EditTitulo').value.trim();
     const descricao = document.getElementById('v31EditDescricao').value.trim();
-    const precoStr = document.getElementById('v31EditPreco').value.trim();
+    // v33k.1059: campo mascarado. lerMoeda devolve o número; o texto agora é "R$ 59,90".
+    const precoNum = lerMoeda(document.getElementById('v31EditPreco'));
     
     // Cores: pega só as marcadas
     const cores = Array.from(document.querySelectorAll('.v31-edit-cor:checked')).map(c => c.dataset.cor);
@@ -35714,7 +35923,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     const perso = {};
     if (titulo) perso.titulo = titulo;
     if (descricao) perso.descricao = descricao;
-    if (precoStr) perso.preco = parseFloat(precoStr.replace(',', '.'));
+    if (precoNum > 0) perso.preco = precoNum;
     // Só salva coresAtivas se NÃO está com todas marcadas (todas = herda)
     if (!todasMarcadas && cores.length > 0) perso.coresAtivas = cores;
     
@@ -35814,12 +36023,14 @@ Retorne JSON: {"ID": "valor", ...}`;
     // Atualiza só o que mudou, o resto do anúncio fica intacto.
     const tituloAtual = (document.getElementById('v31EditTitulo').value || '').trim();
     const descAtual = (document.getElementById('v31EditDescricao').value || '').trim();
-    const precoAtual = (document.getElementById('v31EditPreco').value || '').trim();
+    // comparação NUMÉRICA: com máscara, comparar texto marcaria "mudou" sempre
+    // ("R$ 59,90" nunca é igual ao 59.9 guardado no original).
+    const precoAtualNum = lerMoeda(document.getElementById('v31EditPreco'));
     
     const camposPropagar = [];
     if (tituloAtual !== (_v31ValoresOriginais.titulo || '')) camposPropagar.push('titulo');
     if (descAtual !== (_v31ValoresOriginais.descricao || '')) camposPropagar.push('descricao');
-    if (precoAtual !== (_v31ValoresOriginais.preco || '')) camposPropagar.push('preco');
+    if (precoAtualNum !== (Number(_v31ValoresOriginais.preco) || 0)) camposPropagar.push('preco');
     // Cores: se o usuário mexeu nos checkboxes (sempre verifica)
     camposPropagar.push('cores');
     
@@ -37585,8 +37796,13 @@ Retorne JSON: {"ID": "valor", ...}`;
     document.getElementById('prodNome').value = '';
     document.getElementById('prodSku').value = '';
     document.getElementById('prodEan').value = '';
-    document.getElementById('prodPreco').value = '';
+    porMoeda(document.getElementById('prodPreco'), '');
     document.getElementById('prodPeso').value = '';
+    // v33k.1059: liga as máscaras. mascaraX é idempotente, então chamar toda
+    // vez que o formulário abre não empilha listener.
+    mascaraMoeda(document.getElementById('prodPreco'));
+    mascaraDecimal(document.getElementById('prodPeso'), 3);
+    mascaraSomenteDigitos(document.getElementById('prodEan'), 14);
     document.getElementById('prodDescricao').value = '';
     // v32j.1: limpa palavras-chave SEO
     const pkSEOEl = document.getElementById('prodPalavrasChaveSEO');
@@ -40257,7 +40473,10 @@ REGRAS DURAS:
     document.getElementById('prodNome').value = p.nome || '';
     document.getElementById('prodSku').value = p.skuPai || '';
     document.getElementById('prodEan').value = p.ean || '';
-    document.getElementById('prodPreco').value = p.preco || '';
+    mascaraMoeda(document.getElementById('prodPreco'));
+    mascaraDecimal(document.getElementById('prodPeso'), 3);
+    mascaraSomenteDigitos(document.getElementById('prodEan'), 14);
+    porMoeda(document.getElementById('prodPreco'), p.preco || '');
     document.getElementById('prodPeso').value = p.peso || '';
     document.getElementById('prodDescricao').value = p.descricao || '';
     // v32j.1: carrega palavras-chave SEO
@@ -42168,7 +42387,7 @@ REGRAS DURAS:
     // Atributos regulatórios tipo FDA NÃO entram aqui, ficam vazios de propósito.
     let nDefaults = 0;
     const pesoProduto = parseFloat(document.getElementById('prodShopeePeso')?.value) 
-      || parseFloat(document.getElementById('prodPeso')?.value) || 0.5;
+      || lerDecimal(document.getElementById('prodPeso')) || 0.5;
     attrs.forEach(a => {
       if (produto.atributosShopee[a.attribute_id]) return; // já preenchido
       const nomeNorm = (a.nome || '').toLowerCase();
@@ -42282,7 +42501,7 @@ REGRAS DURAS:
     const marca = (document.getElementById('prodMarca')||{}).value || '';
     const material = (document.getElementById('prodMaterial')||{}).value || '';
     const categoria = (document.getElementById('prodCategoria')||{}).value || '';
-    const peso = (document.getElementById('prodPeso')||{}).value || '';
+    const peso = lerDecimal(document.getElementById('prodPeso')) || '';
     
     // Primeira foto do produto (pra IA analisar visualmente quando texto for fraco)
     const primeiraFoto = (_fotosProdutoSessao && _fotosProdutoSessao.length > 0) 
@@ -42788,8 +43007,8 @@ REGRAS DURAS:
       ean: document.getElementById('prodEan').value.trim(),
       lojaId: document.getElementById('prodLoja').value,
       categoria: document.getElementById('prodCategoria').value,
-      preco: parseFloat(document.getElementById('prodPreco').value) || 0,
-      peso: parseFloat(document.getElementById('prodShopeePeso')?.value) || parseFloat(document.getElementById('prodPeso')?.value) || 0,
+      preco: lerMoeda(document.getElementById('prodPreco')) || 0,   // v33k.1059: campo mascarado, NUNCA parseFloat(value)
+      peso: parseFloat(document.getElementById('prodShopeePeso')?.value) || lerDecimal(document.getElementById('prodPeso')) || 0,
       descricao: document.getElementById('prodDescricao').value.trim(),
       // v32j.1: salva palavras-chave SEO (CSV → array)
       palavrasChaveSEO: ((document.getElementById('prodPalavrasChaveSEO')||{}).value || '')
@@ -55698,7 +55917,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1057-fix-cache-categorias';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1060-tpag';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
