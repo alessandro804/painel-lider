@@ -7309,6 +7309,18 @@
     el.style.maxWidth = '100%';
     el.innerHTML =
       '<div id="dfStats"></div>' +
+      // v33k.1025: Kits mora aqui agora. Saiu da barra principal de Notas
+      // Fiscais porque não é ferramenta do mesmo nível que "emitir NF" — é
+      // composição de produto, e o lugar de tratar produto e código fiscal
+      // é esta tela.
+      '<div style="display:flex;align-items:center;gap:10px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;padding:10px 13px;margin-bottom:12px">' +
+        '<span style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9px;background:#ccfbf1;color:#0f766e;flex-shrink:0"><span class="lc-ic" data-lucide="package-search"></span></span>' +
+        '<div style="flex:1;min-width:150px">' +
+          '<div style="font-size:13px;font-weight:700;color:#0f766e">Kits na Nota</div>' +
+          '<div style="font-size:11.5px;color:#0f766e;opacity:.85">Um kit vendido sai na nota como vários itens — diga de que cada um é feito</div>' +
+        '</div>' +
+        '<button class="lc-btn lc-btn--sm" style="background:#0d9488;color:#fff" onclick="abrirKitsFiscais()">Abrir</button>' +
+      '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' +
         '<input id="dfBusca" placeholder="🔍 Buscar SKU ou nome…" oninput="_dfSetBusca(this.value)" style="' + inp + ';flex:1;min-width:170px">' +
         '<select id="dfStatus" onchange="_dfSetStatus(this.value)" style="' + inp + ';max-width:160px">' +
@@ -16762,11 +16774,6 @@ window.LC_SVG = {
             <span><span style="display:block;font-size:13.5px;font-weight:700;color:var(--lc-ink)">NCM dos Produtos</span>
             <span style="display:block;font-size:11.5px;color:var(--lc-muted)">Código fiscal de cada produto</span></span>
           </button>
-          <button data-nf-tool="kits" onclick="abrirKitsFiscais()" title="Um kit vendido como um item só precisa sair na nota como vários. Aqui você diz de que cada kit é feito." style="display:flex;align-items:center;gap:10px;text-align:left;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:12px;padding:12px 14px;cursor:pointer;transition:box-shadow .15s,border-color .15s" onmouseover="this.style.borderColor='#0d9488';this.style.boxShadow='0 2px 8px rgba(13,148,136,.12)'" onmouseout="this.style.borderColor='var(--lc-border)';this.style.boxShadow='none'">
-            <span style="display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;background:#ccfbf1;color:#0f766e;flex-shrink:0"><span class="lc-ic" data-lucide="package-search"></span></span>
-            <span><span style="display:block;font-size:13.5px;font-weight:700;color:var(--lc-ink)">Kits na Nota</span>
-            <span style="display:block;font-size:11.5px;color:var(--lc-muted)">1 kit vendido = vários itens na NF</span></span>
-          </button>
           <button data-nf-tool="notas" onclick="abrirCentralNotas()" title="Todas as NF-e já emitidas: baixar DANFE e XML, cancelar ou devolver" style="display:flex;align-items:center;gap:10px;text-align:left;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:12px;padding:12px 14px;cursor:pointer;transition:box-shadow .15s,border-color .15s" onmouseover="this.style.borderColor='#16a34a';this.style.boxShadow='0 2px 8px rgba(22,163,74,.12)'" onmouseout="this.style.borderColor='var(--lc-border)';this.style.boxShadow='none'">
             <span style="display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;background:#dcfce7;color:#15803d;flex-shrink:0"><span class="lc-ic" data-lucide="file-check-2"></span></span>
             <span><span style="display:block;font-size:13.5px;font-weight:700;color:var(--lc-ink)">Notas Emitidas</span>
@@ -19318,6 +19325,9 @@ window.LC_SVG = {
       <button class="op-new-btn" onclick="abrirAdicionarLoja()">+ Adicionar nova loja</button>
     </div>
     
+    <!-- v33k.1023: progresso da primeira carga (fica enquanto ela roda) -->
+    <div id="cargaInicialPainel"></div>
+
     <!-- Conteúdo: cards agrupados por marketplace -->
     <div id="lojasConexoesLista"></div>
   </div>
@@ -25871,8 +25881,15 @@ Retorne JSON: {"ID": "valor", ...}`;
           }
           // Atualiza info de conta conectada (independente de já ter idBanco)
           if (correspondente.contaConectada !== local.contaConectada) {
+            const acabouDeConectar = !local.contaConectada && !!correspondente.contaConectada;
             local.contaConectada = correspondente.contaConectada;
             mudou = true;
+            // v33k.1023: é aqui que os quatro marketplaces se encontram —
+            // qualquer um deles passa por esta reconciliação ao conectar.
+            // Disparar daqui evita repetir a mesma regra em quatro callbacks.
+            if (acabouDeConectar && typeof _ciDispararSeNova === 'function') {
+              _ciDispararSeNova(local);
+            }
           }
           if (correspondente.conta) {
             local.contaInfo = correspondente.conta;
@@ -28612,6 +28629,161 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window._dropAlternarProduto = _dropAlternarProduto;
 
+  // ═══════════════════════════════════════════════════════════════════
+  // CARGA INICIAL — PROGRESSO E DISPARO AUTOMÁTICO (v33k.1023b)
+  // ═══════════════════════════════════════════════════════════════════
+  // Duas coisas que faltavam para a primeira integração funcionar sozinha:
+  //
+  //   1. COMEÇAR. Antes, conectar uma loja não disparava nada — os dados só
+  //      apareciam se a pessoa descobrisse o botão Sincronizar. Agora, quando
+  //      uma loja passa de "não conectada" para "conectada", a carga começa.
+  //      O gatilho fica na reconciliação com o banco, que é o único ponto por
+  //      onde os quatro marketplaces passam. Enganchar nos quatro retornos de
+  //      OAuth seria a mesma regra em quatro lugares.
+  //
+  //   2. MOSTRAR. Aviso que some em três segundos não serve para um processo
+  //      de vinte minutos. O painel abaixo fica na tela enquanto a carga corre.
+  const _ciEstado = { cargas: [], carregando: false, disparadas: new Set() };
+
+  async function _ciCarregarStatus() {
+    if (_ciEstado.carregando) return _ciEstado.cargas;
+    _ciEstado.carregando = true;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/lojas/carga-inicial/status', {
+        headers: {
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || ''),
+          'x-api-token': getApiToken(),
+        },
+      });
+      const d = await r.json().catch(() => ({}));
+      _ciEstado.cargas = (d && d.ok && Array.isArray(d.cargas)) ? d.cargas : [];
+      _ciEstado.aviso = d && d.aviso;
+    } catch (e) { /* silencioso: é informação extra, não pode atrapalhar a tela */ }
+    _ciEstado.carregando = false;
+    return _ciEstado.cargas;
+  }
+
+  function _ciDaLoja(idBanco) {
+    return _ciEstado.cargas.find(c => String(c.loja_id) === String(idBanco)) || null;
+  }
+
+  // Chamado pela reconciliação quando uma loja acabou de ficar conectada.
+  async function _ciDispararSeNova(loja) {
+    if (!loja || !loja.idBanco) return;
+    const chave = String(loja.idBanco);
+    if (_ciEstado.disparadas.has(chave)) return;   // já disparei nesta sessão
+    await _ciCarregarStatus();
+    if (_ciDaLoja(loja.idBanco)) return;           // já tem carga registrada
+    _ciEstado.disparadas.add(chave);
+    console.log('[carga-inicial] loja recém-conectada:', loja.nome, '— iniciando primeira carga');
+    try {
+      await acaoLojaSincronizar(loja.id, { primeiraCarga: true });
+    } catch (e) {
+      console.warn('[carga-inicial] falhou ao iniciar:', e.message);
+    }
+    await _ciCarregarStatus();
+    _ciRenderPainel();
+  }
+
+  function _ciRenderPainel() {
+    const alvo = document.getElementById('cargaInicialPainel');
+    if (!alvo) return;
+    const emCurso = _ciEstado.cargas.filter(c => c.status === 'rodando');
+    const comErro = _ciEstado.cargas.filter(c => c.status === 'erro');
+    const parciais = _ciEstado.cargas.filter(c => c.status === 'concluida' && c.incompleta_motivo);
+
+    if (!emCurso.length && !comErro.length && !parciais.length) { alvo.innerHTML = ''; return; }
+
+    const nomeLoja = (id) => {
+      const l = (typeof lojasErp !== 'undefined' ? lojasErp : []).find(x => String(x.idBanco) === String(id));
+      return l ? l.nome : ('loja ' + id);
+    };
+    const desde = (iso) => {
+      if (!iso) return '';
+      const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+      if (min < 1) return 'começou agora';
+      if (min < 60) return 'há ' + min + ' min';
+      return 'há ' + Math.floor(min / 60) + 'h' + (min % 60 ? (min % 60) + 'min' : '');
+    };
+
+    let html = '';
+
+    emCurso.forEach(c => {
+      const naVez = c.etapa === 'vendas';
+      // O número real informa mais do que uma promessa de prazo: "340 de 1.200"
+      // diz onde está e quanto falta; "pode demorar horas" não diz nada.
+      const detalhe = naVez
+        ? ('Anúncios prontos: <b>' + (c.anuncios_prontos || 0) + '</b>. Agora buscando as vendas dos últimos 30 dias.')
+        : ('Trazendo os anúncios' + (c.anuncios_total ? ' — <b>' + (c.anuncios_prontos || 0) + ' de ' + c.anuncios_total + '</b>' : '') + '.');
+      html +=
+        '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:13px 15px;margin-bottom:10px">' +
+          '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+            '<span style="font-size:14px;font-weight:800;color:#1e3a8a">Primeira carga · ' + escapeHtml(nomeLoja(c.loja_id)) + '</span>' +
+            '<span style="font-size:11.5px;color:#3b82f6;background:#dbeafe;border-radius:99px;padding:2px 10px;font-weight:700">' +
+              (naVez ? 'etapa 2 de 2 · vendas' : 'etapa 1 de 2 · anúncios') + '</span>' +
+            '<div style="flex:1"></div>' +
+            '<span style="font-size:11.5px;color:#64748b">' + desde(c.iniciada_em) + '</span>' +
+          '</div>' +
+          '<div style="font-size:12.5px;color:#1e40af;line-height:1.55">' + detalhe + '</div>' +
+          '<div style="height:6px;background:#dbeafe;border-radius:99px;margin-top:9px;overflow:hidden">' +
+            '<div style="height:100%;width:' + (naVez ? '70' : '30') + '%;background:#3b82f6;border-radius:99px"></div>' +
+          '</div>' +
+          '<div style="font-size:11.5px;color:#64748b;margin-top:7px">' +
+            (naVez
+              ? 'Esta etapa roda no servidor — pode fechar a aba que ela continua.'
+              : 'Mantenha esta aba aberta até os anúncios terminarem. Depois disso pode fechar.') +
+          '</div>' +
+        '</div>';
+    });
+
+    parciais.forEach(c => {
+      html +=
+        '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:13px 15px;margin-bottom:10px">' +
+          '<div style="font-size:13.5px;font-weight:800;color:#92400e;margin-bottom:4px">Carga concluída em parte · ' + escapeHtml(nomeLoja(c.loja_id)) + '</div>' +
+          '<div style="font-size:12.5px;color:#92400e;line-height:1.5">' +
+            (c.anuncios_prontos || 0) + ' anúncio(s) e ' + (c.vendas_prontas || 0) + ' venda(s) chegaram, mas nem tudo veio: ' +
+            escapeHtml(String(c.incompleta_motivo).slice(0, 180)) +
+          '</div>' +
+          '<div style="font-size:11.5px;color:#a16207;margin-top:6px">Clique em <b>Sincronizar</b> na loja para completar.</div>' +
+        '</div>';
+    });
+
+    comErro.forEach(c => {
+      html +=
+        '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:13px 15px;margin-bottom:10px">' +
+          '<div style="font-size:13.5px;font-weight:800;color:#b91c1c;margin-bottom:4px">A primeira carga parou · ' + escapeHtml(nomeLoja(c.loja_id)) + '</div>' +
+          '<div style="font-size:12.5px;color:#b91c1c;line-height:1.5">' + escapeHtml(String(c.erro || 'motivo não registrado').slice(0, 220)) + '</div>' +
+          '<div style="font-size:11.5px;color:#991b1b;margin-top:6px">Clique em <b>Sincronizar</b> na loja para tentar de novo.</div>' +
+        '</div>';
+    });
+
+    alvo.innerHTML = html;
+  }
+
+  // Enquanto houver carga rodando, atualiza sozinho. Para quando acaba —
+  // um timer eterno numa aba esquecida é chamada à toa a cada 15 segundos.
+  let _ciTimer = null;
+  function _ciAcompanhar() {
+    if (_ciTimer) return;
+    _ciTimer = setInterval(async () => {
+      await _ciCarregarStatus();
+      _ciRenderPainel();
+      if (!_ciEstado.cargas.some(c => c.status === 'rodando')) {
+        clearInterval(_ciTimer); _ciTimer = null;
+      }
+    }, 15000);
+  }
+
+  async function _ciAtualizarPainel() {
+    await _ciCarregarStatus();
+    _ciRenderPainel();
+    if (_ciEstado.cargas.some(c => c.status === 'rodando')) _ciAcompanhar();
+  }
+
+  window._ciAtualizarPainel = _ciAtualizarPainel;
+  window._ciDispararSeNova = _ciDispararSeNova;
+  window._ciCarregarStatus = _ciCarregarStatus;
+
   async function renderLojasConexoes(opts) {
     opts = opts || {};
     const lista = document.getElementById('lojasConexoesLista');
@@ -29276,6 +29448,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     closeAddLoja();
     showToast('✓ Loja "' + nome + '" criada');
     renderLojasConexoes();
+    if (typeof _ciAtualizarPainel === 'function') _ciAtualizarPainel();
     
     // Pergunta se quer conectar AGORA (fluxo natural: criou → conecta)
     const info = MK_INFO[mk];
@@ -31253,12 +31426,44 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.adsSincronizarTodas = adsSincronizarTodas;
   
-  async function acaoLojaSincronizar(lojaLocalId) {
+  // ═══ CARGA INICIAL (v33k.1023) ═══════════════════════════════════
+  // A primeira sincronização de uma loja é diferente das seguintes: é ela
+  // que traz tudo do zero, demora, e é a que dá ao novo usuário a impressão
+  // de que o sistema funciona (ou não). Antes ela não avisava nada.
+  //
+  // A ordem é anúncios → vendas por necessidade, não preferência: venda que
+  // chega antes do catálogo fica sem foto, sem nome e sem vínculo.
+  //
+  // Esta etapa (anúncios) roda aqui no navegador porque é aqui que o catálogo
+  // é gravado. Ao terminar, avisamos o servidor, que assume a etapa das
+  // vendas por conta própria — daí em diante pode fechar a aba.
+  async function _ciAvisar(lojaIdBanco, caminho, corpo) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/lojas/' + lojaIdBanco + '/carga-inicial' + (caminho || ''), {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || ''),
+          'x-api-token': getApiToken(), 'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(corpo || {}),
+      });
+      return await r.json().catch(() => ({}));
+    } catch (e) { return {}; }
+  }
+
+  async function acaoLojaSincronizar(lojaLocalId, opts) {
     const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
     if (!loja) return;
     const lojaIdBanco = await garantirLojaNoBanco(loja);
     if (!lojaIdBanco) { showToast('⚠️ Loja não está no banco'); return; }
-    
+
+    // primeira carga: registra o início e explica a espera antes de começar
+    const ehPrimeira = !!(opts && opts.primeiraCarga);
+    if (ehPrimeira) {
+      await _ciAvisar(lojaIdBanco, '', {});
+      showToast('Primeira carga de ' + loja.nome + ': trazendo os anúncios. As vendas vêm em seguida, sozinhas.');
+    }
+
     showToast('🔄 Sincronizando ' + loja.nome + '...');
     try {
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/sincronizar', {
@@ -31304,7 +31509,19 @@ Retorne JSON: {"ID": "valor", ...}`;
         }
         showToast(msg);
         renderProdutos();
-        
+
+        // v33k.1023: catálogo gravado — o servidor assume as vendas daqui.
+        // A partir deste ponto pode fechar a aba: a etapa 2 roda no agendador.
+        if (ehPrimeira) {
+          const r2 = await _ciAvisar(lojaIdBanco, '/anuncios-prontos', {
+            total: anuncios.length, prontos: anuncios.length, dias: 30,
+          });
+          if (r2 && r2.ok) {
+            showToast('✓ ' + anuncios.length + ' anúncio(s) de ' + loja.nome +
+              '. Agora as vendas dos últimos 30 dias — isso roda no servidor, pode fechar a aba.');
+          }
+        }
+
         // Mostra modal de notificação se houver banimentos não lidos
         setTimeout(() => notificarBanimentos(), 400);
       }
@@ -31312,7 +31529,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       showToast('⚠ Erro: ' + e.message, true);
     }
   }
-  
+
   async function acaoLojaDesconectar(lojaLocalId) {
     const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
     if (!loja || !loja.idBanco) return;
@@ -42437,7 +42654,115 @@ REGRAS DURAS:
     return subindo;
   }
   
+  // ═══════════════════════════════════════════════════════════════════
+  // CRIAR E JÁ EXPORTAR (v33k.1027)
+  // ═══════════════════════════════════════════════════════════════════
+  // Cadastrar um produto e anunciá-lo eram duas viagens: salvava, fechava,
+  // achava o produto na lista, abria o menu, exportava. Para quem está
+  // subindo catálogo novo, isso multiplica por dezenas.
+  //
+  // Um detalhe de ordem que importa mais do que parece: a exportação começa
+  // recarregando os produtos do backend. Se ela rodar antes da gravação
+  // terminar, o produto recém-criado some do cache local e a exportação
+  // falha com "produto não encontrado". Por isso o convite só aparece
+  // DEPOIS que o backend confirmou — e as fotos já viraram URL pública, que
+  // é o que o ML aceita (base64 estoura o limite de tamanho).
+  function _ceOferecerExport(produto) {
+    if (!produto) return;
+    const lojas = (typeof lojasErp !== 'undefined' ? lojasErp : [])
+      .filter(l => l.idBanco && (l.contaConectada || l.conectada));
+    if (!lojas.length) return;   // sem loja conectada não há o que oferecer
+
+    let ov = document.getElementById('ceOverlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'ceOverlay';
+      ov.className = 'overlay';
+      ov.onclick = (e) => { if (e.target.id === 'ceOverlay') _ceFechar(); };
+      document.body.appendChild(ov);
+    }
+
+    const porMk = {};
+    lojas.forEach(l => { (porMk[l.marketplace] = porMk[l.marketplace] || []).push(l); });
+
+    ov.innerHTML =
+      '<div class="modal" style="max-width:520px;width:94%">' +
+        '<div style="padding:16px 20px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:16px;font-weight:800;color:#1e2a47">Anunciar agora?</div>' +
+          '<div style="font-size:12px;color:#6b7280;margin-top:2px">' + escapeHtml(produto.nome) + ' foi salvo. Escolha onde publicar.</div>' +
+        '</div>' +
+        '<div style="padding:16px 20px;max-height:52vh;overflow-y:auto">' +
+          Object.keys(porMk).map(mk =>
+            '<div style="margin-bottom:12px">' +
+              '<div style="font-size:11.5px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:6px">' + escapeHtml(mk) + '</div>' +
+              porMk[mk].map(l =>
+                '<label style="display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:9px;margin-bottom:6px;cursor:pointer">' +
+                  '<input type="checkbox" class="ceLoja" value="' + escapeHtml(String(l.idBanco)) + '" ' +
+                    'data-mk="' + escapeHtml(mk) + '" data-local="' + escapeHtml(String(l.id)) + '" style="width:16px;height:16px">' +
+                  '<span style="font-size:13px;color:#111827">' + escapeHtml(l.nome) + '</span>' +
+                '</label>').join('') +
+            '</div>').join('') +
+          '<div style="font-size:11.5px;color:#9ca3af;line-height:1.5">' +
+            'A exportação valida os dados obrigatórios de cada marketplace antes de publicar. ' +
+            'Se faltar algo, ela avisa e não cria o anúncio pela metade.' +
+          '</div>' +
+        '</div>' +
+        '<div style="padding:14px 20px;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;gap:8px">' +
+          '<button onclick="_ceFechar()" style="padding:9px 16px;background:#fff;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;font-size:13px">Agora não</button>' +
+          '<button id="ceBtnExportar" onclick="_ceExportar(\'' + String(produto.id) + '\')" style="padding:9px 18px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">Publicar</button>' +
+        '</div>' +
+      '</div>';
+    ov.classList.add('active');
+  }
+
+  function _ceFechar() {
+    const ov = document.getElementById('ceOverlay');
+    if (ov) ov.classList.remove('active');
+  }
+
+  async function _ceExportar(produtoId) {
+    const marcadas = Array.from(document.querySelectorAll('.ceLoja:checked'));
+    if (!marcadas.length) { showToast('Escolha ao menos uma loja', true); return; }
+
+    const btn = document.getElementById('ceBtnExportar');
+    if (btn) { btn.disabled = true; btn.textContent = 'Publicando…'; }
+
+    const ok = [];
+    const falhas = [];
+    for (const cb of marcadas) {
+      const mk = cb.dataset.mk;
+      const nomeLoja = cb.parentNode.textContent.trim();
+      try {
+        // uma loja por vez: publicar em paralelo dispara várias chamadas
+        // simultâneas ao mesmo marketplace e esbarra no limite de taxa
+        const r = await exportarProdutoMarketplace(produtoId, mk, { lojaIdBanco: cb.value, lojaId: cb.dataset.local });
+        if (r && r.ok) ok.push(nomeLoja); else falhas.push(nomeLoja + ': ' + ((r && r.erro) || 'falhou'));
+      } catch (e) {
+        falhas.push(nomeLoja + ': ' + e.message);
+      }
+    }
+
+    if (btn) { btn.disabled = false; btn.textContent = 'Publicar'; }
+    _ceFechar();
+
+    if (ok.length && !falhas.length) {
+      showToast('✓ Publicado em ' + ok.join(', '));
+    } else if (ok.length) {
+      showToast('Publicado em ' + ok.join(', ') + '. Falhou: ' + falhas.join(' | '), true);
+    } else {
+      showToast('Não publicou: ' + falhas.join(' | '), true);
+    }
+    if (typeof renderProdutos === 'function') renderProdutos();
+  }
+
+  window._ceOferecerExport = _ceOferecerExport;
+  window._ceFechar = _ceFechar;
+  window._ceExportar = _ceExportar;
+
+  let _ceProdutoNovo = false;
+
   async function salvarProduto() {
+    _ceProdutoNovo = false;
     const nome = document.getElementById('prodNome').value.trim();
     if (!nome) { showToast('Informe o nome do produto', true); return; }
     
@@ -42543,6 +42868,7 @@ REGRAS DURAS:
         criadoEm: new Date().toISOString()
       };
       produtosErp.push(produtoSalvo);
+      _ceProdutoNovo = true;   // v33k.1027: só oferece publicar em produto NOVO
     }
     
     // Guarda o guia na biblioteca da loja (reaproveita se já existir igual)
@@ -42579,9 +42905,16 @@ REGRAS DURAS:
             }
             saveProdutos();
             renderProdutos();
+            // v33k.1027: só agora. Exportar antes disso recarregaria os
+            // produtos do backend por cima do cache e o recém-criado sumiria.
+            if (_ceProdutoNovo && typeof _ceOferecerExport === 'function') {
+              _ceProdutoNovo = false;
+              setTimeout(() => _ceOferecerExport(produtoSalvo), 350);
+            }
           }
         })
         .catch(err => {
+          _ceProdutoNovo = false;
           showToast('⚠ Produto salvo localmente, mas não sincronizou: ' + err.message, true);
         });
     }
@@ -42896,8 +43229,18 @@ REGRAS DURAS:
     // cai pra rota legada (que usa a 1a loja conectada do marketplace).
     let urlExportar;
     let lojaIdBanco = null;  // v31b.7: declara no escopo da função pra disponível no try{} depois
+
+    // v33k.1027: destino explícito tem precedência sobre a loja do produto.
+    // Sem isto, quem chama pedindo "publica na loja X" era ignorado em
+    // silêncio e o anúncio ia para a loja de origem do produto — o que
+    // inviabiliza publicar o mesmo produto em mais de uma conta.
+    if (opts && opts.lojaIdBanco) {
+      lojaIdBanco = opts.lojaIdBanco;
+      urlExportar = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + produtoParaExportar.idBanco;
+    }
+
     const lojaProduto = lojasErp.find(l => String(l.id) === String(p.lojaId));
-    if (lojaProduto) {
+    if (!urlExportar && lojaProduto) {
       lojaIdBanco = await garantirLojaNoBanco(lojaProduto);
       if (lojaIdBanco) {
         urlExportar = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/exportar/' + produtoParaExportar.idBanco;
@@ -46153,12 +46496,301 @@ São o mesmo produto?`;
   
   let _produtoVinculosAtual = null;
   
+  // ═══════════════════════════════════════════════════════════════════
+  // VÍNCULO VARIAÇÃO POR VARIAÇÃO (v33k.1026)
+  // ═══════════════════════════════════════════════════════════════════
+  // O backend já aceitava mapeamento por variação — faltava a tela. Sem ela,
+  // só dava para vincular o anúncio INTEIRO, e aí toda variação nossa
+  // apontava para o mesmo anúncio sem dizer qual é qual. Estoque e preço
+  // iam para o lugar errado.
+  //
+  // A parte que faz isso ser usável não é a tela: é o casamento automático
+  // por SKU. Mapear 30 variações à mão, uma a uma, é pior do que não ter o
+  // recurso. Aqui ele chega com tudo já preenchido pelo SKU e a pessoa só
+  // corrige o que ficou em branco.
+  const _vvEstado = { produto: null, loja: null, anuncio: null, varsAnuncio: [], mapa: {}, busca: '', achados: [] };
+
+  function _vvApi(caminho, opts) {
+    return fetch(BACKEND_URL + caminho, Object.assign({
+      headers: {
+        'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || ''),
+        'x-api-token': getApiToken(),
+        'Content-Type': 'application/json',
+      },
+    }, opts || {})).then(r => r.json()).catch(() => ({ ok: false, erro: 'falha de rede' }));
+  }
+
+  // SKU: ignora espaço, hífen, underscore e ponto — "fly pto 38" e "FLY-PTO-38"
+  // são o mesmo SKU escrito por pessoas diferentes.
+  const _vvNorm = (v) => String(v || '').trim().toLowerCase().replace(/[\s\-_.]/g, '');
+  // Rótulo: mais agressivo. O marketplace escreve "Azul · 40" e nós guardamos
+  // cor e tamanho separados; qualquer pontuação atrapalha a comparação.
+  // Também tira acento, senão "Bege" e "bêge" não casam.
+  const _vvNormRot = (v) => String(v || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  function abrirVincularPorVariacao(produtoId) {
+    const produto = produtosErp.find(p => String(p.id) === String(produtoId));
+    if (!produto) { showToast('Produto não encontrado', true); return; }
+    if (!(produto.variacoes || []).length) {
+      showToast('Este produto não tem variações. Use o vínculo do anúncio inteiro.', true);
+      return;
+    }
+    _vvEstado.produto = produto;
+    _vvEstado.loja = null; _vvEstado.anuncio = null;
+    _vvEstado.varsAnuncio = []; _vvEstado.mapa = {}; _vvEstado.busca = ''; _vvEstado.achados = [];
+
+    let ov = document.getElementById('vvOverlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'vvOverlay';
+      ov.className = 'overlay';
+      ov.onclick = (e) => { if (e.target.id === 'vvOverlay') _vvFechar(); };
+      ov.innerHTML =
+        '<div class="modal" style="max-width:860px;width:96%;max-height:92vh;display:flex;flex-direction:column">' +
+          '<div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px">' +
+            '<div style="flex:1"><div style="font-size:16px;font-weight:800;color:#1e2a47">Vincular variação por variação</div>' +
+            '<div id="vvSub" style="font-size:12px;color:#6b7280"></div></div>' +
+            '<button onclick="_vvFechar()" style="background:none;border:none;font-size:22px;color:#9ca3af;cursor:pointer">×</button>' +
+          '</div>' +
+          '<div id="vvCorpo" style="padding:16px 20px;overflow-y:auto;flex:1"></div>' +
+        '</div>';
+      document.body.appendChild(ov);
+    }
+    ov.classList.add('active');
+    document.getElementById('vvSub').textContent = produto.nome + ' · ' + (produto.variacoes || []).length + ' variação(ões)';
+    _vvRender();
+  }
+
+  function _vvFechar() {
+    const ov = document.getElementById('vvOverlay');
+    if (ov) ov.classList.remove('active');
+  }
+
+  function _vvRender() {
+    const c = document.getElementById('vvCorpo');
+    if (!c) return;
+    const e = _vvEstado;
+
+    // ── passo 1: a loja ──
+    const lojas = (typeof lojasErp !== 'undefined' ? lojasErp : [])
+      .filter(l => l.idBanco && (l.contaConectada || l.conectada));
+    if (!e.loja) {
+      c.innerHTML = !lojas.length
+        ? '<div style="padding:24px;text-align:center;color:#6b7280">Nenhuma loja conectada. Conecte uma em <b>Lojas &amp; Conexões</b>.</div>'
+        : '<div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:10px">1. Em qual loja está o anúncio?</div>' +
+          lojas.map(l =>
+            '<button onclick="_vvEscolherLoja(\'' + String(l.idBanco) + '\')" style="display:block;width:100%;text-align:left;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:11px 14px;margin-bottom:8px;cursor:pointer">' +
+              '<div style="font-size:13.5px;font-weight:700;color:#111827">' + escapeHtml(l.nome) + '</div>' +
+              '<div style="font-size:11.5px;color:#6b7280">' + escapeHtml(l.marketplace || '') + '</div>' +
+            '</button>').join('');
+      return;
+    }
+
+    // ── passo 2: o anúncio ──
+    if (!e.anuncio) {
+      c.innerHTML =
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">' +
+          '<button onclick="_vvVoltar(\'loja\')" style="background:none;border:none;color:#4f46e5;cursor:pointer;font-size:12.5px;font-weight:600">← trocar loja</button>' +
+          '<span style="font-size:12.5px;color:#6b7280">' + escapeHtml(e.loja.nome) + '</span>' +
+        '</div>' +
+        '<div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:8px">2. Qual anúncio?</div>' +
+        '<div style="display:flex;gap:8px;margin-bottom:10px">' +
+          '<input id="vvBusca" value="' + escapeHtml(e.busca) + '" placeholder="Buscar por título ou colar o código (MLB...)" ' +
+            'onkeydown="if(event.key===\'Enter\')_vvBuscar()" style="flex:1;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">' +
+          '<button onclick="_vvBuscar()" style="padding:9px 16px;background:#4f46e5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px">Buscar</button>' +
+        '</div>' +
+        '<div id="vvResultados">' +
+          (e.achados.length
+            ? e.achados.map(a =>
+                '<button onclick="_vvEscolherAnuncio(\'' + String(a.id) + '\')" style="display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:9px 12px;margin-bottom:7px;cursor:pointer">' +
+                  (a.thumbnail ? '<img src="' + escapeHtml(a.thumbnail) + '" style="width:34px;height:34px;border-radius:6px;object-fit:cover">' : '') +
+                  '<span style="flex:1;min-width:0">' +
+                    '<span style="display:block;font-size:12.5px;color:#111827">' + escapeHtml(String(a.titulo || '').slice(0, 62)) + '</span>' +
+                    '<span style="display:block;font-size:11px;color:#6b7280">' + escapeHtml(a.id) +
+                      (a.userProductId ? ' · família ' + escapeHtml(a.userProductId) : '') + '</span>' +
+                  '</span>' +
+                '</button>').join('')
+            : '<div style="font-size:12.5px;color:#9ca3af;padding:6px 2px">Busque pelo título, ou cole o código do anúncio e clique em Buscar.</div>') +
+        '</div>';
+      return;
+    }
+
+    // ── passo 3: o mapeamento ──
+    const nossas = e.produto.variacoes || [];
+    const casadas = Object.values(e.mapa).filter(Boolean).length;
+    c.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">' +
+        '<button onclick="_vvVoltar(\'anuncio\')" style="background:none;border:none;color:#4f46e5;cursor:pointer;font-size:12.5px;font-weight:600">← trocar anúncio</button>' +
+        '<span style="font-size:12.5px;color:#6b7280">' + escapeHtml(String(e.anuncio.titulo || '').slice(0, 50)) + '</span>' +
+      '</div>' +
+      '<div style="background:' + (casadas === nossas.length ? '#f0fdf4' : '#fffbeb') + ';border:1px solid ' +
+        (casadas === nossas.length ? '#bbf7d0' : '#fde68a') + ';border-radius:10px;padding:10px 13px;margin-bottom:12px;font-size:12.5px;color:' +
+        (casadas === nossas.length ? '#166534' : '#92400e') + '">' +
+        '<b>' + casadas + ' de ' + nossas.length + '</b> variação(ões) mapeada(s)' +
+        (casadas === nossas.length ? ' — tudo pronto.' : '. As que ficarem em branco não serão vinculadas.') +
+      '</div>' +
+      '<div style="border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12.5px">' +
+          '<thead><tr style="background:#f9fafb">' +
+            '<th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280">Sua variação</th>' +
+            '<th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280">SKU</th>' +
+            '<th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280">Variação no anúncio</th>' +
+          '</tr></thead><tbody>' +
+          nossas.map((v, i) => {
+            const rot = [v.cor, v.tamanho].filter(Boolean).join(' · ') || (v.nome || ('variação ' + (i + 1)));
+            const sel = e.mapa[String(v.id)] || '';
+            return '<tr style="border-top:1px solid #f3f4f6">' +
+              '<td style="padding:7px 10px;color:#111827">' + escapeHtml(rot) + '</td>' +
+              '<td style="padding:7px 10px;color:#6b7280;font-family:ui-monospace,monospace;font-size:11.5px">' + escapeHtml(v.sku || '—') + '</td>' +
+              '<td style="padding:5px 10px">' +
+                '<select onchange="_vvMapear(\'' + String(v.id) + '\', this.value)" style="width:100%;padding:6px 8px;border:1px solid ' +
+                  (sel ? '#d1d5db' : '#fcd34d') + ';border-radius:6px;font-size:12.5px">' +
+                  '<option value="">— não vincular —</option>' +
+                  e.varsAnuncio.map(va =>
+                    '<option value="' + escapeHtml(String(va.id == null ? '__inteiro__' : va.id)) + '"' +
+                    (String(sel) === String(va.id == null ? '__inteiro__' : va.id) ? ' selected' : '') + '>' +
+                    escapeHtml(va.rotulo) + (va.sku ? ' · ' + escapeHtml(va.sku) : '') + '</option>').join('') +
+                '</select>' +
+              '</td>' +
+            '</tr>';
+          }).join('') +
+        '</tbody></table>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:14px;flex-wrap:wrap">' +
+        '<button onclick="_vvAutoCasar()" style="padding:9px 14px;background:#fff;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;font-size:12.5px;font-weight:600">Casar de novo pelo SKU</button>' +
+        '<button onclick="_vvSalvar()" style="padding:9px 18px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">Salvar vínculos</button>' +
+      '</div>';
+  }
+
+  function _vvEscolherLoja(idBanco) {
+    _vvEstado.loja = (typeof lojasErp !== 'undefined' ? lojasErp : []).find(l => String(l.idBanco) === String(idBanco)) || null;
+    _vvRender();
+  }
+  function _vvVoltar(passo) {
+    if (passo === 'loja') { _vvEstado.loja = null; _vvEstado.anuncio = null; _vvEstado.achados = []; }
+    if (passo === 'anuncio') { _vvEstado.anuncio = null; _vvEstado.varsAnuncio = []; _vvEstado.mapa = {}; }
+    _vvRender();
+  }
+
+  async function _vvBuscar() {
+    const inp = document.getElementById('vvBusca');
+    const q = inp ? inp.value.trim() : '';
+    _vvEstado.busca = q;
+    const res = document.getElementById('vvResultados');
+    if (res) res.innerHTML = '<div style="font-size:12.5px;color:#6b7280;padding:6px 2px">Buscando…</div>';
+
+    // Colou um código de anúncio? Vai direto — não faz sentido buscar por ele.
+    if (/^ML[A-Z]\d{5,}$/i.test(q)) { await _vvEscolherAnuncio(q.toUpperCase()); return; }
+
+    const d = await _vvApi('/api/marketplaces/loja/' + _vvEstado.loja.idBanco + '/buscar-anuncios?limit=40&q=' + encodeURIComponent(q));
+    _vvEstado.achados = (d && d.ok && d.dados && Array.isArray(d.dados.itens)) ? d.dados.itens : [];
+    if (!_vvEstado.achados.length && res) {
+      res.innerHTML = '<div style="font-size:12.5px;color:#b91c1c;padding:6px 2px">' +
+        escapeHtml((d && d.erro) || 'Nenhum anúncio encontrado.') + '</div>';
+      return;
+    }
+    _vvRender();
+  }
+
+  async function _vvEscolherAnuncio(anuncioId) {
+    const c = document.getElementById('vvCorpo');
+    if (c) c.innerHTML = '<div style="padding:24px;text-align:center;color:#6b7280">Lendo as variações do anúncio…</div>';
+    const d = await _vvApi('/api/marketplaces/loja/' + _vvEstado.loja.idBanco + '/anuncio/' + encodeURIComponent(anuncioId) + '/variacoes');
+    if (!d || !d.ok) {
+      showToast((d && d.erro) || 'Não consegui ler o anúncio', true);
+      _vvEstado.anuncio = null;
+      _vvRender();
+      return;
+    }
+    _vvEstado.anuncio = d.anuncio;
+    _vvEstado.varsAnuncio = d.variacoes || [];
+    _vvAutoCasar(true);
+  }
+
+  // Casa pelo SKU. É o que torna o recurso utilizável: numa grade de 30
+  // variações, o SKU costuma resolver quase tudo sozinho.
+  function _vvAutoCasar(silencioso) {
+    const e = _vvEstado;
+    const nossas = e.produto.variacoes || [];
+    let casou = 0;
+    e.mapa = {};
+    nossas.forEach(v => {
+      const meuSku = _vvNorm(v.sku);
+      if (!meuSku) return;
+      const achou = e.varsAnuncio.find(va => _vvNorm(va.sku) === meuSku);
+      if (achou) { e.mapa[String(v.id)] = achou.id == null ? '__inteiro__' : String(achou.id); casou++; }
+    });
+    // Sem SKU dos dois lados, tenta pelo rótulo (Azul · 38)
+    nossas.forEach(v => {
+      if (e.mapa[String(v.id)]) return;
+      const rot = _vvNormRot([v.cor, v.tamanho].filter(Boolean).join(''));
+      if (!rot) return;
+      const achou = e.varsAnuncio.find(va => _vvNormRot(va.rotulo) === rot);
+      if (achou) { e.mapa[String(v.id)] = achou.id == null ? '__inteiro__' : String(achou.id); casou++; }
+    });
+    _vvRender();
+    if (!silencioso) showToast(casou + ' variação(ões) casada(s) automaticamente');
+  }
+
+  function _vvMapear(varId, valor) { _vvEstado.mapa[String(varId)] = valor || ''; _vvRender(); }
+
+  async function _vvSalvar() {
+    const e = _vvEstado;
+    const pares = Object.keys(e.mapa).filter(k => e.mapa[k]).map(k => ({
+      variacaoId: k,
+      // "__inteiro__" = anúncio sem variações: vincula sem modelIdExterno
+      modelIdExterno: e.mapa[k] === '__inteiro__' ? null : e.mapa[k],
+    }));
+    if (!pares.length) { showToast('Nenhuma variação mapeada.', true); return; }
+
+    const d = await _vvApi('/api/produtos/' + e.produto.id + '/vinculos', {
+      method: 'POST',
+      body: JSON.stringify({
+        loja: { lojaIdBanco: e.loja.idBanco, lojaId: e.loja.id, marketplace: e.loja.marketplace },
+        anuncioId: e.anuncio.id,
+        titulo: e.anuncio.titulo,
+        mapeamento: pares,
+      }),
+    });
+    if (!d || !d.ok) { showToast((d && d.erro) || 'Falha ao salvar', true); return; }
+    showToast('✓ ' + pares.length + ' variação(ões) vinculada(s) a ' + e.anuncio.id);
+    _vvFechar();
+    if (typeof recarregarProdutos === 'function') { try { await recarregarProdutos(); } catch (_) {} }
+    if (typeof renderProdutos === 'function') renderProdutos();
+  }
+
+  window.abrirVincularPorVariacao = abrirVincularPorVariacao;
+  window._vvFechar = _vvFechar;
+  window._vvEscolherLoja = _vvEscolherLoja;
+  window._vvVoltar = _vvVoltar;
+  window._vvBuscar = _vvBuscar;
+  window._vvEscolherAnuncio = _vvEscolherAnuncio;
+  window._vvAutoCasar = _vvAutoCasar;
+  window._vvMapear = _vvMapear;
+  window._vvSalvar = _vvSalvar;
+
   function abrirVinculos(produtoId) {
     const produto = produtosErp.find(p => String(p.id) === String(produtoId));
     if (!produto) { showToast('Produto não encontrado', true); return; }
     _produtoVinculosAtual = produto;
     document.getElementById('vinculosModalTitulo').textContent = '🔗 Vínculos: ' + produto.nome;
     desenharVinculos();
+    // v33k.1026: atalho para criar vínculo variação por variação. O modal
+    // atual só MOSTRA o que já existe; criar era possível apenas pelo anúncio
+    // inteiro, o que jogava estoque e preço no lugar errado.
+    try {
+      const cab = document.getElementById('vinculosModalTitulo');
+      if (cab && !document.getElementById('btnVincVariacao')) {
+        const b = document.createElement('button');
+        b.id = 'btnVincVariacao';
+        b.textContent = '＋ Vincular por variação';
+        b.style.cssText = 'margin-left:12px;padding:6px 12px;background:#4f46e5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600';
+        b.onclick = () => { closeVinculos(); abrirVincularPorVariacao(produto.id); };
+        cab.parentNode.insertBefore(b, cab.nextSibling);
+      }
+    } catch (_) {}
     document.getElementById('vinculosOverlay').classList.add('active');
   }
   
@@ -55056,7 +55688,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1021-paginacao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1028-familia-mlu';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
