@@ -56008,7 +56008,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1086-home-todos-marketplaces';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1094-anuncio-completo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -58385,6 +58385,25 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const pct = (n) => (n === null || n === undefined) ? '—' : (Number(n).toFixed(2).replace('.', ',') + '%');
     const num = (n) => (n === null || n === undefined) ? '—' : Number(n).toLocaleString('pt-BR');
     const dec = (n) => (n === null || n === undefined) ? '—' : Number(n).toFixed(1).replace('.', ',');
+    // v33k.1088: quais marketplaces da seleção não entregam cliques/visitas.
+    // Devolve texto pronto ('TikTok e Shein') ou '' quando não há nenhum.
+    function _homeMktSemCliques() {
+      try {
+        const sel = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []).map(String);
+        const base = (_pedCacheLojas && _pedCacheLojas.length ? _pedCacheLojas : []);
+        const alvo = sel.length ? base.filter(l => sel.includes(String(l.id))) : base;
+        const mks = new Set();
+        alvo.forEach(l => {
+          const m = String(l.marketplace || '').toLowerCase();
+          if (m.includes('tiktok')) mks.add('TikTok');
+          else if (m.includes('shein')) mks.add('Shein');
+        });
+        const arr = [...mks];
+        if (!arr.length) return '';
+        return arr.length === 1 ? arr[0] : (arr.slice(0, -1).join(', ') + ' e ' + arr[arr.length - 1]);
+      } catch (_) { return ''; }
+    }
+
     // Cliques por Venda em destaque, com faixa de qualidade por cor:
     // <40 excelente · 40–60 bom · 60–80 médio · >80 ruim. A taxa de conversão
     // vira um número pequeno secundário ao lado.
@@ -58408,7 +58427,15 @@ Responda APENAS com JSON válido (sem markdown), formato:
       card(fmtBRL(t.receitaTotal), 'Receitas Totais', delta(t.receitaTotal, ant.receitaTotal, false)) +
       card(pct(t.acosGeral), 'ACOS Geral', delta(t.acosGeral, ant.acosGeral, true)) +
       card(num(t.vendas), 'Vendas', delta(t.vendas, ant.vendas, false)) +
-      card(num(t.cliques), 'Cliques', delta(t.cliques, ant.cliques, false)) +
+      // v33k.1088: o número é de CLIQUES DE ADS, não visitas da loja. E só
+      // Shopee e ML entregam: o TikTok tem o dado mas a app não tem o escopo
+      // de analytics liberado (erro 105005), e a Shein não expõe tráfego nas
+      // APIs que usamos. Sem dizer isso, quem seleciona TikTok/Shein vê zero e
+      // lê como bug. O aviso aparece SÓ quando há loja desses marketplaces
+      // na seleção, pra não poluir quem só usa Shopee/ML.
+      card(num(t.cliques), 'Cliques (Ads)' + (_homeMktSemCliques()
+        ? ' <span title="' + _homeMktSemCliques() + ' não informam cliques/visitas nas APIs disponíveis" style="cursor:help;opacity:.6">ⓘ</span>'
+        : ''), delta(t.cliques, ant.cliques, false)) +
       card(fmtBRL(t.ticketMedio), 'Ticket Médio', delta(t.ticketMedio, ant.ticketMedio, false)) +
       card(fmtBRL(t.receitaPublicidade), 'Receita por Publicidade', delta(t.receitaPublicidade, ant.receitaPublicidade, false)) +
       card(pct(t.acosDireto), 'ACOS Direto', delta(t.acosDireto, ant.acosDireto, true)) +
@@ -67636,6 +67663,22 @@ ${JSON.stringify(metricas, null, 2)}`
         // marketplace informa a decomposição (hoje TikTok). "estimada" nunca
         // tem detalhe, é conta nossa, não extrato deles.
         pedTaxasDetalheHtml(p.taxasDetalhe) +
+        // v33k.1087: decomposição da ESTIMATIVA (quando ainda não liquidou).
+        // Mostra de onde vem cada parte: comissão 6%, taxa fixa R$ 6,00,
+        // afiliado 10% em X% das vendas. Sem isso o número é uma caixa-preta e
+        // o lojista não consegue conferir contra o que ele conhece do
+        // marketplace.
+        (Array.isArray(p.taxaEstimativaItens) && p.taxaEstimativaItens.length
+          ? '<div style="margin:2px 0 8px 14px;padding-left:10px;border-left:2px solid var(--lc-warning)">'
+            + p.taxaEstimativaItens.map(function (i) {
+                return '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--lc-muted);padding:1px 0">'
+                  + '<span>' + escapeHtml(i.rotulo) + ' <span style="opacity:.7">(' + escapeHtml(String(i.base))
+                  + (Number(i.freq) < 100 ? (', em ' + String(i.freq).replace('.', ',') + '% das vendas') : '') + ')</span></span>'
+                  + '<span>− ' + formatBRL(i.valor) + '</span></div>';
+              }).join('')
+            + '<div style="font-size:10px;color:var(--lc-muted-2);margin-top:3px">Percentuais medidos nos pedidos desta loja que já foram liquidados.</div>'
+            + '</div>'
+          : '') +
         (p.freteVendedor > 0 ? linhaLucro('Frete (você paga)', '− ' + formatBRL(p.freteVendedor)) : '') +
         (p.cupomVendedor > 0 ? linhaLucro('Cupom/promoção (você banca)', '− ' + formatBRL(p.cupomVendedor), 'var(--lc-warning)') : '') +
         (p.cupomShopee > 0 ? linhaLucro('Cupom Shopee (não te afeta)', formatBRL(p.cupomShopee), 'var(--lc-muted-2)') : '') +
