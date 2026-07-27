@@ -30744,6 +30744,38 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.mascaraMoeda = mascaraMoeda; window.mascaraSomenteDigitos = mascaraSomenteDigitos;
   window.mascaraDecimal = mascaraDecimal; window.lerDecimal = lerDecimal;
 
+  // v33k.1106: devolve pedido(s) pra etapa "Emitir NF".
+  // Confirmação obrigatória: a nota atual deixa de valer PARA ESTE PEDIDO e
+  // uma nova será emitida. A nota antiga continua no histórico fiscal (não
+  // apagamos nada da nfe_notas), mas se ela estava autorizada de verdade,
+  // emitir outra gera documento duplicado, e quem sabe disso é o operador.
+  async function expVoltarParaEmitir(orderSns) {
+    const lista = (orderSns || []).filter(Boolean);
+    if (!lista.length) return;
+    const um = lista.length === 1;
+    const msg = (um ? 'Voltar o pedido ' + lista[0] : 'Voltar ' + lista.length + ' pedidos')
+      + ' para a etapa Emitir NF?\n\n'
+      + 'A nota atual deixa de valer para ' + (um ? 'este pedido' : 'estes pedidos')
+      + ' e você poderá emitir uma nova.\n\n'
+      + 'Use quando a nota não serve (emitida em homologação, cancelada, ou com dado fiscal errado).\n'
+      + 'NÃO use se a nota está correta: emitir outra geraria nota duplicada.';
+    if (!confirm(msg)) return;
+
+    try {
+      const r = await fetch(BACKEND_URL + '/api/expedicao/voltar-para-emitir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ orderSns: lista }),
+      }).then(x => x.json());
+      if (!r || !r.ok) { _toast((r && r.erro) || 'Não consegui voltar o pedido', true); return; }
+      _toast(r.voltaram + ' pedido(s) voltaram para Emitir NF' + (r.aviso ? ('. ' + r.aviso) : ''));
+      if (typeof expCarregar === 'function') expCarregar();   // recarrega a lista
+    } catch (e) {
+      _toast('Falha: ' + e.message, true);
+    }
+  }
+  window.expVoltarParaEmitir = expVoltarParaEmitir;
+
   // ---- Sub-aba ANÚNCIOS (cards com foto + filtros client-side) ----
   let _adsAnunciosCache = [];
   // Aviso fixo no topo da lista (teto de lojas, loja que não respondeu).
@@ -56021,7 +56053,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1105-nota-invalida-volta';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1106-voltar-para-emitir';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -66351,6 +66383,20 @@ ${JSON.stringify(metricas, null, 2)}`
       if (p.estado === 'para_programar') btnAcao = '<button onclick="expAvancarUm(\'' + p.orderSn + '\',\'programar\')" style="' + btnStyle + '">Programar envio</button>';
       else if (p.estado === 'falha_programacao' || p.estado === 'erro_rastreio' || programandoComErro) {
         btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'programar\')" style="' + btnRetry + '">↻ Tentar de novo</button>';
+        // v33k.1106: botão de voltar SÓ quando o erro é a própria NOTA.
+        // "Tentar de novo" reenvia o mesmo arquivo recusado, então em nota
+        // inválida ele nunca resolve. Mas em falha do marketplace reenviar é o
+        // certo, e oferecer "voltar para emitir" ali levaria o operador a
+        // refazer uma nota que está correta, gerando duplicidade.
+        // Por isso a condição é o TEXTO DO ERRO, não o estado.
+        const _errTxt = String(p.erro || '');   // campo real do card
+        const _notaInvalida = /homologa|sem valor fiscal|não tem valor|nao tem valor|cancelad/i.test(_errTxt);
+        if (_notaInvalida) {
+          btnAcao += ' <button onclick="expVoltarParaEmitir([\'' + p.orderSn + '\'])" style="' +
+            'border:1px solid #fbbf24;background:#fffbeb;color:#92400e;padding:8px 14px;border-radius:99px;' +
+            'cursor:pointer;font-weight:700;font-size:12px" title="Devolve o pedido para a etapa Emitir NF">' +
+            '↩ Voltar para emitir</button>';
+        }
       }
     } else if (_expEtapaSel === 3) {
       // ETAPA 3 (Imprimir): gerando_etiqueta → (plataforma emitindo, sem botão)
@@ -66431,6 +66477,14 @@ ${JSON.stringify(metricas, null, 2)}`
       const m = t.match(/cStat[:\s]*(\d{3})/i) || t.match(/\b(1\d\d|2\d\d|3\d\d|4\d\d|5\d\d)\b/);
       const cod = m ? m[1] : null;
       const R = (titulo, acao) => ({ titulo, acao });
+      // v33k.1106: nota de HOMOLOGAÇÃO em primeiro lugar. É o caso em que
+      // "Tentar de novo" nunca resolve (reenvia o mesmo arquivo sem valor
+      // fiscal), e o texto que a Shopee devolve é longo e enterra a causa.
+      // Aqui ela vira título, e a ação aponta o botão certo.
+      if (/homologa/i.test(t))
+        return R('Nota emitida em HOMOLOGAÇÃO (sem valor fiscal)',
+          'Esta nota foi gerada quando a empresa ainda estava em ambiente de teste, por isso o marketplace recusa. '
+          + 'Clique em "↩ Voltar para emitir" para devolver o pedido à etapa Emitir NF e gerar a nota real, em produção.');
       if (/EAI_AGAIN|ENOTFOUND|ETIMEDOUT|ECONNRESET|getaddrinfo|Erro de conexao com SEFAZ|socket hang up/i.test(t))
         return R('Falha de conexão com a SEFAZ', 'Instabilidade de rede, o servidor da SEFAZ não respondeu. Tente reenviar em alguns minutos.');
       if (/certificad|pfx|senha do certificado|expirad|vencid/i.test(t))
