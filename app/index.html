@@ -2138,6 +2138,27 @@
   // sugestão por IA e busca), CEST, Unidade, Origem e "Salvar Tributação".
   // Cada coluna tem "Editar em Massa": preenche um valor e aplica em todas as
   // linhas, é o jeito rápido quando o lote tem produtos do mesmo tipo.
+  // v33k.1116: padrão da descrição que sai na NF, no modal de Tributação.
+  // Se algum produto do catálogo com ESTE SKU tem nome próprio (frente 1), usa
+  // ele; senão devolve o título do anúncio que veio do pedido. A pessoa edita
+  // no campo e decide o que sai na nota.
+  function _descPadraoNF(sku, fallbackTitulo) {
+    const fb = String(fallbackTitulo || '').trim();
+    try {
+      const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+      const alvo = norm(sku);
+      if (alvo && typeof produtosErp !== 'undefined' && Array.isArray(produtosErp)) {
+        for (const p of produtosErp) {
+          if (!p || p.status === 'excluido' || p.nomeProprio !== true) continue;
+          for (const v of (p.variacoes || [])) {
+            if (norm(v.sku) === alvo) return (p.nome || fb);
+          }
+        }
+      }
+    } catch (_) {}
+    return fb;
+  }
+
   function _abrirModalNcmEmMassa(pendentes, orderSns) {
     window._ncmLoteCtx = { pendentes, orderSns };
     const nPed = orderSns.length;
@@ -2174,6 +2195,12 @@
             '<div style="font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px">' + _esc((p.descricao || '').slice(0, 34)) + '</div>' +
             '<div style="font-size:10.5px;color:#94a3b8;margin-top:2px">' + p.pedidos.length + ' pedido' + (p.pedidos.length === 1 ? '' : 's') + '</div>' +
           '</div></div>' +
+        '</td>' +
+        // DESCRIÇÃO (o que sai na NF) — v33k.1116: editável, padrão = nome próprio
+        // do catálogo se houver, senão o título do anúncio do pedido.
+        '<td style="' + td + '">' +
+          '<input id="nlDesc' + i + '" value="' + _esc(_descPadraoNF(p.sku, p.descricao)) + '" maxlength="120" placeholder="Descrição na NF" style="' + inpT + '">' +
+          '<div style="font-size:10.5px;color:#94a3b8;margin-top:3px">o que sai na nota</div>' +
         '</td>' +
         // NCM + IA + busca
         '<td style="' + td + '">' +
@@ -2220,6 +2247,7 @@
         '<table style="width:100%;border-collapse:collapse">' +
           '<thead><tr style="background:#f8fafc">' +
             '<th style="' + th + '">Produtos</th>' +
+            '<th style="' + th + '">Descrição (sai na NF)</th>' +
             '<th style="' + th + '">NCM ' + req +
               '<span onclick="_ncmLoteMassa(\'ncm\')" style="' + massa + '">Editar em Massa</span></th>' +
             '<th style="' + th + '">CEST' +
@@ -2399,7 +2427,9 @@
         cest: ((document.getElementById('nlCest' + i) || {}).value || '').replace(/\D/g, ''),
         unidade: (document.getElementById('nlUnid' + i) || {}).value || 'UN',
         origem: (document.getElementById('nlOrig' + i) || {}).value || '0',
-        descricao: pendentes[i].descricao,
+        // v33k.1116: descrição editável (o que sai na NF). Cai no título do
+        // anúncio se o campo estiver vazio.
+        descricao: (((document.getElementById('nlDesc' + i) || {}).value || '').trim() || pendentes[i].descricao || '').slice(0, 120),
         _salvar: salvar,
       });
     }
@@ -7205,8 +7235,11 @@
         if (!out.has(sku)) out.set(sku, {
           sku, nome: p.nome || sku, foto: (v.foto || fotoProd || null),
           donoLojaIds: new Set(), vincLojaIds: new Set(), marketplaces: new Set(), ativo: false,
+          nomeProprio: false,   // v33k.1116: se algum produto do SKU tem nome próprio
         });
         const reg = out.get(sku);
+        // v33k.1116: nome próprio (frente 1) manda no padrão da descrição da NF.
+        if (p.nomeProprio === true) { reg.nomeProprio = true; reg.nome = p.nome || reg.nome; }
         if (!reg.foto && (v.foto || fotoProd)) reg.foto = v.foto || fotoProd;
         if (ativo) reg.ativo = true; // se qualquer produto do SKU está ativo, o SKU conta como ativo
         // dono do produto (a loja onde ele vive)
@@ -7219,7 +7252,7 @@
       });
     });
     return Array.from(out.values()).map(r => ({
-      sku: r.sku, nome: r.nome, foto: r.foto, ativo: r.ativo,
+      sku: r.sku, nome: r.nome, foto: r.foto, ativo: r.ativo, nomeProprio: !!r.nomeProprio,
       donoLojaIds: Array.from(r.donoLojaIds), vincLojaIds: Array.from(r.vincLojaIds),
       marketplaces: Array.from(r.marketplaces),
     }));
@@ -7287,10 +7320,17 @@
     } catch (_) {}
     _dfState.itens = base.map(b => {
       const f = fiscais[b.sku] || null;
+      // v33k.1116: descrição que sai na NF (editável). Padrão (decidido com o
+      // Alessandro): nome próprio se o produto tiver um; senão a descrição fiscal
+      // já cadastrada; senão o nome/título do anúncio. A pessoa sempre reescreve.
+      const descNF = b.nomeProprio
+        ? (b.nome || '')
+        : ((f && f.descricao) || b.nome || '');
       return {
-        sku: b.sku, nome: b.nome, foto: b.foto || null, ativo: !!b.ativo,
+        sku: b.sku, nome: b.nome, foto: b.foto || null, ativo: !!b.ativo, nomeProprio: !!b.nomeProprio,
         donoLojaIds: b.donoLojaIds || [], vincLojaIds: b.vincLojaIds || [], marketplaces: b.marketplaces || [],
         _dePedido: !!b._dePedido,   // v33k.792: preserva o flag (isenta do filtro de conta)
+        descricao: descNF,
         ncm: f ? (f.ncm || '') : '', cest: f ? (f.cest || '') : '',
         unidade: f ? (f.unidade || 'UN') : 'UN', origem: f ? (f.origem != null ? String(f.origem) : '0') : '0',
         temFiscal: !!(f && f.ncm),
@@ -7469,7 +7509,9 @@
         '<td style="padding:5px 8px;text-align:center"><input type="checkbox" ' + checked + ' onclick="_dfToggle(\'' + skuJs + '\')" style="width:16px;height:16px"></td>' +
         '<td style="padding:4px 6px">' + foto + '</td>' +
         '<td style="padding:5px 8px;font-size:12px;white-space:nowrap">' + selo + ' ' + _esc(it.sku) + '</td>' +
-        '<td style="padding:5px 8px;font-size:12px;color:#475569">' + _esc((it.nome || '').slice(0, 30)) + '</td>' +
+        // v33k.1116: Descrição (o que sai na NF) agora é EDITÁVEL. Padrão vem do
+        // nome próprio/descrição fiscal; a pessoa reescreve o que quer na nota.
+        '<td style="padding:4px 6px"><input value="' + _esc(it.descricao || '') + '" onchange="_dfSetCampo(\'' + skuJs + '\',\'descricao\',this.value)" maxlength="120" title="' + _esc(it.descricao || '') + '" placeholder="Descrição na NF" style="width:210px;max-width:210px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
         '<td style="padding:5px 8px;font-size:11px;color:#64748b">' + _esc(mkt) + '</td>' +
         '<td style="padding:4px 6px"><input value="' + _esc(it.ncm) + '" onchange="_dfSetCampo(\'' + skuJs + '\',\'ncm\',this.value)" placeholder="NCM" style="width:80px;padding:4px;border:1px solid ' + (it.temFiscal ? '#bbf7d0' : '#fcd34d') + ';border-radius:6px;font-size:12px"></td>' +
         '<td style="padding:4px 6px"><input value="' + _esc(it.cest) + '" onchange="_dfSetCampo(\'' + skuJs + '\',\'cest\',this.value)" placeholder="CEST" style="width:70px;padding:4px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
@@ -7487,7 +7529,7 @@
               '<th style="padding:7px 8px"><input type="checkbox" ' + (todosSelNaPagina ? 'checked' : '') + ' onclick="_dfToggleTodosPagina()" style="width:16px;height:16px" title="Selecionar a página"></th>' +
               '<th style="padding:7px 8px"></th>' +
               '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">SKU</th>' +
-              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Produto</th>' +
+              '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Descrição (sai na NF)</th>' +
               '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">Canal</th>' +
               '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">NCM</th>' +
               '<th style="padding:7px 8px;text-align:left;font-size:11px;color:#475569">CEST</th>' +
@@ -7560,7 +7602,7 @@
       if (cest) reg.cest = cest.replace(/\D/g, '');
       if (origem) reg.origem = origem;
       if (unidade) reg.unidade = unidade;
-      reg.descricao = it.nome;
+      reg.descricao = it.descricao || it.nome;   // v33k.1116: descrição editável (padrão = nome próprio/título)
       itens.push(reg);
       // aplica no estado local pra refletir na hora
       if (ncmDig) { it.ncm = ncmDig; it.temFiscal = true; }
@@ -7613,7 +7655,8 @@
     if (invalidos.length) return _toast(invalidos.length + ' NCM(s) com dígitos ≠ 8. Corrija antes de salvar.', true);
     const itens = editados.map(it => ({
       sku: it.sku, ncm: it.ncm ? it.ncm.replace(/\D/g, '') : '', cest: it.cest ? it.cest.replace(/\D/g, '') : '',
-      origem: it.origem, unidade: it.unidade, descricao: it.nome,
+      origem: it.origem, unidade: it.unidade,
+      descricao: it.descricao || it.nome,   // v33k.1116: descrição editável (o que sai na NF)
     }));
     const r = await _api('/api/nfe/produtos-fiscal/em-massa', { method: 'POST', body: JSON.stringify({ itens }) });
     if (r && r.ok) {
@@ -12080,6 +12123,25 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  /* v33k.1115 (frente 1): pílula "batizar" em produtos que ainda usam o título
+     herdado do anúncio (sem nome próprio). */
+  .prod-card-v2 .prod-card-batizar {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #92400e;
+    background: #fef3c7;
+    border: 1px solid #fcd34d;
+    border-radius: 99px;
+    padding: 2px 9px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    line-height: 1.4;
+    transition: background .15s;
+  }
+  .prod-card-v2 .prod-card-batizar:hover { background: #fde68a; }
   .prod-card-v2 .prod-card-sku {
     font-size: 11px;
     color: #6b7280;
@@ -17315,8 +17377,14 @@ window.LC_SVG = {
         <div style="font-size:18px;font-weight:800;color:#1e293b">📌 Anúncios vinculados</div>
         <div id="gerVincTitulo" style="font-size:13px;color:#6b7280;margin-top:2px"></div>
       </div>
-      <button onclick="fecharGerenciarVinculos()" style="width:40px;height:40px;border:none;background:#e5e7eb;border-radius:10px;cursor:pointer;font-size:18px">✕</button>
+      <div style="display:flex;gap:10px;align-items:center">
+        <!-- v33k.1118 (frente 3): adicionar outro anúncio e casar variação por variação -->
+        <button onclick="_gvAdicionarAnuncio()" style="padding:10px 16px;border:none;background:#4f46e5;color:#fff;border-radius:10px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">＋ Adicionar anúncio</button>
+        <button onclick="fecharGerenciarVinculos()" style="width:40px;height:40px;border:none;background:#e5e7eb;border-radius:10px;cursor:pointer;font-size:18px">✕</button>
+      </div>
     </div>
+    <!-- v33k.1118 (frente 3): barra de ações que aparece ao selecionar variações -->
+    <div id="gerVincSelBar" style="display:none;align-items:center;gap:10px;padding:10px 24px;border-bottom:1px solid #e5e7eb;background:#eef2ff;max-width:1100px;margin:0 auto;width:100%;box-sizing:border-box"></div>
     <div id="gerVincLista" style="flex:1;overflow-y:auto;padding:20px 24px;max-width:1100px;margin:0 auto;width:100%"></div>
     <div style="display:flex;gap:10px;padding:16px 24px;border-top:1px solid #e5e7eb;background:#f8fafc;max-width:1100px;margin:0 auto;width:100%;box-sizing:border-box">
       <button onclick="atualizarVinculosDoModal()" style="flex:1;padding:12px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:10px;cursor:pointer;font-weight:700">🔄 Atualizar vínculos</button>
@@ -37598,6 +37666,9 @@ Retorne JSON: {"ID": "valor", ...}`;
         ${fotoHtml}
         <div class="prod-card-body">
           <div class="prod-card-nome">${escapeHtml(p.nome)}</div>
+          ${(p.nomeProprio !== true && p.status !== 'excluido')
+            ? `<button class="prod-card-batizar" onclick="event.stopPropagation();batizarProdutoRapido('${p.id}')" title="Este produto ainda usa o título do anúncio que o criou (nome não próprio). Clique pra dar um nome próprio.">✏️ batizar</button>`
+            : ''}
           <div class="prod-card-sku">SKU: ${escapeHtml(p.skuPai||'—')}</div>
           <div class="prod-card-mkts">${mktChips}${vincBadges || (mktChips ? '' : '<span style="font-size:10px;color:#9ca3af">Não publicado</span>')}</div>
           ${lojaChips ? `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px">${lojaChips}</div>` : ''}
@@ -37631,6 +37702,90 @@ Retorne JSON: {"ID": "valor", ...}`;
     const gradeProd = lista.querySelector('.prod-grid-v2');
     if (gradeProd && typeof animarCascata === 'function') animarCascata(gradeProd);
   }
+
+  // ============================================================
+  // BATIZAR RÁPIDO (v33k.1115, frente 1, criação interna)
+  // ============================================================
+  // Dá NOME PRÓPRIO a um produto que nasceu do anúncio e herdou o título.
+  // Aplica local na hora (resposta imediata) e persiste no backend pelo
+  // endpoint leve /batizar. O título do anúncio NÃO se perde: continua em
+  // cada variacoes[].vinculos[].titulo.
+  async function batizarProdutoRapido(id) {
+    const p = produtosErp.find(x => String(x.id) === String(id));
+    if (!p) return;
+    const atual = p.nome || '';
+    let novo = await lcPrompt(
+      'Nome próprio do produto. O título de cada anúncio continua preservado nos vínculos.',
+      atual,
+      { titulo: '✏️ Batizar produto', placeholder: 'Ex: Kit 5 Bermudas de Moletom Masculina', okLabel: 'Batizar' }
+    );
+    if (novo == null) return; // cancelou
+    novo = String(novo).trim();
+    if (novo.length < 3) { showToast('O nome deve ter pelo menos 3 caracteres', true); return; }
+    if (novo.length > 120) { showToast('O nome pode ter no máximo 120 caracteres', true); return; }
+    if (novo === atual) {
+      // mesmo texto: ainda assim confirma como próprio (a pessoa revisou e manteve)
+      if (!(await lcConfirm('Manter este mesmo nome e marcá-lo como nome próprio?'))) return;
+    }
+
+    // 1) aplica local já (o card atualiza na hora)
+    p.nome = novo;
+    p.nomeProprio = true;
+    p.nomeProprioEm = new Date().toISOString();
+    p.atualizadoEm = new Date().toISOString();
+    saveProdutos();
+    renderProdutos();
+
+    // 2) persiste no backend
+    try {
+      if (p.idBanco != null) {
+        const resp = await fetch(BACKEND_URL + '/api/produtos/' + p.idBanco + '/batizar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify({ nome: novo })
+        });
+        const data = await resp.json();
+        if (!data.ok) throw new Error(data.erro || 'Erro');
+      } else {
+        // ainda não está no banco (recém-criado): salva o produto inteiro, já
+        // vai com nomeProprio=true, e guarda o id do banco.
+        const salvo = await salvarProdutoNoBackend(p);
+        if (salvo && salvo.id) p.idBanco = salvo.id;
+        saveProdutos();
+      }
+      showToast('✓ Produto batizado');
+    } catch (err) {
+      showToast('⚠ Batizado localmente, mas não sincronizou: ' + err.message, true);
+    }
+
+    // 3) ponte fiscal (v33k.1116): oferece usar esse nome também nas NOTAS.
+    // Só atualiza a descrição das variações que JÁ têm cadastro fiscal (o backend
+    // não cria cadastro sem NCM). Se o produto não tem SKU nenhum, nem pergunta.
+    const skus = [...new Set((p.variacoes || []).map(v => String(v.sku || '').trim()).filter(Boolean))];
+    if (skus.length) {
+      const querNaNota = await lcConfirm(
+        'Usar "' + novo + '" também como descrição nas notas fiscais deste produto?\n\n' +
+        'Atualiza só as variações que já têm NCM cadastrado. O título do anúncio segue preservado nos vínculos.'
+      );
+      if (querNaNota) {
+        try {
+          const r = await _api('/api/nfe/produtos-fiscal/descricao', {
+            method: 'POST', body: JSON.stringify({ skus, descricao: novo }),
+          });
+          if (r && r.ok) {
+            showToast(r.atualizados > 0
+              ? '✓ Descrição da NF atualizada em ' + r.atualizados + ' variação(ões)'
+              : 'Nenhuma variação com NCM cadastrado ainda, nada a atualizar na NF');
+          } else {
+            showToast('⚠ Não consegui atualizar a descrição da NF: ' + ((r && r.erro) || 'erro'), true);
+          }
+        } catch (e) {
+          showToast('⚠ Não consegui atualizar a descrição da NF: ' + e.message, true);
+        }
+      }
+    }
+  }
+  window.batizarProdutoRapido = batizarProdutoRapido;
 
   // Skeletons de card de produto (mostrados enquanto o backend responde).
   function _prodSkeletons() {
@@ -43238,7 +43393,23 @@ REGRAS DURAS:
       })(),
       atualizadoEm: new Date().toISOString()
     };
-    
+
+    // v33k.1115 (frente 1): decide o marcador de NOME PRÓPRIO.
+    // Produto novo nasce batizado. Na edição, só vira próprio se a pessoa
+    // realmente mudou o nome (ou se já era próprio); abrir só pra ajustar
+    // estoque/foto NÃO tira o produto da lista de "batizar".
+    if (_produtoEditandoId) {
+      const pAnt = produtosErp.find(x => String(x.id) === String(_produtoEditandoId));
+      const nomeMudou = pAnt && String(pAnt.nome || '').trim() !== nome;
+      if (nomeMudou || (pAnt && pAnt.nomeProprio === true)) {
+        dados.nomeProprio = true;
+        dados.nomeProprioEm = new Date().toISOString();
+      }
+    } else {
+      dados.nomeProprio = true;
+      dados.nomeProprioEm = new Date().toISOString();
+    }
+
     // v32b: mescla campos específicos Shopee (categoria, atributos, peso, dimensões)
     if (typeof lerCamposShopeeDoModal === 'function') {
       const dadosShopee = lerCamposShopeeDoModal();
@@ -45585,6 +45756,8 @@ Use medidas coerentes com o tipo de produto identificado.`;
           marketplaces: { [loja.marketplace]: { exportado: true, importado: true } },
           // Importados respeitam o modelo de origem (legado = preço único, ou variação)
           modeloPreco: prodExterno.modeloPreco || 'unico',
+          // v33k.1115 (frente 1): nasceu do anúncio, nome ainda é herdado (a batizar).
+          nomeProprio: false,
           criadoEm: new Date().toISOString()
         });
         novos++;
@@ -46077,6 +46250,8 @@ São o mesmo produto?`;
       })),
       marketplaces: { [loja.marketplace]: { exportado: true, importado: true } },
       modeloPreco: prodExterno.modeloPreco || 'unico',
+      // v33k.1115 (frente 1): nasceu do anúncio, nome ainda é herdado (a batizar).
+      nomeProprio: false,
       criadoEm: new Date().toISOString()
     });
   }
@@ -46397,6 +46572,10 @@ São o mesmo produto?`;
         produtoInterno = {
           id: gerarId(),
           nome: anuncio.nome || anuncio.title || 'Produto sem nome',
+          // v33k.1115 (frente 1): o produto NASCEU do anúncio e herdou o título.
+          // Marca como SEM nome próprio pra aparecer na lista de "batizar". No
+          // re-sync o nome NÃO é sobrescrito, então o batismo sobrevive.
+          nomeProprio: false,
           skuPai: skuPaiAnuncio,
           lojaId: loja.id,
           categoria: anuncio.categoria || '',
@@ -47049,6 +47228,22 @@ São o mesmo produto?`;
           nossas.map((v, i) => {
             const rot = [v.cor, v.tamanho].filter(Boolean).join(' · ') || (v.nome || ('variação ' + (i + 1)));
             const sel = e.mapa[String(v.id)] || '';
+            // v33k.1117 (frente 2): dica do que vai acontecer com o SKU ao salvar.
+            let dica = '';
+            if (sel && sel !== '__inteiro__') {
+              const va = (e.varsAnuncio || []).find(x => String(x.id) === String(sel));
+              const meu = String(v.sku || '').trim();
+              const ext = va ? String(va.sku || '').trim() : '';
+              const podeGravar = (String((e.loja && e.loja.marketplace) || '').toLowerCase() === 'mercadolivre' ||
+                                  String((e.loja && e.loja.marketplace) || '').toLowerCase() === 'shopee');
+              if (meu) {
+                if (ext && _vvNorm(meu) === _vvNorm(ext)) dica = '<span style="color:#16a34a">✓ SKU bate</span>';
+                else if (!ext) dica = podeGravar
+                  ? '<span style="color:#2563eb">📝 vai gravar seu SKU no anúncio</span>'
+                  : '<span style="color:#6b7280">registra só do nosso lado</span>';
+                else dica = '<span style="color:#b45309">⚠ anúncio tem "' + escapeHtml(ext) + '", fica suspeito</span>';
+              }
+            }
             return '<tr style="border-top:1px solid #f3f4f6">' +
               '<td style="padding:7px 10px;color:#111827">' + escapeHtml(rot) + '</td>' +
               '<td style="padding:7px 10px;color:#6b7280;font-family:ui-monospace,monospace;font-size:11.5px">' + escapeHtml(v.sku || '—') + '</td>' +
@@ -47061,6 +47256,7 @@ São o mesmo produto?`;
                     (String(sel) === String(va.id == null ? '__inteiro__' : va.id) ? ' selected' : '') + '>' +
                     escapeHtml(va.rotulo) + (va.sku ? ' · ' + escapeHtml(va.sku) : '') + '</option>').join('') +
                 '</select>' +
+                (dica ? '<div style="font-size:10.5px;margin-top:3px">' + dica + '</div>' : '') +
               '</td>' +
             '</tr>';
           }).join('') +
@@ -47144,26 +47340,127 @@ São o mesmo produto?`;
 
   function _vvMapear(varId, valor) { _vvEstado.mapa[String(varId)] = valor || ''; _vvRender(); }
 
+  // v33k.1117 (FRENTE 2): vínculo simplificado por SKU, com FORÇAR.
+  // Casa por SKU (o _vvAutoCasar já faz). Ao salvar, pra cada par mapeado onde o
+  // SKU não bate, aplica as 3 ressalvas combinadas com o Alessandro:
+  //  1) Confirmação EXPLÍCITA mostrando qual SKU vai em qual anúncio.
+  //  2) Só grava o nosso SKU no anúncio quando o anúncio está SEM SKU (e o
+  //     marketplace deixa escrever: ML e Shopee). Se o anúncio já tem outro SKU,
+  //     NÃO sobrescreve (não quebra o controle do lojista), só marca skuSuspeito
+  //     do nosso lado.
+  //  3) criadoPor: 'forcado-manual' pra distinguir do casamento automático.
   async function _vvSalvar() {
     const e = _vvEstado;
-    const pares = Object.keys(e.mapa).filter(k => e.mapa[k]).map(k => ({
-      variacaoId: k,
-      // "__inteiro__" = anúncio sem variações: vincula sem modelIdExterno
-      modelIdExterno: e.mapa[k] === '__inteiro__' ? null : e.mapa[k],
-    }));
+    const marketplace = String((e.loja && e.loja.marketplace) || '').toLowerCase();
+    const podeGravarSku = (marketplace === 'mercadolivre' || marketplace === 'shopee');
+    const idBackend = e.produto.idBanco || e.produto.id;
+
+    const byVarId = {}; (e.produto.variacoes || []).forEach(v => { byVarId[String(v.id)] = v; });
+    const vaById = {}; (e.varsAnuncio || []).forEach(va => { if (va.id != null) vaById[String(va.id)] = va; });
+
+    const pares = [];       // itens finais pro POST /vinculos
+    const aEscrever = [];   // { variacaoId, modelId, meuSku, rotulo } → gravar SKU no anúncio
+    const suspeitos = [];   // { meuSku, extSku, rotulo }
+
+    Object.keys(e.mapa).forEach(k => {
+      const sel = e.mapa[k];
+      if (!sel) return;
+      const v = byVarId[k]; if (!v) return;
+      const inteiro = (sel === '__inteiro__');
+      const va = inteiro ? null : vaById[String(sel)];
+      const meuSku = String(v.sku || '').trim();
+      const extSku = va ? String(va.sku || '').trim() : '';
+      const rotulo = va ? (va.rotulo || meuSku || 'variação') : 'anúncio inteiro';
+      // v33k.1118 (frente 3): guarda o rótulo da variação no anúncio pra a central
+      // de vínculos mostrar "Preto 38 ↔ Preto 38" sem precisar rebuscar.
+      const par = { variacaoId: k, modelIdExterno: inteiro ? null : sel, skuSuspeito: false, criadoPor: 'vinculo-unico', rotuloExterno: (va && va.rotulo) ? va.rotulo : null };
+
+      if (inteiro || !meuSku) {
+        par.skuExterno = extSku || meuSku || '';
+      } else if (extSku && _vvNorm(meuSku) === _vvNorm(extSku)) {
+        par.skuExterno = extSku;                        // casou de verdade
+      } else if (!extSku) {
+        // anúncio SEM SKU → grava o nosso (se der); senão só registra do nosso lado
+        par.skuExterno = meuSku; par.criadoPor = 'forcado-manual';
+        if (podeGravarSku && va && va.id != null) aEscrever.push({ variacaoId: k, modelId: String(va.id), meuSku, rotulo });
+      } else {
+        // anúncio JÁ tem outro SKU → NÃO sobrescreve, marca suspeito do nosso lado
+        par.skuExterno = extSku; par.criadoPor = 'forcado-manual'; par.skuSuspeito = true;
+        suspeitos.push({ meuSku, extSku, rotulo });
+      }
+      pares.push(par);
+    });
+
     if (!pares.length) { showToast('Nenhuma variação mapeada.', true); return; }
 
-    const d = await _vvApi('/api/produtos/' + e.produto.id + '/vinculos', {
+    // Ressalva 1: confirmação explícita quando há força (gravação ou suspeita).
+    if (aEscrever.length || suspeitos.length) {
+      let msg = '';
+      if (aEscrever.length) {
+        msg += '📝 Vou GRAVAR o seu SKU nestes anúncios que estão SEM SKU (' + marketplace + '):\n' +
+          aEscrever.slice(0, 12).map(x => '• ' + x.meuSku + '  →  ' + x.rotulo).join('\n') +
+          (aEscrever.length > 12 ? '\n• (+' + (aEscrever.length - 12) + ' mais)' : '') + '\n\n';
+      } else if (!podeGravarSku) {
+        // marketplace que não deixa escrever SKU: avisa que só registra do nosso lado
+        const semGravar = pares.filter(p => p.criadoPor === 'forcado-manual' && !p.skuSuspeito).length;
+        if (semGravar) msg += 'ℹ️ O ' + (marketplace || 'marketplace') + ' não permite gravar SKU no anúncio pela API. ' +
+          semGravar + ' vínculo(s) vão ficar registrados só do nosso lado.\n\n';
+      }
+      if (suspeitos.length) {
+        msg += '⚠ Em ' + suspeitos.length + ' variação(ões) o anúncio JÁ tem outro SKU. NÃO vou sobrescrever, só marco como suspeito pra você revisar:\n' +
+          suspeitos.slice(0, 8).map(x => '• seu "' + x.meuSku + '"  ≠  anúncio "' + x.extSku + '"  (' + x.rotulo + ')').join('\n') +
+          (suspeitos.length > 8 ? '\n• (+' + (suspeitos.length - 8) + ' mais)' : '') + '\n\n';
+      }
+      msg += 'Confirmar?';
+      if (!(await lcConfirm(msg, { titulo: 'Forçar vínculo por SKU', okLabel: 'Confirmar' }))) return;
+    }
+
+    // Ressalva 2: grava o SKU no anúncio (só ML/Shopee, só os "aEscrever").
+    if (aEscrever.length) {
+      showToast('Gravando SKU em ' + aEscrever.length + ' variação(ões) do anúncio…');
+      const rw = await _vvApi('/api/produtos/' + idBackend + '/anuncio-variacoes', {
+        method: 'POST',
+        body: JSON.stringify({
+          lojaId: e.loja.idBanco, anuncioId: e.anuncio.id, dryRun: false,
+          variacoes: aEscrever.map(x => ({ modelId: x.modelId, sku: x.meuSku })),
+        }),
+      });
+      const okPorModel = {};
+      if (rw && rw.ok && Array.isArray(rw.resultados)) {
+        rw.resultados.forEach(l => {
+          const a = (l.acoes || []).find(x => x.campo === 'sku');
+          okPorModel[String(l.modelId)] = !!(a && a.ok !== false);
+        });
+      }
+      // O que NÃO gravou de fato no anúncio vira suspeito (não afirmamos que bateu).
+      let falhou = 0;
+      aEscrever.forEach(x => {
+        const gravou = rw && rw.ok && okPorModel[String(x.modelId)] === true;
+        if (!gravou) {
+          falhou++;
+          const par = pares.find(p => String(p.variacaoId) === String(x.variacaoId));
+          if (par) par.skuSuspeito = true;
+        }
+      });
+      if (!rw || !rw.ok) showToast('⚠ Não gravei o SKU no anúncio: ' + ((rw && rw.erro) || 'erro') + '. Salvo pra revisar.', true);
+      else if (rw.suportado === false) showToast('⚠ Este marketplace não gravou o SKU (não suportado). Salvo pra revisar.', true);
+      else if (falhou) showToast('⚠ ' + falhou + ' SKU(s) não gravaram no anúncio, ficam pra revisar.', true);
+      else showToast('✓ SKU gravado no anúncio');
+    }
+
+    const d = await _vvApi('/api/produtos/' + idBackend + '/vinculos', {
       method: 'POST',
       body: JSON.stringify({
         loja: { lojaIdBanco: e.loja.idBanco, lojaId: e.loja.id, marketplace: e.loja.marketplace },
         anuncioId: e.anuncio.id,
         titulo: e.anuncio.titulo,
         mapeamento: pares,
+        criadoPor: 'vinculo-unico',   // fallback; cada par já manda o seu criadoPor
       }),
     });
     if (!d || !d.ok) { showToast((d && d.erro) || 'Falha ao salvar', true); return; }
-    showToast('✓ ' + pares.length + ' variação(ões) vinculada(s) a ' + e.anuncio.id);
+    const nForc = pares.filter(p => p.criadoPor === 'forcado-manual').length;
+    showToast('✓ ' + pares.length + ' variação(ões) vinculada(s)' + (nForc ? ' (' + nForc + ' forçada(s))' : '') + ' a ' + e.anuncio.id);
     _vvFechar();
     if (typeof recarregarProdutos === 'function') { try { await recarregarProdutos(); } catch (_) {} }
     if (typeof renderProdutos === 'function') renderProdutos();
@@ -48601,6 +48898,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         nossoNome: v.nome || ((v.cor||'') + (v.tamanho ? ' / ' + v.tamanho : '')),
         nossoSku: v.sku || '',
         skuExterno: vi.skuExterno || '',
+        // v33k.1118 (frente 3): rótulo da variação NO ANÚNCIO (ex.: "Preto · 38")
+        // e o modelId, pra mostrar lado a lado e pro "conferir no anúncio" casar.
+        rotuloExterno: vi.rotuloExterno || '',
+        modelIdExterno: vi.modelIdExterno != null ? String(vi.modelIdExterno) : '',
         estado: !vi.skuExterno
           ? 'sem_sku'
           : (normalizarSku(vi.skuExterno) === normalizarSku(v.sku) ? 'ok' : 'divergente'),
@@ -48613,10 +48914,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
 
   let _produtoGerenciarVinculos = null;
-  function abrirGerenciarVinculos(produtoId) {
+  const _gvSel = new Set();   // v33k.1118 (frente 3): "anuncioId|variacaoId" selecionados
+  function abrirGerenciarVinculos(produtoId, opts) {
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) return;
     _produtoGerenciarVinculos = produtoId;
+    // seleção zera ao abrir/refazer, salvo quando o próprio seletor pede pra manter
+    if (!(opts && opts.manterSelecao)) _gvSel.clear();
     const anuncios = _anunciosDoProduto(p);
     const lista = document.getElementById('gerVincLista');
     if (!anuncios.length) {
@@ -48634,20 +48938,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         const varsHtml = a.variacoes.map(vx => {
           const st = SEL[vx.estado] || SEL.sem_sku;
           const skuSafe = String(vx.nossoSku || '').replace(/'/g, "\\'");
+          // v33k.1118 (frente 3): checkbox pra seleção múltipla + rótulo externo.
+          const selKey = a.anuncioId + '|' + vx.variacaoId;
+          const checked = _gvSel.has(selKey) ? 'checked' : '';
+          const rotExt = vx.rotuloExterno || '';
+          const extLinha = rotExt
+            ? '<b>' + escapeHtml(rotExt) + '</b>' + (vx.skuExterno ? '  ·  ' + escapeHtml(vx.skuExterno) : '')
+            : escapeHtml(vx.skuExterno || '(sem SKU no anúncio)');
           return `
           <tr style="border-top:1px solid #f1f5f9;background:${st.bg}">
-            <td style="padding:8px 12px;width:36px;text-align:center;font-size:15px" title="${st.txt}">${st.ic}</td>
+            <td style="padding:8px 4px;width:28px;text-align:center"><input type="checkbox" ${checked} onclick="_gvToggleSel('${selKey.replace(/'/g,"\\'")}', this.checked)" style="width:16px;height:16px;cursor:pointer"></td>
+            <td style="padding:8px 8px;width:26px;text-align:center;font-size:15px" title="${st.txt}">${st.ic}</td>
             <td style="padding:8px 12px">
               <div style="font-weight:600;color:#1e293b">${escapeHtml(vx.nossoNome || '—')}</div>
               <div style="font-size:12px;color:#9ca3af">${escapeHtml(vx.nossoSku||'sem SKU')}</div>
             </td>
-            <td style="padding:8px 12px;color:#94a3b8;text-align:center;width:40px">→</td>
+            <td style="padding:8px 8px;color:#94a3b8;text-align:center;width:26px">→</td>
             <td style="padding:8px 12px">
-              <div style="font-size:13px;color:${st.cor};font-weight:${vx.estado==='ok'?'400':'600'}">${escapeHtml(vx.skuExterno || '(sem SKU no anúncio)')}</div>
+              <div style="font-size:13px;color:${st.cor};font-weight:${vx.estado==='ok'?'400':'600'}">${extLinha}</div>
               <div style="font-size:11px;color:#94a3b8">${st.txt}</div>
             </td>
-            <td style="padding:8px 12px;width:190px;text-align:right;white-space:nowrap">
-              <button onclick="abrirHistoricoEstoque('${skuSafe}','${String(vx.nossoNome||'').replace(/'/g,"\\'")}')" title="Ver tudo que aconteceu com esta variação" style="padding:4px 9px;background:#eff6ff;color:#1d4ed8;border:none;border-radius:6px;cursor:pointer;font-size:12px;margin-right:4px">🕑 histórico</button>
+            <td style="padding:8px 12px;width:170px;text-align:right;white-space:nowrap">
+              <button onclick="abrirHistoricoEstoque('${skuSafe}','${String(vx.nossoNome||'').replace(/'/g,"\\'")}')" title="Ver o histórico de estoque desta variação" style="padding:4px 8px;background:#eff6ff;color:#1d4ed8;border:none;border-radius:6px;cursor:pointer;font-size:12px;margin-right:4px">🕑</button>
               <button onclick="revincularVariacao('${a.anuncioId}','${vx.variacaoId}')" title="Casar esta linha com OUTRA variação nossa" style="padding:4px 9px;background:#f0fdf4;color:#15803d;border:none;border-radius:6px;cursor:pointer;font-size:12px;margin-right:4px">🔗 trocar</button>
               <button onclick="desvincularVariacao('${a.anuncioId}','${vx.variacaoId}')" style="padding:4px 9px;background:#fee2e2;color:#b91c1c;border:none;border-radius:6px;cursor:pointer;font-size:12px">✕ tirar</button>
             </td>
@@ -48662,13 +48974,14 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
                 <div style="font-size:12px;margin-top:4px">${a.variacoes.length} variações, <span style="color:#16a34a;font-weight:600">${nOk} conferida(s)</span>${nDiv?` · <span style="color:#b45309;font-weight:600">${nDiv} divergente(s)</span>`:''}${nSemSku?` · <span style="color:#64748b;font-weight:600">${nSemSku} sem SKU no anúncio</span>`:''}</div>
                 ${nSemSku === a.variacoes.length ? '<div style="margin-top:6px;font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 8px">⚠️ <strong>Nenhuma variação deste anúncio tem SKU.</strong> O vínculo foi feito por posição/nome, não por SKU, ninguém conferiu. Confira antes de replicar estoque: um vínculo errado empurra a quantidade da variação errada.</div>' : ''}
               </div>
+              <button onclick="_gvConferirAnuncio('${a.anuncioId}')" title="Busca no marketplace os rótulos e variações reais deste anúncio e confere o casamento (preenche o 'Preto 38' do lado do anúncio)" style="padding:8px 14px;background:#eff6ff;color:#1d4ed8;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">🔍 Conferir no anúncio</button>
               <button onclick="desvincularAnuncio('${a.anuncioId}')" style="padding:8px 14px;background:#fee2e2;color:#b91c1c;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">✕ Desvincular anúncio</button>
-              <button onclick="separarAnuncio('${a.anuncioId}')" style="padding:8px 14px;background:#fef3c7;color:#92400e;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap" title="Tira este anúncio do produto e cria um produto novo independente (use quando casou errado)">📦 Separar</button>
+              <button onclick="separarAnuncio('${a.anuncioId}')" style="padding:8px 14px;background:#fef3c7;color:#92400e;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap" title="Usa este anúncio como referência pra criar um PRODUTO INTERNO distinto (nome próprio). O anúncio vira um vínculo dele. É o 'pai deixa de ser anúncio'.">⭐ Virar produto interno</button>
             </div>
           </div>
           <table style="width:100%;border-collapse:collapse">
             <thead><tr style="background:#fafbfc;font-size:11px;color:#94a3b8;text-transform:uppercase">
-              <th></th><th style="padding:6px 12px;text-align:left">Nossa variação</th><th></th><th style="padding:6px 12px;text-align:left">No anúncio</th><th></th>
+              <th style="padding:6px 4px;text-align:center"><input type="checkbox" ${(a.variacoes.length && a.variacoes.every(vx => _gvSel.has(a.anuncioId + '|' + vx.variacaoId))) ? 'checked' : ''} onclick="_gvToggleAnuncio('${a.anuncioId}', this.checked)" title="Selecionar todas as variações deste anúncio" style="width:15px;height:15px;cursor:pointer"></th><th></th><th style="padding:6px 12px;text-align:left">Nossa variação</th><th></th><th style="padding:6px 12px;text-align:left">No anúncio</th><th></th>
             </tr></thead>
             <tbody>${varsHtml}</tbody>
           </table>
@@ -48676,9 +48989,231 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       }).join('');
     }
     document.getElementById('gerVincTitulo').textContent = (p.nome||'').slice(0,50);
+    _gvRefreshSelBar();   // v33k.1118 (frente 3)
     document.getElementById('gerVincOverlay').classList.add('active');
   }
   window.abrirGerenciarVinculos = abrirGerenciarVinculos;
+
+  // ============================================================
+  // FRENTE 3 (v33k.1118): seleção múltipla + conferir + mover/criar produto
+  // ============================================================
+  function _gvProdutoAtual() {
+    return produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos)) || null;
+  }
+  function _gvParesSelecionados() {
+    return [..._gvSel].map(k => { const i = k.indexOf('|'); return { anuncioId: k.slice(0, i), variacaoId: k.slice(i + 1) }; });
+  }
+  function _gvToggleSel(key, on) {
+    if (on) _gvSel.add(key); else _gvSel.delete(key);
+    _gvRefreshSelBar();
+  }
+  window._gvToggleSel = _gvToggleSel;
+  function _gvToggleAnuncio(anuncioId, on) {
+    const p = _gvProdutoAtual(); if (!p) return;
+    (p.variacoes || []).forEach(v => {
+      if ((v.vinculos || []).some(vi => String(vi.anuncioId) === String(anuncioId))) {
+        const key = anuncioId + '|' + v.id;
+        if (on) _gvSel.add(key); else _gvSel.delete(key);
+      }
+    });
+    abrirGerenciarVinculos(p.id, { manterSelecao: true });
+  }
+  window._gvToggleAnuncio = _gvToggleAnuncio;
+  function _gvLimparSel() { _gvSel.clear(); const p = _gvProdutoAtual(); if (p) abrirGerenciarVinculos(p.id); }
+  window._gvLimparSel = _gvLimparSel;
+
+  function _gvRefreshSelBar() {
+    const bar = document.getElementById('gerVincSelBar');
+    if (!bar) return;
+    const n = _gvSel.size;
+    if (!n) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+    bar.style.display = 'flex';
+    bar.innerHTML =
+      '<span style="font-weight:700;color:#3730a3">' + n + ' variação(ões) selecionada(s)</span>' +
+      '<div style="flex:1"></div>' +
+      '<button onclick="_gvMoverSelecionadas()" style="padding:8px 14px;background:#4f46e5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12.5px;font-weight:700">↪ Mover p/ outro produto</button>' +
+      '<button onclick="_gvCriarProdutoDeSelecionadas()" style="padding:8px 14px;background:#0d9488;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12.5px;font-weight:700">✨ Criar produto novo</button>' +
+      '<button onclick="_gvTirarSelecionadas()" style="padding:8px 14px;background:#fee2e2;color:#b91c1c;border:none;border-radius:8px;cursor:pointer;font-size:12.5px;font-weight:700">✕ Tirar vínculos</button>' +
+      '<button onclick="_gvLimparSel()" style="padding:8px 12px;background:#fff;color:#6b7280;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;font-size:12.5px">limpar</button>';
+  }
+  window._gvRefreshSelBar = _gvRefreshSelBar;
+
+  function _gvAdicionarAnuncio() {
+    const p = _gvProdutoAtual(); if (!p) return;
+    if (typeof abrirVincularPorVariacao !== 'function') { showToast('Fluxo de vínculo por variação indisponível', true); return; }
+    fecharGerenciarVinculos();
+    abrirVincularPorVariacao(p.id);
+  }
+  window._gvAdicionarAnuncio = _gvAdicionarAnuncio;
+
+  // Confere no marketplace: lê as variações REAIS do anúncio e preenche o rótulo
+  // externo (Preto 38) e, quando o vínculo estava sem SKU, o SKU também.
+  async function _gvConferirAnuncio(anuncioId) {
+    const p = _gvProdutoAtual(); if (!p) return;
+    let lojaIdBanco = null;
+    (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+      if (String(vi.anuncioId) === String(anuncioId) && !lojaIdBanco && (vi.lojaIdBanco || vi.lojaId)) lojaIdBanco = String(vi.lojaIdBanco || vi.lojaId);
+    }));
+    if (!lojaIdBanco) { showToast('Não achei a loja deste anúncio', true); return; }
+    showToast('Conferindo no marketplace…');
+    const d = await _vvApi('/api/marketplaces/loja/' + lojaIdBanco + '/anuncio/' + encodeURIComponent(anuncioId) + '/variacoes');
+    if (!d || !d.ok) { showToast((d && d.erro) || 'Não consegui ler o anúncio', true); return; }
+    const vars = d.variacoes || [];
+    const porModel = {}, porSku = {};
+    vars.forEach(va => { if (va.id != null) porModel[String(va.id)] = va; if (va.sku) porSku[normalizarSku(va.sku)] = va; });
+    let atualizados = 0;
+    (p.variacoes || []).forEach(v => {
+      (v.vinculos || []).forEach(vi => {
+        if (String(vi.anuncioId) !== String(anuncioId)) return;
+        let va = (vi.modelIdExterno != null && porModel[String(vi.modelIdExterno)]) ||
+                 (vi.skuExterno && porSku[normalizarSku(vi.skuExterno)]) || null;
+        if (!va) {
+          const nossoRot = _vvNormRot([v.cor, v.tamanho].filter(Boolean).join(''));
+          if (nossoRot) va = vars.find(x => _vvNormRot(x.rotulo) === nossoRot) || null;
+        }
+        if (!va) return;
+        if (va.rotulo && vi.rotuloExterno !== va.rotulo) { vi.rotuloExterno = va.rotulo; atualizados++; }
+        if (!vi.skuExterno && va.sku) { vi.skuExterno = va.sku; vi.skuSuspeito = normalizarSku(va.sku) !== normalizarSku(v.sku); atualizados++; }
+        if (va.id != null && vi.modelIdExterno == null) vi.modelIdExterno = String(va.id);
+      });
+    });
+    p.atualizadoEm = new Date().toISOString();
+    try {
+      await fetch(BACKEND_URL + '/api/produtos/' + (p.idBanco || p.id), { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() }, body: JSON.stringify(p) });
+      showToast(atualizados ? ('✓ Conferido: ' + atualizados + ' atualização(ões)') : '✓ Conferido, já estava tudo preenchido');
+    } catch (e) { showToast('Erro ao salvar: ' + e.message, true); }
+    if (typeof saveProdutos === 'function') saveProdutos();
+    abrirGerenciarVinculos(p.id);
+  }
+  window._gvConferirAnuncio = _gvConferirAnuncio;
+
+  async function _gvTirarSelecionadas() {
+    const p = _gvProdutoAtual(); if (!p) return;
+    const pares = _gvParesSelecionados(); if (!pares.length) return;
+    if (!await lcConfirm('Tirar ' + pares.length + ' vínculo(s) selecionado(s)?\n\nOs anúncios continuam no marketplace, só deixam de estar ligados a estas variações.')) return;
+    let removidos = 0;
+    pares.forEach(({ anuncioId, variacaoId }) => {
+      const v = (p.variacoes || []).find(x => String(x.id) === String(variacaoId));
+      if (!v || !v.vinculos) return;
+      const antes = v.vinculos.length;
+      v.vinculos = v.vinculos.filter(vi => String(vi.anuncioId) !== String(anuncioId));
+      removidos += antes - v.vinculos.length;
+    });
+    p.atualizadoEm = new Date().toISOString();
+    try {
+      await fetch(BACKEND_URL + '/api/produtos/' + (p.idBanco || p.id), { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() }, body: JSON.stringify(p) });
+      showToast('✓ ' + removidos + ' vínculo(s) removido(s)');
+    } catch (e) { showToast('Erro ao salvar: ' + e.message, true); }
+    _gvSel.clear();
+    if (typeof saveProdutos === 'function') saveProdutos();
+    abrirGerenciarVinculos(p.id);
+    if (typeof renderEstoque === 'function') renderEstoque();
+  }
+  window._gvTirarSelecionadas = _gvTirarSelecionadas;
+
+  // recarrega o catálogo do backend e reabre a central (após operação no servidor)
+  async function _gvReloadEReabrir(origemId) {
+    try {
+      if (typeof carregarTodosProdutos === 'function') {
+        const todos = await carregarTodosProdutos();
+        if (Array.isArray(todos) && todos.length) produtosErp = todos;
+      }
+    } catch (_) {}
+    _gvSel.clear();
+    if (typeof saveProdutos === 'function') saveProdutos();
+    if (typeof renderProdutos === 'function') renderProdutos();
+    abrirGerenciarVinculos(origemId);
+  }
+
+  async function _gvCriarProdutoDeSelecionadas() {
+    const p = _gvProdutoAtual(); if (!p) return;
+    const pares = _gvParesSelecionados(); if (!pares.length) return;
+    const nome = await lcPrompt('Nome do NOVO produto (nome próprio):', p.nome || '', { titulo: '✨ Criar produto com as variações selecionadas', okLabel: 'Criar' });
+    if (nome == null) return;
+    const nomeF = String(nome).trim();
+    if (nomeF.length < 3) { showToast('O nome deve ter pelo menos 3 caracteres', true); return; }
+    showToast('Criando produto…');
+    // servidor faz tudo de forma atômica (cria o produto e tira os vínculos da origem)
+    const r = await _vvApi('/api/produtos/mover-vinculos', {
+      method: 'POST',
+      body: JSON.stringify({ origemId: (p.idBanco || p.id), selecoes: pares, destino: { modo: 'novo', nome: nomeF, nomeProprio: true } }),
+    });
+    if (!r || !r.ok) { showToast((r && r.erro) || 'Falha ao criar', true); return; }
+    if (r.aviso) showToast('⚠ ' + r.aviso, true);
+    showToast('✓ Produto "' + nomeF + '" criado com ' + (r.movidos || 0) + ' vínculo(s)');
+    await _gvReloadEReabrir(p.id);
+  }
+  window._gvCriarProdutoDeSelecionadas = _gvCriarProdutoDeSelecionadas;
+
+  // ── mover pra outro produto interno: abre um seletor de produto ──
+  function _gvMoverSelecionadas() {
+    const p = _gvProdutoAtual(); if (!p || !_gvSel.size) return;
+    _gvAbrirPickerProduto();
+  }
+  window._gvMoverSelecionadas = _gvMoverSelecionadas;
+
+  function _gvAbrirPickerProduto() {
+    let ov = document.getElementById('gvPickerOverlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'gvPickerOverlay';
+      ov.className = 'overlay';
+      ov.style.zIndex = '10060';
+      ov.onclick = (e) => { if (e.target.id === 'gvPickerOverlay') ov.classList.remove('active'); };
+      ov.innerHTML =
+        '<div class="modal" style="max-width:560px;width:94%;max-height:80vh;display:flex;flex-direction:column">' +
+          '<div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px">' +
+            '<div style="flex:1;font-size:15px;font-weight:800;color:#1e2a47">Mover para qual produto?</div>' +
+            '<button onclick="document.getElementById(\'gvPickerOverlay\').classList.remove(\'active\')" style="background:none;border:none;font-size:22px;color:#9ca3af;cursor:pointer">×</button>' +
+          '</div>' +
+          '<div style="padding:12px 20px 8px"><input id="gvPickerBusca" placeholder="Buscar por nome ou SKU…" oninput="_gvPickerRender()" style="width:100%;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;box-sizing:border-box"></div>' +
+          '<div id="gvPickerLista" style="padding:0 20px 16px;overflow-y:auto;flex:1"></div>' +
+        '</div>';
+      document.body.appendChild(ov);
+    }
+    ov.classList.add('active');
+    const b = document.getElementById('gvPickerBusca'); if (b) b.value = '';
+    _gvPickerRender();
+  }
+  function _gvPickerRender() {
+    const origem = _gvProdutoAtual(); if (!origem) return;
+    const nq = String((document.getElementById('gvPickerBusca') || {}).value || '').trim().toLowerCase();
+    const cand = produtosErp.filter(x =>
+      String(x.id) !== String(origem.id) && x.status !== 'excluido' &&
+      (!nq || String(x.nome || '').toLowerCase().includes(nq) || String(x.skuPai || '').toLowerCase().includes(nq)));
+    const lista = document.getElementById('gvPickerLista'); if (!lista) return;
+    if (!cand.length) { lista.innerHTML = '<div style="color:#9ca3af;padding:16px;text-align:center">Nenhum produto encontrado.</div>'; return; }
+    lista.innerHTML = cand.slice(0, 60).map(x => {
+      let foto = (x.fotos && x.fotos[0]) || '';
+      if (!foto && Array.isArray(x.cores)) { for (const c of x.cores) { if (c.fotos && c.fotos[0]) { foto = c.fotos[0]; break; } } }
+      const idSafe = String(x.id).replace(/'/g, "\\'");
+      return '<button onclick="_gvExecutarMover(\'' + idSafe + '\')" style="display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:9px 12px;margin-bottom:7px;cursor:pointer">' +
+        (foto ? '<img src="' + escapeHtml(foto) + '" style="width:34px;height:34px;border-radius:6px;object-fit:cover">' : '<div style="width:34px;height:34px;border-radius:6px;background:#f1f5f9;display:flex;align-items:center;justify-content:center">📦</div>') +
+        '<span style="flex:1;min-width:0"><span style="display:block;font-size:13px;font-weight:600;color:#111827">' + escapeHtml(String(x.nome || '(sem nome)').slice(0, 60)) + '</span>' +
+        '<span style="display:block;font-size:11px;color:#6b7280">SKU ' + escapeHtml(x.skuPai || '—') + (x.nomeProprio === true ? ' · nome próprio' : '') + '</span></span></button>';
+    }).join('');
+  }
+  window._gvPickerRender = _gvPickerRender;
+
+  async function _gvExecutarMover(destinoId) {
+    const p = _gvProdutoAtual(); if (!p) return;
+    const t = produtosErp.find(x => String(x.id) === String(destinoId));
+    if (!t) { showToast('Produto destino não encontrado', true); return; }
+    const pares = _gvParesSelecionados(); if (!pares.length) return;
+    const picker = document.getElementById('gvPickerOverlay'); if (picker) picker.classList.remove('active');
+    if (!await lcConfirm('Mover ' + pares.length + ' vínculo(s) para "' + (t.nome || 'produto') + '"?\n\nAs variações que faltarem no destino são criadas lá, casando por SKU ou por cor/tamanho.')) return;
+    showToast('Movendo…');
+    // servidor faz a fusão e a remoção da origem numa operação atômica
+    const r = await _vvApi('/api/produtos/mover-vinculos', {
+      method: 'POST',
+      body: JSON.stringify({ origemId: (p.idBanco || p.id), selecoes: pares, destino: { modo: 'existente', produtoId: (t.idBanco || t.id) } }),
+    });
+    if (!r || !r.ok) { showToast((r && r.erro) || 'Falha ao mover', true); return; }
+    if (r.aviso) showToast('⚠ ' + r.aviso, true);
+    showToast('✓ ' + (r.movidos || 0) + ' vínculo(s) movido(s) para "' + (t.nome || 'produto') + '"');
+    await _gvReloadEReabrir(p.id);
+  }
+  window._gvExecutarMover = _gvExecutarMover;
 
   function fecharGerenciarVinculos() {
     document.getElementById('gerVincOverlay').classList.remove('active');
@@ -49037,64 +49572,44 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.desvincularAnuncio = desvincularAnuncio;
 
-  // SEPARAR: pra quando um anúncio casou no produto ERRADO (mesmo SKU, produto
-  // diferente). Tira o anúncio deste produto e cria um produto NOVO independente
-  // com ele, aí você ajusta o SKU/nome e o sistema não re-casa errado.
+  // VIRAR PRODUTO INTERNO (v33k.1118, frente 3): "o pai deixa de ser anúncio".
+  // Usa ESTE anúncio como referência pra criar um PRODUTO INTERNO distinto, com
+  // nome próprio. As variações e vínculos do anúncio vão pro produto novo, e o
+  // anúncio passa a ser um vínculo DELE (aparece na lista como qualquer outro).
+  // A criação e a remoção da origem acontecem de forma atômica no servidor.
   async function separarAnuncio(anuncioId) {
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
     if (!p) return;
-    if (!await lcConfirm('Separar o anúncio ' + anuncioId + ' deste produto?\n\nEle vira um PRODUTO NOVO independente (com as variações e vínculos dele). Use quando o anúncio casou errado aqui, depois ajuste o SKU/nome do produto novo pra não voltar a casar.')) return;
-
-    // coleta as variações que têm vínculo com esse anúncio + o título do anúncio
-    const variacoesNovas = [];
-    let titulo = '';
-    (p.variacoes||[]).forEach(v => {
-      const vincsDoAnuncio = (v.vinculos||[]).filter(vi => String(vi.anuncioId) === String(anuncioId));
-      if (vincsDoAnuncio.length) {
-        if (!titulo && vincsDoAnuncio[0].titulo) titulo = vincsDoAnuncio[0].titulo;
-        // cria a variação no produto novo com só os vínculos desse anúncio
-        variacoesNovas.push({ ...JSON.parse(JSON.stringify(v)), vinculos: vincsDoAnuncio });
-        // remove esses vínculos do produto atual
-        v.vinculos = (v.vinculos||[]).filter(vi => String(vi.anuncioId) !== String(anuncioId));
-      }
+    // coleta as variações com vínculo desse anúncio + um título de referência
+    const selecoes = []; let titulo = '';
+    (p.variacoes || []).forEach(v => {
+      (v.vinculos || []).forEach(vi => {
+        if (String(vi.anuncioId) === String(anuncioId)) {
+          selecoes.push({ anuncioId: String(anuncioId), variacaoId: String(v.id) });
+          if (!titulo && vi.titulo) titulo = vi.titulo;
+        }
+      });
     });
-    if (!variacoesNovas.length) { showToast('Anúncio não encontrado neste produto', true); return; }
+    if (!selecoes.length) { showToast('Anúncio não encontrado neste produto', true); return; }
 
-    // produto novo independente, SKU pai marcado pra não re-casar com o original
-    const novo = {
-      id: gerarId(),
-      nome: titulo || (p.nome + ' (separado)'),
-      skuPai: 'separado-' + anuncioId,
-      lojaId: p.lojaId,
-      categoria: p.categoria || '', categoryIdMl: p.categoryIdMl || null, categoryIdShopee: p.categoryIdShopee || null,
-      preco: p.preco || 0, peso: p.peso || 0, descricao: p.descricao || '',
-      status: 'ativo', statusMl: '',
-      fotos: [], cores: [],
-      variacoes: variacoesNovas,
-      marketplaces: {},
-      modeloPreco: p.modeloPreco || 'variacao',
-      criadoEm: new Date().toISOString(),
-    };
-    produtosErp.push(novo);
-    p.atualizadoEm = new Date().toISOString();
-    try {
-      // salva o original (sem o anúncio) e o novo
-      await fetch(BACKEND_URL + '/api/produtos/' + (p.idBanco || p.id), {
-        method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-        body: JSON.stringify(p),
-      });
-      const r = await fetch(BACKEND_URL + '/api/produtos', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-        body: JSON.stringify(novo),
-      });
-      const d = await r.json();
-      if (d.ok && d.produto) { novo.idBanco = d.produto.id; saveProdutosLocal && saveProdutosLocal(); }
-      showToast('✓ Anúncio separado num produto novo. Ajuste o SKU/nome dele se precisar.');
-      abrirGerenciarVinculos(p.id);
-      if (typeof renderEstoque === 'function') renderEstoque();
-    } catch(e) {
-      showToast('Erro ao separar: ' + e.message, true);
-    }
+    const nome = await lcPrompt(
+      'Nome do produto interno (nome próprio) que terá este anúncio como referência.\n\nO anúncio continua no marketplace e passa a ser um vínculo deste novo produto.',
+      titulo || p.nome || '',
+      { titulo: '⭐ Virar produto interno', okLabel: 'Criar produto' });
+    if (nome == null) return;
+    const nomeF = String(nome).trim();
+    if (nomeF.length < 3) { showToast('O nome deve ter pelo menos 3 caracteres', true); return; }
+
+    showToast('Criando produto interno…');
+    const r = await _vvApi('/api/produtos/mover-vinculos', {
+      method: 'POST',
+      body: JSON.stringify({ origemId: (p.idBanco || p.id), selecoes, destino: { modo: 'novo', nome: nomeF, nomeProprio: true } }),
+    });
+    if (!r || !r.ok) { showToast((r && r.erro) || 'Falha ao criar', true); return; }
+    if (r.aviso) showToast('⚠ ' + r.aviso, true);
+    showToast('✓ Produto interno "' + nomeF + '" criado. O anúncio agora é vínculo dele.');
+    await _gvReloadEReabrir(p.id);
+    if (typeof renderEstoque === 'function') renderEstoque();
   }
   window.separarAnuncio = separarAnuncio;
 
@@ -56096,7 +56611,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1109-sem-nota-volta-emitir';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1114-descricao-danfe';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
