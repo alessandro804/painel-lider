@@ -37654,6 +37654,8 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (_anunSet.size > 0) {
         vincBadges += `<span class="prod-card-mkt-chip" style="background:#7c3aed;cursor:pointer" title="Ver e gerenciar os ${_anunSet.size} anúncios vinculados" onclick="event.stopPropagation();abrirGerenciarVinculos('${p.id}')">📌 ${_anunSet.size} anúncio${_anunSet.size>1?'s':''}</span>`;
       }
+      // v33k.1122 (Leva 3): selo agregado de status (só aparece se houver não-ativo)
+      vincBadges += _chipStatusAgregado(p, p.id);
       
       // Checkbox de seleção (canto superior esquerdo do card)
       const selecionado = _prodSelecionados.has(String(p.id));
@@ -48749,18 +48751,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!ids.length) { showToast('Selecione produtos primeiro', true); return; }
     // Monta tarefas: cada variação com SKU + anúncios vinculados
     const tarefas = [];
+    let pulados = 0;   // v33k.1120 (Leva 1): anúncios não ativos ignorados
     ids.forEach(id => {
       const p = produtosErp.find(x => String(x.id) === id);
       if (!p) return;
       (p.variacoes||[]).forEach(v => {
         if (!v.sku) return;
-        const anuncios = _anunciosPorSku(v.sku);
-        if (anuncios.length) tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios });
+        const { ativos, pulados: pul } = _separarAnunciosReplicaveis(_anunciosPorSku(v.sku));
+        pulados += pul.length;
+        if (ativos.length) tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios: ativos });
       });
     });
-    if (!tarefas.length) { showToast('Nenhuma variação com anúncio vinculado nos produtos selecionados', true); return; }
+    if (!tarefas.length) { showToast('Nenhuma variação com anúncio ATIVO vinculado nos produtos selecionados' + (pulados ? ' (' + pulados + ' não ativo(s) ignorado(s))' : ''), true); return; }
     const totalAnuncios = tarefas.reduce((s,t)=>s+t.anuncios.length,0);
-    if (!await lcConfirm(`Replicar o estoque de ${tarefas.length} variação(ões) de ${ids.length} produto(s) para ${totalAnuncios} anúncio(s)?`)) return;
+    if (!await lcConfirm(`Replicar o estoque de ${tarefas.length} variação(ões) de ${ids.length} produto(s) para ${totalAnuncios} anúncio(s) ativo(s)?` + (pulados ? `\n\n⚠ ${pulados} anúncio(s) não ativo(s) serão ignorados.` : ''))) return;
     const prog = document.getElementById('estoqueMassaProdInfo');
     let ok = 0, falha = 0;
     for (let i = 0; i < tarefas.length; i++) {
@@ -48855,6 +48859,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             loja: loja ? loja.nome : '(loja ?)',
             titulo: vi.titulo || produto.nome || '',
             skuPai: produto.skuPai || '',
+            // v33k.1120 (Leva 1): status do anúncio (do último sync) guardado no vínculo
+            statusMl: vi.statusMl || vi.statusAnuncio || '',
             variacoes: [],
           });
         }
@@ -48953,8 +48959,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           <div style="padding:14px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
               <div style="flex:1;min-width:200px">
-                <div style="font-weight:700;font-size:14px;color:#1e293b">${escapeHtml(a.titulo || 'Anúncio sem título')}</div>
+                <div style="font-weight:700;font-size:14px;color:#1e293b">${escapeHtml(a.titulo || 'Anúncio sem título')}${(typeof v32d_htmlTagStatus==='function' && typeof v32d_statusVinculo==='function') ? v32d_htmlTagStatus(v32d_statusVinculo({statusMl:a.statusMl})) : ''}</div>
                 <div style="font-size:12px;color:#6b7280;margin-top:3px">${escapeHtml(a.loja)} · ${mk} · ID ${escapeHtml(a.anuncioId)} · SKU pai: ${escapeHtml(a.skuPai||'—')}</div>
+                ${(typeof v32d_statusVinculo==='function' && !_statusPermiteReplicar(v32d_statusVinculo({statusMl:a.statusMl}))) ? '<div style="margin-top:5px;font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:5px 8px;display:inline-block">⚠ Anúncio não está ativo — alterações de estoque NÃO são replicadas pra ele até voltar a ficar ativo.</div>' : ''}
                 <div style="font-size:12px;margin-top:4px">${a.variacoes.length} variações, <span style="color:#16a34a;font-weight:600">${nOk} conferida(s)</span>${nDiv?` · <span style="color:#b45309;font-weight:600">${nDiv} divergente(s)</span>`:''}${nSemSku?` · <span style="color:#64748b;font-weight:600">${nSemSku} sem SKU no anúncio</span>`:''}</div>
                 ${nSemSku === a.variacoes.length ? '<div style="margin-top:6px;font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 8px">⚠️ <strong>Nenhuma variação deste anúncio tem SKU.</strong> O vínculo foi feito por posição/nome, não por SKU, ninguém conferiu. Confira antes de replicar estoque: um vínculo errado empurra a quantidade da variação errada.</div>' : ''}
               </div>
@@ -49209,14 +49216,16 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
     if (!p) return;
     const tarefas = [];
+    let pulados = 0;   // v33k.1120 (Leva 1): anúncios não ativos ignorados
     (p.variacoes||[]).forEach(v => {
       if (!v.sku) return;
-      const anuncios = _anunciosPorSku(v.sku);
-      if (anuncios.length) tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios });
+      const { ativos, pulados: pul } = _separarAnunciosReplicaveis(_anunciosPorSku(v.sku));
+      pulados += pul.length;
+      if (ativos.length) tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios: ativos });
     });
-    if (!tarefas.length) { showToast('Nenhuma variação com anúncio vinculado', true); return; }
+    if (!tarefas.length) { showToast('Nenhuma variação com anúncio ATIVO vinculado' + (pulados ? ' (' + pulados + ' não ativo(s) ignorado(s))' : ''), true); return; }
     const totalAnuncios = tarefas.reduce((s,t)=>s+t.anuncios.length,0);
-    if (!await lcConfirm(`Replicar o estoque de ${tarefas.length} variação(ões) deste produto para ${totalAnuncios} anúncio(s)? O valor do painel prevalece.`)) return;
+    if (!await lcConfirm(`Replicar o estoque de ${tarefas.length} variação(ões) deste produto para ${totalAnuncios} anúncio(s) ativo(s)? O valor do painel prevalece.` + (pulados ? `\n\n⚠ ${pulados} anúncio(s) não ativo(s) serão ignorados.` : ''))) return;
     showToast(`📦 Replicando ${tarefas.length} variação(ões)...`);
     let ok = 0, falha = 0;
     for (const t of tarefas) {
@@ -49343,8 +49352,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // Antes desta versão isso era IMPOSSÍVEL: não havia nenhum registro de
   // movimentação. O `estoque_espelho_shopee` guarda só uma FOTO do estado atual,
   // sobrescrita a cada mudança, o valor anterior era perdido pra sempre.
+  // v33k.1132: logo do marketplace (selo colorido da marca) e SKU/nome corrente
+  // do histórico (pros botões de balanço/entrada/saída dentro do modal).
+  let _histEstSkuAtual = null, _histEstNomeAtual = '';
+  function _mkLogoChip(mk) {
+    const i = (typeof MK_INFO !== 'undefined' && MK_INFO[mk]) || null;
+    if (!i) return '';
+    return '<span title="' + escapeHtml(i.nome) + '" style="display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:16px;padding:0 5px;border-radius:3px;background:' + i.cor + ';color:' + i.txt + ';font-size:9px;font-weight:800;letter-spacing:.4px;vertical-align:middle;margin-right:5px">' + i.sigla + '</span>';
+  }
   async function abrirHistoricoEstoque(sku, nomeVariacao) {
     if (!sku) { lcAlert('Esta variação não tem SKU, sem SKU não há como rastrear o estoque.'); return; }
+    _histEstSkuAtual = String(sku); _histEstNomeAtual = nomeVariacao || '';
     let ov = document.getElementById('histEstOverlay');
     if (!ov) {
       ov = document.createElement('div');
@@ -49359,12 +49377,18 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       // caixa, flutuando solto sobre a página.
       ov.innerHTML =
         '<div class="modal modal-large" onclick="event.stopPropagation()" style="display:flex;flex-direction:column;padding:0;overflow:hidden">' +
-          '<div style="padding:18px 22px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex:0 0 auto">' +
+          '<div style="padding:18px 22px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex:0 0 auto;flex-wrap:wrap">' +
             '<div>' +
               '<div style="font-size:17px;font-weight:800;color:#1e293b">🕑 Histórico de estoque</div>' +
               '<div id="histEstSub" style="font-size:13px;color:#6b7280;margin-top:2px"></div>' +
             '</div>' +
-            '<button onclick="fecharHistoricoEstoque()" style="background:#f3f4f6;border:none;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:16px">✕</button>' +
+            // v33k.1132: ajustes manuais direto no histórico (mais prático)
+            '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+              '<button onclick="_ajusteManualPorSku(\'entrada\')" title="Registrar ENTRADA (soma ao saldo) e replicar" style="padding:7px 11px;background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">📥 Entrada</button>' +
+              '<button onclick="_ajusteManualPorSku(\'saida\')" title="Registrar SAÍDA (subtrai do saldo) e replicar" style="padding:7px 11px;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">📤 Saída</button>' +
+              '<button onclick="_ajusteManualPorSku(\'balanco\')" title="Balanço: define o valor absoluto do saldo e replica" style="padding:7px 11px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">⚖ Balanço</button>' +
+              '<button onclick="fecharHistoricoEstoque()" style="background:#f3f4f6;border:none;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:16px">✕</button>' +
+            '</div>' +
           '</div>' +
           '<div id="histEstCorpo" style="padding:18px 22px;overflow:auto;flex:1 1 auto;min-height:0"></div>' +
         '</div>';
@@ -49393,43 +49417,96 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           '</div>';
         return;
       }
+      // v33k.1121 (Leva 2): timeline UNIFICADA do produto interno — junta as
+      // movimentações de estoque (balanço/entrada/replicar/ajuste) com as VENDAS
+      // (pedido + NF) e as DEVOLUÇÕES cruzadas por SKU.
       const movs = d.movimentos || [];
-      if (!movs.length) {
+      const vendas = d.vendas || [];
+      const devolucoes = d.devolucoes || [];
+      if (!movs.length && !vendas.length && !devolucoes.length) {
         corpo.innerHTML =
           '<div style="padding:34px;text-align:center;color:#9ca3af">' +
-            '<div style="font-size:15px;font-weight:600;color:#6b7280;margin-bottom:6px">Nenhuma movimentação registrada ainda</div>' +
-            '<div style="font-size:13px">O histórico começou a ser gravado a partir da v33k.598. Movimentações anteriores não existem no banco.<br>' +
-            'Assim que você replicar estoque nesta variação, o registro aparece aqui.</div>' +
+            '<div style="font-size:15px;font-weight:600;color:#6b7280;margin-bottom:6px">Nenhum registro ainda</div>' +
+            '<div style="font-size:13px">Aqui aparecem as vendas (com pedido e NF), devoluções, entradas, balanços e replicações desta variação.<br>' +
+            'O histórico de estoque começou a ser gravado a partir da v33k.598.</div>' +
           '</div>';
         return;
       }
 
+      const lojaNomeDe = (idb) => (typeof lojasErp !== 'undefined'
+        ? (lojasErp.find(l => String(l.idBanco) === String(idb)) || {}).nome : null) || (idb != null ? ('loja ' + idb) : '—');
+      const mkNomeDe = (mk) => (MK_INFO[mk] && MK_INFO[mk].nome) || mk || '—';
+      const tms = (s) => { const t = s ? new Date(s).getTime() : 0; return Number.isFinite(t) ? t : 0; };
+      const fmtDt = (s) => s ? new Date(s).toLocaleString('pt-BR') : '—';
+
       // resumo
-      const ultimo = movs[0];
-      const nLojas = new Set(movs.map(m => m.loja_id_banco).filter(Boolean)).size;
-      const saldoAtual = (ultimo.qtd_depois != null) ? ultimo.qtd_depois : '—';
-      const linhas = movs.map(m => {
-        const dt = m.criado_em ? new Date(m.criado_em).toLocaleString('pt-BR') : '—';
-        const lojaNome = (typeof lojasErp !== 'undefined'
-          ? (lojasErp.find(l => String(l.idBanco) === String(m.loja_id_banco)) || {}).nome : null) || ('loja ' + (m.loja_id_banco ?? '—'));
-        const mkNome = (MK_INFO[m.marketplace] && MK_INFO[m.marketplace].nome) || m.marketplace || '—';
+      const ultimoMov = movs.find(m => m.qtd_depois != null);
+      const saldoAtual = ultimoMov ? ultimoMov.qtd_depois : '—';
+      const nLojas = new Set([...movs.map(m => m.loja_id_banco), ...vendas.map(v => v.lojaIdBanco), ...devolucoes.map(x => x.lojaIdBanco)].filter(v => v != null)).size;
+
+      // eventos unificados, ordenados do mais recente pro mais antigo
+      const eventos = [];
+      movs.forEach(m => eventos.push({ _ts: tms(m.criado_em), kind: 'mov', d: m }));
+      vendas.forEach(v => eventos.push({ _ts: tms(v.criadoEm), kind: 'venda', d: v }));
+      devolucoes.forEach(x => eventos.push({ _ts: tms(x.criadoEm), kind: 'devolucao', d: x }));
+      eventos.sort((a, b) => b._ts - a._ts);
+
+      const ORIGEM = {
+        replicar_estoque: '🔁 Replicar estoque',
+        push_manual:      '✍️ Alteração manual',
+        entrada:          '📥 Entrada',
+        saida:            '📤 Saída',
+        balanco:          '⚖️ Balanço',
+        venda:            '🛒 Venda',
+        sync:             '🔄 Sincronização',
+        ajuste:           '⚙️ Ajuste/balanço',
+      };
+
+      const linhas = eventos.map(ev => {
+        const dt = fmtDt(ev.kind === 'mov' ? ev.d.criado_em : ev.d.criadoEm);
+        if (ev.kind === 'venda') {
+          const v = ev.d;
+          const nf = v.nfEmitida ? ('NF ' + escapeHtml(String(v.nfNumero || '—'))) : '<span style="color:#b45309">sem NF</span>';
+          const dl = (v.qtd != null && v.qtd > 0) ? ('−' + v.qtd) : '−';
+          return '<tr style="border-top:1px solid #f1f5f9;background:#fff7ed">' +
+            '<td style="padding:9px 10px;font-size:12px;color:#64748b;white-space:nowrap">' + dt + '</td>' +
+            '<td style="padding:9px 10px"><div style="font-size:13px;font-weight:600;color:#1e293b">' + escapeHtml(lojaNomeDe(v.lojaIdBanco)) + '</div>' +
+              '<div style="font-size:11px;color:#9ca3af">' + _mkLogoChip(v.marketplace) + escapeHtml(mkNomeDe(v.marketplace)) + '</div></td>' +
+            '<td style="padding:9px 10px;font-size:12px;color:#9a3412">🛒 Venda' +
+              (v.orderSn ? '<div style="font-size:11px;color:#64748b">Pedido ' + escapeHtml(String(v.orderSn)) + '</div>' : '') +
+              '<div style="font-size:11px;color:#64748b">' + nf + (v.status ? ' · ' + escapeHtml(String(v.status)) : '') + '</div></td>' +
+            '<td style="padding:9px 10px;text-align:center;font-size:13px;color:#cbd5e1">—</td>' +
+            '<td style="padding:9px 10px;text-align:center;font-weight:800;font-size:13px;color:#dc2626">' + dl + '</td>' +
+            '<td style="padding:9px 10px;text-align:center;font-size:13px;color:#cbd5e1">—</td>' +
+            '<td style="padding:9px 10px;text-align:center;color:#94a3b8">·</td></tr>';
+        }
+        if (ev.kind === 'devolucao') {
+          const x = ev.d;
+          return '<tr style="border-top:1px solid #f1f5f9;background:#f0fdf4">' +
+            '<td style="padding:9px 10px;font-size:12px;color:#64748b;white-space:nowrap">' + dt + '</td>' +
+            '<td style="padding:9px 10px"><div style="font-size:13px;font-weight:600;color:#1e293b">' + escapeHtml(lojaNomeDe(x.lojaIdBanco)) + '</div>' +
+              '<div style="font-size:11px;color:#9ca3af">' + _mkLogoChip(x.marketplace) + escapeHtml(mkNomeDe(x.marketplace)) + '</div></td>' +
+            '<td style="padding:9px 10px;font-size:12px;color:#15803d">↩️ Devolução' +
+              (x.orderSn ? '<div style="font-size:11px;color:#64748b">Pedido ' + escapeHtml(String(x.orderSn)) + '</div>' : '') +
+              (x.notaOriginalNumero ? '<div style="font-size:11px;color:#64748b">NF de venda ' + escapeHtml(String(x.notaOriginalNumero)) + '</div>' : '') +
+              (x.motivo ? '<div style="font-size:11px;color:#9ca3af">' + escapeHtml(String(x.motivo)) + '</div>' : '') + '</td>' +
+            '<td style="padding:9px 10px;text-align:center;font-size:13px;color:#cbd5e1">—</td>' +
+            '<td style="padding:9px 10px;text-align:center;font-weight:800;font-size:13px;color:#16a34a">↩︎ entrada</td>' +
+            '<td style="padding:9px 10px;text-align:center;font-size:13px;color:#cbd5e1">—</td>' +
+            '<td style="padding:9px 10px;text-align:center;color:#94a3b8">·</td></tr>';
+        }
+        // ev.kind === 'mov'
+        const m = ev.d;
         const antes  = (m.qtd_antes  != null) ? m.qtd_antes  : '?';
         const depois = (m.qtd_depois != null) ? m.qtd_depois : '—';
         const dl = m.delta;
         const dlTxt = (dl == null) ? '' : (dl > 0 ? '+' + dl : String(dl));
         const dlCor = (dl == null) ? '#9ca3af' : (dl > 0 ? '#16a34a' : (dl < 0 ? '#dc2626' : '#6b7280'));
-        const ORIGEM = {
-          replicar_estoque: '🔁 Replicar estoque',
-          push_manual:      '✍️ Alteração manual',
-          venda:            '🛒 Venda',
-          sync:             '🔄 Sincronização',
-          ajuste:           '⚙️ Ajuste',
-        };
         return '<tr style="border-top:1px solid #f1f5f9;' + (m.ok ? '' : 'background:#fef2f2') + '">' +
           '<td style="padding:9px 10px;font-size:12px;color:#64748b;white-space:nowrap">' + dt + '</td>' +
           '<td style="padding:9px 10px">' +
-            '<div style="font-size:13px;font-weight:600;color:#1e293b">' + escapeHtml(lojaNome) + '</div>' +
-            '<div style="font-size:11px;color:#9ca3af">' + escapeHtml(mkNome) + (m.anuncio_id ? ' · ' + escapeHtml(m.anuncio_id) : '') + '</div>' +
+            '<div style="font-size:13px;font-weight:600;color:#1e293b">' + escapeHtml(lojaNomeDe(m.loja_id_banco)) + '</div>' +
+            '<div style="font-size:11px;color:#9ca3af">' + _mkLogoChip(m.marketplace) + escapeHtml(mkNomeDe(m.marketplace)) + (m.anuncio_id ? ' · ' + escapeHtml(m.anuncio_id) : '') + '</div>' +
           '</td>' +
           '<td style="padding:9px 10px;font-size:12px;color:#475569">' + escapeHtml(ORIGEM[m.origem] || m.origem || '—') +
             (m.motivo ? '<div style="font-size:11px;color:#9ca3af">' + escapeHtml(m.motivo) + '</div>' : '') + '</td>' +
@@ -49443,23 +49520,23 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         '</tr>';
       }).join('');
 
+      const tile = (rot, val) => '<div style="flex:1;min-width:120px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px">' +
+        '<div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:700">' + rot + '</div>' +
+        '<div style="font-size:24px;font-weight:800;color:#1e293b">' + val + '</div></div>';
+
       corpo.innerHTML =
         '<div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">' +
-          '<div style="flex:1;min-width:130px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px">' +
-            '<div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:700">Estoque atual</div>' +
-            '<div style="font-size:24px;font-weight:800;color:#1e293b">' + saldoAtual + '</div></div>' +
-          '<div style="flex:1;min-width:130px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px">' +
-            '<div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:700">Movimentações</div>' +
-            '<div style="font-size:24px;font-weight:800;color:#1e293b">' + movs.length + '</div></div>' +
-          '<div style="flex:1;min-width:130px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px">' +
-            '<div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:700">Lojas envolvidas</div>' +
-            '<div style="font-size:24px;font-weight:800;color:#1e293b">' + nLojas + '</div></div>' +
+          tile('Estoque atual', saldoAtual) +
+          tile('Vendas', vendas.length) +
+          tile('Devoluções', devolucoes.length) +
+          tile('Movimentações', movs.length) +
+          tile('Lojas', nLojas) +
         '</div>' +
         '<table style="width:100%;border-collapse:collapse">' +
           '<thead><tr style="background:#fafbfc;font-size:11px;color:#94a3b8;text-transform:uppercase">' +
             '<th style="padding:8px 10px;text-align:left">Data</th>' +
             '<th style="padding:8px 10px;text-align:left">Loja / anúncio</th>' +
-            '<th style="padding:8px 10px;text-align:left">Origem</th>' +
+            '<th style="padding:8px 10px;text-align:left">Evento</th>' +
             '<th style="padding:8px 10px;text-align:center">Antes</th>' +
             '<th style="padding:8px 10px;text-align:center">Δ</th>' +
             '<th style="padding:8px 10px;text-align:center">Depois</th>' +
@@ -49477,6 +49554,71 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (ov) ov.classList.remove('active');
   }
   window.fecharHistoricoEstoque = fecharHistoricoEstoque;
+
+  // v33k.1132: ajuste manual (balanço / entrada / saída) DENTRO do histórico.
+  // Age por SKU (a mesma chave do histórico): acha a(s) variação(ões), aplica o
+  // novo saldo, grava o movimento (antes → depois) e replica só pros ativos.
+  async function _ajusteManualPorSku(modo) {
+    const sku = _histEstSkuAtual;
+    if (!sku) { showToast('Sem SKU pra ajustar', true); return; }
+    const skuU = String(sku).trim().toUpperCase();
+    const alvos = [];
+    (produtosErp || []).forEach(p => {
+      if (p.status === 'excluido') return;
+      (p.variacoes || []).forEach(v => {
+        if (String(v.sku || '').trim().toUpperCase() === skuU) alvos.push({ p, v });
+      });
+    });
+    if (!alvos.length) { showToast('Não achei a variação desse SKU no painel', true); return; }
+    const atual = Math.max(0, parseInt(alvos[0].v.estoque) || 0);
+
+    let novo, origem, motivo;
+    if (modo === 'balanco') {
+      const r = await lcPrompt('Balanço — quantas unidades TEM agora? (define o valor absoluto)\n\nSaldo atual: ' + atual, String(atual), { titulo: '⚖ Balanço de estoque', okLabel: 'Aplicar balanço' });
+      if (r == null) return;
+      novo = Math.max(0, parseInt(String(r).replace(/\D/g, ''), 10) || 0);
+      origem = 'balanco'; motivo = 'Balanço (painel): ' + atual + ' → ' + novo;
+    } else if (modo === 'entrada') {
+      const r = await lcPrompt('Entrada — quantas unidades ENTRARAM? (soma ao saldo)\n\nSaldo atual: ' + atual, '', { titulo: '📥 Entrada de estoque', placeholder: 'ex: 50', okLabel: 'Registrar entrada' });
+      if (r == null) return;
+      const q = parseInt(String(r).replace(/\D/g, ''), 10);
+      if (!q || q <= 0) { showToast('Quantidade inválida', true); return; }
+      novo = atual + q; origem = 'entrada'; motivo = 'Entrada de estoque (+' + q + ')';
+    } else { // saida
+      const r = await lcPrompt('Saída — quantas unidades SAÍRAM? (subtrai do saldo)\n\nSaldo atual: ' + atual, '', { titulo: '📤 Saída de estoque', placeholder: 'ex: 10', okLabel: 'Registrar saída' });
+      if (r == null) return;
+      const q = parseInt(String(r).replace(/\D/g, ''), 10);
+      if (!q || q <= 0) { showToast('Quantidade inválida', true); return; }
+      novo = Math.max(0, atual - q); origem = 'saida'; motivo = 'Saída avulsa (-' + q + ')';
+    }
+
+    // aplica em TODAS as variações desse SKU (o saldo é por SKU) e persiste
+    alvos.forEach(({ p, v }) => { v.estoque = novo; p.atualizadoEm = new Date().toISOString(); });
+    saveProdutos();
+    if (typeof renderEstoque === 'function') renderEstoque();
+    if (typeof renderEstoqueStats === 'function') renderEstoqueStats();
+
+    // grava o movimento (antes → depois) no histórico
+    const a0 = alvos[0];
+    try {
+      await fetch(BACKEND_URL + '/api/marketplaces/estoque-ajuste-interno', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ movimentos: [{
+          sku, produtoId: String(a0.p.id), variacaoId: String(a0.v.id),
+          variacaoNome: a0.v.nome || '', qtdAntes: atual, qtdDepois: novo, origem, motivo,
+        }] }),
+      });
+    } catch (_) { /* o histórico nunca bloqueia o ajuste */ }
+
+    // replica o novo saldo só pros anúncios ATIVOS
+    if (typeof _enviarEstoqueTempoReal === 'function') _enviarEstoqueTempoReal(sku, novo);
+
+    showToast('✓ ' + (modo === 'balanco' ? 'Balanço' : modo === 'entrada' ? 'Entrada' : 'Saída') + ' aplicada · saldo ' + novo);
+    // reabre o histórico pra já mostrar o movimento novo
+    setTimeout(() => abrirHistoricoEstoque(sku, _histEstNomeAtual), 300);
+  }
+  window._ajusteManualPorSku = _ajusteManualPorSku;
 
   // ═══════════════════════════════════════════════════════════════════════
   // TROCAR O VÍNCULO DE UMA VARIAÇÃO (v33k.598)
@@ -49603,20 +49745,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!_estoqueSelecionados.length) { showToast('Selecione variações primeiro', true); return; }
     // Monta as tarefas: pra cada variação selecionada, acha SKU, estoque e anúncios
     const tarefas = [];
+    let pulados = 0;   // v33k.1120 (Leva 1): anúncios não ativos ignorados
     _estoqueSelecionados.forEach(selId => {
       const [pid, vid] = selId.split(':');
       const p = produtosErp.find(x => String(x.id) === String(pid));
       const v = p && (p.variacoes||[]).find(x => String(x.id) === String(vid));
       if (!v || !v.sku) return;
-      const anuncios = _anunciosPorSku(v.sku);
-      if (anuncios.length) {
-        tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios });
+      const { ativos, pulados: pul } = _separarAnunciosReplicaveis(_anunciosPorSku(v.sku));
+      pulados += pul.length;
+      if (ativos.length) {
+        tarefas.push({ sku: v.sku, estoque: Math.max(0, parseInt(v.estoque)||0), anuncios: ativos });
       }
     });
-    if (!tarefas.length) { showToast('Nenhuma das selecionadas tem SKU com anúncios vinculados', true); return; }
+    if (!tarefas.length) { showToast('Nenhuma das selecionadas tem SKU com anúncio ATIVO vinculado' + (pulados ? ' (' + pulados + ' não ativo(s) ignorado(s))' : ''), true); return; }
 
     const totalAnuncios = tarefas.reduce((s,t)=>s+t.anuncios.length,0);
-    if (!await lcConfirm(`Replicar o estoque de ${tarefas.length} variação(ões) selecionada(s) para ${totalAnuncios} anúncio(s) vinculado(s)?`)) return;
+    if (!await lcConfirm(`Replicar o estoque de ${tarefas.length} variação(ões) selecionada(s) para ${totalAnuncios} anúncio(s) ativo(s)?` + (pulados ? `\n\n⚠ ${pulados} anúncio(s) não ativo(s) serão ignorados.` : ''))) return;
 
     showToast(`🔄 Replicando ${tarefas.length} variação(ões)...`);
     let okTotal = 0, falhaTotal = 0;
@@ -49812,8 +49956,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const skuSafe = String(v.sku || '').replace(/'/g, "\\'");
       const nomeSafe = String(v.nome || '').replace(/'/g, "\\'");
       const btnHist = v.sku
-        ? `<button class="estoque-replicar-btn" style="background:#eff6ff;color:#1d4ed8" title="Histórico desta variação: quando mudou, em qual loja, antes → depois" onclick="event.stopPropagation(); abrirHistoricoEstoque('${skuSafe}','${nomeSafe}')">🕑</button>`
+        ? `<button class="estoque-replicar-btn" style="background:#eff6ff;color:#1d4ed8" title="Histórico desta variação: vendas, devoluções, entradas, balanços e replicações" onclick="event.stopPropagation(); abrirHistoricoEstoque('${skuSafe}','${nomeSafe}')">🕑</button>`
         : '';
+      // v33k.1121 (Leva 2): botão de ENTRADA de estoque (chegada/compra/reposição)
+      const btnEntrada = `<button class="estoque-replicar-btn" style="background:#f0fdf4;color:#15803d" title="Registrar ENTRADA de estoque (chegada, compra, reposição) desta variação" onclick="event.stopPropagation(); registrarEntradaEstoque('${p.id}','${v.id}')">📥</button>`;
       return `<div class="estoque-var-linha">
         <input type="checkbox" class="estoque-check" ${checked} onchange="toggleEstoqueSel('${selId}')">
         <div class="estoque-var-nome">${escapeHtml(v.nome||'Variação')}<div class="estoque-var-sku">${escapeHtml(v.sku||'sem SKU')}</div></div>
@@ -49821,6 +49967,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         <input type="number" class="estoque-var-input ${baixo}" value="${estoque}" onchange="atualizarEstoqueVar('${p.id}','${v.id}',this.value)">
         <!-- v33k.599: selo PERSISTENTE do push. O toast some em 3s; este fica. -->
         <span data-sku-selo="${escapeHtml(v.sku||'')}" style="display:none;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;white-space:nowrap"></span>
+        ${btnEntrada}
         ${btnHist}
         ${btnReplicar}
       </div>`;
@@ -49931,9 +50078,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const anunciosProd = new Set();
       variacoes.forEach(v => (v.vinculos||[]).forEach(vi => { if (vi.anuncioId) anunciosProd.add(String(vi.anuncioId)); }));
       const nAnunciosProd = anunciosProd.size;
-      const vincBadge = nAnunciosProd > 0
+      // v33k.1122 (Leva 3): selo agregado de status junto do badge de vínculos
+      const chipStatusProd = _chipStatusAgregado(p, p.id);
+      const vincBadge = (nAnunciosProd > 0
         ? `<span class="estoque-prod-vinc clicavel" title="Ver e gerenciar os ${nAnunciosProd} anúncios vinculados" onclick="event.stopPropagation(); abrirGerenciarVinculos('${p.id}')">📌 ${nAnunciosProd} anúncio(s) vinculado(s)</span>`
-        : `<span class="estoque-prod-vinc semvinc" title="Nenhum anúncio vinculado">sem vínculos</span>`;
+        : `<span class="estoque-prod-vinc semvinc" title="Nenhum anúncio vinculado">sem vínculos</span>`)
+        + (chipStatusProd ? ' ' + chipStatusProd : '');
 
       // foto de capa do produto/anúncio (1ª global, senão 1ª de alguma cor)
       let foto = (p.fotos && p.fotos[0]) || null;
@@ -50175,9 +50325,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
   async function _enviarEstoqueTempoReal(sku, estoque) {
     try {
-      const anuncios = (typeof _anunciosPorSku === 'function') ? _anunciosPorSku(sku) : [];
-      if (!anuncios.length) {
+      const todos = (typeof _anunciosPorSku === 'function') ? _anunciosPorSku(sku) : [];
+      if (!todos.length) {
         _seloEstoque(sku, 'neutro', 'sem anúncio vinculado', 'Esta variação não está vinculada a nenhum anúncio, o estoque ficou só no painel.');
+        return;
+      }
+      // v33k.1120 (Leva 1): só empurra pros ANÚNCIOS ATIVOS
+      const { ativos: anuncios, pulados } = _separarAnunciosReplicaveis(todos);
+      const sufixoPulados = pulados.length ? ' · ' + pulados.length + ' não ativo(s) pulado(s)' : '';
+      if (!anuncios.length) {
+        _seloEstoque(sku, 'neutro', pulados.length + ' anúncio(s) não ativo(s)',
+          'Nenhum anúncio ativo pra este SKU (todos ' + [...new Set(pulados.map(p => _rotuloStatusAnuncio(p.statusAnuncio)))].join(', ') + '). O estoque ficou só no painel.');
         return;
       }
       _seloEstoque(sku, 'enviando', 'enviando aos anúncios…');
@@ -50190,9 +50348,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const d = (data && data.dados) || {};
       if (data && data.ok) {
         const n = d.sucesso || anuncios.length;
-        _seloEstoque(sku, 'ok', 'replicado em ' + n + ' anúncio' + (n === 1 ? '' : 's'),
-          'Estoque ' + estoque + ' enviado para ' + n + ' anúncio(s) vinculado(s).');
-        showToast('✓ Estoque enviado (' + n + ' anúncio' + (n === 1 ? '' : 's') + ')');
+        _seloEstoque(sku, 'ok', 'replicado em ' + n + ' anúncio' + (n === 1 ? '' : 's') + sufixoPulados,
+          'Estoque ' + estoque + ' enviado para ' + n + ' anúncio(s) ativo(s).' + (pulados.length ? ' ' + pulados.length + ' não ativo(s) foram pulados.' : ''));
+        showToast('✓ Estoque enviado (' + n + ' anúncio' + (n === 1 ? '' : 's') + ')' + (pulados.length ? ' · ' + pulados.length + ' não ativo(s) pulado(s)' : ''));
       } else {
         const falhas = (d.resultados || []).filter(r => !r.ok);
         const detalhe = falhas.slice(0, 2).map(f => f.erro).join(' | ');
@@ -50230,12 +50388,66 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             anuncioId: vinc.anuncioId,
             loja: loja ? loja.nome : '(loja ?)',
             marketplace: vinc.marketplace || (loja && loja.marketplace) || '?',
+            // v33k.1120 (Leva 1): status do anúncio (do último sync, guardado no
+            // próprio vínculo) pra decidir se pode replicar estoque pra ele.
+            statusAnuncio: (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vinc) : 'desconhecido',
           });
         });
       });
     });
     return achados;
   }
+
+  // v33k.1120 (Leva 1): só replicamos estoque/anúncio pra quem está ATIVO.
+  // 'desconhecido' (vínculo legado, sem status do sync) NÃO é bloqueado, senão
+  // paralisaríamos o estoque de anúncios que só não foram sincronizados ainda.
+  // Bloqueia o que sabidamente não está no ar: pausado, inativo, em revisão,
+  // banido, fechado/encerrado.
+  function _statusPermiteReplicar(status) {
+    return status === 'ativo' || status === 'desconhecido' || !status;
+  }
+  // separa uma lista de anúncios (de _anunciosPorSku) em {ativos, pulados}
+  function _separarAnunciosReplicaveis(anuncios) {
+    const ativos = [], pulados = [];
+    (anuncios || []).forEach(a => {
+      if (_statusPermiteReplicar(a.statusAnuncio)) ativos.push(a);
+      else pulados.push(a);
+    });
+    return { ativos, pulados };
+  }
+  // rótulo curto do status pro toast/confirmação
+  function _rotuloStatusAnuncio(status) {
+    return ({ ativo:'ativo', pausado:'pausado', inativo:'inativo', em_revisao:'em revisão',
+      banido:'banido', fechado:'encerrado', desconhecido:'status desconhecido' })[status] || status || '—';
+  }
+  // v33k.1122 (Leva 3): status AGREGADO dos anúncios de um produto (por anúncio
+  // único), pra mostrar no card sem abrir a central. Só destaca o que NÃO está
+  // ativo (pausado/inativo/revisão/banido/encerrado) — quando está tudo ok, não polui.
+  function _statusAgregadoProduto(p) {
+    const porAnuncio = {};
+    (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+      if (!vi.anuncioId) return;
+      const aid = String(vi.anuncioId);
+      if (!(aid in porAnuncio)) porAnuncio[aid] = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
+    }));
+    const counts = {}; let naoAtivos = 0, total = 0;
+    Object.values(porAnuncio).forEach(st => {
+      total++; counts[st] = (counts[st] || 0) + 1;
+      if (st !== 'ativo' && st !== 'desconhecido') naoAtivos++;
+    });
+    return { total, naoAtivos, counts };
+  }
+  // chip vermelho "⚠ N não ativo(s)" — string vazia quando está tudo ativo
+  function _chipStatusAgregado(p, prodId) {
+    const ag = _statusAgregadoProduto(p);
+    if (!ag.naoAtivos) return '';
+    const partes = Object.keys(ag.counts)
+      .filter(k => k !== 'ativo' && k !== 'desconhecido')
+      .map(k => ag.counts[k] + ' ' + _rotuloStatusAnuncio(k));
+    const tt = 'Anúncios não ativos: ' + partes.join(', ') + '. O estoque NÃO é replicado pra eles até voltarem a ficar ativos. Clique pra ver.';
+    return '<span class="prod-card-mkt-chip" style="background:#dc2626;cursor:pointer" title="' + escapeHtml(tt) + '" onclick="event.stopPropagation();abrirGerenciarVinculos(\'' + String(prodId).replace(/'/g, "\\'") + '\')">⚠ ' + ag.naoAtivos + ' não ativo' + (ag.naoAtivos > 1 ? 's' : '') + '</span>';
+  }
+  window._chipStatusAgregado = _chipStatusAgregado;
 
   // Replica o estoque de uma variação (pelo SKU) para todos os anúncios vinculados.
   async function replicarEstoquePorSku(produtoId, variacaoId) {
@@ -50246,17 +50458,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!sku) { showToast('Esta variação não tem SKU, não dá pra vincular', true); return; }
 
     const novoEstoque = Math.max(0, parseInt(v.estoque) || 0);
-    const anuncios = _anunciosPorSku(sku);
-    if (anuncios.length === 0) {
+    const todos = _anunciosPorSku(sku);
+    if (todos.length === 0) {
       showToast('Nenhum anúncio vinculado a esse SKU em nenhuma loja', true);
       return;
     }
+    // v33k.1120 (Leva 1): replica só pros ANÚNCIOS ATIVOS
+    const { ativos: anuncios, pulados } = _separarAnunciosReplicaveis(todos);
+    if (anuncios.length === 0) {
+      showToast('Todos os ' + pulados.length + ' anúncio(s) deste SKU estão não ativos (' +
+        [...new Set(pulados.map(a => _rotuloStatusAnuncio(a.statusAnuncio)))].join(', ') + '). Nada replicado.', true);
+      return;
+    }
 
-    // Confirmação com a lista de onde vai replicar
+    // Confirmação com a lista de onde vai replicar (+ aviso dos pulados)
     const lojasResumo = anuncios.map(a => `• ${a.loja} (${a.marketplace})`).join('\n');
-    if (!await lcConfirm(`Replicar estoque ${novoEstoque} do SKU "${sku}" para ${anuncios.length} anúncio(s):\n\n${lojasResumo}\n\nConfirmar?`)) return;
+    const avisoPulados = pulados.length
+      ? `\n\n⚠ ${pulados.length} anúncio(s) não ativo(s) serão pulados:\n` +
+        pulados.map(a => `• ${a.loja} (${a.marketplace}) — ${_rotuloStatusAnuncio(a.statusAnuncio)}`).join('\n')
+      : '';
+    if (!await lcConfirm(`Replicar estoque ${novoEstoque} do SKU "${sku}" para ${anuncios.length} anúncio(s) ativo(s):\n\n${lojasResumo}${avisoPulados}\n\nConfirmar?`)) return;
 
-    showToast(`🔄 Replicando estoque em ${anuncios.length} anúncio(s)...`);
+    showToast(`🔄 Replicando estoque em ${anuncios.length} anúncio(s) ativo(s)...`);
     try {
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
         method: 'POST',
@@ -50266,7 +50489,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const data = await resp.json();
       const d = data.dados || {};
       if (data.ok) {
-        showToast(`✓ Estoque replicado em ${d.sucesso} anúncio(s)`);
+        showToast(`✓ Estoque replicado em ${d.sucesso} anúncio(s)` + (pulados.length ? ` · ${pulados.length} não ativo(s) pulado(s)` : ''));
       } else {
         const falhas = (d.resultados || []).filter(r => !r.ok);
         const detalhe = falhas.slice(0,3).map(f => f.erro).join(' | ');
@@ -50278,7 +50501,52 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     }
   }
   window.replicarEstoquePorSku = replicarEstoquePorSku;
-  
+
+  // ── ENTRADA DE ESTOQUE (v33k.1121, Leva 2) ───────────────────────────
+  // Registra a chegada de unidades (compra, reposição, retorno) SOMANDO ao saldo
+  // atual. Grava o movimento (origem 'entrada', antes → depois) no histórico e
+  // replica o novo saldo só pros anúncios ATIVOS. É o botão 📥 da linha.
+  async function registrarEntradaEstoque(produtoId, variacaoId) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    const v = p && (p.variacoes||[]).find(x => String(x.id) === String(variacaoId));
+    if (!v) { showToast('Variação não encontrada', true); return; }
+    const atual = Math.max(0, parseInt(v.estoque) || 0);
+    const nome = v.nome || ((v.cor||'') + (v.tamanho ? ' / ' + v.tamanho : ''));
+    const resp = await lcPrompt(
+      'Quantas unidades ENTRARAM de "' + nome + '"?\n\nSaldo atual: ' + atual + ' un. O valor é somado ao saldo.',
+      '', { titulo: '📥 Entrada de estoque', placeholder: 'ex: 50', okLabel: 'Registrar entrada' });
+    if (resp == null) return;
+    const qtd = parseInt(String(resp).replace(/\D/g, ''), 10);
+    if (!qtd || qtd <= 0) { showToast('Informe uma quantidade válida (maior que zero)', true); return; }
+    const novo = atual + qtd;
+
+    // 1) aplica no painel (fonte da verdade) e persiste
+    v.estoque = novo;
+    p.atualizadoEm = new Date().toISOString();
+    saveProdutos();
+    renderEstoque();
+    if (typeof renderEstoqueStats === 'function') renderEstoqueStats();
+
+    // 2) registra o movimento de ENTRADA no histórico (antes → depois)
+    if (v.sku) {
+      fetch(BACKEND_URL + '/api/marketplaces/estoque-ajuste-interno', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ movimentos: [{
+          sku: v.sku, produtoId: String(p.id), variacaoId: String(v.id), variacaoNome: nome,
+          qtdAntes: atual, qtdDepois: novo, origem: 'entrada', motivo: 'Entrada de estoque (+' + qtd + ')',
+        }] }),
+      }).catch(() => {});
+    }
+
+    // 3) replica o novo saldo só pros anúncios ATIVOS (reusa o push filtrado)
+    showToast('✓ Entrada de ' + qtd + ' un. registrada · saldo ' + novo);
+    if (v.sku && typeof _enviarEstoqueTempoReal === 'function') {
+      _enviarEstoqueTempoReal(v.sku, novo);
+    }
+  }
+  window.registrarEntradaEstoque = registrarEntradaEstoque;
+
   // Ação em massa: zerar ou definir estoque dos selecionados
   // ═══════════════════════════════════════════════════════════════════════
   // EDITAR ESTOQUE EM MASSA + REPLICAR NUM PASSO SÓ (v33k.599)
@@ -50317,13 +50585,16 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (!p) return;
       const v = (p.variacoes||[]).find(x => String(x.id) === String(vid));
       if (!v) return;
-      const anuncios = (typeof _anunciosPorSku === 'function' && v.sku) ? _anunciosPorSku(v.sku) : [];
+      // v33k.1120 (Leva 1): só os anúncios ATIVOS entram na replicação
+      const todosA = (typeof _anunciosPorSku === 'function' && v.sku) ? _anunciosPorSku(v.sku) : [];
+      const sep = _separarAnunciosReplicaveis(todosA);
       alvos.push({
         p, v, selId,
         nome: v.nome || ((v.cor||'') + (v.tamanho ? ' / ' + v.tamanho : '')),
         sku: v.sku || '',
         estoqueAntes: (v.estoque != null) ? Number(v.estoque) : null,
-        anuncios,
+        anuncios: sep.ativos,
+        anunciosPulados: sep.pulados.length,
       });
     });
     if (!alvos.length) { showToast('Nenhuma variação válida', true); return; }
@@ -50331,15 +50602,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const comAnuncio = alvos.filter(a => a.anuncios.length > 0);
     const semAnuncio = alvos.filter(a => a.anuncios.length === 0);
     const totalAnuncios = comAnuncio.reduce((s, a) => s + a.anuncios.length, 0);
+    const totalPulados = alvos.reduce((s, a) => s + (a.anunciosPulados || 0), 0);
 
     // pergunta UMA vez se replica, em vez de obrigar a repetir a seleção depois
     let replicar = false;
     if (comAnuncio.length > 0) {
       replicar = await lcConfirm(
         'Atualizar ' + alvos.length + ' variação(ões) para estoque ' + novoValor + '.\n\n'
-        + '📤 Replicar nos anúncios vinculados agora?\n'
-        + '   • ' + comAnuncio.length + ' variação(ões) com anúncio · ' + totalAnuncios + ' anúncio(s) no total\n'
-        + (semAnuncio.length ? '   • ' + semAnuncio.length + ' sem anúncio vinculado (só no painel)\n' : '')
+        + '📤 Replicar nos anúncios ATIVOS vinculados agora?\n'
+        + '   • ' + comAnuncio.length + ' variação(ões) com anúncio ativo · ' + totalAnuncios + ' anúncio(s) ativo(s)\n'
+        + (totalPulados ? '   • ⚠ ' + totalPulados + ' anúncio(s) não ativo(s) serão ignorados\n' : '')
+        + (semAnuncio.length ? '   • ' + semAnuncio.length + ' sem anúncio ativo (só no painel)\n' : '')
         + '\nOK = salva e replica  ·  Cancelar = salva SÓ no painel');
     }
 
