@@ -51294,6 +51294,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // ── 4) replica com a barra de progresso padrão do sistema ──
     abrirMassaProgress('📦 Replicando estoque nos anúncios...', comAnuncio.length);
     let feitos = 0, okAnuncios = 0, falhaAnuncios = 0;
+    // v33k.1150: agrega o MOTIVO REAL das falhas (antes só mostrava a contagem
+    // "X falha(s)" sem dizer por quê). Junta as mensagens de erro por anúncio.
+    const _motivosFalha = {};
     for (const a of comAnuncio) {
       if (_massaCancelar) {
         atualizarMassaProgress(feitos, comAnuncio.length, 'Cancelado pelo usuário, as demais NÃO foram replicadas', true);
@@ -51313,12 +51316,18 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         okAnuncios += d.sucesso || 0;
         falhaAnuncios += d.falhas || 0;
         feitos++;
+        (d.resultados || []).filter(x => !x.ok).forEach(x => {
+          const m = String(x.erro || 'erro desconhecido').replace(/\s+/g, ' ').trim().slice(0, 160);
+          _motivosFalha[m] = (_motivosFalha[m] || 0) + 1;
+        });
         const houveFalha = (d.falhas || 0) > 0;
         atualizarMassaProgress(feitos, comAnuncio.length,
           a.nome + ' [' + a.sku + '] → ' + (d.sucesso || 0) + '/' + a.anuncios.length + ' anúncio(s)'
           + (houveFalha ? ' · ' + d.falhas + ' falha(s)' : ''), houveFalha);
       } catch (e) {
         feitos++; falhaAnuncios += a.anuncios.length;
+        const m = String(e.message || 'erro de rede').slice(0, 160);
+        _motivosFalha[m] = (_motivosFalha[m] || 0) + a.anuncios.length;
         atualizarMassaProgress(feitos, comAnuncio.length, a.nome + ' [' + a.sku + ']: ' + e.message, true);
       }
     }
@@ -51326,6 +51335,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       '✓ ' + okAnuncios + ' anúncio(s) atualizado(s)'
       + (falhaAnuncios ? ' · ✗ ' + falhaAnuncios + ' falha(s)' : '')
       + (semAnuncio.length ? ' · ' + semAnuncio.length + ' variação(ões) sem anúncio' : ''));
+    // mostra os motivos das falhas (os mais comuns), pra parar de "falhar sem dizer por quê"
+    const _motivosOrd = Object.entries(_motivosFalha).sort((a, b) => b[1] - a[1]);
+    if (_motivosOrd.length) {
+      const linhas = _motivosOrd.slice(0, 5).map(([m, n]) => n + '× ' + m);
+      console.warn('[replicar massa] MOTIVOS DAS FALHAS:\n' + linhas.join('\n'));
+      lcAlert('Motivos das ' + falhaAnuncios + ' falha(s):\n\n' + linhas.join('\n\n'), { titulo: '⚠ Por que alguns anúncios falharam' });
+    }
 
     // ★ A SELEÇÃO PERMANECE. Era isto que obrigava a refazer tudo do zero.
     atualizarBarraMassa();
