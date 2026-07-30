@@ -49675,6 +49675,43 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!i) return '';
     return '<span title="' + escapeHtml(i.nome) + '" style="display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:16px;padding:0 5px;border-radius:3px;background:' + i.cor + ';color:' + i.txt + ';font-size:9px;font-weight:800;letter-spacing:.4px;vertical-align:middle;margin-right:5px">' + i.sigla + '</span>';
   }
+  // v33k.1139: logo pequeno do marketplace (só o logo, sem sigla textual, sem
+  // margem), pra enfileirar ao lado de produto/variação. `px` = tamanho do logo.
+  function _mkLogoMini(mk, px) {
+    const fs = px || 13;
+    const key = (typeof window.LC_MKT_KEY === 'function') ? window.LC_MKT_KEY(mk) : String(mk || '').toLowerCase();
+    const logo = (typeof window.LC_LOGO === 'function') ? window.LC_LOGO(key) : '';
+    const nome = ((typeof MK_INFO !== 'undefined' && MK_INFO[mk]) || {}).nome || key;
+    if (logo) {
+      return '<span title="' + escapeHtml(nome) + '" style="display:inline-flex;align-items:center;vertical-align:middle;font-size:' + fs + 'px">' + logo + '</span>';
+    }
+    const i = (typeof MK_INFO !== 'undefined' && MK_INFO[mk]) || null;
+    if (!i) return '';
+    return '<span title="' + escapeHtml(i.nome) + '" style="display:inline-flex;align-items:center;justify-content:center;min-width:' + Math.round(fs * 1.4) + 'px;height:' + fs + 'px;padding:0 3px;border-radius:3px;background:' + i.cor + ';color:' + i.txt + ';font-size:' + Math.max(8, fs - 4) + 'px;font-weight:800;vertical-align:middle">' + i.sigla + '</span>';
+  }
+  // fileira de logos DISTINTOS a partir de uma lista de vínculos (deriva o
+  // marketplace do vínculo ou, na falta, da loja). String vazia se nenhum.
+  function _logosDistintosDeVinculos(vinculos, px) {
+    const seen = new Set(); const out = [];
+    (vinculos || []).forEach(vi => {
+      let mk = vi.marketplace || vi.mkt || '';
+      if (!mk) {
+        const loja = (typeof lojasErp !== 'undefined' ? lojasErp : []).find(l =>
+          (vi.lojaIdBanco && String(l.idBanco) === String(vi.lojaIdBanco)) ||
+          (vi.lojaId && String(l.id) === String(vi.lojaId)));
+        if (loja) mk = loja.marketplace;
+      }
+      const key = (typeof window.LC_MKT_KEY === 'function') ? window.LC_MKT_KEY(mk) : String(mk || '').toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      const l = _mkLogoMini(mk, px);
+      if (l) out.push(l);
+    });
+    if (!out.length) return '';
+    return '<span style="display:inline-flex;align-items:center;gap:4px;vertical-align:middle">' + out.join('') + '</span>';
+  }
+  window._mkLogoMini = _mkLogoMini;
+  window._logosDistintosDeVinculos = _logosDistintosDeVinculos;
   async function abrirHistoricoEstoque(sku, nomeVariacao) {
     if (!sku) { lcAlert('Esta variação não tem SKU, sem SKU não há como rastrear o estoque.'); return; }
     _histEstModo = 'sku'; _histEstSkuAtual = String(sku); _histEstNomeAtual = nomeVariacao || '';
@@ -50417,9 +50454,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         : '';
       // v33k.1121 (Leva 2): botão de ENTRADA de estoque (chegada/compra/reposição)
       const btnEntrada = `<button class="estoque-replicar-btn" style="background:#f0fdf4;color:#15803d" title="Registrar ENTRADA de estoque (chegada, compra, reposição) desta variação" onclick="event.stopPropagation(); registrarEntradaEstoque('${p.id}','${v.id}')">📥</button>`;
+      // v33k.1139: logos pequenos dos marketplaces onde ESTA variação tem vínculo
+      const logosVar = _logosDistintosDeVinculos(v.vinculos, 12);
       return `<div class="estoque-var-linha">
         <input type="checkbox" class="estoque-check" ${checked} onchange="toggleEstoqueSel('${selId}')">
-        <div class="estoque-var-nome">${escapeHtml(v.nome||'Variação')}<div class="estoque-var-sku">${escapeHtml(v.sku||'sem SKU')}</div></div>
+        <div class="estoque-var-nome"><span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">${escapeHtml(v.nome||'Variação')}${logosVar ? `<span style="flex-shrink:0">${logosVar}</span>` : ''}</span><div class="estoque-var-sku">${escapeHtml(v.sku||'sem SKU')}</div></div>
         ${iconeCasamento}
         <input type="number" class="estoque-var-input ${baixo}" value="${estoque}" onchange="atualizarEstoqueVar('${p.id}','${v.id}',this.value)">
         <!-- v33k.599: selo PERSISTENTE do push. O toast some em 3s; este fica. -->
@@ -50535,6 +50574,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const anunciosProd = new Set();
       variacoes.forEach(v => (v.vinculos||[]).forEach(vi => { if (vi.anuncioId) anunciosProd.add(String(vi.anuncioId)); }));
       const nAnunciosProd = anunciosProd.size;
+      // v33k.1139: logos dos marketplaces onde o produto tem vínculo (distintos),
+      // ao lado do nome do produto.
+      const _todosVincProd = [];
+      variacoes.forEach(v => (v.vinculos||[]).forEach(vi => _todosVincProd.push(vi)));
+      const logosProd = _logosDistintosDeVinculos(_todosVincProd, 15);
       // v33k.1122 (Leva 3): selo agregado de status junto do badge de vínculos
       const chipStatusProd = _chipStatusAgregado(p, p.id);
       const vincBadge = (nAnunciosProd > 0
@@ -50560,7 +50604,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           <input type="checkbox" class="estoque-prod-check" ${_estoqueProdSelecionados.includes(String(p.id))?'checked':''} onclick="event.stopPropagation(); toggleProdSelEstoque('${p.id}')" style="width:17px;height:17px;cursor:pointer;flex-shrink:0">
           ${fotoHtml}
           <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleVariacoesEstoque('${p.id}')">
-            <div style="font-size:14px;font-weight:600;color:var(--lc-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.nome)}</div>
+            <div style="display:flex;align-items:center;gap:7px;min-width:0">
+              ${logosProd ? `<span style="flex-shrink:0">${logosProd}</span>` : ''}
+              <span style="font-size:14px;font-weight:600;color:var(--lc-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.nome)}</span>
+            </div>
             <div style="font-size:11px;color:var(--lc-info);margin-top:2px">${escapeHtml(p.skuPai||'sem SKU')} · ${nVars} variaç${nVars>1?'ões':'ão'}</div>
             <div style="margin-top:4px">${vincBadge}</div>
           </div>
@@ -50905,17 +50952,21 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!ag.total) return '';
     const pid = String(prodId).replace(/'/g, "\\'");
     const onclick = 'event.stopPropagation();_gvModalStatusProduto(\'' + pid + '\')';
+    // v33k.1139: chips menores e mais discretos. Ponto colorido em CSS (o emoji
+    // 🟢/🔴 saía como círculo vazado em alguns navegadores) e fonte reduzida.
+    const dot = (cor) => '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + cor + ';margin-right:4px;vertical-align:middle"></span>';
+    const base = 'display:inline-flex;align-items:center;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:20px;cursor:pointer;line-height:1.7;vertical-align:middle';
     let out = '';
     if (ag.ativos) {
       const tt = ag.ativos + ' anúncio(s) ativo(s) — recebem replicação de estoque. Clique pra ver por variação.';
-      out += '<span class="prod-card-mkt-chip" style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0;cursor:pointer" title="' + escapeHtml(tt) + '" onclick="' + onclick + '">🟢 ' + ag.ativos + ' ativo' + (ag.ativos > 1 ? 's' : '') + '</span>';
+      out += '<span style="' + base + ';background:#dcfce7;color:#166534;border:1px solid #bbf7d0" title="' + escapeHtml(tt) + '" onclick="' + onclick + '">' + dot('#22c55e') + ag.ativos + ' ativo' + (ag.ativos > 1 ? 's' : '') + '</span>';
     }
     if (ag.naoAtivos) {
       const partes = Object.keys(ag.counts)
         .filter(k => k !== 'ativo' && k !== 'desconhecido')
         .map(k => ag.counts[k] + ' ' + _rotuloStatusAnuncio(k));
       const tt = 'Anúncios não ativos: ' + partes.join(', ') + '. O estoque NÃO é replicado pra eles até voltarem a ficar ativos. Clique pra ver por variação.';
-      out += '<span class="prod-card-mkt-chip" style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;cursor:pointer" title="' + escapeHtml(tt) + '" onclick="' + onclick + '">🔴 ' + ag.naoAtivos + ' não ativo' + (ag.naoAtivos > 1 ? 's' : '') + '</span>';
+      out += '<span style="' + base + ';background:#fee2e2;color:#991b1b;border:1px solid #fecaca' + (ag.ativos ? ';margin-left:4px' : '') + '" title="' + escapeHtml(tt) + '" onclick="' + onclick + '">' + dot('#ef4444') + ag.naoAtivos + ' não ativo' + (ag.naoAtivos > 1 ? 's' : '') + '</span>';
     }
     return out;
   }
