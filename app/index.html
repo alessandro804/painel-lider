@@ -50835,6 +50835,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       enviando: { bg:'#eff6ff', cor:'#1d4ed8', ic:'⟳' },
       ok:       { bg:'#f0fdf4', cor:'#15803d', ic:'✓' },
       erro:     { bg:'#fef2f2', cor:'#b91c1c', ic:'✗' },
+      // v33k.1151: AVISO amarelo — não é erro (ex.: aguardando oferta ativa encerrar)
+      aviso:    { bg:'#fffbeb', cor:'#b45309', ic:'⏳' },
       neutro:   { bg:'#f8fafc', cor:'#94a3b8', ic:'·' },
     }[estado] || { bg:'#f8fafc', cor:'#64748b', ic:'·' };
     alvo.style.display = 'inline-flex';
@@ -50878,10 +50880,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           'Estoque ' + estoque + ' enviado para ' + n + ' anúncio(s) ativo(s).' + (pulados.length ? ' ' + pulados.length + ' não ativo(s) foram pulados.' : '') + (nFlash ? ' ' + nFlash + ' variação(ões) foram tiradas de oferta relâmpago pra liberar a reserva.' : ''));
         showToast('✓ Estoque enviado (' + n + ' anúncio' + (n === 1 ? '' : 's') + ')' + (pulados.length ? ' · ' + pulados.length + ' não ativo(s) pulado(s)' : '') + avisoFlash);
       } else {
-        const falhas = (d.resultados || []).filter(r => !r.ok);
-        const detalhe = falhas.slice(0, 2).map(f => f.erro).join(' | ');
-        _seloEstoque(sku, 'erro', (d.sucesso||0) + ' ok · ' + (d.falhas||falhas.length||'?') + ' falha(s)' + (nFlash ? ' ⚡' : ''), detalhe);
-        showToast('⚠ Estoque: ' + (d.sucesso||0) + ' ok, ' + (d.falhas||falhas.length||'?') + ' falha(s)' + avisoFlash + (detalhe ? ', ' + detalhe : ''), true);
+        // v33k.1151: separa FALHA REAL de "aguardando oferta relâmpago ATIVA".
+        const naoOk = (d.resultados || []).filter(r => !r.ok);
+        const soOfertaAtiva = naoOk.filter(r => r.dados && r.dados.flashAtivaResidual);
+        const falhasReais = naoOk.filter(r => !(r.dados && r.dados.flashAtivaResidual));
+        if (falhasReais.length === 0 && soOfertaAtiva.length > 0) {
+          // tudo que não foi = só reserva de oferta ATIVA → AVISO amarelo, não erro
+          _seloEstoque(sku, 'aviso', (d.sucesso||0) + ' ok · ' + soOfertaAtiva.length + ' em oferta ativa' + (nFlash ? ' ⚡' : ''),
+            'O estoque interno foi salvo. ' + soOfertaAtiva.length + ' anúncio(s) estão numa oferta relâmpago ATIVA; a Shopee libera a reserva quando ela encerrar e o estoque zera na próxima sincronização.');
+          showToast('⏳ ' + (d.sucesso||0) + ' atualizado(s) · ' + soOfertaAtiva.length + ' aguardando oferta ativa encerrar' + avisoFlash, false);
+        } else {
+          const detalhe = falhasReais.slice(0, 2).map(f => f.erro).join(' | ');
+          _seloEstoque(sku, 'erro', (d.sucesso||0) + ' ok · ' + falhasReais.length + ' falha(s)' + (soOfertaAtiva.length ? ' · ' + soOfertaAtiva.length + ' em oferta ativa' : '') + (nFlash ? ' ⚡' : ''), detalhe);
+          showToast('⚠ Estoque: ' + (d.sucesso||0) + ' ok, ' + falhasReais.length + ' falha(s)' + (soOfertaAtiva.length ? ' · ⏳ ' + soOfertaAtiva.length + ' em oferta ativa' : '') + avisoFlash + (detalhe ? ', ' + detalhe : ''), true);
+        }
       }
     } catch (e) {
       _seloEstoque(sku, 'erro', 'não enviou', e.message);
@@ -51149,10 +51161,19 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (data.ok) {
         showToast(`✓ Estoque replicado em ${d.sucesso} anúncio(s)` + (pulados.length ? ` · ${pulados.length} não ativo(s) pulado(s)` : '') + avisoFlash);
       } else {
-        const falhas = (d.resultados || []).filter(r => !r.ok);
-        const detalhe = falhas.slice(0,3).map(f => f.erro).join(' | ');
-        showToast(`⚠ ${d.sucesso||0} ok, ${d.falhas||0} falha(s)${avisoFlash}: ${detalhe}`, true);
-        console.warn('[replicar estoque] falhas:', falhas);
+        // v33k.1151: separa FALHA REAL de "aguardando oferta relâmpago ATIVA" (amarelo)
+        const naoOk = (d.resultados || []).filter(r => !r.ok);
+        const soOfertaAtiva = naoOk.filter(r => r.dados && r.dados.flashAtivaResidual);
+        const falhasReais = naoOk.filter(r => !(r.dados && r.dados.flashAtivaResidual));
+        if (falhasReais.length === 0 && soOfertaAtiva.length > 0) {
+          lcAlert('O estoque interno já foi salvo. ' + soOfertaAtiva.length + ' anúncio(s) estão numa oferta relâmpago ATIVA — a Shopee só libera a reserva quando ela encerrar, e aí o estoque zera na próxima sincronização.\n\n' + soOfertaAtiva[0].erro,
+            { tipo: 'aviso', titulo: '⚠ Aguardando a oferta relâmpago encerrar' });
+          showToast(`⏳ ${d.sucesso||0} atualizado(s) · ${soOfertaAtiva.length} aguardando oferta ativa encerrar` + avisoFlash, false);
+        } else {
+          const detalhe = falhasReais.slice(0,3).map(f => f.erro).join(' | ');
+          showToast(`⚠ ${d.sucesso||0} ok, ${falhasReais.length} falha(s)` + (soOfertaAtiva.length ? ` · ⏳ ${soOfertaAtiva.length} em oferta ativa` : '') + `${avisoFlash}: ${detalhe}`, true);
+          console.warn('[replicar estoque] falhas:', falhasReais);
+        }
       }
     } catch(e) {
       showToast('Erro ao replicar: ' + e.message, true);
@@ -51293,10 +51314,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
     // ── 4) replica com a barra de progresso padrão do sistema ──
     abrirMassaProgress('📦 Replicando estoque nos anúncios...', comAnuncio.length);
-    let feitos = 0, okAnuncios = 0, falhaAnuncios = 0;
-    // v33k.1150: agrega o MOTIVO REAL das falhas (antes só mostrava a contagem
-    // "X falha(s)" sem dizer por quê). Junta as mensagens de erro por anúncio.
-    const _motivosFalha = {};
+    let feitos = 0, okAnuncios = 0, falhaAnuncios = 0, aguardandoOferta = 0;
+    // v33k.1150/1151: separa FALHA REAL de "aguardando oferta relâmpago ATIVA".
+    // A reserva de uma oferta que está no ar NÃO é erro (a Shopee só a libera
+    // quando ela encerra) — então isso vira AVISO amarelo, não falha vermelha.
+    const _motivosFalha = {};   // falhas de verdade (vermelho)
+    const _avisosOferta = {};   // aguardando a oferta ativa encerrar (amarelo)
     for (const a of comAnuncio) {
       if (_massaCancelar) {
         atualizarMassaProgress(feitos, comAnuncio.length, 'Cancelado pelo usuário, as demais NÃO foram replicadas', true);
@@ -51314,16 +51337,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         });
         const d = (await resp.json().catch(() => ({}))).dados || {};
         okAnuncios += d.sucesso || 0;
-        falhaAnuncios += d.falhas || 0;
         feitos++;
+        let falhaLinha = 0, avisoLinha = 0;
         (d.resultados || []).filter(x => !x.ok).forEach(x => {
-          const m = String(x.erro || 'erro desconhecido').replace(/\s+/g, ' ').trim().slice(0, 160);
-          _motivosFalha[m] = (_motivosFalha[m] || 0) + 1;
+          const m = String(x.erro || 'erro desconhecido').replace(/\s+/g, ' ').trim().slice(0, 180);
+          if (x.dados && x.dados.flashAtivaResidual) {
+            aguardandoOferta++; avisoLinha++;
+            _avisosOferta[m] = (_avisosOferta[m] || 0) + 1;
+          } else {
+            falhaAnuncios++; falhaLinha++;
+            _motivosFalha[m] = (_motivosFalha[m] || 0) + 1;
+          }
         });
-        const houveFalha = (d.falhas || 0) > 0;
         atualizarMassaProgress(feitos, comAnuncio.length,
           a.nome + ' [' + a.sku + '] → ' + (d.sucesso || 0) + '/' + a.anuncios.length + ' anúncio(s)'
-          + (houveFalha ? ' · ' + d.falhas + ' falha(s)' : ''), houveFalha);
+          + (falhaLinha ? ' · ' + falhaLinha + ' falha(s)' : '')
+          + (avisoLinha ? ' · ⏳ ' + avisoLinha + ' em oferta ativa' : ''), falhaLinha > 0);
       } catch (e) {
         feitos++; falhaAnuncios += a.anuncios.length;
         const m = String(e.message || 'erro de rede').slice(0, 160);
@@ -51334,13 +51363,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     finalizarMassaProgress(
       '✓ ' + okAnuncios + ' anúncio(s) atualizado(s)'
       + (falhaAnuncios ? ' · ✗ ' + falhaAnuncios + ' falha(s)' : '')
+      + (aguardandoOferta ? ' · ⏳ ' + aguardandoOferta + ' aguardando oferta ativa encerrar' : '')
       + (semAnuncio.length ? ' · ' + semAnuncio.length + ' variação(ões) sem anúncio' : ''));
-    // mostra os motivos das falhas (os mais comuns), pra parar de "falhar sem dizer por quê"
+    // FALHAS REAIS → alerta vermelho (perigo) com os motivos
     const _motivosOrd = Object.entries(_motivosFalha).sort((a, b) => b[1] - a[1]);
     if (_motivosOrd.length) {
       const linhas = _motivosOrd.slice(0, 5).map(([m, n]) => n + '× ' + m);
       console.warn('[replicar massa] MOTIVOS DAS FALHAS:\n' + linhas.join('\n'));
-      lcAlert('Motivos das ' + falhaAnuncios + ' falha(s):\n\n' + linhas.join('\n\n'), { titulo: '⚠ Por que alguns anúncios falharam' });
+      lcAlert('Motivos das ' + falhaAnuncios + ' falha(s):\n\n' + linhas.join('\n\n'), { tipo: 'perigo', titulo: '❌ Anúncios que falharam' });
+    }
+    // AGUARDANDO OFERTA ATIVA → aviso AMARELO (não é erro; zera quando a oferta encerra)
+    const _avisosOrd = Object.entries(_avisosOferta).sort((a, b) => b[1] - a[1]);
+    if (_avisosOrd.length) {
+      const linhas = _avisosOrd.slice(0, 5).map(([m, n]) => n + '× ' + m);
+      console.warn('[replicar massa] AGUARDANDO OFERTA ATIVA:\n' + linhas.join('\n'));
+      lcAlert('O estoque interno já foi salvo. ' + aguardandoOferta + ' anúncio(s) estão numa oferta relâmpago ATIVA e a Shopee só libera a reserva quando ela encerrar — aí o estoque zera automaticamente na próxima sincronização.\n\n' + linhas.join('\n\n'),
+        { tipo: 'aviso', titulo: '⚠ Aguardando a oferta relâmpago encerrar' });
     }
 
     // ★ A SELEÇÃO PERMANECE. Era isto que obrigava a refazer tudo do zero.
