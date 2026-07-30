@@ -45739,7 +45739,7 @@ Use medidas coerentes com o tipo de produto identificado.`;
   // Função legada, mantida pra compatibilidade
   async function sincronizarLoja(loja) {
     if (loja && loja.contaConectada) {
-      return sincronizarConta(loja.marketplace);
+      return sincronizarConta(loja.marketplace, loja);
     }
     showToast('Esta loja não tem conta conectada. Conecte em 🏪 Lojas & Conexões.', true);
   }
@@ -48577,23 +48577,32 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.dispararSyncVendasEAds = dispararSyncVendasEAds;
 
-  async function sincronizarConta(marketplace) {
+  async function sincronizarConta(marketplace, lojaAlvo) {
+    // v33k.1141: `lojaAlvo` (opcional) = a LOJA ESPECÍFICA a sincronizar. Sem ela,
+    // caía sempre na PRIMEIRA loja do marketplace — o que quebrava quem tem VÁRIAS
+    // lojas do mesmo marketplace (ex: 8 lojas SHEIN): só a 1ª sincronizava e o
+    // estoque das outras nunca chegava no painel. Com lojaAlvo, sincroniza a loja
+    // exata que o usuário marcou.
     // Detecta se é a PRIMEIRA sincronização desta conta (loja nova). Se for,
     // mostra o popup explicativo e dispara, em background, também a sync de
     // VENDAS e ADS, pra pessoa ver as métricas do negócio o quanto antes.
     // v33k.345: flag de primeira sync POR USUÁRIO (era global → um usuário
     // agência que já sincronizou faria outro pular o popup/sync inicial da loja).
-    const chavePrimeira = 'lider_primeira_sync_' + marketplace;
+    // Chave por loja quando temos a loja alvo (senão, por marketplace, compat).
+    const chavePrimeira = 'lider_primeira_sync_' + (lojaAlvo ? ('loja_' + (lojaAlvo.idBanco || lojaAlvo.id)) : marketplace);
     const ehPrimeira = !lsUserGet(chavePrimeira);
     if (ehPrimeira) {
       mostrarPopupPrimeiraSync(marketplace);
       lsUserSet(chavePrimeira, '1');
     }
 
-    showToast('🔄 Sincronizando anúncios da conta ' + marketplace + '...');
-    
-    // Acha a loja correspondente no localStorage e garante que existe no banco
-    const loja = lojasErp.find(l => l.contaConectada && l.marketplace === marketplace)
+    showToast('🔄 Sincronizando anúncios da conta ' + (lojaAlvo && lojaAlvo.nome ? lojaAlvo.nome : marketplace) + '...');
+
+    // Acha a loja correspondente no localStorage e garante que existe no banco.
+    // Prioriza a loja alvo (sync por loja específica); só cai no "primeira do
+    // marketplace" quando ninguém passou uma loja (fluxo legado por marketplace).
+    const loja = lojaAlvo
+              || lojasErp.find(l => l.contaConectada && l.marketplace === marketplace)
               || lojasErp.find(l => l.marketplace === marketplace);
     
     let urlSync;
@@ -48633,7 +48642,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         return;
       }
       // FASE A: importação automática com dedup por SKU
-      const lojaParaImportar = lojasErp.find(l => l.contaConectada && l.marketplace === marketplace) || loja;
+      // v33k.1141: a loja pra importar é a MESMA que foi sincronizada (loja alvo),
+      // senão o vínculo/estoque entrava com a loja errada em multi-loja.
+      const lojaParaImportar = lojaAlvo || lojasErp.find(l => l.contaConectada && l.marketplace === marketplace) || loja;
       if (lojaParaImportar && typeof importarAnunciosAutomatico === 'function') {
         const stats = await importarAnunciosAutomatico(anuncios, lojaParaImportar);
         let msg = '✓ ' + anuncios.length + ' anúncio(s) processado(s) · ';
@@ -81551,7 +81562,11 @@ ${JSON.stringify(metricas, null, 2)}`
       const nome = loja ? loja.nome : c.value;
       prog.textContent += `\n⏳ Sincronizando ${nome}...`;
       try {
-        await sincronizarConta(mk);
+        // v33k.1141: passa a LOJA ESPECÍFICA marcada. Antes ia só o marketplace,
+        // e o sincronizarConta caía sempre na 1ª loja daquele marketplace — quem
+        // tem várias lojas (ex: 8 SHEIN) só via a 1ª sincronizar. Agora cada
+        // loja marcada é sincronizada de fato.
+        await sincronizarConta(mk, loja || undefined);
         feitas++;
         prog.textContent += ` ✓`;
       } catch (e) {
