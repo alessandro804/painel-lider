@@ -2069,36 +2069,46 @@
     const pedidosOk = [];
     const errosPre = [];
     const semSku = [];                 // itens sem SKU: bloqueiam, não somem
-    for (const sn of orderSns) {
-      const lojaId = (window._expLojaPorSn && window._expLojaPorSn[sn]) || null;
-      if (!lojaId) { errosPre.push(sn + ': loja não identificada'); continue; }
-      try {
-        const d = await _api('/api/nfe/pedido-para-emissao?lojaId=' + lojaId + '&orderSn=' + encodeURIComponent(sn));
-        if (!d || !d.ok) { errosPre.push(sn + ': ' + ((d && d.erro) || 'falha ao carregar')); continue; }
-        if (!d.empresa) { errosPre.push(sn + ': loja sem empresa fiscal vinculada'); continue; }
-        pedidosOk.push(sn);
-        (d.itens || []).forEach(it => {
-          // v33k.1083: item sem SKU NÃO bloqueia mais (a v1082 bloqueava, e isso
-          // estava errado: muito vendedor não usa SKU no anúncio, e transformar
-          // isso em impedimento fiscal para a operação).
-          // O backend agora sempre devolve um código estável: SKU do vendedor,
-          // senão o identificador do anúncio, senão um gerado do pedido. Se
-          // ainda assim vier vazio, é bug do backend e precisa aparecer.
-          if (!it.sku) {
-            semSku.push({ orderSn: sn, descricao: it.descricao || '(sem descrição)' });
-            return;
-          }
-          const k = String(it.sku);
-          if (!porSku.has(k)) {
-            // a foto vem do backend (foto_principal da expedição), é o que faz
-            // você reconhecer o produto na hora de escolher o NCM.
-            porSku.set(k, { sku: it.sku, descricao: it.descricao || '', foto: it.foto || null, pedidos: [] });
-          } else if (!porSku.get(k).foto && it.foto) {
-            porSku.get(k).foto = it.foto;
-          }
-          if (!porSku.get(k).pedidos.includes(sn)) porSku.get(k).pedidos.push(sn);
-        });
-      } catch (e) { errosPre.push(sn + ': ' + (e.message || 'erro')); }
+    // v33k.1152 PERFORMANCE: antes era 1 requisição POR VEZ (await dentro do for),
+    // o que deixava a checagem de NCM MUITO lenta em lote (N idas e voltas em
+    // série). Agora dispara em BLOCOS CONCORRENTES (6 por vez) e mescla o
+    // resultado NA ORDEM original — determinístico, mas ~6× mais rápido.
+    const _CONC_PRE = 6;
+    const _resPre = new Array(orderSns.length);
+    for (let i = 0; i < orderSns.length; i += _CONC_PRE) {
+      const fatia = orderSns.slice(i, i + _CONC_PRE);
+      await Promise.all(fatia.map(async (sn, j) => {
+        const idx = i + j;
+        const lojaId = (window._expLojaPorSn && window._expLojaPorSn[sn]) || null;
+        if (!lojaId) { _resPre[idx] = { sn, erro: 'loja não identificada' }; return; }
+        try {
+          const d = await _api('/api/nfe/pedido-para-emissao?lojaId=' + lojaId + '&orderSn=' + encodeURIComponent(sn));
+          _resPre[idx] = { sn, d };
+        } catch (e) { _resPre[idx] = { sn, erro: (e.message || 'erro') }; }
+      }));
+    }
+    for (const res of _resPre) {
+      if (!res) continue;
+      const sn = res.sn;
+      if (res.erro) { errosPre.push(sn + ': ' + res.erro); continue; }
+      const d = res.d;
+      if (!d || !d.ok) { errosPre.push(sn + ': ' + ((d && d.erro) || 'falha ao carregar')); continue; }
+      if (!d.empresa) { errosPre.push(sn + ': loja sem empresa fiscal vinculada'); continue; }
+      pedidosOk.push(sn);
+      (d.itens || []).forEach(it => {
+        // v33k.1083: item sem SKU NÃO bloqueia (muito vendedor não usa SKU); só registra.
+        if (!it.sku) {
+          semSku.push({ orderSn: sn, descricao: it.descricao || '(sem descrição)' });
+          return;
+        }
+        const k = String(it.sku);
+        if (!porSku.has(k)) {
+          porSku.set(k, { sku: it.sku, descricao: it.descricao || '', foto: it.foto || null, pedidos: [] });
+        } else if (!porSku.get(k).foto && it.foto) {
+          porSku.get(k).foto = it.foto;
+        }
+        if (!porSku.get(k).pedidos.includes(sn)) porSku.get(k).pedidos.push(sn);
+      });
     }
     if (!pedidosOk.length) {
       _toast('Nenhum pedido pôde ser preparado. ' + (errosPre[0] || ''), true);
@@ -2483,7 +2493,9 @@
       await _api('/api/expedicao/marcar-emitindo', { method: 'POST', body: JSON.stringify({ orderSns }) });
       if (typeof expCarregar === 'function') { try { await expCarregar(); } catch (_) {} }
     } catch (_) { /* se falhar a marcação, segue a emissão normalmente */ }
-    _toast('Emitindo ' + orderSns.length + ' nota' + (orderSns.length === 1 ? '' : 's') + '…');
+    // v33k.1153: transição SILENCIOSA — os pedidos já migraram pro chip "Emitindo"
+    // (marcar-emitindo + reload acima). Nada de toast "Emitindo N notas…" a pedido
+    // do Alessandro: a mudança de status na tela é o próprio feedback.
     for (let i = 0; i < orderSns.length; i++) {
       const sn = orderSns[i];
       const lojaId = (window._expLojaPorSn && window._expLojaPorSn[sn]) || null;
@@ -67419,7 +67431,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const cont = document.getElementById('expEtapas');
     if (!cont) return;
     const porEtapa = (_expDados && _expDados.porEtapa) || { 1: 0, 2: 0, 3: 0, 4: 0, 8: 0, 9: 0 };
-    const nomes = { 1: 'Emitir NF', 2: 'Processar', 3: 'Imprimir', 4: 'Impresso', 5: 'Full', 8: 'Devolvidos', 9: 'Cancelados' };
+    const nomes = { 1: 'Emitir NF', 2: 'Programar', 3: 'Imprimir', 4: 'Impresso', 5: 'Full', 8: 'Devolvidos', 9: 'Cancelados' };
     // fluxo principal (1→2→3→4) em cards conectados; fora-do-fluxo (8,9) numa barra própria.
     const fluxo = [1, 2, 3, 4];
     let html = '<div class="exp-fluxo">';
@@ -67608,7 +67620,10 @@ ${JSON.stringify(metricas, null, 2)}`
       // saber de relance se tem nota travada. Os transitórios seguem a regra antiga.
       const etapaDeFluxo = (_expEtapaSel === 2 || _expEtapaSel === 3);
       const erroSempreVisivelEtapa1 = (_expEtapaSel === 1 && ehChipErro);
-      if (ehProcesso && !g.n && !ativo && !etapaDeFluxo && !erroSempreVisivelEtapa1) return;
+      // v33k.1152: o chip "Emitindo" fica SEMPRE visível na etapa 1 (Emitir NF),
+      // mesmo zerado — o operador pediu pra sempre enxergar esse status.
+      const emitindoSempreVisivel = (_expEtapaSel === 1 && g.principal === 'emitindo');
+      if (ehProcesso && !g.n && !ativo && !etapaDeFluxo && !erroSempreVisivelEtapa1 && !emitindoSempreVisivel) return;
       // zerado fica discreto (presente, mas apagado). Estilo padrão, sem cores.
       const opac = (!g.n && !ativo) ? '.5' : '1';
       html += '<button onclick="expSelEstado(\'' + g.principal + '\')" style="font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer;font-weight:600;opacity:' + opac + ';border:1.5px solid ' +
@@ -68216,6 +68231,16 @@ ${JSON.stringify(metricas, null, 2)}`
   window._expModoRodape = getModoEtiqueta();
   function expSetRodape(m) { setModoEtiqueta(m); }
 
+  // v33k.1152: a barra de ações (#expAcoes) contém o próprio checkbox
+  // "Selecionar todos" + os botões de massa. A visibilidade dela deve depender de
+  // HAVER PEDIDOS na tela, NUNCA da seleção — senão, ao desmarcar tudo, a barra
+  // inteira sumia (levando junto o "selecionar todos") e não dava pra reselecionar.
+  function _expAcoesVisiveis() {
+    const acoes = document.getElementById('expAcoes');
+    if (!acoes) return;
+    const temPeds = (window._expPedidos || []).length > 0;
+    acoes.style.display = (temPeds && _expEtapaSel !== 9 && _expEtapaSel !== 8 && _expEtapaSel !== 5) ? 'flex' : 'none';
+  }
   function expToggleSel(sn) {
     // v33k.580: NÃO recarrega a lista inteira a cada clique.
     // Antes chamava expCarregarLista(), que refaz o fetch e redesenha TUDO.
@@ -68232,9 +68257,8 @@ ${JSON.stringify(metricas, null, 2)}`
       master.checked = total > 0 && _expSel.size >= total;
     }
     expAtualizaSelInfo();
-    // mostra/esconde a barra de ações conforme haja seleção
-    const acoes = document.getElementById('expAcoes');
-    if (acoes) acoes.style.display = _expSel.size ? 'flex' : 'none';
+    // v33k.1152: a barra fica visível enquanto houver pedidos (não some ao desmarcar)
+    _expAcoesVisiveis();
   }
   function expToggleTodos(marcar) {
     // v33k.390: desmarca de verdade. Antes o expCarregarLista resetava o checkbox
@@ -68243,8 +68267,8 @@ ${JSON.stringify(metricas, null, 2)}`
       _expSel.clear();
       document.querySelectorAll('input[data-exp-sn]').forEach(cb => { cb.checked = false; });
       expAtualizaSelInfo();
-      const acoesOff = document.getElementById('expAcoes');
-      if (acoesOff) acoesOff.style.display = 'none';
+      // v33k.1152: NÃO esconde a barra ao desmarcar — mantém enquanto houver pedidos
+      _expAcoesVisiveis();
       return;
     }
 
@@ -68277,8 +68301,7 @@ ${JSON.stringify(metricas, null, 2)}`
     naTela.forEach(p => { if (p && p.orderSn) _expSel.add(p.orderSn); });
     document.querySelectorAll('input[data-exp-sn]').forEach(cb => { cb.checked = true; });
     expAtualizaSelInfo();
-    const acoes = document.getElementById('expAcoes');
-    if (acoes) acoes.style.display = _expSel.size ? 'flex' : 'none';
+    _expAcoesVisiveis();
   }
   function expAtualizaSelInfo() {
     const info = document.getElementById('expSelInfo');
@@ -68496,7 +68519,7 @@ ${JSON.stringify(metricas, null, 2)}`
       // vários: confirma e emite em lote. v33k.547: antes de emitir, o fluxo
       // CHECA os NCMs faltantes de todos os pedidos e abre um modal único pra
       // você preencher tudo de uma vez, só então as notas são emitidas.
-      if (!await lcConfirm('Vou verificar os dados fiscais e emitir a NF de ' + sns.length + ' pedido(s). Se faltar algum NCM, peço antes de emitir. Os que autorizarem avançam para "Processar". Continuar?', {
+      if (!await lcConfirm('Vou verificar os dados fiscais e emitir a NF de ' + sns.length + ' pedido(s). Se faltar algum NCM, peço antes de emitir. Os que autorizarem avançam para "Programar". Continuar?', {
         titulo: 'Emitir ' + sns.length + ' NF-e?', okLabel: 'Emitir todas', perigo: false,
       })) return;
       if (typeof emitirLoteComChecagem === 'function') emitirLoteComChecagem(sns);
@@ -68585,13 +68608,25 @@ ${JSON.stringify(metricas, null, 2)}`
       const resp = await fetch(BACKEND_URL + '/api/expedicao/avancar?' + params.toString(), {
         method: 'POST',
         headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getTokenLogin() },
-        body: JSON.stringify({ lojaIds: lojas, orderSns, acao, modo }),
+        body: JSON.stringify({ lojaIds: lojas, orderSns, acao, modo, assincrono: acao === 'gerar_etiqueta' }),
       });
       const data = await resp.json();
 
+      // ── GERAR ETIQUETA agora é ASSÍNCRONO (v33k.1153): resposta imediata, gera em
+      // 2º plano. Os pedidos migram na hora pra "Emitindo etiqueta" (silencioso), e
+      // conforme cada etiqueta sai viram "Impresso". Ao terminar, abre o PDF final.
+      if (acao === 'gerar_etiqueta' && data.ok && data.gerando && data.jobId) {
+        _expSel.clear();
+        expCarregar();  // mostra todos migrando pra "Emitindo etiqueta" na hora
+        if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+        _expAcompanharEtiqueta(data.jobId);
+        return;
+      }
+
       // ── PROGRAMAR é ASSÍNCRONO (v33k.394): resposta imediata, processa em 2º plano ──
       if (acao === 'programar' && data.ok && data.programando) {
-        showToast('⏳ ' + (data.total || orderSns.length) + ' pedido(s) em programação. Acompanhe em "Programando".');
+        // v33k.1153: transição SILENCIOSA — os pedidos migram pra "Programando" na
+        // hora (o expCarregar abaixo mostra), sem toast anunciando.
         _expSel.clear();
         expCarregar();  // os pedidos já migraram pra "programando", recarrega e mostra
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
@@ -68648,6 +68683,37 @@ ${JSON.stringify(metricas, null, 2)}`
       } catch (_) { /* silencioso */ }
     };
     setTimeout(poll, 2500);
+  }
+
+  // v33k.1153: acompanha o job de GERAÇÃO DE ETIQUETAS em 2º plano. Recarrega a
+  // tela de vez em quando (os pedidos vão virando "Impresso" conforme saem), e ao
+  // concluir abre o PDF final. Silencioso no começo — a migração de status é o
+  // feedback; só um toast discreto no fim, junto com o PDF.
+  function _expAcompanharEtiqueta(jobId) {
+    let tentativas = 0;
+    let jaAbriuPdf = false;
+    const naAba = () => document.getElementById('pedAbaExpedicao') && document.getElementById('pedAbaExpedicao').style.display !== 'none';
+    const poll = async () => {
+      tentativas++;
+      try {
+        const r = await fetch(BACKEND_URL + '/api/expedicao/etiqueta/progresso/' + jobId, { headers: { 'x-api-token': getApiToken() } });
+        const j = await r.json();
+        if (!j.ok) { if (tentativas < 5) setTimeout(poll, 2000); return; }
+        // a cada ~3 ticks recarrega os contadores pra mostrar os pedidos migrando
+        if (naAba() && tentativas % 3 === 0) { try { expRebuscarContadores(); } catch (_) {} }
+        if (j.status === 'concluido' || j.status === 'erro') {
+          if (!jaAbriuPdf && j.pdfBase64) { jaAbriuPdf = true; try { expAbrirPdf(j.pdfBase64, j.nomeArquivo || 'etiquetas.pdf'); } catch (_) {} }
+          const falhas = j.falhas || 0;
+          if (j.geradas) showToast('✓ ' + j.geradas + ' etiqueta(s) gerada(s)' + (falhas ? ' · ' + falhas + ' com erro' : ''));
+          else if (falhas) showToast('⚠ Nenhuma etiqueta saiu · ' + falhas + ' com erro' + (j.ultimoErro ? ': ' + j.ultimoErro : ''), true);
+          if (naAba()) { try { expCarregar(); } catch (_) {} }
+          return;
+        }
+        if (tentativas > 600) return; // teto ~15min
+        setTimeout(poll, 1500);
+      } catch (_) { if (tentativas < 8) setTimeout(poll, 2500); }
+    };
+    setTimeout(poll, 1200);
   }
 
   // converte base64 → Blob PDF e abre em nova aba (pronto pra imprimir 10x15)
@@ -72757,7 +72823,7 @@ ${JSON.stringify(metricas, null, 2)}`
   const _ETAPA_INFO = {
     // ── Automação da Expedição (mestre: nf_automatica) ──
     nf_automatica:        { n: 1, icone: 'file-check-2',   titulo: 'Emitir a NF',              quando: 'assim que o pedido é pago' },
-    programar_automatico: { n: 2, icone: 'truck',          titulo: 'Processar o pedido',       quando: 'assim que a NF é autorizada' },
+    programar_automatico: { n: 2, icone: 'truck',          titulo: 'Programar o pedido',       quando: 'assim que a NF é autorizada' },
     devolucao_automatica: { n: 3, icone: 'undo-2',         titulo: 'Cancelar / devolver',      quando: 'quando o pedido é cancelado ou volta' },
     etiqueta_whatsapp:    { n: 4, icone: 'message-circle', titulo: 'Etiqueta no WhatsApp',     quando: 'nos horários de corte (07:00 e 13:00)' },
     // ── Automação de Promoções (mestre: motor_relampago_auto), v33k.594 ──
