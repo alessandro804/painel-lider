@@ -17416,6 +17416,8 @@ window.LC_SVG = {
       <div style="display:flex;gap:10px;align-items:center">
         <!-- v33k.1133: reconciliar vínculos em massa (simulação → seleção → aplicar) -->
         <button onclick="_recAbrir()" title="Rodar uma verificação geral: busca no marketplace os dados reais de cada anúncio, mostra o que mudaria e você escolhe o que aplicar" style="padding:10px 16px;border:1px solid #c7d2fe;background:#eef2ff;color:#4338ca;border-radius:10px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">🔄 Reconciliar em massa</button>
+        <!-- v33k.1135: juntar produtos que são o mesmo (anúncios virando pais separados) -->
+        <button onclick="v31AbrirModalMesclar(_produtoGerenciarVinculos)" title="Este produto é o mesmo que outro que virou pai separado? Junte-os: os vínculos do duplicado vêm pra cá e o duplicado é apagado (não afeta o anúncio no marketplace)" style="padding:10px 16px;border:1px solid #fde68a;background:#fffbeb;color:#92400e;border-radius:10px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">🔀 Mesclar com outro produto</button>
         <!-- v33k.1118 (frente 3): adicionar outro anúncio e casar variação por variação -->
         <button onclick="_gvAdicionarAnuncio()" style="padding:10px 16px;border:none;background:#4f46e5;color:#fff;border-radius:10px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">＋ Adicionar anúncio</button>
         <button onclick="fecharGerenciarVinculos()" style="width:40px;height:40px;border:none;background:#e5e7eb;border-radius:10px;cursor:pointer;font-size:18px">✕</button>
@@ -17425,6 +17427,7 @@ window.LC_SVG = {
     <div id="gerVincSelBar" style="display:none;align-items:center;gap:10px;padding:10px 24px;border-bottom:1px solid #e5e7eb;background:#eef2ff;max-width:1100px;margin:0 auto;width:100%;box-sizing:border-box"></div>
     <div id="gerVincLista" style="flex:1;overflow-y:auto;padding:20px 24px;max-width:1100px;margin:0 auto;width:100%"></div>
     <div style="display:flex;gap:10px;padding:16px 24px;border-top:1px solid #e5e7eb;background:#f8fafc;max-width:1100px;margin:0 auto;width:100%;box-sizing:border-box">
+      <button onclick="abrirHistoricoProduto(_produtoGerenciarVinculos)" style="flex:1;padding:12px;background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;border-radius:10px;cursor:pointer;font-weight:700">🕑 Histórico do produto</button>
       <button onclick="atualizarVinculosDoModal()" style="flex:1;padding:12px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:10px;cursor:pointer;font-weight:700">🔄 Atualizar vínculos</button>
       <button onclick="replicarEstoqueProdutoModal()" style="flex:1;padding:12px;background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;border-radius:10px;cursor:pointer;font-weight:700">📦 Replicar estoque nos anúncios</button>
       <button onclick="fecharGerenciarVinculos()" style="flex:1;padding:12px;background:#16a34a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:700">Fechar</button>
@@ -36566,6 +36569,13 @@ Retorne JSON: {"ID": "valor", ...}`;
     v31_RenderListaMesclar();
     document.getElementById('v31MesclarOverlay').style.display = 'flex';
   }
+  // v33k.1135: o merge revisável existia mas estava MORTO (nunca chamado e sem
+  // exposição no window, então os onclick inline do modal nem funcionariam).
+  // Exposto agora + acessível pela central de vínculos ("Mesclar com outro produto").
+  window.v31AbrirModalMesclar = v31AbrirModalMesclar;
+  if (typeof v31_RenderListaMesclar === 'function') window.v31_RenderListaMesclar = v31_RenderListaMesclar;
+  if (typeof v31ExecutarMesclar === 'function') window.v31ExecutarMesclar = v31ExecutarMesclar;
+  if (typeof v31FecharModalMesclar === 'function') window.v31FecharModalMesclar = v31FecharModalMesclar;
   
   // Renderiza lista de candidatos aplicando filtro de busca
   function v31_RenderListaMesclar() {
@@ -36702,11 +36712,18 @@ Retorne JSON: {"ID": "valor", ...}`;
     saveProdutos();
     
     showToast('✅ ' + movidos + ' vínculo(s) movido(s). Duplicado apagado no banco.');
+    const _destinoId = destino.id;
     v31FecharModalMesclar();
-    
+
     // Re-renderiza
     if (typeof renderProdutos === 'function') renderProdutos();
     if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
+    // v33k.1135: se a central de vínculos está aberta neste produto, reabre pra
+    // mostrar os vínculos já mesclados (senão ficava dado velho na tela).
+    const _cv = document.getElementById('gerVincOverlay');
+    if (_cv && _cv.classList.contains('active') && typeof abrirGerenciarVinculos === 'function' && String(_produtoGerenciarVinculos) === String(_destinoId)) {
+      abrirGerenciarVinculos(_destinoId);
+    }
   }
   
   function v31_OnTrocarLoja() {
@@ -48915,6 +48932,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         variacaoId: v.id,
         nossoNome: v.nome || ((v.cor||'') + (v.tamanho ? ' / ' + v.tamanho : '')),
         nossoSku: v.sku || '',
+        // v33k.1136: foto da variação (própria, ou da cor, ou capa do produto)
+        foto: v.foto || ((produto.cores||[]).find(c => String(c.nome||'').trim().toLowerCase() === String(v.cor||'').trim().toLowerCase()) || {}).fotos?.[0] || (produto.fotos||[])[0] || null,
         skuExterno: vi.skuExterno || '',
         // v33k.1118 (frente 3): rótulo da variação NO ANÚNCIO (ex.: "Preto · 38")
         // e o modelId, pra mostrar lado a lado e pro "conferir no anúncio" casar.
@@ -48941,10 +48960,24 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!(opts && opts.manterSelecao)) _gvSel.clear();
     const anuncios = _anunciosDoProduto(p);
     const lista = document.getElementById('gerVincLista');
+    // v33k.1136: cabeçalho do PRODUTO (foto + resumo) no topo da central
+    const _prodFoto = (p.fotos && p.fotos[0]) || (((p.cores || []).find(c => c.fotos && c.fotos[0]) || {}).fotos || [])[0] || null;
+    const _prodFotoHtml = _prodFoto
+      ? '<img src="' + escapeHtml(_prodFoto) + '" style="width:54px;height:54px;border-radius:10px;object-fit:cover;border:1px solid #e2e8f0;flex-shrink:0" onerror="this.style.display=\'none\'">'
+      : '<div style="width:54px;height:54px;border-radius:10px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;color:#cbd5e1;font-size:22px;flex-shrink:0">📦</div>';
+    const _aggChip = (typeof _chipStatusAgregado === 'function') ? _chipStatusAgregado(p, p.id) : '';
+    const _headerProd = '<div style="display:flex;align-items:center;gap:14px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px 16px;margin-bottom:16px">' +
+      _prodFotoHtml +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-weight:800;font-size:16px;color:#1e293b">' + escapeHtml(p.nome || '(sem nome)') + '</div>' +
+        '<div style="font-size:12.5px;color:#6b7280;margin-top:3px">SKU pai: ' + escapeHtml(p.skuPai || '—') + ' · ' + (p.variacoes || []).length + ' variação(ões) · ' + anuncios.length + ' anúncio(s) vinculado(s)</div>' +
+        '<div style="margin-top:6px">' + (_aggChip || '<span style="font-size:11.5px;color:#16a34a;font-weight:700">🟢 anúncios ativos</span>') + '</div>' +
+      '</div>' +
+    '</div>';
     if (!anuncios.length) {
-      lista.innerHTML = '<div style="color:#9ca3af;padding:24px;text-align:center">Nenhum anúncio vinculado a este produto.</div>';
+      lista.innerHTML = _headerProd + '<div style="color:#9ca3af;padding:24px;text-align:center;border:1px dashed #e2e8f0;border-radius:12px">Nenhum anúncio vinculado a este produto. Use "＋ Adicionar anúncio" no topo.</div>';
     } else {
-      lista.innerHTML = anuncios.map(a => {
+      lista.innerHTML = _headerProd + anuncios.map(a => {
         const mk = (MK_INFO[a.marketplace] && MK_INFO[a.marketplace].nome) || a.marketplace;
         // v33k.598: contagem HONESTA, 'sem SKU' não entra mais no "ok".
         const nOk    = a.variacoes.filter(x => x.estado === 'ok').length;
@@ -48967,6 +49000,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           <tr style="border-top:1px solid #f1f5f9;background:${st.bg}">
             <td style="padding:8px 4px;width:28px;text-align:center"><input type="checkbox" ${checked} onclick="_gvToggleSel('${selKey.replace(/'/g,"\\'")}', this.checked)" style="width:16px;height:16px;cursor:pointer"></td>
             <td style="padding:8px 8px;width:26px;text-align:center;font-size:15px" title="${st.txt}">${st.ic}</td>
+            <td style="padding:8px 6px;width:44px;text-align:center">${vx.foto ? '<img src="'+escapeHtml(vx.foto)+'" style="width:34px;height:34px;border-radius:6px;object-fit:cover;border:1px solid #eef2f7;vertical-align:middle" onerror="this.style.display=\'none\'">' : '<div style="width:34px;height:34px;border-radius:6px;background:#f8fafc;border:1px solid #eef2f7;display:inline-block"></div>'}</td>
             <td style="padding:8px 12px">
               <div style="font-weight:600;color:#1e293b">${escapeHtml(vx.nossoNome || '—')}</div>
               <div style="font-size:12px;color:#9ca3af">${escapeHtml(vx.nossoSku||'sem SKU')}</div>
@@ -48987,10 +49021,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           <div style="padding:14px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
               <div style="flex:1;min-width:200px">
-                <div style="font-weight:700;font-size:14px;color:#1e293b">${escapeHtml(a.titulo || 'Anúncio sem título')}${(typeof v32d_htmlTagStatus==='function' && typeof v32d_statusVinculo==='function') ? v32d_htmlTagStatus(v32d_statusVinculo({statusMl:a.statusMl})) : ''}</div>
-                <div style="font-size:12px;color:#6b7280;margin-top:3px">${escapeHtml(a.loja)} · ${mk} · ID ${escapeHtml(a.anuncioId)} · SKU pai: ${escapeHtml(a.skuPai||'—')}</div>
+                <div style="font-weight:700;font-size:14px;color:#1e293b;display:flex;align-items:center;gap:2px;flex-wrap:wrap">${(typeof _mkLogoChip==='function')?_mkLogoChip(a.marketplace):''}<span>${escapeHtml(a.titulo || 'Anúncio sem título')}</span>${(typeof v32d_htmlTagStatus==='function' && typeof v32d_statusVinculo==='function') ? v32d_htmlTagStatus(v32d_statusVinculo({statusMl:a.statusMl})) : ''}</div>
+                <div style="font-size:12px;color:#6b7280;margin-top:3px">${escapeHtml(a.loja)} · ID ${escapeHtml(a.anuncioId)} · SKU pai: ${escapeHtml(a.skuPai||'—')}</div>
                 ${(typeof v32d_statusVinculo==='function' && !_statusPermiteReplicar(v32d_statusVinculo({statusMl:a.statusMl}))) ? '<div style="margin-top:5px;font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:5px 8px;display:inline-block">⚠ Anúncio não está ativo — alterações de estoque NÃO são replicadas pra ele até voltar a ficar ativo.</div>' : ''}
-                <div style="font-size:12px;margin-top:4px">${a.variacoes.length} variações, <span style="color:#16a34a;font-weight:600">${nOk} conferida(s)</span>${nDiv?` · <span style="color:#b45309;font-weight:600">${nDiv} divergente(s)</span>`:''}${nSemSku?` · <span style="color:#64748b;font-weight:600">${nSemSku} sem SKU no anúncio</span>`:''}</div>
+                <div style="margin-top:6px">${a.variacoes.length + ' variação(ões)'}${nOk?` <span style="display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:#dcfce7;color:#15803d;margin-left:4px">✅ ${nOk} confere</span>`:''}${nDiv?` <span style="display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:#fef3c7;color:#92400e;margin-left:4px">⚠️ ${nDiv} divergente</span>`:''}${nSemSku?` <span style="display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:#f1f5f9;color:#64748b;margin-left:4px">❓ ${nSemSku} sem SKU</span>`:''}</div>
                 ${nSemSku === a.variacoes.length ? '<div style="margin-top:6px;font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 8px">⚠️ <strong>Nenhuma variação deste anúncio tem SKU.</strong> O vínculo foi feito por posição/nome, não por SKU, ninguém conferiu. Confira antes de replicar estoque: um vínculo errado empurra a quantidade da variação errada.</div>' : ''}
               </div>
               <button onclick="_gvConferirAnuncio('${a.anuncioId}')" title="Busca no marketplace os rótulos e variações reais deste anúncio e confere o casamento (preenche o 'Preto 38' do lado do anúncio)" style="padding:8px 14px;background:#eff6ff;color:#1d4ed8;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">🔍 Conferir no anúncio</button>
@@ -49000,7 +49034,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           </div>
           <table style="width:100%;border-collapse:collapse">
             <thead><tr style="background:#fafbfc;font-size:11px;color:#94a3b8;text-transform:uppercase">
-              <th style="padding:6px 4px;text-align:center"><input type="checkbox" ${(a.variacoes.length && a.variacoes.every(vx => _gvSel.has(a.anuncioId + '|' + vx.variacaoId))) ? 'checked' : ''} onclick="_gvToggleAnuncio('${a.anuncioId}', this.checked)" title="Selecionar todas as variações deste anúncio" style="width:15px;height:15px;cursor:pointer"></th><th></th><th style="padding:6px 12px;text-align:left">Nossa variação</th><th></th><th style="padding:6px 12px;text-align:left">No anúncio</th><th></th>
+              <th style="padding:6px 4px;text-align:center"><input type="checkbox" ${(a.variacoes.length && a.variacoes.every(vx => _gvSel.has(a.anuncioId + '|' + vx.variacaoId))) ? 'checked' : ''} onclick="_gvToggleAnuncio('${a.anuncioId}', this.checked)" title="Selecionar todas as variações deste anúncio" style="width:15px;height:15px;cursor:pointer"></th><th></th><th></th><th style="padding:6px 12px;text-align:left">Nossa variação</th><th></th><th style="padding:6px 12px;text-align:left">No anúncio</th><th></th>
             </tr></thead>
             <tbody>${varsHtml}</tbody>
           </table>
@@ -49624,6 +49658,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // v33k.1132: logo do marketplace (selo colorido da marca) e SKU/nome corrente
   // do histórico (pros botões de balanço/entrada/saída dentro do modal).
   let _histEstSkuAtual = null, _histEstNomeAtual = '';
+  // v33k.1135: modo do histórico — 'sku' (uma variação) ou 'produto' (todas as
+  // variações do produto interno juntas). Guarda os SKUs do produto no modo produto.
+  let _histEstModo = 'sku', _histEstSkusProduto = [], _histEstSaldoProduto = null;
   function _mkLogoChip(mk) {
     const i = (typeof MK_INFO !== 'undefined' && MK_INFO[mk]) || null;
     if (!i) return '';
@@ -49631,7 +49668,24 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   async function abrirHistoricoEstoque(sku, nomeVariacao) {
     if (!sku) { lcAlert('Esta variação não tem SKU, sem SKU não há como rastrear o estoque.'); return; }
-    _histEstSkuAtual = String(sku); _histEstNomeAtual = nomeVariacao || '';
+    _histEstModo = 'sku'; _histEstSkuAtual = String(sku); _histEstNomeAtual = nomeVariacao || '';
+    _histEstSkusProduto = [String(sku)]; _histEstSaldoProduto = null;
+    return _histEstAbrirModal();
+  }
+  // v33k.1135: histórico do PRODUTO INTERNO inteiro (junta todas as variações)
+  async function abrirHistoricoProduto(produtoId) {
+    const p = (produtosErp || []).find(x => String(x.id) === String(produtoId));
+    if (!p) { showToast('Produto não encontrado', true); return; }
+    const skus = [...new Set((p.variacoes || []).map(v => String(v.sku || '').trim()).filter(Boolean))];
+    if (!skus.length) { lcAlert('Este produto não tem SKU nas variações, sem SKU não há como rastrear o estoque.'); return; }
+    _histEstModo = 'produto'; _histEstSkuAtual = null; _histEstNomeAtual = p.nome || '';
+    _histEstSkusProduto = skus;
+    _histEstSaldoProduto = (p.variacoes || []).reduce((s, v) => s + (parseInt(v.estoque, 10) || 0), 0);
+    return _histEstAbrirModal();
+  }
+  window.abrirHistoricoProduto = abrirHistoricoProduto;
+
+  async function _histEstAbrirModal() {
     let ov = document.getElementById('histEstOverlay');
     if (!ov) {
       ov = document.createElement('div');
@@ -49653,9 +49707,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             '</div>' +
             // v33k.1132: ajustes manuais direto no histórico (mais prático)
             '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
-              '<button onclick="_ajusteManualPorSku(\'entrada\')" title="Registrar ENTRADA (soma ao saldo) e replicar" style="padding:7px 11px;background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">📥 Entrada</button>' +
-              '<button onclick="_ajusteManualPorSku(\'saida\')" title="Registrar SAÍDA (subtrai do saldo) e replicar" style="padding:7px 11px;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">📤 Saída</button>' +
-              '<button onclick="_ajusteManualPorSku(\'balanco\')" title="Balanço: define o valor absoluto do saldo e replica" style="padding:7px 11px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">⚖ Balanço</button>' +
+              // os ajustes manuais só fazem sentido por VARIAÇÃO (1 SKU); no modo
+              // produto (várias variações) o grupo fica escondido.
+              '<span id="histEstAcoes" style="display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+                '<button onclick="_ajusteManualPorSku(\'entrada\')" title="Registrar ENTRADA (soma ao saldo) e replicar" style="padding:7px 11px;background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">📥 Entrada</button>' +
+                '<button onclick="_ajusteManualPorSku(\'saida\')" title="Registrar SAÍDA (subtrai do saldo) e replicar" style="padding:7px 11px;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">📤 Saída</button>' +
+                '<button onclick="_ajusteManualPorSku(\'balanco\')" title="Balanço: define o valor absoluto do saldo e replica" style="padding:7px 11px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">⚖ Balanço</button>' +
+              '</span>' +
               '<button onclick="fecharHistoricoEstoque()" style="background:#f3f4f6;border:none;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:16px">✕</button>' +
             '</div>' +
           '</div>' +
@@ -49663,14 +49721,23 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         '</div>';
       document.body.appendChild(ov);
     }
-    document.getElementById('histEstSub').textContent = (nomeVariacao ? nomeVariacao + ' · ' : '') + 'SKU ' + sku;
+    if (_histEstModo === 'produto') {
+      document.getElementById('histEstSub').textContent = 'Produto: ' + (_histEstNomeAtual || '') + ' · ' + _histEstSkusProduto.length + ' variação(ões)';
+    } else {
+      document.getElementById('histEstSub').textContent = (_histEstNomeAtual ? _histEstNomeAtual + ' · ' : '') + 'SKU ' + (_histEstSkuAtual || '');
+    }
+    // ajustes manuais só no modo variação (1 SKU)
+    const _acoes = document.getElementById('histEstAcoes');
+    if (_acoes) _acoes.style.display = (_histEstModo === 'produto') ? 'none' : 'inline-flex';
     const corpo = document.getElementById('histEstCorpo');
     corpo.innerHTML = '<div style="text-align:center;padding:40px;color:#9ca3af">Carregando histórico…</div>';
     ov.classList.add('active');
 
     try {
       const lojas = (typeof lojasErp !== 'undefined' ? lojasErp : []).map(l => l.idBanco).filter(Boolean);
-      const qs = new URLSearchParams({ sku: String(sku) });
+      const qs = new URLSearchParams();
+      if (_histEstModo === 'produto') qs.set('skus', _histEstSkusProduto.join(','));
+      else qs.set('sku', String(_histEstSkuAtual || _histEstSkusProduto[0] || ''));
       if (lojas.length) qs.set('lojaIds', lojas.join(','));
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-historico?' + qs.toString(),
         { headers: { 'x-api-token': getApiToken() } });
@@ -49710,7 +49777,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
       // resumo
       const ultimoMov = movs.find(m => m.qtd_depois != null);
-      const saldoAtual = ultimoMov ? ultimoMov.qtd_depois : '—';
+      // no modo produto o "saldo" é a soma das variações; no modo variação é o
+      // último depois registrado.
+      const saldoAtual = (_histEstModo === 'produto')
+        ? (_histEstSaldoProduto != null ? _histEstSaldoProduto : '—')
+        : (ultimoMov ? ultimoMov.qtd_depois : '—');
       const nLojas = new Set([...movs.map(m => m.loja_id_banco), ...vendas.map(v => v.lojaIdBanco), ...devolucoes.map(x => x.lojaIdBanco)].filter(v => v != null)).size;
 
       // eventos unificados, ordenados do mais recente pro mais antigo
@@ -50377,6 +50448,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             <div style="margin-top:4px">${vincBadge}</div>
           </div>
           ${totalTag}
+          <button type="button" onclick="event.stopPropagation(); abrirHistoricoProduto('${p.id}')" title="Histórico do produto inteiro: vendas, devoluções, entradas, balanços e replicações de todas as variações" style="border:1px solid var(--lc-border);background:var(--lc-surface);cursor:pointer;color:#4338ca;padding:6px 9px;border-radius:8px;font-size:13px;flex-shrink:0" title="Histórico do produto">🕑</button>
           <button type="button" class="estoque-toggle" id="seta-${p.id}" onclick="toggleVariacoesEstoque('${p.id}')" style="border:none;background:none;cursor:pointer;color:var(--lc-muted);padding:6px;display:flex;align-items:center;flex-shrink:0;transition:transform .2s" title="Expandir/recolher">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
           </button>
@@ -50740,11 +50812,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       return;
     }
 
-    // Confirmação com a lista de onde vai replicar (+ aviso dos pulados)
-    const lojasResumo = anuncios.map(a => `• ${a.loja} (${a.marketplace})`).join('\n');
+    // Confirmação com a lista de onde vai replicar (+ aviso dos pulados).
+    // v33k.1134: mostra o ID do anúncio em cada linha (antes só "loja (mkt)",
+    // que virava um monte de linha igual e confusa) e limita a lista pra o
+    // diálogo não estourar quando o SKU tem dezenas de anúncios.
+    const _lnAnuncio = (a, extra) => `• ${a.loja} (${a.marketplace}) · anúncio ${a.anuncioId}${extra || ''}`;
+    const _listaCap = (arr, extraFn, cap = 40) => {
+      const linhas = arr.slice(0, cap).map(a => _lnAnuncio(a, extraFn ? extraFn(a) : ''));
+      if (arr.length > cap) linhas.push(`…e mais ${arr.length - cap} anúncio(s)`);
+      return linhas.join('\n');
+    };
+    const lojasResumo = _listaCap(anuncios);
     const avisoPulados = pulados.length
       ? `\n\n⚠ ${pulados.length} anúncio(s) não ativo(s) serão pulados:\n` +
-        pulados.map(a => `• ${a.loja} (${a.marketplace}) — ${_rotuloStatusAnuncio(a.statusAnuncio)}`).join('\n')
+        _listaCap(pulados, a => ' — ' + _rotuloStatusAnuncio(a.statusAnuncio))
       : '';
     if (!await lcConfirm(`Replicar estoque ${novoEstoque} do SKU "${sku}" para ${anuncios.length} anúncio(s) ativo(s):\n\n${lojasResumo}${avisoPulados}\n\nConfirmar?`)) return;
 
