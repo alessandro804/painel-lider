@@ -49662,6 +49662,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // variações do produto interno juntas). Guarda os SKUs do produto no modo produto.
   let _histEstModo = 'sku', _histEstSkusProduto = [], _histEstSaldoProduto = null;
   function _mkLogoChip(mk) {
+    // v33k.1137: usa o LOGO REAL do marketplace (LC_LOGO), como no resto do
+    // sistema. Fallback pro selo de sigla só se não houver logo pra essa chave.
+    const key = (typeof window.LC_MKT_KEY === 'function') ? window.LC_MKT_KEY(mk) : String(mk || '').toLowerCase();
+    const logo = (typeof window.LC_LOGO === 'function') ? window.LC_LOGO(key) : '';
+    if (logo) {
+      const nome = ((typeof MK_INFO !== 'undefined' && MK_INFO[mk]) || {}).nome || key;
+      // font-size controla o tamanho (o logo é 1.35em); 12px → ~16px de logo
+      return '<span title="' + escapeHtml(nome) + '" style="display:inline-flex;align-items:center;vertical-align:middle;margin-right:6px;font-size:12px">' + logo + '</span>';
+    }
     const i = (typeof MK_INFO !== 'undefined' && MK_INFO[mk]) || null;
     if (!i) return '';
     return '<span title="' + escapeHtml(i.nome) + '" style="display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:16px;padding:0 5px;border-radius:3px;background:' + i.cor + ';color:' + i.txt + ';font-size:9px;font-weight:800;letter-spacing:.4px;vertical-align:middle;margin-right:5px">' + i.sigla + '</span>';
@@ -49741,7 +49750,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (lojas.length) qs.set('lojaIds', lojas.join(','));
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-historico?' + qs.toString(),
         { headers: { 'x-api-token': getApiToken() } });
-      if (!resp.ok) throw new Error('servidor respondeu ' + resp.status);
+      if (!resp.ok) {
+        // v33k.1138: mensagem ciente do modo. O histórico do PRODUTO usa `skus=`
+        // (lista), suportado só a partir do backend v1135. Se o backend antigo
+        // ainda estiver no ar, ele devolve 400 nessa rota — então explicamos o
+        // porquê em vez de mostrar um "400" cru que não ajuda ninguém.
+        if (resp.status === 400 && _histEstModo === 'produto') {
+          corpo.innerHTML =
+            '<div style="padding:26px;text-align:center;background:#fffbeb;border:1px solid #fde68a;border-radius:10px">' +
+              '<div style="font-weight:700;color:#92400e;margin-bottom:6px">Histórico do produto indisponível nesta versão do servidor</div>' +
+              '<div style="font-size:13px;color:#78716c">O histórico consolidado do produto interno precisa do <strong>backend v1135</strong> (ou mais novo).<br>' +
+              'Suba a versão nova do backend e tente de novo. O histórico por variação (SKU único) continua funcionando normalmente.</div>' +
+            '</div>';
+          return;
+        }
+        throw new Error('servidor respondeu ' + resp.status);
+      }
       const d = await resp.json();
 
       if (d.semTabela) {
@@ -49968,48 +49992,93 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // anúncio não tem SKU), não havia como corrigir na mão, e um vínculo errado
   // faz o "Replicar estoque" empurrar a quantidade da variação ERRADA.
   // Agora dá pra apontar a linha do anúncio pra OUTRA variação nossa.
-  async function revincularVariacao(anuncioId, variacaoIdAtual) {
+  // v33k.1137: "trocar" agora abre um PICKER com busca e foto (antes era um
+  // lcPrompt com lista numerada gigante — inutilizável com 96 variações).
+  let _gvTrocaCtx = null;
+  function revincularVariacao(anuncioId, variacaoIdAtual) {
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
     if (!p) return;
-    const vAtual = (p.variacoes||[]).find(x => String(x.id) === String(variacaoIdAtual));
+    const vAtual = (p.variacoes || []).find(x => String(x.id) === String(variacaoIdAtual));
     if (!vAtual) return;
-    const vinc = (vAtual.vinculos||[]).find(vi => String(vi.anuncioId) === String(anuncioId));
+    const vinc = (vAtual.vinculos || []).find(vi => String(vi.anuncioId) === String(anuncioId));
     if (!vinc) { showToast('Vínculo não encontrado', true); return; }
+    const candidatas = (p.variacoes || []).filter(v => String(v.id) !== String(variacaoIdAtual));
+    if (!candidatas.length) { lcAlert('Este produto só tem uma variação, não há pra onde trocar.'); return; }
+    _gvTrocaCtx = { produtoId: p.id, anuncioId: String(anuncioId), variacaoIdAtual: String(variacaoIdAtual) };
 
-    const opcoes = (p.variacoes||[])
-      .filter(v => String(v.id) !== String(variacaoIdAtual))
-      .map((v, i) => (i+1) + ') ' + (v.nome || ((v.cor||'') + '/' + (v.tamanho||''))) + '  [' + (v.sku||'sem SKU') + ']');
-    if (!opcoes.length) { lcAlert('Este produto só tem uma variação, não há pra onde trocar.'); return; }
-
-    const escolha = await lcPrompt(
-      'Trocar o vínculo do anúncio ' + anuncioId + '\n\n'
-      + 'Hoje ele aponta para: ' + (vAtual.nome || vAtual.sku) + '\n'
-      + (vinc.skuExterno ? 'SKU no anúncio: ' + vinc.skuExterno + '\n' : 'O anúncio NÃO tem SKU (por isso ninguém conferiu).\n')
-      + '\nDigite o número da variação correta:\n\n' + opcoes.join('\n'));
-    if (!escolha) return;
-    const idx = parseInt(escolha, 10) - 1;
-    const candidatas = (p.variacoes||[]).filter(v => String(v.id) !== String(variacaoIdAtual));
-    const vNova = candidatas[idx];
-    if (!vNova) { showToast('Opção inválida', true); return; }
-
-    // move o vínculo: tira da atual, põe na nova
-    vAtual.vinculos = (vAtual.vinculos||[]).filter(vi => String(vi.anuncioId) !== String(anuncioId));
-    vNova.vinculos = vNova.vinculos || [];
-    if (!vNova.vinculos.some(vi => String(vi.anuncioId) === String(anuncioId))) {
-      vNova.vinculos.push({ ...vinc });
+    let ov = document.getElementById('gvTrocaOverlay');
+    if (!ov) {
+      ov = document.createElement('div'); ov.id = 'gvTrocaOverlay'; ov.className = 'modal-overlay';
+      ov.style.zIndex = '10070';
+      ov.onclick = (e) => { if (e.target === ov) ov.classList.remove('active'); };
+      ov.innerHTML =
+        '<div class="modal" onclick="event.stopPropagation()" style="max-width:560px;width:94%;max-height:82vh;display:flex;flex-direction:column;padding:0;overflow:hidden">' +
+          '<div style="padding:16px 20px;border-bottom:1px solid #e5e7eb">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div style="font-size:15px;font-weight:800;color:#1e293b">🔗 Trocar variação vinculada</div>' +
+            '<button onclick="document.getElementById(\'gvTrocaOverlay\').classList.remove(\'active\')" style="background:#f3f4f6;border:none;width:32px;height:32px;border-radius:8px;cursor:pointer">✕</button></div>' +
+            '<div id="gvTrocaSub" style="font-size:12.5px;color:#6b7280;margin-top:4px"></div>' +
+            '<input id="gvTrocaBusca" oninput="_gvTrocaRender()" placeholder="🔍 Buscar variação (nome ou SKU)…" style="margin-top:10px;width:100%;padding:9px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box">' +
+          '</div>' +
+          '<div id="gvTrocaLista" style="overflow-y:auto;padding:8px 12px;flex:1 1 auto"></div>' +
+        '</div>';
+      document.body.appendChild(ov);
     }
+    document.getElementById('gvTrocaSub').innerHTML =
+      'Anúncio <b>' + escapeHtml(String(anuncioId)) + '</b> aponta hoje pra <b>' + escapeHtml(vAtual.nome || vAtual.sku || '—') + '</b>' +
+      (vinc.skuExterno ? ' · SKU no anúncio: ' + escapeHtml(vinc.skuExterno) : ' · o anúncio não tem SKU') +
+      '. Escolha a variação correta:';
+    const busca = document.getElementById('gvTrocaBusca'); if (busca) busca.value = '';
+    _gvTrocaRender();
+    ov.classList.add('active');
+  }
+  window.revincularVariacao = revincularVariacao;
+
+  function _gvTrocaRender() {
+    if (!_gvTrocaCtx) return;
+    const p = produtosErp.find(x => String(x.id) === String(_gvTrocaCtx.produtoId));
+    const cont = document.getElementById('gvTrocaLista'); if (!p || !cont) return;
+    const termo = String((document.getElementById('gvTrocaBusca') || {}).value || '').toLowerCase().trim();
+    const cands = (p.variacoes || []).filter(v => String(v.id) !== String(_gvTrocaCtx.variacaoIdAtual))
+      .filter(v => !termo || (v.nome || '').toLowerCase().includes(termo) || (v.sku || '').toLowerCase().includes(termo) || ((v.cor || '') + ' ' + (v.tamanho || '')).toLowerCase().includes(termo));
+    if (!cands.length) { cont.innerHTML = '<div style="padding:24px;text-align:center;color:#9ca3af">Nenhuma variação encontrada.</div>'; return; }
+    cont.innerHTML = cands.map(v => {
+      const foto = v.foto || ((p.cores || []).find(c => String(c.nome || '').trim().toLowerCase() === String(v.cor || '').trim().toLowerCase()) || {}).fotos?.[0] || (p.fotos || [])[0] || null;
+      const thumb = foto ? '<img src="' + escapeHtml(foto) + '" style="width:34px;height:34px;border-radius:6px;object-fit:cover;border:1px solid #eef2f7;flex-shrink:0" onerror="this.style.display=\'none\'">' : '<div style="width:34px;height:34px;border-radius:6px;background:#f8fafc;border:1px solid #eef2f7;flex-shrink:0"></div>';
+      return '<div onclick="_gvExecutarTroca(\'' + String(v.id).replace(/'/g, "\\'") + '\')" style="display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer" onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'transparent\'">' +
+        thumb +
+        '<div style="flex:1;min-width:0"><div style="font-weight:600;color:#1e293b;font-size:13px">' + escapeHtml(v.nome || ((v.cor || '') + ' / ' + (v.tamanho || ''))) + '</div>' +
+        '<div style="font-size:11.5px;color:#94a3b8">' + escapeHtml(v.sku || 'sem SKU') + '</div></div>' +
+        '<span style="font-size:12px;color:#1d4ed8;font-weight:700">selecionar →</span>' +
+      '</div>';
+    }).join('');
+  }
+  window._gvTrocaRender = _gvTrocaRender;
+
+  async function _gvExecutarTroca(variacaoIdNova) {
+    if (!_gvTrocaCtx) return;
+    const ctx = _gvTrocaCtx;
+    const p = produtosErp.find(x => String(x.id) === String(ctx.produtoId));
+    if (!p) return;
+    const vAtual = (p.variacoes || []).find(x => String(x.id) === String(ctx.variacaoIdAtual));
+    const vNova = (p.variacoes || []).find(x => String(x.id) === String(variacaoIdNova));
+    if (!vAtual || !vNova) { showToast('Variação não encontrada', true); return; }
+    const vinc = (vAtual.vinculos || []).find(vi => String(vi.anuncioId) === String(ctx.anuncioId));
+    if (!vinc) { showToast('Vínculo não encontrado', true); return; }
+    vAtual.vinculos = (vAtual.vinculos || []).filter(vi => String(vi.anuncioId) !== String(ctx.anuncioId));
+    vNova.vinculos = vNova.vinculos || [];
+    if (!vNova.vinculos.some(vi => String(vi.anuncioId) === String(ctx.anuncioId))) vNova.vinculos.push({ ...vinc });
     p.atualizadoEm = new Date().toISOString();
+    const ov = document.getElementById('gvTrocaOverlay'); if (ov) ov.classList.remove('active');
     try {
       await fetch(BACKEND_URL + '/api/produtos/' + (p.idBanco || p.id), {
-        method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-        body: JSON.stringify(p),
+        method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() }, body: JSON.stringify(p),
       });
       showToast('✓ Vínculo movido para "' + (vNova.nome || vNova.sku) + '"');
       abrirGerenciarVinculos(p.id);
       if (typeof renderEstoque === 'function') renderEstoque();
     } catch (e) { showToast('Erro ao salvar: ' + e.message, true); }
   }
-  window.revincularVariacao = revincularVariacao;
+  window._gvExecutarTroca = _gvExecutarTroca;
 
   async function desvincularAnuncio(anuncioId) {
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
@@ -50151,6 +50220,54 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     return { temVinculo: true, todosOk, tooltip, detalhe };
   }
 
+  // v33k.1137: modal das integra\u00e7\u00f5es da varia\u00e7\u00e3o (antes era um lcAlert com um
+  // pared\u00e3o de texto). Mostra, por an\u00fancio: logo do marketplace, loja, ID, e o
+  // casamento do SKU (nosso \u00d7 an\u00fancio) com \u2713/\u26a0.
+  function _gvModalCasamento(produtoId, variacaoId) {
+    const p = (produtosErp || []).find(x => String(x.id) === String(produtoId));
+    const v = p && (p.variacoes || []).find(x => String(x.id) === String(variacaoId));
+    if (!v) { showToast('Varia\u00e7\u00e3o n\u00e3o encontrada', true); return; }
+    const vincs = v.vinculos || [];
+    let ov = document.getElementById('gvCasaOverlay');
+    if (!ov) {
+      ov = document.createElement('div'); ov.id = 'gvCasaOverlay'; ov.className = 'modal-overlay';
+      ov.style.zIndex = '10070';
+      ov.onclick = (e) => { if (e.target === ov) ov.classList.remove('active'); };
+      ov.innerHTML =
+        '<div class="modal" onclick="event.stopPropagation()" style="max-width:600px;width:94%;max-height:82vh;display:flex;flex-direction:column;padding:0;overflow:hidden">' +
+          '<div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:flex-start;gap:10px">' +
+            '<div><div style="font-size:15px;font-weight:800;color:#1e293b">\ud83d\udd17 Integra\u00e7\u00f5es desta varia\u00e7\u00e3o</div><div id="gvCasaSub" style="font-size:12.5px;color:#6b7280;margin-top:3px"></div></div>' +
+            '<button onclick="document.getElementById(\'gvCasaOverlay\').classList.remove(\'active\')" style="background:#f3f4f6;border:none;width:32px;height:32px;border-radius:8px;cursor:pointer">\u2715</button>' +
+          '</div>' +
+          '<div id="gvCasaLista" style="overflow-y:auto;padding:10px 14px;flex:1 1 auto"></div>' +
+        '</div>';
+      document.body.appendChild(ov);
+    }
+    document.getElementById('gvCasaSub').textContent = (v.nome || v.sku || '') + ' \u00b7 ' + vincs.length + ' an\u00fancio(s) vinculado(s)';
+    const nossoSku = v.sku || '';
+    const corpo = document.getElementById('gvCasaLista');
+    if (!vincs.length) {
+      corpo.innerHTML = '<div style="padding:24px;text-align:center;color:#9ca3af">Sem an\u00fancios vinculados a esta varia\u00e7\u00e3o.</div>';
+    } else {
+      corpo.innerHTML = vincs.map(vi => {
+        const loja = (lojasErp || []).find(l => String(l.idBanco) === String(vi.lojaIdBanco || vi.lojaId));
+        const ext = vi.skuExterno || '';
+        const casou = !ext || normalizarSku(ext) === normalizarSku(nossoSku);
+        const cor = casou ? '#16a34a' : '#b45309';
+        return '<div style="display:flex;align-items:center;gap:10px;padding:9px 8px;border-top:1px solid #f1f5f9">' +
+          _mkLogoChip(vi.marketplace) +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:600;color:#1e293b">' + escapeHtml(loja ? loja.nome : (vi.marketplace || '\u2014')) + ' \u00b7 <span style="font-weight:400;color:#94a3b8">ID ' + escapeHtml(String(vi.anuncioId || '\u2014')) + '</span></div>' +
+            '<div style="font-size:11.5px;color:#64748b;margin-top:1px">nosso <b>' + escapeHtml(nossoSku || '\u2014') + '</b> ' + (casou ? '=' : '\u2260') + ' an\u00fancio <b style="color:' + cor + '">' + escapeHtml(ext || '(sem SKU no an\u00fancio)') + '</b></div>' +
+          '</div>' +
+          '<span style="font-size:16px;color:' + cor + '">' + (casou ? '\u2713' : '\u26a0') + '</span>' +
+        '</div>';
+      }).join('');
+    }
+    ov.classList.add('active');
+  }
+  window._gvModalCasamento = _gvModalCasamento;
+
   function _chaveVar(v) {
     const norm = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
     const cor = norm(v.cor), tam = norm(v.tamanho);
@@ -50286,9 +50403,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const nVinc = (v.sku) ? _anunciosPorSku(v.sku).length : 0;
       const statusCasamento = _statusCasamentoVar(v);
       const iconeCasamento = statusCasamento.todosOk
-        ? `<span class="estoque-casamento ok" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); lcAlert('${escapeHtml(statusCasamento.detalhe)}')">✅</span>`
+        ? `<span class="estoque-casamento ok" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); _gvModalCasamento('${p.id}','${v.id}')">✅</span>`
         : (statusCasamento.temVinculo
-          ? `<span class="estoque-casamento alerta" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); lcAlert('${escapeHtml(statusCasamento.detalhe)}')">⚠️</span>`
+          ? `<span class="estoque-casamento alerta" title="${escapeHtml(statusCasamento.tooltip)}" onclick="event.stopPropagation(); _gvModalCasamento('${p.id}','${v.id}')">⚠️</span>`
           : '');
       const btnReplicar = nVinc > 0
         ? `<button class="estoque-replicar-btn" title="Replicar estoque ${estoque} para ${nVinc} anúncio(s) vinculado(s)" onclick="replicarEstoquePorSku('${p.id}','${v.id}')">🔄 ${nVinc}</button>`
@@ -50771,24 +50888,106 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const aid = String(vi.anuncioId);
       if (!(aid in porAnuncio)) porAnuncio[aid] = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
     }));
-    const counts = {}; let naoAtivos = 0, total = 0;
+    const counts = {}; let naoAtivos = 0, ativos = 0, total = 0;
     Object.values(porAnuncio).forEach(st => {
       total++; counts[st] = (counts[st] || 0) + 1;
-      if (st !== 'ativo' && st !== 'desconhecido') naoAtivos++;
+      if (st === 'ativo') ativos++;
+      else if (st !== 'desconhecido') naoAtivos++;
     });
-    return { total, naoAtivos, counts };
+    return { total, ativos, naoAtivos, counts };
   }
-  // chip vermelho "⚠ N não ativo(s)" — string vazia quando está tudo ativo
+  // v33k.1138: dois chips DISCRETOS — verde (ativos) e vermelho (não ativos),
+  // em tons claro/escuro (fundo claro + texto escuro). Ambos clicáveis, abrem o
+  // detalhamento por variação (_gvModalStatusProduto). O verde só aparece quando
+  // há de fato anúncio ativo; o vermelho só quando há algum fora do ar.
   function _chipStatusAgregado(p, prodId) {
     const ag = _statusAgregadoProduto(p);
-    if (!ag.naoAtivos) return '';
-    const partes = Object.keys(ag.counts)
-      .filter(k => k !== 'ativo' && k !== 'desconhecido')
-      .map(k => ag.counts[k] + ' ' + _rotuloStatusAnuncio(k));
-    const tt = 'Anúncios não ativos: ' + partes.join(', ') + '. O estoque NÃO é replicado pra eles até voltarem a ficar ativos. Clique pra ver.';
-    return '<span class="prod-card-mkt-chip" style="background:#dc2626;cursor:pointer" title="' + escapeHtml(tt) + '" onclick="event.stopPropagation();abrirGerenciarVinculos(\'' + String(prodId).replace(/'/g, "\\'") + '\')">⚠ ' + ag.naoAtivos + ' não ativo' + (ag.naoAtivos > 1 ? 's' : '') + '</span>';
+    if (!ag.total) return '';
+    const pid = String(prodId).replace(/'/g, "\\'");
+    const onclick = 'event.stopPropagation();_gvModalStatusProduto(\'' + pid + '\')';
+    let out = '';
+    if (ag.ativos) {
+      const tt = ag.ativos + ' anúncio(s) ativo(s) — recebem replicação de estoque. Clique pra ver por variação.';
+      out += '<span class="prod-card-mkt-chip" style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0;cursor:pointer" title="' + escapeHtml(tt) + '" onclick="' + onclick + '">🟢 ' + ag.ativos + ' ativo' + (ag.ativos > 1 ? 's' : '') + '</span>';
+    }
+    if (ag.naoAtivos) {
+      const partes = Object.keys(ag.counts)
+        .filter(k => k !== 'ativo' && k !== 'desconhecido')
+        .map(k => ag.counts[k] + ' ' + _rotuloStatusAnuncio(k));
+      const tt = 'Anúncios não ativos: ' + partes.join(', ') + '. O estoque NÃO é replicado pra eles até voltarem a ficar ativos. Clique pra ver por variação.';
+      out += '<span class="prod-card-mkt-chip" style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;cursor:pointer" title="' + escapeHtml(tt) + '" onclick="' + onclick + '">🔴 ' + ag.naoAtivos + ' não ativo' + (ag.naoAtivos > 1 ? 's' : '') + '</span>';
+    }
+    return out;
   }
   window._chipStatusAgregado = _chipStatusAgregado;
+
+  // v33k.1138: detalhamento do status POR VARIAÇÃO. Mostra, pra cada variação do
+  // produto interno, cada anúncio vinculado com logo + loja + ID + tag de status,
+  // com os ativos em verde discreto e os fora do ar em vermelho discreto. Assim a
+  // pessoa vê exatamente QUAL variação tem QUAL anúncio parado.
+  function _gvModalStatusProduto(produtoId) {
+    const p = (produtosErp || []).find(x => String(x.id) === String(produtoId));
+    if (!p) { showToast('Produto não encontrado', true); return; }
+    let ov = document.getElementById('gvStatusOverlay');
+    if (!ov) {
+      ov = document.createElement('div'); ov.id = 'gvStatusOverlay'; ov.className = 'modal-overlay';
+      ov.style.zIndex = '10075';
+      ov.onclick = (e) => { if (e.target === ov) ov.classList.remove('active'); };
+      ov.innerHTML =
+        '<div class="modal" onclick="event.stopPropagation()" style="max-width:620px;width:94%;max-height:82vh;display:flex;flex-direction:column;padding:0;overflow:hidden">' +
+          '<div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:flex-start;gap:10px">' +
+            '<div><div style="font-size:15px;font-weight:800;color:#1e293b">📡 Status dos anúncios por variação</div><div id="gvStatusSub" style="font-size:12.5px;color:#6b7280;margin-top:3px"></div></div>' +
+            '<button onclick="document.getElementById(\'gvStatusOverlay\').classList.remove(\'active\')" style="background:#f3f4f6;border:none;width:32px;height:32px;border-radius:8px;cursor:pointer">✕</button>' +
+          '</div>' +
+          '<div id="gvStatusLista" style="overflow-y:auto;padding:10px 14px;flex:1 1 auto"></div>' +
+          '<div style="padding:10px 16px;border-top:1px solid #e5e7eb;font-size:11.5px;color:#94a3b8">O status vem do último sync (não é ao vivo). Só anúncios ativos recebem replicação de estoque.</div>' +
+        '</div>';
+      document.body.appendChild(ov);
+    }
+    const ag = _statusAgregadoProduto(p);
+    document.getElementById('gvStatusSub').textContent =
+      (p.nome || p.sku || '') + ' · ' + ag.ativos + ' ativo(s), ' + ag.naoAtivos + ' fora do ar de ' + ag.total + ' anúncio(s)';
+    const corpo = document.getElementById('gvStatusLista');
+    const vars = (p.variacoes || []).filter(v => (v.vinculos || []).length);
+    if (!vars.length) {
+      corpo.innerHTML = '<div style="padding:24px;text-align:center;color:#9ca3af">Nenhum anúncio vinculado a este produto.</div>';
+    } else {
+      const tag = (st) => {
+        const ativo = st === 'ativo';
+        const bg = ativo ? '#dcfce7' : (st === 'desconhecido' ? '#f3f4f6' : '#fee2e2');
+        const fg = ativo ? '#166534' : (st === 'desconhecido' ? '#6b7280' : '#991b1b');
+        const br = ativo ? '#bbf7d0' : (st === 'desconhecido' ? '#e5e7eb' : '#fecaca');
+        const dot = ativo ? '🟢' : (st === 'desconhecido' ? '⚪' : '🔴');
+        return '<span style="padding:2px 8px;background:' + bg + ';color:' + fg + ';border:1px solid ' + br + ';border-radius:20px;font-size:10.5px;font-weight:700;white-space:nowrap">' + dot + ' ' + escapeHtml(_rotuloStatusAnuncio(st).toUpperCase()) + '</span>';
+      };
+      corpo.innerHTML = vars.map(v => {
+        const vincs = v.vinculos || [];
+        const linhas = vincs.map(vi => {
+          const st = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
+          const loja = (lojasErp || []).find(l => String(l.idBanco) === String(vi.lojaIdBanco || vi.lojaId));
+          return '<div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-top:1px solid #f1f5f9">' +
+            _mkLogoChip(vi.marketplace) +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="font-size:12.5px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(loja ? loja.nome : (vi.marketplace || '—')) + '</div>' +
+              '<div style="font-size:11px;color:#94a3b8">ID ' + escapeHtml(String(vi.anuncioId || '—')) + '</div>' +
+            '</div>' + tag(st) +
+          '</div>';
+        }).join('');
+        const nAtivos = vincs.filter(vi => ((typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido') === 'ativo').length;
+        const nFora = vincs.length - nAtivos - vincs.filter(vi => ((typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido') === 'desconhecido').length;
+        const resumo = '<span style="font-size:11px;color:#16a34a;font-weight:700">' + nAtivos + ' ativo(s)</span>' +
+          (nFora > 0 ? ' <span style="font-size:11px;color:#dc2626;font-weight:700">· ' + nFora + ' fora</span>' : '');
+        return '<div style="margin:8px 0;border:1px solid #eef2f7;border-radius:10px;overflow:hidden">' +
+          '<div style="padding:8px 10px;background:#f8fafc;display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+            '<div style="font-size:12.5px;font-weight:800;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(v.nome || v.sku || 'Variação') + (v.sku ? ' <span style="font-weight:500;color:#94a3b8">· ' + escapeHtml(v.sku) + '</span>' : '') + '</div>' +
+            '<div style="white-space:nowrap">' + resumo + '</div>' +
+          '</div>' + linhas +
+        '</div>';
+      }).join('');
+    }
+    ov.classList.add('active');
+  }
+  window._gvModalStatusProduto = _gvModalStatusProduto;
 
   // Replica o estoque de uma variação (pelo SKU) para todos os anúncios vinculados.
   async function replicarEstoquePorSku(produtoId, variacaoId) {
