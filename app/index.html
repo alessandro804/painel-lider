@@ -19283,8 +19283,10 @@ window.LC_SVG = {
         <option value="tiktok">TikTok</option>
         <option value="shein">Shein</option>
       </select>
-      <button class="primary-btn" style="background:#16a34a;white-space:nowrap" onclick="abrirSincronizarEstoques()">🔄 Sincronizar estoques</button>
-
+      <!-- v33k.915: botões compactos. Estoque menor + Anúncios pra forçar a sync
+           de anúncios na hora (novo anúncio que ainda não apareceu na lista). -->
+      <button onclick="abrirSincronizarEstoques()" title="Sincronizar o estoque com os anúncios agora" style="padding:9px 12px;border:1px solid #16a34a;background:#16a34a;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">🔄 Estoque</button>
+      <button id="anBtnSyncAnuncios" onclick="sincronizarAnunciosAgora()" title="Buscar anúncios novos nos marketplaces e casar por SKU agora" style="padding:9px 12px;border:1px solid #4f46e5;background:#4f46e5;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">🏷️ Anúncios</button>
     </div>
 
     <!-- v33k.914: abas de status agregado (Todos/Ativos/Inativos/Rascunho/Em revisão/Excluídos) -->
@@ -43976,7 +43978,10 @@ REGRAS DURAS:
     }
     if (regua) opts.regua = regua;
     fecharExportConfig();
-    return exportarProdutoMarketplace(produtoId, marketplace, opts);
+    const _r = await exportarProdutoMarketplace(produtoId, marketplace, opts);
+    // v33k.915: publicou um anúncio novo → reflete na hora na lista de Anúncios.
+    try { if (window._anRefreshSeAtiva) await window._anRefreshSeAtiva(); } catch (_) {}
+    return _r;
   }
   window.confirmarExportacao = confirmarExportacao;
 
@@ -47351,9 +47356,19 @@ São o mesmo produto?`;
         });
       })).then(() => {
         console.log('[importarAnunciosAutomatico] vinculos persistidos no banco com sucesso');
+        // v33k.915: quando a tela de Anúncios está aberta, reconcilia com o backend
+        // pra que o anúncio recém-criado/importado apareça já casado por SKU.
+        setTimeout(() => { try { if (window._anRefreshSeAtiva) window._anRefreshSeAtiva(); } catch (_) {} }, 1200);
       });
     }
-    
+
+    // v33k.915: reflete NA HORA na lista de Anúncios (dados já em memória), sem
+    // esperar o backend — o novo anúncio precisa aparecer assim que é criado.
+    try {
+      const _scr = document.getElementById('estoqueScreen');
+      if (_scr && _scr.classList.contains('active') && typeof renderEstoque === 'function') renderEstoque();
+    } catch (_) {}
+
     return stats;
   }
   
@@ -49295,6 +49310,64 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   function _anSetTab(id) { _anunciosTab = id; _estoquePagina = 1; renderEstoque(); }
   window._anSetTab = _anSetTab;
+
+  // v33k.915: recarrega o catálogo do backend e re-renderiza a lista de Anúncios,
+  // MAS só se a tela de Anúncios estiver ativa (evita trabalho à toa). Usado
+  // depois de criar/importar anúncio pra que ele apareça na hora na listagem.
+  async function _anRefreshSeAtiva() {
+    const scr = document.getElementById('estoqueScreen');
+    const ativa = scr && (scr.classList.contains('active') || scr.style.display !== 'none' && getComputedStyle(scr).display !== 'none');
+    if (!ativa) return;
+    try {
+      if (typeof carregarTodosProdutos === 'function') {
+        const todos = await carregarTodosProdutos();
+        if (todos && todos.length) produtosErp = todos;
+      }
+    } catch (_) {}
+    try { renderEstoque(); } catch (_) {}
+  }
+  window._anRefreshSeAtiva = _anRefreshSeAtiva;
+
+  // v33k.915: força a sincronização de ANÚNCIOS agora (busca listagens novas nos
+  // marketplaces e casa por SKU, via sincronizarConta → importarAnunciosAutomatico).
+  // Respeita o filtro de loja: se houver lojas selecionadas, sincroniza só elas;
+  // senão, todas as lojas conectadas.
+  let _anSyncEmAndamento = false;
+  async function sincronizarAnunciosAgora() {
+    if (_anSyncEmAndamento) return;
+    const btn = document.getElementById('anBtnSyncAnuncios');
+    const lojasSel = (_estoqueLojasSel || []).map(String);
+    let alvo = (lojasErp || []).filter(l => l.contaConectada);
+    if (lojasSel.length) alvo = alvo.filter(l => lojasSel.includes(String(l.id)));
+    if (!alvo.length) {
+      // sem "contaConectada" marcada: cai pra todas as lojas com marketplace
+      alvo = (lojasErp || []).filter(l => l.marketplace);
+      if (lojasSel.length) alvo = alvo.filter(l => lojasSel.includes(String(l.id)));
+    }
+    if (!alvo.length) { if (typeof showToast === 'function') showToast('Nenhuma loja conectada para sincronizar.', true); return; }
+    _anSyncEmAndamento = true;
+    const rotuloOrig = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.innerHTML = '⏳ Sincronizando...'; }
+    let okLojas = 0;
+    try {
+      // uma loja de cada vez pra não estourar a API dos marketplaces.
+      for (const loja of alvo) {
+        try {
+          if (typeof sincronizarConta === 'function') {
+            await sincronizarConta(loja.marketplace, loja, { semPopup: true });
+            okLojas++;
+          }
+        } catch (e) { console.warn('[sincronizarAnunciosAgora] loja ' + (loja.nome || loja.id) + ':', e); }
+      }
+    } finally {
+      _anSyncEmAndamento = false;
+      if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = rotuloOrig; }
+    }
+    // recarrega o catálogo completo e re-renderiza (os novos anúncios entram aqui).
+    await _anRefreshSeAtiva();
+    if (typeof showToast === 'function') showToast('✓ Anúncios sincronizados (' + okLojas + '/' + alvo.length + ' loja(s)).');
+  }
+  window.sincronizarAnunciosAgora = sincronizarAnunciosAgora;
 
   // ─────────────────────────────────────────────────────────────────────────
   // MENU "..." por produto (tela Anúncios). Flutua ancorado no botão (evita o
