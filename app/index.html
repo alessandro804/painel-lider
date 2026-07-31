@@ -1342,7 +1342,7 @@
   // endereço/dados e salva a correção (reaplicada em todas as etapas e na
   // emissão). Na etapa Emitir, o botão principal já emite a NF.
   // ════════════════════════════════════════════════════════════════
-  async function abrirDetalhesPedido(lojaId, orderSn, etapa) {
+  async function abrirDetalhesPedido(lojaId, orderSn, etapa, erroCtx) {
     etapa = Number(etapa || 0);
     _overlay('detPedidoOverlay',
       '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="file-search"></span> Detalhes do pedido</h2>' +
@@ -1365,6 +1365,7 @@
       empresa: data.empresa,
       itens: data.itens || [],
       codigoMunicipio: (data.destinatario && data.destinatario.endereco && data.destinatario.endereco.codigoMunicipio) || '',
+      erroContexto: erroCtx || '',   // v33k.1166: motivo da NF-com-erro (destaca o campo culpado)
     };
     _renderDetalhes(data);
   }
@@ -1512,43 +1513,16 @@
     // acontece lá em cima, logo depois de definir `d`/`end`). Um só lugar, sem bagunça.
     let blocoBruto = '';
 
-    // ── produtos (com NCM editável, igual à revisão) ──
-    const itensHtml = itens.length ? itens.map((it, i) => {
-      const jaTem = it.temCadastroFiscal === true || (it.ncm && String(it.ncm).length >= 8);
-      // v33k.1083: o código pode não ser o SKU do vendedor. Dizer de onde veio
-      // evita a confusão de "esse código não é meu, cadastrei errado?".
-      const notaSku = it.skuGerado
-        ? '<div style="font-size:10px;color:#b45309">código gerado para este pedido (anúncio sem SKU)</div>'
-        : (it.skuDoAnuncio ? '<div style="font-size:10px;color:#64748b">código do anúncio</div>' : '');
-      const selo = jaTem
-        ? '<span title="Já cadastrado" style="font-size:10.5px;font-weight:700;color:#166534;background:#dcfce7;padding:1px 6px;border-radius:99px">✓</span>'
-        : '<span title="Falta NCM" style="font-size:10.5px;font-weight:700;color:#b45309;background:#fef3c7;padding:1px 6px;border-radius:99px">!</span>';
-      return '<tr><td style="padding:5px 8px;font-size:12px;white-space:nowrap">' + selo + ' ' + _esc(it.sku) + notaSku + '</td>' +
-        '<td style="padding:5px 8px;font-size:12px">' + _esc((it.descricao || '').slice(0, 34)) + '</td>' +
-        '<td style="padding:5px 8px;font-size:12px;text-align:center">' + it.quantidade + '</td>' +
-        '<td style="padding:5px 8px;font-size:12px;text-align:right">R$ ' + Number(it.valorUnitario).toFixed(2) + '</td>' +
-        // v33k.1080: PADRONIZADO NUM CADASTRO SÓ.
-        // Aqui existia um input de NCM avulso que salvava SÓ o NCM: origem e
-        // unidade caíam em padrão silencioso ('0' e 'UN'), o que gera CSOSN
-        // errado em mercadoria importada. Eram dois caminhos de cadastro
-        // fiscal na mesma tela, cada um com seus bugs. Agora leva ao mesmo
-        // modal completo que a revisão já usava.
-        '<td style="padding:4px 6px;text-align:center">' + (jaTem
-          ? '<span style="font-size:12px;color:#15803d;font-weight:600">' + _esc(it.ncm || 'cadastrado') + '</span>'
-          : '<button type="button" onclick="_dpAbrirFiscal(' + i + ')" style="padding:5px 10px;border:1px solid #fcd34d;background:#fffbeb;color:#92400e;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Cadastrar</button>')
-        + '</td></tr>';
-    }).join('') : '<tr><td colspan="5" style="padding:10px;text-align:center;color:#64748b">Nenhum item retornado</td></tr>';
-
+    // ── produtos TOTALMENTE EDITÁVEIS (v33k.1166) ──────────────────────────
+    // Descrição, Qtd, Preço, NCM, CEST e Origem editáveis por item; dá pra
+    // ADICIONAR e REMOVER produto. Salva o cadastro fiscal por SKU e usa os itens
+    // editados na emissão. A tabela é renderizada por _dpRenderProdutos() logo
+    // após o innerHTML (pra reusar em add/remover sem remontar o modal inteiro).
     const blocoProdutos =
       '<div style="' + card + '">' +
-        '<div style="font-weight:700;color:#0f172a;margin-bottom:10px">Produtos <span style="font-weight:400;font-size:12px;color:#64748b">(preencha o NCM se estiver vazio, salva p/ as próximas)</span></div>' +
-        '<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f1f5f9">' +
-          '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">SKU</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Produto</th><th style="padding:6px;font-size:11px;color:#475569">Qtd</th><th style="padding:6px 8px;text-align:right;font-size:11px;color:#475569">Valor</th><th style="padding:6px 8px;font-size:11px;color:#475569">NCM</th>' +
-        '</tr></thead><tbody>' + itensHtml + '</tbody></table>' +
-        // v33k.1080: o botão "Salvar NCMs" saiu junto com os campos avulsos.
-        // O cadastro agora é pelo botão "Cadastrar" de cada linha, no modal
-        // completo, que já salva ao confirmar.
-        '' +
+        '<div style="font-weight:700;color:#0f172a;margin-bottom:4px">Produtos <span style="font-weight:400;font-size:12px;color:#64748b">(edite descrição, preço, NCM, CEST e origem; adicione ou remova itens — fica salvo p/ as próximas)</span></div>' +
+        '<div id="dpProdErroBanner"></div>' +
+        '<div id="dpProdutosBody"></div>' +
       '</div>';
 
     // ── Desconto: abatido do valor total da NF ──
@@ -1587,9 +1561,30 @@
     // v33k.712: reconhece o isento tanto pelo indIEDest (origem) quanto pelo
     // indicadorIE/isentoIe salvos na correção, pra o checkbox voltar marcado.
     const ieIsento = (d.indIEDest === 2) || (d.indicadorIE === 2) || (d.isentoIe === true) || (String(ieAtual).toUpperCase() === 'ISENTO');
+    // v33k.1163: aviso quando o comprador vem VAZIO. No Mercado Livre os dados do
+    // cliente só são liberados quando o pedido é liberado pra emissão de NF; antes
+    // disso o destinatário vem em branco (não é erro). O aviso evita que o operador
+    // ache que é bug ou tente emitir/preencher à mão sem necessidade.
+    const _mktDet = (data.loja && data.loja.marketplace) || (window._dpCtx && window._dpCtx.marketplace) || '';
+    const _semDadosComprador =
+      !String(d.nome || '').trim() &&
+      !String(d.cpf || d.cnpj || d.documento || '').trim() &&
+      !String(end.cep || '').trim() &&
+      !String(end.logradouro || '').trim() &&
+      !String(end.municipio || '').trim();
+    const avisoSemDados = _semDadosComprador
+      ? ('<div style="margin-bottom:14px;padding:11px 13px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;color:#92400e;font-size:12.5px;line-height:1.55">' +
+          '<span class="lc-ic" data-lucide="clock" style="width:14px;height:14px;vertical-align:-2px"></span> ' +
+          '<b>Dados do comprador ainda não liberados.</b><br>' +
+          (/mercado|livre|\bml\b/i.test(_mktDet)
+            ? 'No Mercado Livre, o nome, o CPF/CNPJ e o endereço do cliente só ficam disponíveis quando o pedido é <b>liberado para emissão de NF</b>. Este pedido ainda está <b>aguardando liberação</b> — quando liberar, os dados aparecem aqui sozinhos. Não precisa preencher à mão nem emitir agora.'
+            : 'Os dados do cliente ainda não foram liberados pelo marketplace. Assim que o pedido for liberado, eles aparecem aqui automaticamente.') +
+        '</div>')
+      : '';
     const blocoDest =
       '<div style="' + card + '">' +
         '<div style="font-weight:700;color:#0f172a;margin-bottom:12px">Destinatário <span style="font-weight:400;font-size:12px;color:#64748b">(edite o que estiver errado ou faltando)</span></div>' +
+        avisoSemDados +
         '<div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">' +
           _campo('dpNome', 'Nome / Razão Social', d.nome || '') +
           '<div><label style="' + lbl + '">CPF / CNPJ</label><input id="dpDoc" style="' + inp + '" value="' + _esc(d.cpf || d.cnpj || '') + '" oninput="_dpAtualizarIE()"></div>' +
@@ -1679,9 +1674,179 @@
 
       el.innerHTML = faixaPedido + faixaEmpresa + blocoResumo + faixaCorrecao + faixaAviso + blocoProdutos + blocoDesconto + blocoDest + _dpLinhaTempo(data.linhaTempo) + rodape;
       _hidratarIcones(el);
-      _dpAtualizarTotais(); // pinta subtotal/total já na abertura
+      _dpRenderProdutos();      // v33k.1166: monta a tabela editável de produtos
+      _dpAtualizarTotais();     // pinta subtotal/total já na abertura
+      _dpAplicarErroDestaque(); // v33k.1166: se veio de NF-com-erro, destaca o campo culpado
     }
   }
+
+  // ── PRODUTOS EDITÁVEIS DO MODAL DE DETALHES (v33k.1166) ────────────────────
+  const _DP_ORIGENS = [
+    ['0', '0 - Nacional'],
+    ['1', '1 - Estrangeira (importação direta)'],
+    ['2', '2 - Estrangeira (mercado interno)'],
+    ['3', '3 - Nacional (>40% import.)'],
+    ['4', '4 - Nacional (proc. produtivo básico)'],
+    ['5', '5 - Nacional (<40% import.)'],
+    ['6', '6 - Estrangeira (imp. direta, s/ similar)'],
+    ['7', '7 - Estrangeira (merc. interno, s/ similar)'],
+    ['8', '8 - Nacional (import. >70%)'],
+  ];
+  function _dpOrigemOptions(sel) {
+    const s = String(sel != null ? sel : '0');
+    return _DP_ORIGENS.map(o => '<option value="' + o[0] + '"' + (o[0] === s ? ' selected' : '') + '>' + o[1] + '</option>').join('');
+  }
+  const _DP_INP = 'width:100%;padding:5px 7px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;box-sizing:border-box';
+  function _dpRenderProdutos() {
+    const cont = document.getElementById('dpProdutosBody');
+    if (!cont) return;
+    const itens = (window._dpCtx && window._dpCtx.itens) || [];
+    const th = (t, extra) => '<th style="padding:6px 6px;text-align:left;font-size:11px;color:#475569;' + (extra || '') + '">' + t + '</th>';
+    const linhas = itens.length ? itens.map((it, i) => {
+      const ncm = String(it.ncm || '').replace(/\D/g, '');
+      const ncmOk = /^\d{8}$/.test(ncm);
+      const desc = (it.descricaoFiscal || it.descricao || '');
+      return '<tr data-prod-row="' + i + '" style="border-top:1px solid #f1f5f9">' +
+        '<td style="padding:4px 6px"><input id="dpSku' + i + '" value="' + _esc(it.sku || '') + '" oninput="_dpProdSet(' + i + ',\'sku\',this.value)" placeholder="SKU" style="' + _DP_INP + ';min-width:96px"></td>' +
+        '<td style="padding:4px 6px"><input id="dpDesc' + i + '" value="' + _esc(desc) + '" maxlength="120" oninput="_dpProdSet(' + i + ',\'descricao\',this.value)" placeholder="Descrição (sai na NF)" style="' + _DP_INP + ';min-width:150px"></td>' +
+        '<td style="padding:4px 6px"><input id="dpQtd' + i + '" type="number" min="1" value="' + (Number(it.quantidade) || 1) + '" oninput="_dpProdSet(' + i + ',\'quantidade\',this.value)" style="' + _DP_INP + ';width:50px;text-align:center"></td>' +
+        '<td style="padding:4px 6px"><input id="dpPreco' + i + '" type="number" step="0.01" min="0" value="' + Number(it.valorUnitario || 0).toFixed(2) + '" oninput="_dpProdSet(' + i + ',\'valorUnitario\',this.value)" style="' + _DP_INP + ';width:78px;text-align:right"></td>' +
+        '<td style="padding:4px 6px"><input id="dpNcm' + i + '" maxlength="8" inputmode="numeric" value="' + _esc(ncm) + '" oninput="_dpProdSet(' + i + ',\'ncm\',this.value)" placeholder="8 díg." style="' + _DP_INP + ';width:84px;text-align:center;border-color:' + (ncmOk ? '#cbd5e1' : '#f59e0b') + '"></td>' +
+        '<td style="padding:4px 6px"><input id="dpCest' + i + '" maxlength="7" inputmode="numeric" value="' + _esc(String(it.cest || '')) + '" oninput="_dpProdSet(' + i + ',\'cest\',this.value)" placeholder="opc." style="' + _DP_INP + ';width:72px;text-align:center"></td>' +
+        '<td style="padding:4px 6px"><select id="dpOrig' + i + '" onchange="_dpProdSet(' + i + ',\'origem\',this.value)" style="' + _DP_INP + ';min-width:120px">' + _dpOrigemOptions(it.origem) + '</select></td>' +
+        '<td style="padding:4px 4px;text-align:center"><button type="button" onclick="_dpRemoverProduto(' + i + ')" title="Remover produto" style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;width:26px;height:26px;border-radius:7px;cursor:pointer;font-weight:700">✕</button></td>' +
+      '</tr>';
+    }).join('') : '<tr><td colspan="8" style="padding:10px;text-align:center;color:#64748b">Nenhum produto — clique em “Adicionar produto”.</td></tr>';
+    cont.innerHTML =
+      '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:640px">' +
+        '<thead><tr style="background:#f1f5f9">' + th('SKU') + th('Descrição') + th('Qtd', 'text-align:center') + th('Preço', 'text-align:right') + th('NCM', 'text-align:center') + th('CEST', 'text-align:center') + th('Origem') + th('') + '</tr></thead>' +
+        '<tbody>' + linhas + '</tbody>' +
+      '</table></div>' +
+      '<div style="margin-top:8px"><button type="button" onclick="_dpAddProduto()" style="border:1px dashed #94a3b8;background:#f8fafc;color:#334155;padding:6px 12px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer">+ Adicionar produto</button></div>';
+    _dpRecalcSubtotal();
+  }
+  window._dpRenderProdutos = _dpRenderProdutos;
+
+  function _dpProdSet(i, campo, val) {
+    const ctx = window._dpCtx || {};
+    const it = (ctx.itens || [])[i];
+    if (!it) return;
+    if (campo === 'quantidade') it.quantidade = Math.max(1, parseInt(val, 10) || 1);
+    else if (campo === 'valorUnitario') it.valorUnitario = Math.max(0, parseFloat(val) || 0);
+    else if (campo === 'ncm') { it.ncm = String(val || '').replace(/\D/g, '').slice(0, 8); it.temCadastroFiscal = /^\d{8}$/.test(it.ncm); }
+    else if (campo === 'cest') it.cest = String(val || '').replace(/\D/g, '').slice(0, 7);
+    else if (campo === 'origem') it.origem = String(val);
+    else if (campo === 'descricao') { const v = String(val || '').replace(/\s+/g, ' ').slice(0, 120); it.descricao = v; it.descricaoFiscal = v; }
+    else if (campo === 'sku') it.sku = String(val || '').trim();
+    if (campo === 'quantidade' || campo === 'valorUnitario') _dpRecalcSubtotal();
+    // ao editar, tira o destaque vermelho de erro do campo (e recolore o NCM)
+    const suf = { descricao: 'Desc', quantidade: 'Qtd', valorUnitario: 'Preco', ncm: 'Ncm', cest: 'Cest', origem: 'Orig', sku: 'Sku' }[campo];
+    const el = suf && document.getElementById('dp' + suf + i);
+    if (el) {
+      el.style.background = '#fff';
+      el.style.borderColor = (campo === 'ncm' && !/^\d{8}$/.test(it.ncm || '')) ? '#f59e0b' : '#cbd5e1';
+    }
+  }
+  window._dpProdSet = _dpProdSet;
+
+  function _dpRecalcSubtotal() {
+    const ctx = window._dpCtx || {};
+    const sub = (ctx.itens || []).reduce((s, it) => s + (Number(it.valorUnitario) || 0) * (Number(it.quantidade) || 0), 0);
+    ctx.subtotalItens = sub;
+    _dpAtualizarTotais();
+  }
+
+  function _dpAddProduto() {
+    const ctx = window._dpCtx || {};
+    ctx.itens = ctx.itens || [];
+    ctx.itens.push({ sku: '', descricao: '', quantidade: 1, valorUnitario: 0, ncm: '', cest: '', origem: '0', unidade: 'UN', temCadastroFiscal: false, avulso: true });
+    _dpRenderProdutos();
+    const el = document.getElementById('dpSku' + (ctx.itens.length - 1)); if (el) el.focus();
+  }
+  window._dpAddProduto = _dpAddProduto;
+
+  function _dpRemoverProduto(i) {
+    const ctx = window._dpCtx || {};
+    if (!ctx.itens) return;
+    if (ctx.itens.length <= 1) { _toast('A nota precisa de pelo menos 1 produto.', true); return; }
+    ctx.itens.splice(i, 1);
+    _dpRenderProdutos();
+  }
+  window._dpRemoverProduto = _dpRemoverProduto;
+
+  // valida os itens; pinta em vermelho os campos com problema; retorna a lista de erros.
+  function _dpValidarItens() {
+    const ctx = window._dpCtx || {};
+    const itens = ctx.itens || [];
+    const erros = [];
+    let focou = false;
+    const marcar = (suf, i) => {
+      const el = document.getElementById('dp' + suf + i);
+      if (el) { el.style.borderColor = '#dc2626'; el.style.background = '#fef2f2'; if (!focou) { try { el.focus(); el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {} focou = true; } }
+    };
+    if (!itens.length) { erros.push({ i: -1, msg: 'a nota precisa de ao menos 1 produto' }); return erros; }
+    itens.forEach((it, i) => {
+      const desc = String(it.descricaoFiscal || it.descricao || '').trim();
+      const ncm = String(it.ncm || '').replace(/\D/g, '');
+      const cest = String(it.cest || '').replace(/\D/g, '');
+      if (!desc) { erros.push({ i, msg: 'descrição vazia' }); marcar('Desc', i); }
+      if (!(Number(it.quantidade) > 0)) { erros.push({ i, msg: 'quantidade inválida' }); marcar('Qtd', i); }
+      if (!(Number(it.valorUnitario) > 0)) { erros.push({ i, msg: 'preço inválido' }); marcar('Preco', i); }
+      if (ncm.length !== 8) { erros.push({ i, msg: 'NCM precisa ter 8 dígitos' }); marcar('Ncm', i); }
+      if (cest && cest.length !== 7) { erros.push({ i, msg: 'CEST deve ter 7 dígitos' }); marcar('Cest', i); }
+    });
+    return erros;
+  }
+  window._dpValidarItens = _dpValidarItens;
+
+  // persiste NCM/CEST/origem/unidade/descrição por SKU (aprende p/ próximas vendas)
+  async function _dpPersistirFiscalItens() {
+    const ctx = window._dpCtx || {};
+    const payload = (ctx.itens || [])
+      .filter(it => it.sku && /^\d{8}$/.test(String(it.ncm || '').replace(/\D/g, '')))
+      .map(it => ({
+        sku: it.sku,
+        ncm: String(it.ncm).replace(/\D/g, ''),
+        cest: it.cest ? String(it.cest).replace(/\D/g, '') : undefined,
+        origem: it.origem != null ? String(it.origem) : undefined,
+        unidade: it.unidade || 'UN',
+        descricao: (it.descricaoFiscal || it.descricao || '').trim() || undefined,
+      }));
+    if (!payload.length) return { ok: true, gravados: 0 };
+    return await _api('/api/nfe/produtos-fiscal/em-massa', { method: 'POST', body: JSON.stringify({ itens: payload }) });
+  }
+
+  // se o pedido veio de NF-com-erro, destaca em vermelho o campo culpado (ex.: NCM)
+  function _dpAplicarErroDestaque() {
+    const ctx = window._dpCtx || {};
+    let erro = ctx.erroContexto || '';
+    if (!erro) {
+      try { const p = (window._expPedidos || []).find(x => String(x.orderSn) === String(ctx.orderSn)); if (p && p.erro) erro = String(p.erro); } catch (_) {}
+    }
+    if (!erro) return;
+    const banner = document.getElementById('dpProdErroBanner');
+    const ncmProblema = /ncm|classifica[çc][ãa]o fiscal/i.test(erro);
+    if (banner) {
+      banner.innerHTML = '<div style="margin:6px 0 10px;padding:9px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:9px;color:#991b1b;font-size:12.5px;line-height:1.5">' +
+        '<b>NF não emitida.</b> Motivo: ' + _esc(String(erro).slice(0, 240)) +
+        (ncmProblema ? '<br>Corrija o <b>NCM</b> destacado abaixo e emita de novo.' : '') +
+        '</div>';
+    }
+    // destaca o(s) NCM inválido(s)
+    const itens = ctx.itens || [];
+    let focou = false;
+    itens.forEach((it, i) => {
+      const ncm = String(it.ncm || '').replace(/\D/g, '');
+      if (ncmProblema || ncm.length !== 8) {
+        const el = document.getElementById('dpNcm' + i);
+        if (el && (ncmProblema || ncm.length !== 8)) {
+          el.style.borderColor = '#dc2626'; el.style.background = '#fef2f2';
+          if (!focou) { try { el.scrollIntoView({ block: 'center' }); } catch (_) {} focou = true; }
+        }
+      }
+    });
+  }
+  window._dpAplicarErroDestaque = _dpAplicarErroDestaque;
 
   // Mostra/esconde a linha de Inscrição Estadual conforme o documento for CNPJ.
   function _dpAtualizarIE() {
@@ -1797,6 +1962,20 @@
     const ctx = window._dpCtx || {};
     const msg = document.getElementById('dpMsg');
     const setMsg = (html, cor) => { if (msg) { msg.innerHTML = html; msg.style.color = cor; _hidratarIcones(msg); } };
+    // v33k.1166: ao salvar direto (não-silencioso), VALIDA os produtos e NÃO deixa
+    // salvar com NCM/dado errado (destacando em vermelho), e persiste o cadastro
+    // fiscal editado. No modo silencioso (chamado de dentro do emitir), pula, pois
+    // o emitir já validou + persistiu.
+    if (!silencioso) {
+      const erros = _dpValidarItens();
+      if (erros.length) {
+        setMsg('<span class="lc-ic" data-lucide="x"></span> Corrija os campos em vermelho antes de salvar: ' +
+          erros.slice(0, 3).map(e => (e.i >= 0 ? ('produto ' + (e.i + 1) + ' — ') : '') + e.msg).join('; ') + '.', '#b91c1c');
+        return false;
+      }
+      const rf = await _dpPersistirFiscalItens();
+      if (rf && rf.ok === false) { setMsg('<span class="lc-ic" data-lucide="x"></span> ' + _esc(rf.erro || 'Falha ao salvar dados fiscais dos produtos'), '#b91c1c'); return false; }
+    }
     // se o operador digitou CEP mas o IBGE ainda não veio, busca agora
     const cep = (document.getElementById('dpCep') || {}).value || '';
     const cepDig = cep.replace(/\D/g, '');
@@ -1831,16 +2010,23 @@
     // MESMA condição do selo verde da tabela (linha ~1517). Se divergirem, a
     // tela mostra "cadastrado" e a emissão recusa, que é o tipo de contradição
     // que gerou este bug.
-    const temFiscal = (it) => it.temCadastroFiscal === true || (it.ncm && String(it.ncm).length >= 8);
-    const semFiscal = (ctx.itens || []).filter(it => !temFiscal(it));
-    if (semFiscal.length) {
+    // v33k.1166: valida os produtos (bloqueia e destaca em vermelho o que estiver
+    // errado — ex.: NCM sem 8 dígitos) ANTES de gastar uma ida à SEFAZ.
+    const errosItens = _dpValidarItens();
+    if (errosItens.length) {
       const m = document.getElementById('dpMsg');
       if (m) {
-        m.innerHTML = '<span class="lc-ic" data-lucide="x"></span> Não emiti: ' + semFiscal.length +
-          ' produto(s) sem cadastro fiscal. Clique em <b>Cadastrar</b> na linha do produto.';
-        m.style.color = '#b91c1c';
-        _hidratarIcones(m);
+        m.innerHTML = '<span class="lc-ic" data-lucide="x"></span> Não emiti: corrija os campos em vermelho — ' +
+          errosItens.slice(0, 3).map(e => (e.i >= 0 ? ('produto ' + (e.i + 1) + ' (' + e.msg + ')') : e.msg)).join('; ') + '.';
+        m.style.color = '#b91c1c'; _hidratarIcones(m);
       }
+      return;
+    }
+    // persiste o cadastro fiscal editado (aprende p/ próximas) antes de emitir
+    const rfEmit = await _dpPersistirFiscalItens();
+    if (rfEmit && rfEmit.ok === false) {
+      const m = document.getElementById('dpMsg');
+      if (m) { m.innerHTML = '<span class="lc-ic" data-lucide="x"></span> Não emiti: ' + _esc(rfEmit.erro || 'falha ao salvar os dados fiscais.'); m.style.color = '#b91c1c'; _hidratarIcones(m); }
       return;
     }
     const okCorr = await _dpSalvarCorrecoes(true);
@@ -1930,6 +2116,19 @@
       '</div>' +
       '<div style="' + card + '">' +
         '<div style="font-weight:700;color:#0f172a;margin-bottom:12px">Destinatário</div>' +
+        // v33k.1163: mesmo aviso do modal de detalhes — comprador vazio = ainda não liberado
+        ((function () {
+          const mkt = (data.loja && data.loja.marketplace) || '';
+          const vazio = !String(d.nome || '').trim() && !String(d.cpf || d.cnpj || d.documento || '').trim() &&
+            !String(end.cep || '').trim() && !String(end.logradouro || '').trim() && !String(end.municipio || '').trim();
+          if (!vazio) return '';
+          return '<div style="margin-bottom:14px;padding:11px 13px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;color:#92400e;font-size:12.5px;line-height:1.55">' +
+            '<b>Dados do comprador ainda não liberados.</b><br>' +
+            (/mercado|livre|\bml\b/i.test(mkt)
+              ? 'No Mercado Livre, o nome, o CPF/CNPJ e o endereço só ficam disponíveis quando o pedido é <b>liberado para emissão de NF</b>. Aguarde a liberação — os dados aparecem aqui sozinhos. Não precisa emitir agora.'
+              : 'Os dados do cliente ainda não foram liberados pelo marketplace. Assim que o pedido for liberado, eles aparecem aqui automaticamente.') +
+          '</div>';
+        })()) +
         '<div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">' +
           _campo('rpNome', 'Nome / Razão Social', d.nome || '') +
           _campo('rpDoc', 'CPF / CNPJ', d.cpf || d.cnpj || '') +
@@ -2542,62 +2741,65 @@
     await emitirEmLote(orderSns);
   }
 
+  // emite UMA NF-e (usado pelo lote paralelo). Retorna { ok, erro? }.
+  async function _emitirUmaNota(sn) {
+    const lojaId = (window._expLojaPorSn && window._expLojaPorSn[sn]) || null;
+    if (!lojaId) return { ok: false, erro: sn + ': loja não identificada' };
+    try {
+      const data = await _api('/api/nfe/pedido-para-emissao?lojaId=' + lojaId + '&orderSn=' + encodeURIComponent(sn));
+      if (!data.ok || !data.empresa) return { ok: false, erro: sn + ': ' + (data.erro || 'sem empresa emitente') };
+      const d = data.destinatario || {}; const end = d.endereco || {};
+      const doc = (d.cpf || d.cnpj || '').replace(/\D/g, '');
+      const destinatario = {
+        nome: d.nome, cpf: doc.length === 11 ? doc : undefined, cnpj: doc.length === 14 ? doc : undefined,
+        endereco: { logradouro: end.logradouro, numero: end.numero, bairro: end.bairro,
+          complemento: end.complemento, cep: end.cep, municipio: end.municipio, uf: end.uf, codigoMunicipio: end.codigoMunicipio },
+      };
+      const r = await _api('/api/nfe/emitir', {
+        method: 'POST',
+        body: JSON.stringify({ empresaId: data.empresa.id, destinatario, itens: data.itens || [],
+          pedido: { marketplace: (data.loja && data.loja.marketplace) || 'shopee', order_sn: sn, loja_id: lojaId } }),
+      });
+      if (r && r.autorizada) return { ok: true };
+      if (r && r.jaEmitida) return { ok: false, erro: sn + ': já tem a NF nº ' + ((r.nota && r.nota.numero) || '') + ' (não emiti outra)' };
+      if (r && r.pendentes && r.pendentes.length) {
+        const skus = r.pendentes.map(p => p.sku || p.descricao || '?').slice(0, 3).join(', ');
+        return { ok: false, erro: sn + ': sem cadastro fiscal em ' + skus };
+      }
+      if (r && r.classeFaltante) return { ok: false, erro: sn + ': classe fiscal faltando, ajuste manual' };
+      return { ok: false, erro: sn + ': ' + ((r && (r.motivo || r.erro)) || 'rejeitada') + (r && r.cstat ? ' (cStat ' + r.cstat + ')' : '') };
+    } catch (e) {
+      return { ok: false, erro: sn + ': ' + (e.message || 'erro') };
+    }
+  }
+
   async function emitirEmLote(orderSns) {
     let ok = 0, falhas = 0;
     const errosResumo = [];
-    // v33k.788: marca TODOS como "Emitindo" antes do loop e recarrega, os pedidos
-    // migram pro chip "Emitindo" na hora (feedback visual), em vez de toasts que
-    // somem. Um toast discreto único ("Emitindo N notas…") em vez de um por pedido.
+    // marca TODOS como "Emitindo" antes do loop e recarrega EM SILÊNCIO — os
+    // pedidos migram pro chip "Emitindo" na hora, sem piscar a tela.
     try {
       await _api('/api/expedicao/marcar-emitindo', { method: 'POST', body: JSON.stringify({ orderSns }) });
-      if (typeof expCarregar === 'function') { try { await expCarregar(); } catch (_) {} }
+      if (typeof expCarregar === 'function') { try { await expCarregar({ silencioso: true }); } catch (_) {} }
     } catch (_) { /* se falhar a marcação, segue a emissão normalmente */ }
-    // v33k.1153: transição SILENCIOSA — os pedidos já migraram pro chip "Emitindo"
-    // (marcar-emitindo + reload acima). Nada de toast "Emitindo N notas…" a pedido
-    // do Alessandro: a mudança de status na tela é o próprio feedback.
-    for (let i = 0; i < orderSns.length; i++) {
-      const sn = orderSns[i];
-      const lojaId = (window._expLojaPorSn && window._expLojaPorSn[sn]) || null;
-      if (!lojaId) { falhas++; errosResumo.push(sn + ': loja não identificada'); continue; }
-      try {
-        const data = await _api('/api/nfe/pedido-para-emissao?lojaId=' + lojaId + '&orderSn=' + encodeURIComponent(sn));
-        if (!data.ok || !data.empresa) { falhas++; errosResumo.push(sn + ': ' + (data.erro || 'sem empresa emitente')); continue; }
-        // pedido com produto sem cadastro fiscal → precisa de ajuste manual, pula
-        const d = data.destinatario || {}; const end = d.endereco || {};
-        const doc = (d.cpf || d.cnpj || '').replace(/\D/g, '');
-        const destinatario = {
-          nome: d.nome, cpf: doc.length === 11 ? doc : undefined, cnpj: doc.length === 14 ? doc : undefined,
-          endereco: { logradouro: end.logradouro, numero: end.numero, bairro: end.bairro,
-            complemento: end.complemento, cep: end.cep, municipio: end.municipio, uf: end.uf, codigoMunicipio: end.codigoMunicipio },
-        };
-        const r = await _api('/api/nfe/emitir', {
-          method: 'POST',
-          body: JSON.stringify({ empresaId: data.empresa.id, destinatario, itens: data.itens || [],
-            pedido: { marketplace: (data.loja && data.loja.marketplace) || 'shopee', order_sn: sn, loja_id: lojaId } }),
-        });
-        if (r && r.autorizada) { ok++; }
-        else if (r && r.jaEmitida) { falhas++; errosResumo.push(sn + ': já tem a NF nº ' + ((r.nota && r.nota.numero) || '') + ' (não emiti outra)'); }
-        else if (r && r.pendentes && r.pendentes.length) {
-          falhas++;
-          // v33k.1082: diz QUAL produto. Antes era "produto sem NCM" seco, e
-          // quem tinha acabado de cadastrar tudo que a tela mostrou não tinha
-          // como saber que o item pendente era outro.
-          const skus = r.pendentes.map(p => p.sku || p.descricao || '?').slice(0, 3).join(', ');
-          errosResumo.push(sn + ': sem cadastro fiscal em ' + skus);
-        }
-        else if (r && r.classeFaltante) { falhas++; errosResumo.push(sn + ': classe fiscal faltando, ajuste manual'); }
-        else { falhas++; errosResumo.push(sn + ': ' + ((r && (r.motivo || r.erro)) || 'rejeitada') + (r && r.cstat ? ' (cStat ' + r.cstat + ')' : '')); }
-      } catch (e) {
-        falhas++; errosResumo.push(sn + ': ' + (e.message || 'erro'));
+    // v33k.1164: EMISSÃO PARALELA POR PLATAFORMA. Agrupa por marketplace e emite
+    // as plataformas SIMULTANEAMENTE entre si, mas SEQUENCIAL dentro de cada uma
+    // (não estoura o limite de chamadas de nenhuma). Antes era tudo em série (um
+    // por um), o que fazia os pedidos saírem "aos poucos" e devagar.
+    const porMkt = {};
+    orderSns.forEach(sn => {
+      const p = (window._expPedidos || []).find(x => String(x.orderSn) === String(sn));
+      const mkt = (p && p.marketplace) || 'outros';
+      (porMkt[mkt] = porMkt[mkt] || []).push(sn);
+    });
+    await Promise.all(Object.values(porMkt).map(async (grupo) => {
+      for (const sn of grupo) {
+        const res = await _emitirUmaNota(sn);       // sequencial dentro da plataforma
+        if (res.ok) ok++; else { falhas++; errosResumo.push(res.erro); }
       }
-    }
-    // resumo final, v33k.549: quando alguma falha, mostramos um QUADRO com o
-    // motivo de cada uma (o toast some rápido demais pra um erro fiscal, que você
-    // precisa ler e agir). As que falharam ficam em "Nota Fiscal com erro" na
-    // etapa 1, com botão de corrigir e reenviar.
-    let msg = '✓ ' + ok + ' NF-e autorizada(s)';
-    if (falhas) msg += ' · ' + falhas + ' com erro';
-    _toast(msg, falhas > 0);
+    }));
+    // v33k.1164: SEM toast "NF emitida!" (a migração de status é o feedback). Só o
+    // QUADRO de erros aparece, quando há falhas — porque erro fiscal precisa ser lido.
     if (errosResumo.length) {
       _overlay('loteErroOverlay',
         '<div><h2 style="margin:0;font-size:16px">Resultado da emissão</h2>' +
@@ -2620,9 +2822,9 @@
           '</div>';
       }
     }
-    // recarrega a expedição FORÇANDO a normalização, os autorizados já migraram
-    // pra Processar e card+lista precisam refletir isso NA HORA (sem esperar cache).
-    if (typeof expCarregar === 'function') { try { await expCarregar(); } catch (_) {} }
+    // recarrega a expedição EM SILÊNCIO (sem piscar), os autorizados já migraram
+    // pra Processar e card+lista refletem isso na hora.
+    if (typeof expCarregar === 'function') { try { await expCarregar({ silencioso: true }); } catch (_) {} }
     if (typeof _nfChecklistCarregar === 'function') { try { _nfChecklistCarregar(); } catch (_) {} }
   }
 
@@ -7368,6 +7570,15 @@
             const reg = base[idxPorSku.get(chave)];
             reg._dePedido = true;
             reg.ativo = true;   // tem pedido ativo → conta como ativo (aparece no filtro "Ativos")
+            // v33k.913: carrega no registro AS LOJAS (idBanco) onde o pedido existe.
+            // Sem isso, um SKU do catálogo que também está num pedido só filtrava
+            // pelos vínculos de anúncio do catálogo (que às vezes não batem o
+            // id↔idBanco), e a gente compensava ISENTANDO do filtro — o que fazia
+            // ele vazar pra TODAS as lojas. Agora ele tem a loja real do pedido e
+            // filtra certo, sem vazar e sem sumir.
+            if (Array.isArray(s.lojaIdsBanco)) {
+              reg.vincLojaIds = Array.from(new Set([...(reg.vincLojaIds || []), ...s.lojaIdsBanco.map(String)]));
+            }
           } else {
             base.push({
               sku: s.sku, nome: s.nome || s.sku, foto: s.foto || null, ativo: true,
@@ -7554,14 +7765,21 @@
       if (_dfState.filtroStatus === 'sem' && it.temFiscal) return false;
       // loja: EXATAMENTE como o Estoque, é dono de alguma selecionada OU tem
       // vínculo de anúncio com alguma delas (comparando id e idBanco).
-      // v33k.791: SKUs vindos de PEDIDO (_dePedido) são ISENTOS deste filtro, eles
-      // são de pedidos reais que precisam de NF, então têm que aparecer pra cadastro
-      // independente do mapeamento id↔idBanco da loja (que às vezes não bate). Sem
-      // essa isenção, as variações vendidas fora do catálogo sumiam com conta filtrada.
-      if (lojaSel.length && !it._dePedido) {
+      // v33k.913: ANTES os SKUs de PEDIDO (_dePedido) eram totalmente ISENTOS deste
+      // filtro. Isso resolvia o sumiço deles, mas criava o bug oposto: apareciam em
+      // TODAS as lojas (inclusive as que não são deles), o "produtos de outra loja".
+      // Agora eles filtram como qualquer outro, PELA LOJA REAL DO PEDIDO (idBanco,
+      // que o backend já manda em lojaIdsBanco → vincLojaIds). A isenção só sobra
+      // como REDE DE SEGURANÇA quando o mapeamento front→idBanco não pôde ser
+      // calculado (idsBanco vazio): aí, sem como comparar, mostramos pra não esconder
+      // um pedido real que precisa de NF.
+      if (lojaSel.length) {
         const ehDono = it.donoLojaIds.some(l => lojaSel.includes(String(l)));
         const temVinculo = it.vincLojaIds.some(l => lojaSel.includes(String(l)) || idsBanco.includes(String(l)));
-        if (!ehDono && !temVinculo) return false;
+        if (!ehDono && !temVinculo) {
+          const mapeamentoIndisponivel = it._dePedido && idsBanco.length === 0;
+          if (!mapeamentoIndisponivel) return false;
+        }
       }
       if (busca) { const txt = (it.sku + ' ' + it.nome).toLowerCase(); if (!txt.includes(busca)) return false; }
       return true;
@@ -58807,6 +59025,19 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
   window._aplicarPaywall = _aplicarPaywall;
 
+  // v33k.1160: override de páginas por usuário, definido pelo super ADM.
+  // Liberação/bloqueio explícito por cima do papel. Vem do login (_usuarioLogado).
+  function _paginasOverrideUsuario() {
+    try {
+      const u = _usuarioLogado || {};
+      return {
+        extra: Array.isArray(u.paginasExtra) ? u.paginasExtra : [],
+        bloqueadas: Array.isArray(u.paginasBloqueadas) ? u.paginasBloqueadas : [],
+      };
+    } catch (e) { return { extra: [], bloqueadas: [] }; }
+  }
+  window._paginasOverrideUsuario = _paginasOverrideUsuario;
+
   function podeAcessarTela(screenId) {
     if (TELAS_SEMPRE_LIBERADAS.includes(screenId)) return true;
     // BLOQUEIO POR INADIMPLÊNCIA (Fatia 4): marketplace com assinatura vencida
@@ -58814,6 +59045,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (typeof acessoBloqueado === 'function' && acessoBloqueado()) {
       return screenId === 'settingsScreen';
     }
+    // v33k.1160: OVERRIDE do super ADM (bloqueio vence liberação vence papel).
+    const _alvoOv = SUBTELA_HERDA_DE[screenId] || screenId;
+    const _ov = _paginasOverrideUsuario();
+    if (_ov.bloqueadas.includes(_alvoOv)) return false;
+    if (_ov.extra.includes(_alvoOv)) return true;
     const papel = papelAtual();
     if (papel === 'colaborador') {
       // v33k.623: sub-tela (Fechamento, Calendário, Catálogo…) herda a permissão
@@ -67734,7 +67970,8 @@ ${JSON.stringify(metricas, null, 2)}`
     return (typeof getLojasSelGlobal === 'function') ? getLojasSelGlobal() : [];
   }
 
-  async function expCarregar() {
+  async function expCarregar(opts) {
+    const silencioso = !!(opts && opts.silencioso);
     const loading = document.getElementById('expLoading');
     const erro = document.getElementById('expErro');
     const lista = document.getElementById('expLista');
@@ -67750,7 +67987,7 @@ ${JSON.stringify(metricas, null, 2)}`
       const ac = document.getElementById('expAcoes'); if (ac) ac.style.display = 'none';
       return;
     }
-    if (loading) loading.style.display = 'block';
+    if (loading && !silencioso) loading.style.display = 'block';
     try {
       const params = new URLSearchParams({ lojaIds: lojas.join(',') });
       const resp = await fetch(BACKEND_URL + '/api/expedicao/contadores?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
@@ -67770,7 +68007,7 @@ ${JSON.stringify(metricas, null, 2)}`
       expRenderChips();
       // v33k.788: força a normalização na lista pra ela ver o MESMO estado que os
       // contadores acabaram de forçar, card e lista sincronizados no mesmo instante.
-      await expCarregarLista({ forcar: true });
+      await expCarregarLista({ forcar: true, silencioso });
       // v33k.521: a reconciliação com a Shopee agora roda em background no
       // servidor (a tela abre instantânea com os dados locais). Depois de 12s,
       // v33k.770: re-busca os contadores em silêncio VÁRIAS vezes pra pegar a
@@ -67801,7 +68038,7 @@ ${JSON.stringify(metricas, null, 2)}`
                 _expDados = d2;
                 if (mudou) {
                   ultimo = agora; estaveisSeguidos = 0;
-                  expRenderEtapas(); expRenderChips(); expCarregarLista({ forcar: true });
+                  expRenderEtapas(); expRenderChips(); expCarregarLista({ forcar: true, silencioso: true });
                 } else {
                   estaveisSeguidos++;
                 }
@@ -67827,7 +68064,7 @@ ${JSON.stringify(metricas, null, 2)}`
     } catch (e) {
       if (erro) { erro.textContent = e.message; erro.style.display = 'block'; }
     } finally {
-      if (loading) loading.style.display = 'none';
+      if (loading && !silencioso) loading.style.display = 'none';
     }
   }
 
@@ -68087,22 +68324,27 @@ ${JSON.stringify(metricas, null, 2)}`
   // Um único timer (nunca empilha) e pausa quando a aba não está visível.
   const _EXP_ESTADOS_EM_MOVIMENTO = ['emitindo', 'subindo', 'programando', 'gerando_etiqueta', 'obtendo_rastreio'];
   let _expRefreshTimer = null;
+  // v33k.1164: NÃO auto-recarrega mais de 6 em 6s (o "autocarregando" que
+  // incomodava). Quem atualiza a tela agora é: (1) a ação do usuário, com
+  // transição otimista instantânea; (2) os pollers dos jobs de programar/etiqueta,
+  // que recarregam UMA vez, em SILÊNCIO, ao concluir. Se ainda houver pedido "em
+  // movimento", fazemos no MÁXIMO um refresh silencioso tardio (bem espaçado),
+  // como rede de segurança — sem piscar a tela e sem marretar a API.
   function _expAgendarRefreshSeEmMovimento(peds) {
     clearTimeout(_expRefreshTimer);
     const emMovimento = (peds || []).filter(p => _EXP_ESTADOS_EM_MOVIMENTO.includes(p.estado)).length;
     if (!emMovimento) return;
     _expRefreshTimer = setTimeout(() => {
-      // não recarrega com a aba escondida (economiza chamada e bateria)
-      if (document.hidden) { _expAgendarRefreshSeEmMovimento(peds); return; }
-      // só recarrega se ainda estamos na tela da expedição
+      if (document.hidden) return;
       const tela = document.getElementById('pedAbaExpedicao');
       if (!tela || tela.offsetParent === null) return;
-      try { expCarregar(); } catch (_) {}
-    }, 6000);
+      try { expCarregar({ silencioso: true }); } catch (_) {}
+    }, 20000);   // 20s, silencioso — só como rede de segurança
   }
 
   async function expCarregarLista(opts) {
     const forcarNorm = !!(opts && opts.forcar);
+    const silencioso = !!(opts && opts.silencioso);
     const lista = document.getElementById('expLista');
     const acoes = document.getElementById('expAcoes');
     if (!lista) return;
@@ -68112,7 +68354,10 @@ ${JSON.stringify(metricas, null, 2)}`
     // a lista NÃO carregava até clicar num status. O código abaixo já trata o caso
     // null (manda `etapa` em vez de `estado`), então só precisamos das lojas.
     if (!lojas.length) { if (acoes) acoes.style.display = 'none'; return; }
-    lista.innerHTML = _expSkeletons();
+    // v33k.1164: no refresh SILENCIOSO (auto/pós-ação) NÃO troca por skeleton —
+    // mantém os cards atuais até os novos chegarem, sem o "piscar/recarregar" que
+    // incomodava. Skeleton só na 1ª carga / troca de filtro (não-silencioso).
+    if (!silencioso) lista.innerHTML = _expSkeletons();
     try {
       // v33k.390: passa o texto do campo de busca (pedido/SKU/produto) pra filtrar.
       const buscaEl = document.getElementById('pedBusca');
@@ -68197,7 +68442,7 @@ ${JSON.stringify(metricas, null, 2)}`
         return;
       }
       lista.innerHTML = peds.map(p => expCardHtml(p)).join('') + _expPaginacaoHtml(totalGeral);
-      if (typeof animarCascata === 'function') animarCascata(lista);
+      if (!silencioso && typeof animarCascata === 'function') animarCascata(lista);
       if (window.lcHydrateIcons) window.lcHydrateIcons(lista); else if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
       expAtualizaSelInfo();
     } catch (e) {
@@ -68318,9 +68563,19 @@ ${JSON.stringify(metricas, null, 2)}`
         // rede não dá pra saber se o XML chegou à SEFAZ (a lib não devolve a
         // chave no erro), e reenviar sozinho arriscaria nota duplicada.
         const _transitorio = /EAI_AGAIN|ENOTFOUND|ETIMEDOUT|ECONNRESET|getaddrinfo|Erro de conexao com SEFAZ|socket hang up|cStat[:\s]*10[89]/i.test(String(p.erro || ''));
-        const _rotulo = _transitorio ? '↻ Reenviar' : '↻ Corrigir e reenviar';
-        const _dica = _transitorio ? ' title="A falha foi de conexão, os dados estão certos, é só confirmar o reenvio"' : '';
-        btnAcao = '<button onclick="abrirRevisaoPedido(' + Number(p.lojaId) + ',\'' + p.orderSn + '\')" style="' + btnRetry + '"' + _dica + '>' + _rotulo + '</button>';
+        if (_transitorio) {
+          // v33k.912: falha de REDE — nada a corrigir nos dados, é só reenviar.
+          // Mantém o fluxo de revisão (é de lá que a emissão parte).
+          btnAcao = '<button onclick="abrirRevisaoPedido(' + Number(p.lojaId) + ',\'' + p.orderSn + '\')" style="' + btnRetry + '" title="A falha foi de conexão, os dados estão certos, é só confirmar o reenvio">↻ Reenviar</button>';
+        } else {
+          // v33k.912: falha de DADOS (NCM/CEST/descrição/atributo). Botão LARANJA
+          // bem visível "Corrigir" que abre o modal de detalhes JÁ na etapa
+          // editável, destacando em vermelho o campo culpado. O erro é lido de
+          // window._expPedidos dentro de abrirDetalhesPedido/_dpAplicarErroDestaque,
+          // então não precisamos passá-lo no onclick (evita escaping de aspas).
+          const btnCorrigir = 'font-size:12px;font-weight:700;padding:6px 14px;border-radius:8px;border:1px solid #ea580c;background:#f97316;color:#fff;cursor:pointer;white-space:nowrap;box-shadow:0 1px 3px rgba(234,88,12,.35)';
+          btnAcao = '<button onclick="abrirDetalhesPedido(' + Number(p.lojaId) + ',\'' + p.orderSn + '\',1)" style="' + btnCorrigir + '" title="Corrigir os dados do pedido (o campo com erro fica destacado em vermelho)">✎ Corrigir</button>';
+        }
       }
     } else if (_expEtapaSel === 2) {
       // ETAPA 2 (Processar): para_programar → [Programar envio]
@@ -69021,7 +69276,7 @@ ${JSON.stringify(metricas, null, 2)}`
       // conforme cada etiqueta sai viram "Impresso". Ao terminar, abre o PDF final.
       if (acao === 'gerar_etiqueta' && data.ok && data.gerando && data.jobId) {
         _expSel.clear();
-        expCarregar();  // mostra todos migrando pra "Emitindo etiqueta" na hora
+        expCarregar({ silencioso: true });  // migra pra "Emitindo etiqueta" sem piscar
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
         _expAcompanharEtiqueta(data.jobId);
         return;
@@ -69029,12 +69284,11 @@ ${JSON.stringify(metricas, null, 2)}`
 
       // ── PROGRAMAR é ASSÍNCRONO (v33k.394): resposta imediata, processa em 2º plano ──
       if (acao === 'programar' && data.ok && data.programando) {
-        // v33k.1153: transição SILENCIOSA — os pedidos migram pra "Programando" na
-        // hora (o expCarregar abaixo mostra), sem toast anunciando.
+        // v33k.1164: transição SILENCIOSA e sem piscar — os pedidos já migraram pra
+        // "Programando" no backend; recarrega em silêncio (mantém os cards atuais).
         _expSel.clear();
-        expCarregar();  // os pedidos já migraram pra "programando", recarrega e mostra
+        expCarregar({ silencioso: true });
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
-        // polling leve: quando terminar, recarrega de novo pra puxar os que viraram "programado"
         if (data.jobId) _expAcompanharProgramar(data.jobId);
         return;
       }
@@ -69044,19 +69298,14 @@ ${JSON.stringify(metricas, null, 2)}`
         if (acao === 'gerar_etiqueta' && data.pdfBase64) {
           expAbrirPdf(data.pdfBase64, data.nomeArquivo || 'etiquetas.pdf');
         }
-        let msg = acao === 'programar'
-          ? `✓ ${data.sucesso} pedido(s) programado(s).`
-          : `✓ ${data.geradas || data.sucesso} etiqueta(s) gerada(s).`;
-        if (falhas.length) msg += ` ${falhas.length} com erro.`;
-        showToast(msg);
-        // se houve erros específicos, mostra o 1º de forma clara
+        // v33k.1164: sucesso SILENCIOSO (a migração de status é o feedback). Só o erro avisa.
         if (falhas.length && falhas[0].mensagem) showToast('⚠ ' + falhas[0].mensagem, true);
       } else {
         const primeira = (data.resultados || []).find(r => !r.ok);
         showToast('⚠ ' + (primeira ? (primeira.mensagem || primeira.erro) : (data.erro || 'Nada avançou')), true);
       }
       _expSel.clear();
-      expCarregar();  // recarrega contadores + lista (os pedidos migram de status)
+      expCarregar({ silencioso: true });  // migra de status sem piscar a tela
     } catch (e) {
       showToast('Erro: ' + e.message, true);
       if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
@@ -69074,12 +69323,10 @@ ${JSON.stringify(metricas, null, 2)}`
         const j = await r.json();
         if (!j.ok) return;
         if (j.status === 'concluido' || j.status === 'erro') {
-          const msg = j.falhas
-            ? '✓ ' + j.sucesso + ' programado(s), ' + j.falhas + ' com erro' + (j.ultimoErro ? ': ' + j.ultimoErro : '') + '.'
-            : '✓ ' + j.sucesso + ' pedido(s) programado(s) e prontos para imprimir.';
-          showToast(msg, !!j.falhas);
-          // só recarrega se o usuário ainda está na aba de expedição
-          if (document.getElementById('pedAbaExpedicao') && document.getElementById('pedAbaExpedicao').style.display !== 'none') expCarregar();
+          // v33k.1164: SILENCIOSO no sucesso (a migração de status é o feedback).
+          // Só avisa quando teve ERRO, que é acionável.
+          if (j.falhas) showToast('⚠ ' + j.sucesso + ' programado(s), ' + j.falhas + ' com erro' + (j.ultimoErro ? ': ' + j.ultimoErro : '') + '.', true);
+          if (document.getElementById('pedAbaExpedicao') && document.getElementById('pedAbaExpedicao').style.display !== 'none') expCarregar({ silencioso: true });
           return;
         }
         if (tentativas > 300) return; // ~5min de teto
@@ -69108,9 +69355,10 @@ ${JSON.stringify(metricas, null, 2)}`
         if (j.status === 'concluido' || j.status === 'erro') {
           if (!jaAbriuPdf && j.pdfBase64) { jaAbriuPdf = true; try { expAbrirPdf(j.pdfBase64, j.nomeArquivo || 'etiquetas.pdf'); } catch (_) {} }
           const falhas = j.falhas || 0;
-          if (j.geradas) showToast('✓ ' + j.geradas + ' etiqueta(s) gerada(s)' + (falhas ? ' · ' + falhas + ' com erro' : ''));
-          else if (falhas) showToast('⚠ Nenhuma etiqueta saiu · ' + falhas + ' com erro' + (j.ultimoErro ? ': ' + j.ultimoErro : ''), true);
-          if (naAba()) { try { expCarregar(); } catch (_) {} }
+          // v33k.1164: sucesso silencioso (o PDF abrindo + a migração pra "Impresso"
+          // já são o feedback). Só avisa quando algo falhou.
+          if (falhas) showToast('⚠ ' + (j.geradas || 0) + ' etiqueta(s) · ' + falhas + ' com erro' + (j.ultimoErro ? ': ' + j.ultimoErro : ''), true);
+          if (naAba()) { try { expCarregar({ silencioso: true }); } catch (_) {} }
           return;
         }
         if (tentativas > 600) return; // teto ~15min
@@ -86559,6 +86807,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       if (!(await podeCriarSubconta(qtdColab))) return;
     }
     const u = id ? _admUsuarios.find(x=>x.id===id) : null;
+    // v33k.1160: super ADM edita override de páginas → carrega o mapa antes de montar
+    if (papelAtual()==='superadmin' && u) { try { await _admCarregarOverride(); } catch(e){} }
     const old = document.getElementById('admUsuarioOverlay'); if (old) old.remove();
     const ov = document.createElement('div');
     ov.id = 'admUsuarioOverlay';
@@ -86591,7 +86841,15 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         <label class="form-label" style="font-size:12px">Acessos liberados (marque o que ele pode usar)</label>
         <div style="font-size:11px;color:#6b7280;margin-bottom:8px">Começa sem nada. Marque só as áreas que ele precisa.</div>
         <div id="admPermsLista" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:10px;padding:10px">
-          ${(((u&&u.papel==='cliente')?(window.PERMISSOES_CLIENTE||[]):(window.PERMISSOES_DISPONIVEIS||[]))).map(p => {
+          ${(function(){
+            let cat = (u&&u.papel==='cliente') ? (window.PERMISSOES_CLIENTE||[]) : (window.PERMISSOES_DISPONIVEIS||[]);
+            // v33k.1160: marketplace criando subusuário só libera as páginas DELE
+            if (papelAtual()==='marketplace') {
+              const minhas = new Set((TELAS_POR_PAPEL.marketplace)||[]);
+              cat = cat.filter(p => minhas.has(p.screen));
+            }
+            return cat;
+          })().map(p => {
             const marcado = (u && Array.isArray(u.permissoes) && u.permissoes.includes(p.screen)) ? 'checked' : '';
             return `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
               <input type="checkbox" class="adm-perm-check" value="${p.screen}" ${marcado}>
@@ -86600,6 +86858,18 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           }).join('')}
         </div>
       </div>
+      ${(papelAtual()==='superadmin' && u) ? `
+      <div id="admOverrideBox" style="margin-bottom:10px;border:1px solid #c7d2fe;background:#eef2ff;border-radius:10px;padding:11px">
+        <label class="form-label" style="font-size:12px;color:#3730a3">🔓 Acesso a páginas (Super Admin)</label>
+        <div style="font-size:11px;color:#4b5563;margin-bottom:8px">Marque as páginas que <b>${escapeHtml(u.nome||'')}</b> pode acessar. Vale por cima do papel: marque para <b>liberar</b> páginas extras (ex.: Financeiro, Marketing), desmarque para <b>bloquear</b> páginas que ele teria.</div>
+        <div id="admOverrideLista" style="display:flex;flex-direction:column;gap:6px;max-height:230px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:10px;padding:10px;background:#fff">
+          ${_admMontarOverrideChecklist(u)}
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
+          <div id="admOverrideMsg" style="font-size:11.5px;color:#6b7280"></div>
+          <button class="btn" style="background:#4f46e5;color:#fff;font-size:12px;padding:7px 12px;border-radius:8px;border:none;cursor:pointer" onclick="admSalvarOverride(${u.id}, this)">Salvar acessos</button>
+        </div>
+      </div>` : ''}
       <div id="admDonoBox" style="display:${(u&&u.papel==='colaborador')?'block':'none'};margin-bottom:10px">
         <label class="form-label" style="font-size:12px">Empresa do subusuário (dono das lojas)</label>
         <select class="form-input" id="admDonoId">
@@ -86651,6 +86921,87 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     }
   }
   window.abrirAdmUsuarioModal = abrirAdmUsuarioModal;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // OVERRIDE DE PÁGINAS POR USUÁRIO (v33k.1160) — controlado pelo super ADM
+  // ═══════════════════════════════════════════════════════════════════
+  let _admOverrideMapa = {};   // { '<userId>': { extra:[], bloqueadas:[] } }
+  async function _admCarregarOverride() {
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/paginas-override', {
+        headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken() },
+      })).json();
+      _admOverrideMapa = (r && r.ok && r.mapa) ? r.mapa : {};
+    } catch (e) { _admOverrideMapa = {}; }
+  }
+  window._admCarregarOverride = _admCarregarOverride;
+
+  // páginas-base do usuário conforme o papel (null = tudo, p/ admin/superadmin)
+  function _basePaginasUsuario(u) {
+    const papel = u && u.papel;
+    if (papel === 'admin' || papel === 'superadmin') return null;
+    if (papel === 'colaborador') return Array.isArray(u.permissoes) ? u.permissoes : [];
+    if (papel === 'cliente') return (Array.isArray(u.permissoes) && u.permissoes.length) ? u.permissoes : (TELAS_POR_PAPEL.cliente || []);
+    return (TELAS_POR_PAPEL[papel] || []);
+  }
+  function _admOverrideDoUsuario(id) {
+    const o = _admOverrideMapa[String(id)] || {};
+    return { extra: Array.isArray(o.extra) ? o.extra : [], bloqueadas: Array.isArray(o.bloqueadas) ? o.bloqueadas : [] };
+  }
+  function _admMontarOverrideChecklist(u) {
+    const base = _basePaginasUsuario(u);
+    const ov = _admOverrideDoUsuario(u.id);
+    const cat = window.PERMISSOES_DISPONIVEIS || [];
+    return cat.map(p => {
+      const baseHas = (base === null) ? true : base.includes(p.screen);
+      let efetivo = baseHas;
+      if (ov.bloqueadas.includes(p.screen)) efetivo = false;
+      if (ov.extra.includes(p.screen)) efetivo = true;
+      const tag = baseHas ? '' : ' <span style="font-size:10px;color:#7c3aed;font-weight:700">(extra)</span>';
+      return `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" class="adm-override-check" value="${p.screen}" data-base="${baseHas ? '1' : '0'}" ${efetivo ? 'checked' : ''}>
+        <span>${p.label}${tag}</span>
+      </label>`;
+    }).join('');
+  }
+  window._admMontarOverrideChecklist = _admMontarOverrideChecklist;
+
+  async function admSalvarOverride(id, btn) {
+    const box = document.getElementById('admOverrideLista');
+    const msg = document.getElementById('admOverrideMsg');
+    if (!box) return;
+    const extra = [], bloqueadas = [];
+    box.querySelectorAll('.adm-override-check').forEach(ch => {
+      const page = ch.value;
+      const baseHas = ch.getAttribute('data-base') === '1';
+      const desired = ch.checked;
+      if (desired && !baseHas) extra.push(page);
+      if (!desired && baseHas) bloqueadas.push(page);
+    });
+    if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/paginas-override', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: id, extra, bloqueadas }),
+      })).json();
+      if (!r.ok) throw new Error(r.erro || 'falha ao salvar');
+      if (extra.length || bloqueadas.length) _admOverrideMapa[String(id)] = { extra, bloqueadas };
+      else delete _admOverrideMapa[String(id)];
+      if (msg) { msg.textContent = 'Acessos salvos ✓ — valem quando o usuário entrar de novo.'; msg.style.color = '#16a34a'; }
+      // se o super ADM editou a si mesmo, reflete na hora
+      if (_usuarioLogado && String(_usuarioLogado.id) === String(id)) {
+        _usuarioLogado.paginasExtra = extra; _usuarioLogado.paginasBloqueadas = bloqueadas;
+        try { localStorage.setItem('lider_usuario', JSON.stringify(_usuarioLogado)); } catch (e) {}
+        if (typeof aplicarPermissoesUI === 'function') aplicarPermissoesUI();
+      }
+    } catch (e) {
+      if (msg) { msg.textContent = '⚠ ' + e.message; msg.style.color = '#b91c1c'; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Salvar acessos'; }
+    }
+  }
+  window.admSalvarOverride = admSalvarOverride;
 
   function admToggleLojas() {
     const papel = (document.getElementById('admPapel')||{}).value;
