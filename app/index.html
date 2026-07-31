@@ -19260,24 +19260,35 @@ window.LC_SVG = {
     <div class="header-content">
       <button class="back-btn" onclick="goTo('homeScreen')">←</button>
       <div class="header-title-group">
-        <div class="header-title">📊 Estoque</div>
-        <div class="header-subtitle">Controle de estoque dos produtos</div>
+        <div class="header-title">🏷️ Anúncios</div>
+        <div class="header-subtitle">Seus produtos e anúncios nos marketplaces</div>
       </div>
     </div>
   </div>
   <div class="screen-content">
-    <!-- CHUNK 3.3: Stats no topo de Estoque -->
-    <div class="quick-stats-v2" id="estoqueStatsV2"></div>
-    
+    <!-- v33k.914: os cards de contagem saíram (o usuário não quer). O topo agora é
+         só o card padrão de sincronização/automação de estoque, migrado do Estoque. -->
+    <div class="quick-stats-v2" id="estoqueStatsV2" style="display:none"></div>
+
     <div class="prod-toolbar">
       <div class="prod-busca">
-        <input type="text" id="estoqueBusca" placeholder="🔍 Buscar produto ou SKU..." oninput="_estoquePagina=1; renderEstoque()">
+        <input type="text" id="estoqueBusca" placeholder="🔍 Nome, ID ou SKU do produto..." oninput="_estoquePagina=1; renderEstoque()">
       </div>
       <div id="estoqueLojasSel" style="min-width:240px"></div>
       <select id="estoqueFiltroLoja" style="display:none"><option value="">Todas as lojas</option></select>
+      <select id="anunciosFiltroMkt" onchange="_anunciosMkt=this.value; _estoquePagina=1; renderEstoque()" style="padding:9px 12px;border:1px solid var(--lc-border);border-radius:8px;background:var(--lc-surface);color:var(--lc-ink);font-size:13px;white-space:nowrap">
+        <option value="">Todos os marketplaces</option>
+        <option value="mercadolivre">Mercado Livre</option>
+        <option value="shopee">Shopee</option>
+        <option value="tiktok">TikTok</option>
+        <option value="shein">Shein</option>
+      </select>
       <button class="primary-btn" style="background:#16a34a;white-space:nowrap" onclick="abrirSincronizarEstoques()">🔄 Sincronizar estoques</button>
-      
+
     </div>
+
+    <!-- v33k.914: abas de status agregado (Todos/Ativos/Inativos/Rascunho/Em revisão/Excluídos) -->
+    <div id="anunciosTabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
     
     <!-- Ações em massa POR PRODUTO (seleção via checkbox no cabeçalho) -->
     <div id="estoqueMassaProd" style="display:none;align-items:center;gap:12px;flex-wrap:wrap;background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:10px 14px;margin-bottom:12px">
@@ -49191,7 +49202,217 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   window.consolidarEmMassa = consolidarEmMassa;
   let _estoquePagina = 1;
   const _ESTOQUE_POR_PAGINA = 20;
-  
+  // v33k.914: tela "Anúncios" — aba de status ativa e filtro de marketplace.
+  let _anunciosTab = 'todos';   // todos | ativo | inativo | rascunho | revisao | excluido
+  let _anunciosMkt = '';        // '' = todos | mercadolivre | shopee | tiktok | shein
+
+  // Marketplaces onde o produto tem presença (vínculo de anúncio ou exportado).
+  function _anMarketplacesDoProduto(p) {
+    const set = new Set();
+    (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+      const m = String(vi.marketplace || '').toLowerCase();
+      if (m) set.add(m);
+    }));
+    const mk = p.marketplaces || {};
+    Object.keys(mk).forEach(k => { if (mk[k] && mk[k].exportado) set.add(String(k).toLowerCase()); });
+    return set;
+  }
+
+  // v33k.914: em QUAIS abas de status este produto entra. Regra combinada com o
+  // Alessandro: excluído/banido do marketplace → SÓ 'excluido' (sai de ativos/
+  // inativos). Fora isso, um produto entra em TODA aba cujo status ele tenha ao
+  // menos um anúncio (misto ativo+inativo aparece nas duas). Sem anúncio nenhum,
+  // classifica pelo status do próprio produto (catálogo/rascunho).
+  function _anTabsDoProduto(p) {
+    const tabs = new Set();
+    if (p.status === 'excluido' || p.excluidoDoML || p.banidoDoML) { tabs.add('excluido'); return tabs; }
+    if (p.status === 'rascunho') tabs.add('rascunho');
+    let temAtivo = false, temInativo = false, temRevisao = false, total = 0;
+    const porAnuncio = {};
+    (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+      if (!vi.anuncioId) return;
+      const aid = String(vi.anuncioId);
+      if (!(aid in porAnuncio)) porAnuncio[aid] = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
+    }));
+    Object.values(porAnuncio).forEach(st => {
+      total++;
+      if (st === 'ativo') temAtivo = true;
+      else if (st === 'em_revisao') temRevisao = true;
+      else if (st === 'pausado' || st === 'inativo' || st === 'fechado' || st === 'banido') temInativo = true;
+    });
+    if (temAtivo) tabs.add('ativo');
+    if (temInativo) tabs.add('inativo');
+    if (temRevisao) tabs.add('revisao');
+    // só anúncios 'desconhecido' (vínculo legado sem status do sync) → trata como
+    // ativo, é o mesmo critério do _statusPermiteReplicar (no ar até saber o contrário).
+    if (total > 0 && !temAtivo && !temInativo && !temRevisao) tabs.add('ativo');
+    // sem anúncio nenhum → classifica pelo status do produto interno.
+    if (total === 0 && !tabs.size) {
+      if (p.status === 'inativo') tabs.add('inativo');
+      else tabs.add('ativo');
+    }
+    return tabs;
+  }
+
+  // Base de produtos da tela (dedup de duplicados: o filho mesclado não aparece,
+  // o pai representa o grupo — mesma semântica da tela de Produtos).
+  function _anProdutosBase() {
+    return (produtosErp || []).filter(p => !p.duplicadoDeId);
+  }
+
+  // Renderiza as abas de status com contagem, destacando a ativa.
+  function _anRenderTabs() {
+    const host = document.getElementById('anunciosTabs');
+    if (!host) return;
+    const base = _anProdutosBase();
+    const cont = { todos: 0, ativo: 0, inativo: 0, rascunho: 0, revisao: 0, excluido: 0 };
+    base.forEach(p => {
+      const tabs = _anTabsDoProduto(p);
+      if (!tabs.has('excluido')) cont.todos++;   // "Todos" = tudo que não é excluído
+      tabs.forEach(t => { if (t in cont) cont[t]++; });
+    });
+    const defs = [
+      { id: 'todos', rot: 'Todos', cor: '#334155' },
+      { id: 'ativo', rot: '🟢 Ativos', cor: '#166534' },
+      { id: 'inativo', rot: '⚪ Inativos', cor: '#6b7280' },
+      { id: 'rascunho', rot: '📝 Rascunho', cor: '#92400e' },
+      { id: 'revisao', rot: '🔎 Em revisão', cor: '#1d4ed8' },
+      { id: 'excluido', rot: '🗑 Excluídos', cor: '#b91c1c' },
+    ];
+    host.innerHTML = defs.map(d => {
+      const ativa = _anunciosTab === d.id;
+      const n = cont[d.id] || 0;
+      return '<button onclick="_anSetTab(\'' + d.id + '\')" style="' +
+        'display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap;' +
+        (ativa
+          ? 'background:' + d.cor + ';color:#fff;border:1px solid ' + d.cor
+          : 'background:var(--lc-surface);color:' + d.cor + ';border:1px solid var(--lc-border)') +
+        '">' + d.rot +
+        '<span style="font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;' +
+          (ativa ? 'background:rgba(255,255,255,.25);color:#fff' : 'background:var(--lc-surface-2);color:' + d.cor) + '">' + n + '</span>' +
+        '</button>';
+    }).join('');
+  }
+  function _anSetTab(id) { _anunciosTab = id; _estoquePagina = 1; renderEstoque(); }
+  window._anSetTab = _anSetTab;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MENU "..." por produto (tela Anúncios). Flutua ancorado no botão (evita o
+  // clipping do overflow do card) e fecha ao clicar fora ou rolar.
+  // ─────────────────────────────────────────────────────────────────────────
+  function _anFecharMenu() {
+    const m = document.getElementById('anMenuFlutuante'); if (m) m.remove();
+    document.removeEventListener('click', _anCliqueFora, true);
+    window.removeEventListener('scroll', _anFecharMenu, true);
+  }
+  window._anFecharMenu = _anFecharMenu;
+  // Fecha SÓ quando o clique é fora do menu. Em fase de captura, mas se o alvo
+  // estiver dentro do menu não fazemos nada (senão o menu seria removido antes do
+  // onclick do item disparar, e a ação nunca rodaria).
+  function _anCliqueFora(e) {
+    if (e.target && e.target.closest && e.target.closest('#anMenuFlutuante')) return;
+    _anFecharMenu();
+  }
+
+  function _anAbrirMenu(prodId, btn) {
+    const existente = document.getElementById('anMenuFlutuante');
+    _anFecharMenu();
+    if (existente && existente.dataset.pid === String(prodId)) return; // toggle: fecha se já era desse
+    const p = (produtosErp || []).find(x => String(x.id) === String(prodId));
+    const ehExcluido = p && (p.status === 'excluido' || p.excluidoDoML || p.banidoDoML);
+    const itens = [
+      { ic: '✏️', rot: 'Editar produto', ac: 'editar' },
+      { ic: '📋', rot: 'Duplicar anúncio', ac: 'duplicar' },
+      { ic: '🔗', rot: 'Gerenciar vínculos', ac: 'vinculos' },
+      { sep: true },
+      { ic: '💲', rot: 'Definir preço', ac: 'preco' },
+      { ic: '🏷️', rot: 'Definir desconto', ac: 'desconto' },
+      { ic: '🧾', rot: 'Configurar fiscal (NCM)', ac: 'fiscal' },
+      { sep: true },
+      { ic: '🟢', rot: 'Ativar', ac: 'ativar' },
+      { ic: '⚪', rot: 'Desativar', ac: 'desativar' },
+      ehExcluido
+        ? { ic: '♻️', rot: 'Restaurar (tirar da lixeira)', ac: 'restaurar' }
+        : { ic: '🗑', rot: 'Mover p/ lixeira', ac: 'lixeira', perigo: true },
+    ];
+    const menu = document.createElement('div');
+    menu.id = 'anMenuFlutuante';
+    menu.dataset.pid = String(prodId);
+    menu.style.cssText = 'position:fixed;z-index:99999;min-width:210px;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:5px;font-size:13.5px';
+    menu.innerHTML = itens.map(it => {
+      if (it.sep) return '<div style="height:1px;background:var(--lc-border);margin:4px 6px"></div>';
+      const cor = it.perigo ? '#b91c1c' : 'var(--lc-ink)';
+      return '<button onclick="_anMenuAcao(\'' + String(prodId).replace(/'/g, "\\'") + '\',\'' + it.ac + '\')" ' +
+        'style="display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:none;cursor:pointer;padding:8px 10px;border-radius:7px;color:' + cor + ';font-size:13.5px" ' +
+        'onmouseover="this.style.background=\'var(--lc-surface-2)\'" onmouseout="this.style.background=\'none\'">' +
+        '<span style="width:18px;text-align:center">' + it.ic + '</span>' + it.rot + '</button>';
+    }).join('');
+    document.body.appendChild(menu);
+    // posiciona: abaixo do botão, alinhado à direita; sobe se não couber.
+    const r = btn.getBoundingClientRect();
+    const mh = menu.offsetHeight, mw = menu.offsetWidth;
+    let top = r.bottom + 6, left = r.right - mw;
+    if (left < 8) left = 8;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+    menu.style.top = top + 'px';
+    menu.style.left = left + 'px';
+    // fecha ao clicar fora / rolar (captura, no próximo tick pra não pegar este clique)
+    setTimeout(() => {
+      document.addEventListener('click', _anCliqueFora, true);
+      window.addEventListener('scroll', _anFecharMenu, true);
+    }, 0);
+  }
+  window._anAbrirMenu = _anAbrirMenu;
+
+  async function _anMenuAcao(prodId, acao) {
+    _anFecharMenu();
+    const id = String(prodId);
+    switch (acao) {
+      case 'editar':   if (typeof abrirEditarProduto === 'function') abrirEditarProduto(id); break;
+      case 'duplicar': if (typeof abrirDuplicarAnuncio === 'function') abrirDuplicarAnuncio(id); break;
+      case 'vinculos': if (typeof abrirGerenciarVinculos === 'function') abrirGerenciarVinculos(id); break;
+      case 'fiscal':   if (typeof abrirDadosFiscaisProdutos === 'function') abrirDadosFiscaisProdutos(); break;
+      case 'preco':    await _anComSelecaoUnica(id, acaoMassaAjustarPreco); break;
+      case 'desconto': await _anComSelecaoUnica(id, acaoMassaReguaPromocao); break;
+      case 'ativar':    await _anMudarStatusProduto(id, 'ativo'); break;
+      case 'desativar': await _anMudarStatusProduto(id, 'inativo'); break;
+      case 'restaurar': await _anMudarStatusProduto(id, 'ativo', true); break;
+      case 'lixeira':   await _anMudarStatusProduto(id, 'excluido'); break;
+    }
+  }
+  window._anMenuAcao = _anMenuAcao;
+
+  // Executa uma ação-em-massa existente mirando UM produto só (reusa a lógica
+  // testada de preço/desconto), depois atualiza a lista de Anúncios.
+  async function _anComSelecaoUnica(prodId, fn) {
+    const antes = _prodSelecionados;
+    try {
+      _prodSelecionados = new Set([String(prodId)]);
+      await fn();
+    } finally {
+      _prodSelecionados = antes;
+    }
+    try { renderEstoque(); } catch (_) {}
+  }
+
+  // Muda o status do produto (ativo/inativo/excluido) e reflete na tela de Anúncios.
+  async function _anMudarStatusProduto(prodId, novo, silencioso) {
+    const p = (produtosErp || []).find(x => String(x.id) === String(prodId));
+    if (!p) return;
+    const labels = { ativo: 'Ativo', inativo: 'Inativo', excluido: 'Lixeira' };
+    if (!silencioso && novo === 'excluido') {
+      if (!await lcConfirm('Mover "' + (p.nome || p.id) + '" para a lixeira? Ele sai dos anúncios ativos.')) return;
+    }
+    p.status = novo;
+    p.atualizadoEm = new Date().toISOString();
+    if (novo !== 'excluido') { p.excluidoDoML = false; p.banidoDoML = false; }
+    try { if (typeof salvarProdutoNoBackend === 'function') await salvarProdutoNoBackend(p); } catch (_) {}
+    try { if (typeof saveProdutos === 'function') saveProdutos(); } catch (_) {}
+    renderEstoque();
+    if (typeof showToast === 'function') showToast('✓ "' + (p.nome || p.id) + '" → ' + (labels[novo] || novo));
+  }
+
+
   // Abre a tela de estoque carregando o catálogo COMPLETO do backend,
   // pra que a busca e a listagem enxerguem todos os produtos (não só os ~50
   // que ficam em memória pela paginação leve). Estoque é tela de gestão total.
@@ -50819,19 +51040,31 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       host._montado = '1';
     }
 
-    // CHUNK 3.3: popula stats no topo
-    renderEstoqueStats();
-    
+    // v33k.914: abas de status (Todos/Ativos/Inativos/Rascunho/Em revisão/Excluídos)
+    _anRenderTabs();
+    renderEstoqueStats();   // cards de contagem estão ocultos; mantém a chamada por compat.
+
     const lista = document.getElementById('estoqueLista');
     const resumo = document.getElementById('estoqueResumo');
     if (!lista) return;
-    
+
     const busca = (document.getElementById('estoqueBusca')?.value || '').toLowerCase().trim();
     // conjunto de lojas selecionadas (vazio = todas)
     const lojasSel = (_estoqueLojasSel || []).map(String);
-    
-    let produtos = produtosErp.filter(p => {
-      if (p.status === 'excluido') return false;
+    const mktSel = String(_anunciosMkt || '').toLowerCase();
+    const abaSel = _anunciosTab || 'todos';
+
+    let produtos = _anProdutosBase().filter(p => {
+      // ── ABA DE STATUS ──
+      const tabs = _anTabsDoProduto(p);
+      if (abaSel === 'excluido') { if (!tabs.has('excluido')) return false; }
+      else {
+        if (tabs.has('excluido')) return false;         // excluídos só na aba deles
+        if (abaSel !== 'todos' && !tabs.has(abaSel)) return false;
+      }
+      // ── FILTRO DE MARKETPLACE ──
+      if (mktSel) { if (!_anMarketplacesDoProduto(p).has(mktSel)) return false; }
+      // ── FILTRO DE LOJA ──
       if (lojasSel.length > 0) {
         // Produto aparece se é dono de alguma loja selecionada OU tem vínculo de
         // anúncio com alguma delas (produto consolidado vive em 1 lojaId mas tem
@@ -50848,7 +51081,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         if (!ehDono && !temVinculo) return false;
       }
       if (busca) {
-        const txt = (p.nome + ' ' + p.skuPai).toLowerCase();
+        const txt = (p.nome + ' ' + (p.skuPai||'') + ' ' + (p.id||'')).toLowerCase();
         if (!txt.includes(busca)) return false;
       }
       return true;
@@ -50861,7 +51094,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     }
     
     if (produtos.length === 0) {
-      lista.innerHTML = '<div class="prod-vazio"><div class="prod-vazio-icone">📊</div><div>Nenhum produto para controlar estoque.</div></div>';
+      lista.innerHTML = '<div class="prod-vazio"><div class="prod-vazio-icone">🏷️</div><div>Nenhum anúncio' + (_anunciosTab !== 'todos' ? ' nesta aba' : '') + '.</div></div>';
       const pag = document.getElementById('estoquePaginacao');
       if (pag) pag.innerHTML = '';
       return;
@@ -50922,6 +51155,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           </div>
           ${totalTag}
           <button type="button" onclick="event.stopPropagation(); abrirHistoricoProduto('${p.id}')" title="Histórico do produto inteiro: vendas, devoluções, entradas, balanços e replicações de todas as variações" style="border:1px solid var(--lc-border);background:var(--lc-surface);cursor:pointer;color:#4338ca;padding:6px 9px;border-radius:8px;font-size:13px;flex-shrink:0" title="Histórico do produto">🕑</button>
+          <button type="button" onclick="event.stopPropagation(); _anAbrirMenu('${p.id}', this)" title="Ações do anúncio/produto" style="border:1px solid var(--lc-border);background:var(--lc-surface);cursor:pointer;color:var(--lc-ink);padding:6px 10px;border-radius:8px;font-size:16px;line-height:1;flex-shrink:0;font-weight:700">⋯</button>
           <button type="button" class="estoque-toggle" id="seta-${p.id}" onclick="toggleVariacoesEstoque('${p.id}')" style="border:none;background:none;cursor:pointer;color:var(--lc-muted);padding:6px;display:flex;align-items:center;flex-shrink:0;transition:transform .2s" title="Expandir/recolher">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
           </button>
@@ -58098,10 +58332,9 @@ Responda APENAS com JSON válido (sem markdown), formato:
     { id: 'marketing', ic: 'megaphone', label: 'Marketing', screen: 'marketingScreen' },
     { id: 'operacao', ic: 'layout-grid', label: 'Operações', screen: 'operacaoScreen', children: [
       { id: 'demandas', ic: 'clipboard-list', label: 'Demandas', screen: 'operacaoScreen' },
-      { id: 'produtos', ic: 'package', label: 'Produtos', screen: 'produtosScreen' },
+      { id: 'estoque', ic: 'package', label: 'Anúncios', screen: 'estoqueScreen' },
       { id: 'pedidos', ic: 'receipt', label: 'Pedidos', screen: 'pedidosScreen' },
       { id: 'notasfiscais', ic: 'file-text', label: 'Notas Fiscais', screen: 'notasFiscaisScreen' },
-      { id: 'estoque', ic: 'boxes', label: 'Estoques', screen: 'estoqueScreen' },
       { id: 'promocoes', ic: 'ticket', label: 'Promoções', screen: 'promocoesScreen' },
       { id: 'ads', ic: 'chart-column', label: 'Ads', screen: 'adsScreen' },
       { id: 'lucro', ic: 'trending-up', label: 'Lucro', screen: 'lucroScreen' }
