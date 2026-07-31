@@ -1596,7 +1596,7 @@
             '<input id="dpIe" style="' + inp + (ieIsento ? ';background:#f1f5f9;color:#94a3b8' : '') + '" value="' + _esc(ieIsento ? '' : ieAtual) + '" placeholder="Somente números"' + (ieIsento ? ' disabled' : '') + '>' +
           '</div>' +
           '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#334155;padding-bottom:9px;cursor:pointer;user-select:none">' +
-            '<input type="checkbox" id="dpIeIsento" ' + (ieIsento ? 'checked' : '') + ' onchange="_dpToggleIeIsento()" style="width:16px;height:16px"> CNPJ não possui IE (isento)' +
+            '<input type="checkbox" id="dpIeIsento" ' + (ieIsento ? 'checked' : '') + ' onchange="_dpToggleIeIsento()" style="width:16px;height:16px"> CNPJ não possui IE (não contribuinte)' +
           '</label>' +
         '</div>' +
         '<div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-top:12px">' +
@@ -1901,10 +1901,14 @@
     const doc = g('dpDoc').replace(/\D/g, '');
     const ehCnpj = doc.length === 14;
     // Inscrição Estadual (só CNPJ). indicadorIE: 1=contribuinte c/ IE, 2=isento, 9=não contribuinte.
+    // v33k.922: "CNPJ não possui IE" passa a ser NÃO CONTRIBUINTE (9), não "isento" (2).
+    // O indIEDest=2 (isento) é rejeitado por várias SEFAZ ("não permite Contribuinte
+    // Isento"); o 9 é aceito em todas e é o correto pra associação/PJ sem IE que não é
+    // contribuinte de ICMS. Era isso que barrava a NF da associação.
     const ieIsento = !!(document.getElementById('dpIeIsento') || {}).checked;
     let inscricaoEstadual, indicadorIE, isentoIe;
     if (ehCnpj) {
-      if (ieIsento) { inscricaoEstadual = undefined; indicadorIE = 2; isentoIe = true; }  // isento
+      if (ieIsento) { inscricaoEstadual = undefined; indicadorIE = 9; isentoIe = false; }  // sem IE → não contribuinte
       else {
         const ie = g('dpIe').replace(/\D/g, '');
         if (ie) { inscricaoEstadual = ie; indicadorIE = 1; }                              // contribuinte c/ IE
@@ -41321,6 +41325,9 @@ REGRAS DURAS:
       .filter(a => a.anuncioId && (a.lojaIdBanco || a.lojaId))
       .map(a => ({ lojaId: a.lojaIdBanco || a.lojaId, anuncioId: a.anuncioId }));
     if (!alvos.length) return;
+    // v33k.921: mapa local de qtd de variações — o caminho RÁPIDO (batch) não
+    // devolve qtdVariacoes, então preservamos a contagem que já temos.
+    const _qtdLocal = {}; (anuncios || []).forEach(a => { if (a.anuncioId != null) _qtdLocal[String(a.anuncioId)] = a.qtdVariacoes || 0; });
     try {
       const r = await _prodApi('/api/produtos/' + encodeURIComponent(produtoId) + '/anuncios-reais', {
         method: 'POST', body: JSON.stringify({ itens: alvos }),
@@ -41337,7 +41344,8 @@ REGRAS DURAS:
         const elMeta = linha.querySelector('[data-campo="meta"]');
         if (elMeta) {
           const partes = ['#' + real.anuncioId];
-          if (real.qtdVariacoes) partes.push(real.qtdVariacoes + ' variação(ões)');
+          const qv = real.qtdVariacoes || _qtdLocal[String(real.anuncioId)] || 0;
+          if (qv) partes.push(qv + ' variação(ões)');
           if (real.preco != null) partes.push('R$ ' + Number(real.preco).toFixed(2));
           if (real.estoqueTotal != null) partes.push('estoque ' + real.estoqueTotal);
           elMeta.textContent = partes.join(' · ');
@@ -70807,7 +70815,7 @@ ${JSON.stringify(metricas, null, 2)}`
           '<div style="flex:2 1 220px"><label style="font-size:11px;color:#64748b;font-weight:700">Inscrição Estadual</label>' +
             '<input id="nfaIe" placeholder="Somente números" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #d1d5db;border-radius:8px;margin-top:3px"></div>' +
           '<label style="flex:1 1 180px;display:flex;align-items:center;gap:8px;font-size:13px;color:#334155;padding-bottom:9px;cursor:pointer;user-select:none">' +
-            '<input type="checkbox" id="nfaIeIsento" onchange="nfaToggleIeIsento()" style="width:16px;height:16px"> CNPJ não possui IE (isento)' +
+            '<input type="checkbox" id="nfaIeIsento" onchange="nfaToggleIeIsento()" style="width:16px;height:16px"> CNPJ não possui IE (não contribuinte)' +
           '</label>' +
         '</div>' +
 
@@ -71555,7 +71563,9 @@ ${JSON.stringify(metricas, null, 2)}`
           ...(tipo === 'cnpj' ? (function () {
             const isento = !!(document.getElementById('nfaIeIsento') || {}).checked;
             const ie = _nfaDig(g('nfaIe'));
-            if (isento) return { indicadorIE: 2 };
+            // v33k.922: "não possui IE" = NÃO CONTRIBUINTE (9), não "isento" (2).
+            // O indIEDest=2 é rejeitado por várias SEFAZ; o 9 é sempre aceito.
+            if (isento) return { indicadorIE: 9 };
             if (ie.length >= 2) return { indicadorIE: 1, ie: ie };
             return { indicadorIE: 9 };
           })() : {}),
