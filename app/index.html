@@ -50318,6 +50318,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function sincronizarAnunciosAgora() {
     if (_anSyncEmAndamento) return;
     const btn = document.getElementById('anBtnSyncAnuncios');
+    // v33k.1202: reconcilia o cache de lojas com o banco ANTES de sincronizar,
+    // pra o nome ficar atual (ex.: "Daniel 2" → "Renato") no toast e nos alvos.
+    try { if (typeof sincronizarIdsLojasDoBanco === 'function') await sincronizarIdsLojasDoBanco(); } catch (_) {}
+    // nome AO VIVO por idBanco (fonte /api/lucro/minhas-lojas), pra o toast nunca
+    // mostrar um nome velho preso no cache local.
+    const _nomeVivo = (idBanco) => {
+      const lv = (_pedCacheLojas || []).find(l => String(l.id) === String(idBanco));
+      return lv ? lv.nome : null;
+    };
     // v33k.1202: _estoqueLojasSel agora são IDs DO BANCO (idBanco), então casamos
     // as lojas locais pelo idBanco, não pelo id local.
     const lojasSel = (_estoqueLojasSel || []).map(String);
@@ -50344,7 +50353,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       for (const loja of alvo) {
         try {
           if (typeof sincronizarConta === 'function') {
-            await sincronizarConta(loja.marketplace, loja, { semPopup: true });
+            // usa o nome ao vivo (se houver) pro toast/registro refletir o atual
+            const lojaComNomeAtual = Object.assign({}, loja, { nome: _nomeVivo(loja.idBanco) || loja.nome });
+            await sincronizarConta(loja.marketplace, lojaComNomeAtual, { semPopup: true });
             okLojas++;
           }
         } catch (e) { console.warn('[sincronizarAnunciosAgora] loja ' + (loja.nome || loja.id) + ':', e); }
@@ -52303,7 +52314,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         const ehDono = alvo.has(String(p.lojaId));
         const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
           alvo.has(String(vi.lojaIdBanco || vi.lojaId))));
-        if (!ehDono && !temVinculo) return false;
+        // v33k.1202: produto de CATÁLOGO sem vínculo de loja nenhum (loja_id
+        // vazio E sem vínculos de anúncio) SEMPRE aparece — não pode sumir só
+        // porque uma loja foi selecionada. Foi o que deixava a lista vazia.
+        const semLojaAlguma = !String(p.lojaId || '') && !(p.variacoes||[]).some(v => (v.vinculos||[]).length);
+        if (!ehDono && !temVinculo && !semLojaAlguma) return false;
       }
       if (busca) {
         const txt = (p.nome + ' ' + (p.skuPai||'') + ' ' + (p.id||'')).toLowerCase();
@@ -72713,7 +72728,12 @@ ${JSON.stringify(metricas, null, 2)}`
     if (cnpj.length !== 14) { msg.textContent = 'CNPJ precisa ter 14 dígitos.'; msg.style.color = '#b91c1c'; return; }
     msg.textContent = 'Consultando Receita…'; msg.style.color = '#64748b';
     try {
-      const d = await _nfaApi('/api/nfe/consultar-cnpj/' + cnpj);
+      // v33k.1202: passa o EMITENTE selecionado pra consulta usar o certificado
+      // dele (emissor habilitado) na busca da IE — o cert global não é emissor e
+      // a SEFAZ recusava toda consulta (cStat 257).
+      const _empEl = document.getElementById('nfaEmpresa');
+      const _empId = _empEl && _empEl.value ? _empEl.value : '';
+      const d = await _nfaApi('/api/nfe/consultar-cnpj/' + cnpj + (_empId ? ('?empresaId=' + encodeURIComponent(_empId)) : ''));
       if (!d.ok) { msg.textContent = d.erro || 'CNPJ não encontrado.'; msg.style.color = '#b91c1c'; return; }
       const e = d.empresa || {};
       const set = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
