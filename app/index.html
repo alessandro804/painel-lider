@@ -20154,6 +20154,7 @@ window.LC_SVG = {
     </div>
     
     <div class="prod-resumo" id="estoqueResumo"></div>
+    <div id="estoqueAvisoLoja" style="display:none"></div>
     <div id="estoqueLista"></div>
     <div id="estoquePaginacao" style="display:flex;align-items:center;justify-content:center;gap:8px;margin:16px 0"></div>
   </div>
@@ -52294,45 +52295,61 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const mktSel = String(_anunciosMkt || '').toLowerCase();
     const abaSel = _anunciosTab || 'todos';
 
-    let produtos = _anProdutosBase().filter(p => {
-      // ── ABA DE STATUS ──
+    // v33k.1204: filtro em DUAS camadas pra o filtro de loja NUNCA deixar a tela
+    // vazia por engano. Camada 1 (status + marketplace + busca) define o que o
+    // usuário poderia ver; camada 2 (loja) só restringe. Se a loja zerar tudo mas
+    // existirem produtos, mostramos todos e avisamos — em vez de "Nenhum anúncio"
+    // com o catálogo cheio (era o bug que sumia com os 622 produtos).
+    const passaSemLoja = (p) => {
       const tabs = _anTabsDoProduto(p);
       if (abaSel === 'excluido') { if (!tabs.has('excluido')) return false; }
       else {
         if (tabs.has('excluido')) return false;         // excluídos só na aba deles
         if (abaSel !== 'todos' && !tabs.has(abaSel)) return false;
       }
-      // ── FILTRO DE MARKETPLACE ──
       if (mktSel) { if (!_anMarketplacesDoProduto(p).has(mktSel)) return false; }
-      // ── FILTRO DE LOJA ──
-      if (lojasSel.length > 0) {
-        // v33k.1202: _estoqueLojasSel agora guarda o ID DO BANCO (o seletor usa a
-        // lista viva). O produto guarda a loja em p.lojaId (= loja_id, id do
-        // banco), então a comparação é direta. Seleções obsoletas já foram
-        // descartadas na montagem, então isto nunca zera a lista por engano.
-        const alvo = new Set(lojasSel.map(String));
-        const ehDono = alvo.has(String(p.lojaId));
-        const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
-          alvo.has(String(vi.lojaIdBanco || vi.lojaId))));
-        // v33k.1202: produto de CATÁLOGO sem vínculo de loja nenhum (loja_id
-        // vazio E sem vínculos de anúncio) SEMPRE aparece — não pode sumir só
-        // porque uma loja foi selecionada. Foi o que deixava a lista vazia.
-        const semLojaAlguma = !String(p.lojaId || '') && !(p.variacoes||[]).some(v => (v.vinculos||[]).length);
-        if (!ehDono && !temVinculo && !semLojaAlguma) return false;
-      }
       if (busca) {
         const txt = (p.nome + ' ' + (p.skuPai||'') + ' ' + (p.id||'')).toLowerCase();
         if (!txt.includes(busca)) return false;
       }
       return true;
-    });
-    
+    };
+    const passaLoja = (p) => {
+      const alvo = new Set(lojasSel.map(String));
+      const ehDono = alvo.has(String(p.lojaId));
+      const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
+        alvo.has(String(vi.lojaIdBanco || vi.lojaId))));
+      // produto de catálogo sem vínculo de loja nenhum sempre passa.
+      const semLojaAlguma = !String(p.lojaId || '') && !(p.variacoes||[]).some(v => (v.vinculos||[]).length);
+      return ehDono || temVinculo || semLojaAlguma;
+    };
+    const baseSemLoja = _anProdutosBase().filter(passaSemLoja);
+    let produtos = lojasSel.length ? baseSemLoja.filter(passaLoja) : baseSemLoja;
+    let _avisoLojaVazia = false;
+    if (lojasSel.length && produtos.length === 0 && baseSemLoja.length > 0) {
+      // rede de segurança: a loja escolhida não bateu com nenhum produto, mas há
+      // catálogo — mostra tudo e sinaliza, pra nunca deixar a tela vazia à toa.
+      produtos = baseSemLoja;
+      _avisoLojaVazia = true;
+    }
+
     if (resumo) {
-      const totalUnidades = produtos.reduce((s,p) => 
+      const totalUnidades = produtos.reduce((s,p) =>
         s + (p.variacoes||[]).reduce((ss,v) => ss + (parseInt(v.estoque)||0), 0), 0);
       resumo.textContent = `${produtos.length} produto(s) · ${totalUnidades} unidades em estoque`;
     }
-    
+    // aviso da rede de segurança (loja selecionada não bateu com nenhum produto)
+    const avisoBox = document.getElementById('estoqueAvisoLoja');
+    if (avisoBox) {
+      if (_avisoLojaVazia) {
+        avisoBox.style.display = 'block';
+        avisoBox.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:9px 13px;border-radius:9px;font-size:12px;line-height:1.5;margin-bottom:10px">⚠ Nenhum anúncio está vinculado à loja selecionada — mostrando <b>todos os produtos</b>. Se esperava filtrar por loja, o vínculo produto↔loja pode estar diferente no banco.</div>';
+      } else {
+        avisoBox.style.display = 'none';
+        avisoBox.innerHTML = '';
+      }
+    }
+
     if (produtos.length === 0) {
       lista.innerHTML = '<div class="prod-vazio"><div class="prod-vazio-icone">🏷️</div><div>Nenhum anúncio' + (_anunciosTab !== 'todos' ? ' nesta aba' : '') + '.</div></div>';
       const pag = document.getElementById('estoquePaginacao');
@@ -54799,6 +54816,27 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.tkPromoCriar = tkPromoCriar;
 
+  // v33k.1204: resolve nome/foto de um product_id do TikTok olhando no catálogo
+  // local (produtosErp), casando pelo vínculo do anúncio TikTok (product_id ==
+  // vinculo.anuncioId). Assim o detalhe da promoção mostra produto + foto (como
+  // na Shopee) em vez de só o ID cru. Testado em qa_harness.js.
+  function _tkResolverProdutoLocal(productId) {
+    const pid = String(productId || '');
+    if (!pid) return null;
+    for (const p of (produtosErp || [])) {
+      for (const v of (p.variacoes || [])) {
+        for (const vi of (v.vinculos || [])) {
+          if (String(vi.marketplace || '').toLowerCase() === 'tiktok' && String(vi.anuncioId) === pid) {
+            const f0 = p.fotos && p.fotos[0];
+            const foto = f0 ? (f0.url || f0) : null;
+            return { nome: p.nome || ('Produto ' + pid), foto, skuPai: p.skuPai || '' };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   // ── DETALHE / PRODUTOS ─────────────────────────────────────────────
   async function tkPromoDetalhe(activityId, tipoConhecido) {
     _tkPromoView = 'detalhe';
@@ -54806,6 +54844,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     _tkLoading('Carregando produtos da promoção…');
     const r = await _tkApi('GET', '/loja/' + _tkPromoLoja + '/promocao/' + activityId);
     if (!r.ok || !r.atividade) { _tkBody().innerHTML = _tkErroBox('Não consegui abrir a promoção: ' + (r.erro || 'erro.')); return; }
+    // garante o catálogo local pra resolver nome/foto dos produtos (como na Shopee)
+    if ((!produtosErp || !produtosErp.length) && typeof carregarTodosProdutos === 'function') {
+      try { const todos = await carregarTodosProdutos(); if (todos && todos.length) produtosErp = todos; } catch (_) {}
+    }
     const a = r.atividade;
     const raw = a.raw || {};
     const tipo = a.tipo || tipoConhecido || raw.activity_type || 'DIRECT_DISCOUNT';
@@ -54830,9 +54872,19 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           ? ('R$ ' + p.activity_price_amount)
           : (p.discount != null ? (p.discount + '% off') : '—');
         const encerrada = estado === 'encerrada';
+        // v33k.1204: enriquece com nome + foto do catálogo (como na Shopee).
+        const loc = _tkResolverProdutoLocal(pid);
+        const foto = (loc && loc.foto)
+          ? '<img src="' + escapeHtml(loc.foto) + '" style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid #eef2f7" onerror="this.style.visibility=\'hidden\'">'
+          : '<div style="width:44px;height:44px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#94a3b8"><span class="lc-ic" data-size="sm" data-lucide="image"></span></div>';
+        const titulo = loc ? escapeHtml(loc.nome) : ('ID ' + escapeHtml(pid));
+        const sub = (loc && loc.skuPai) ? ('SKU ' + escapeHtml(loc.skuPai) + ' · ' + pid) : ('ID ' + escapeHtml(pid));
         return '<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;background:#fff;border:1px solid #eef2f7;border-radius:9px">' +
-          '<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:#1e293b">ID ' + escapeHtml(pid) + '</div>' +
-            '<div style="font-size:11px;color:#16a34a;font-weight:700">' + escapeHtml(valor) + '</div></div>' +
+          foto +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:12.5px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + titulo + '</div>' +
+            '<div style="font-size:10.5px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + sub + '</div>' +
+            '<div style="font-size:11px;color:#16a34a;font-weight:700;margin-top:1px">' + escapeHtml(valor) + '</div></div>' +
           (encerrada ? '' : '<button class="lc-btn lc-btn--sm" style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c" onclick="tkPromoRemoverProduto(\'' + activityId + '\',\'' + pid + '\')" title="Remover da promoção"><span class="lc-ic" data-size="sm" data-lucide="trash-2"></span></button>') +
         '</div>';
       }).join('') + '</div>';
@@ -55136,8 +55188,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       return d.toISOString().slice(0, 10);
     };
 
-    // 1) FLASH SALES (relâmpago Shopee), somem em ML/cupom
-    if (_filtroPromo !== 'mercadolivre' && _filtroPromo !== 'cupom') {
+    // 1) FLASH SALES (relâmpago Shopee): só aparecem quando o filtro é
+    // compatível com Shopee. v33k.1204: antes a condição era "tudo menos ML e
+    // cupom", então o filtro TikTok deixava vazar as ofertas relâmpago da Shopee.
+    // Agora só mostra em 'todos', 'shopee' e 'relampago'.
+    if (_filtroPromo === 'todos' || _filtroPromo === 'shopee' || _filtroPromo === 'relampago') {
       _flashSalesShopee
         .filter(f => passaLoja(f.lojaId))
         .filter(f => _filtroStatus === 'todos' || f.estado === _filtroStatus)
