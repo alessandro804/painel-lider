@@ -3222,40 +3222,43 @@
   }
 
   // ── IMPRIMIR EM LOTE ────────────────────────────────────────────
-  // Um PDF por nota, abertos em sequência. Não juntamos num arquivo só
-  // porque cada DANFE já vem pronta do backend, reprocessar aqui seria
-  // reimplementar o gerador no navegador.
+  // v33k.1192: UM PDF só com todas as DANFEs selecionadas (o backend junta os
+  // PDFs com pdf-lib). Abre numa aba única, pronto pra imprimir tudo de uma vez.
   async function _cnImprimirLote() {
     const ids = _cnSelecionadas();
     if (!_cnValidarLote(ids, 'impressão')) return;
 
     if (typeof lcConfirm === 'function') {
-      const ok = await lcConfirm('Abrir ' + ids.length + ' DANFE' + (ids.length > 1 ? 's' : '') + ' para impressão?\n\n' +
-        'Cada nota abre em uma aba. Se o navegador bloquear, libere os pop-ups deste site.');
+      const ok = await lcConfirm('Gerar um PDF único com ' + ids.length + ' DANFE' + (ids.length > 1 ? 's' : '') + ' para impressão?');
       if (!ok) return;
     }
 
-    let abertas = 0, falhas = 0;
-    for (const id of ids) {
-      try {
-        const url = _base() + '/api/nfe/notas/' + id + '/danfe';
-        const resp = await fetch(url, { headers: { 'x-api-token': _token() } });
-        if (!resp.ok) { falhas++; continue; }
-        const blob = await resp.blob();
-        const objUrl = URL.createObjectURL(blob);
-        const w = window.open(objUrl, '_blank');
-        if (!w) { falhas++; URL.revokeObjectURL(objUrl); continue; }
-        abertas++;
-        // libera a memória depois que o PDF já foi lido pela aba
-        setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
-        // respiro entre aberturas: sem isso o navegador engasga e bloqueia
-        await new Promise(r => setTimeout(r, 250));
-      } catch (e) { falhas++; }
-    }
-
-    if (typeof lcAlert === 'function') {
-      if (falhas && !abertas) lcAlert('Não consegui abrir nenhuma DANFE. Verifique o bloqueio de pop-ups.');
-      else if (falhas) lcAlert(abertas + ' aberta(s), ' + falhas + ' falharam. Se o navegador bloqueou, libere os pop-ups e tente as restantes.');
+    // abre a aba ANTES do fetch (gesto do usuário) pra o navegador não bloquear
+    const aba = window.open('', '_blank');
+    if (aba) { try { aba.document.write('<title>Gerando DANFEs…</title><p style="font:15px system-ui;padding:24px;color:#334155">Gerando o PDF com ' + ids.length + ' DANFE(s)…</p>'); } catch (_) {} }
+    try {
+      const params = new URLSearchParams({ ids: ids.join(',') });
+      const resp = await fetch(_base() + '/api/nfe/notas-danfe-lote?' + params.toString(),
+        { headers: { 'x-api-token': _token() } });
+      if (!resp.ok) {
+        let msg = 'Não consegui gerar o PDF em lote.';
+        try { const j = await resp.json(); if (j && j.erro) msg = j.erro; } catch (_) {}
+        if (aba) aba.close();
+        if (typeof lcAlert === 'function') lcAlert(msg);
+        return;
+      }
+      const incl = resp.headers.get('X-Danfe-Incluidas');
+      const falhas = Number(resp.headers.get('X-Danfe-Falhas') || 0);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      if (aba) { aba.location.href = url; } else { window.open(url, '_blank'); }
+      setTimeout(() => URL.revokeObjectURL(url), 120000);
+      if (falhas > 0 && typeof lcAlert === 'function') {
+        lcAlert((incl || '?') + ' DANFE(s) no PDF · ' + falhas + ' não pôde(ram) ser gerada(s) (nota sem XML/autorização).');
+      }
+    } catch (e) {
+      if (aba) aba.close();
+      if (typeof lcAlert === 'function') lcAlert('Erro ao gerar o PDF em lote.');
     }
   }
   window._cnImprimirLote = _cnImprimirLote;
@@ -9451,7 +9454,8 @@
           '<label style="' + lbl + ';margin-top:12px"><span class="lc-ic" data-lucide="box"></span> Produto base (a unidade de 1) — pode ser o mesmo anúncio se tiver uma variação de 1 unidade</label>' +
           '<select id="mkBase" onchange="_mkSetBase(this.value)" style="' + inp + '">' +
             '<option value="">— escolha o produto base —</option>' + optProd(_mkState.baseId) +
-          '</select>' : '') +
+          '</select>' +
+          (_mkState.baseId ? '<div style="margin-top:8px"><button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_mkCriarBase()" title="Criar uma variação de 1 unidade neste produto base, pra usar nos kits">➕ Criar variação base (1 un) neste produto</button></div>' : '') : '') +
       '</div>';
 
     // ── tabela de mapeamento ──
@@ -9600,6 +9604,18 @@
     _mkMontarLinhas(); _mkRender();
     _toast(ok + ' kit(s) salvo(s)' + (erro ? ', ' + erro + ' com erro' : '') + '.', erro > 0);
   }
+
+  // cria uma variação base (1 un) no produto base selecionado e re-renderiza
+  window._mkCriarBase = function () {
+    const baseId = _mkState.baseId || _mkState.produtoId;
+    if (!baseId) { _toast('Escolha o produto base primeiro.', true); return; }
+    if (typeof window.abrirNovaVariacao === 'function') {
+      window.abrirNovaVariacao(baseId, {
+        nomeSugerido: '1 unidade',
+        aoCriar: function () { try { _mkRender(); } catch (_) {} },
+      });
+    } else { _toast('Recurso de nova variação indisponível.', true); }
+  };
 
   window.abrirMontarKitsPorAnuncio = abrirMontarKitsPorAnuncio;
   window._mkSetProduto = _mkSetProduto;
@@ -11622,6 +11638,7 @@
     background: white; border: 1.5px solid var(--cinza-borda);
     font-size: 13px; font-weight: 600; color: var(--cinza-texto);
     white-space: nowrap; cursor: pointer;
+    flex-shrink: 0;   /* v33k.1194: não encolhe → o texto nunca vaza do botão; a fila rola no mobile */
   }
   .settings-tab.active { background: var(--azul); color: white; border-color: var(--azul); }
   .settings-panel { display: none; }
@@ -50337,6 +50354,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       { ic: '✏️', rot: 'Editar produto', ac: 'editar' },
       { ic: '📋', rot: 'Duplicar anúncio', ac: 'duplicar' },
       { ic: '🔗', rot: 'Gerenciar vínculos', ac: 'vinculos' },
+      { ic: '➕', rot: 'Nova variação', ac: 'nova-variacao' },
       { sep: true },
       { ic: '💲', rot: 'Definir preço', ac: 'preco' },
       { ic: '🏷️', rot: 'Definir desconto', ac: 'desconto' },
@@ -50387,6 +50405,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       case 'vinculos': if (typeof abrirGerenciarVinculos === 'function') abrirGerenciarVinculos(id); break;
       case 'fiscal':   if (typeof abrirDadosFiscaisProdutos === 'function') abrirDadosFiscaisProdutos(); break;
       case 'kit':      if (typeof window.abrirMontarKitsPorAnuncio === 'function') window.abrirMontarKitsPorAnuncio(id); break;
+      case 'nova-variacao': if (typeof window.abrirNovaVariacao === 'function') window.abrirNovaVariacao(id); break;
       case 'preco':    await _anComSelecaoUnica(id, acaoMassaAjustarPreco); break;
       case 'desconto': await _anComSelecaoUnica(id, acaoMassaReguaPromocao); break;
       case 'ativar':    await _anMudarStatusProduto(id, 'ativo'); break;
@@ -50396,6 +50415,77 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     }
   }
   window._anMenuAcao = _anMenuAcao;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // NOVA VARIAÇÃO RÁPIDA NUM ANÚNCIO (v33k.1195)
+  // Cria uma variação avulsa (nome livre + SKU) direto no produto, sem abrir o
+  // editor completo. Serve pra montar uma "unidade base" de 1 un quando o kit
+  // precisa dela e ainda não existe. Persiste no cadastro e reflete na hora.
+  // opts.aoCriar(variacao) → callback (ex.: o editor de kit re-renderiza a base).
+  // ═══════════════════════════════════════════════════════════════════
+  window.abrirNovaVariacao = function (produtoId, opts) {
+    opts = opts || {};
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!p) { if (typeof showToast === 'function') showToast('Produto não encontrado.', true); return; }
+    const nomeSug = opts.nomeSugerido || '';
+    const skuSug = opts.skuSugerido || '';
+    let ov = document.getElementById('novaVarOverlay');
+    if (ov) ov.remove();
+    ov = document.createElement('div');
+    ov.id = 'novaVarOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:100060;display:flex;align-items:center;justify-content:center;padding:18px';
+    ov.onclick = function (ev) { if (ev.target === ov) ov.remove(); };
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:16px;width:min(460px,96vw);overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.25)">' +
+        '<div style="padding:15px 18px;background:linear-gradient(135deg,#0ea5e9,#0369a1);color:#fff;display:flex;justify-content:space-between;align-items:center">' +
+          '<div style="font-size:15px;font-weight:800">➕ Nova variação</div>' +
+          '<button onclick="document.getElementById(\'novaVarOverlay\').remove()" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:15px">✕</button>' +
+        '</div>' +
+        '<div style="padding:16px 18px">' +
+          '<div style="font-size:12px;color:#64748b;margin-bottom:2px">Anúncio</div>' +
+          '<div style="font-size:13.5px;font-weight:700;color:#0f172a;margin-bottom:12px">' + escapeHtml(p.nome || ('Produto ' + p.id)) + '</div>' +
+          '<label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px">Nome da variação</label>' +
+          '<input id="nvNome" value="' + escapeHtml(nomeSug) + '" placeholder="ex: 1 unidade, Branco, 110V" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;margin-bottom:11px">' +
+          '<label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px">SKU <span style="color:#dc2626">*</span></label>' +
+          '<input id="nvSku" value="' + escapeHtml(skuSug) + '" placeholder="ex: TOALHA-ROSTO-1UN" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;margin-bottom:11px">' +
+          '<div style="display:flex;gap:10px">' +
+            '<div style="flex:1"><label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px">Estoque inicial</label>' +
+              '<input id="nvEstoque" type="number" min="0" step="1" value="0" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px"></div>' +
+            '<div style="flex:1"><label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px">Preço (opcional)</label>' +
+              '<input id="nvPreco" type="number" min="0" step="0.01" placeholder="R$" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px"></div>' +
+          '</div>' +
+          '<div style="font-size:11.5px;color:#94a3b8;margin-top:9px">A variação entra no cadastro do anúncio. Para virar base de kit, cadastre o NCM dela em Configuração de produto.</div>' +
+          '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">' +
+            '<button onclick="document.getElementById(\'novaVarOverlay\').remove()" style="background:#f1f5f9;border:none;color:#334155;padding:9px 16px;border-radius:8px;cursor:pointer;font-size:13.5px;font-weight:600">Cancelar</button>' +
+            '<button id="nvCriar" style="background:#16a34a;border:none;color:#fff;padding:9px 18px;border-radius:8px;cursor:pointer;font-size:13.5px;font-weight:700">Criar variação</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    const inpNome = document.getElementById('nvNome'); if (inpNome && !nomeSug) inpNome.focus(); else { const s = document.getElementById('nvSku'); if (s) s.focus(); }
+    document.getElementById('nvCriar').onclick = function () {
+      const nome = (document.getElementById('nvNome').value || '').trim();
+      const sku = (document.getElementById('nvSku').value || '').trim();
+      const estoque = Math.max(0, parseInt(document.getElementById('nvEstoque').value, 10) || 0);
+      const precoRaw = (document.getElementById('nvPreco').value || '').trim();
+      const preco = precoRaw ? Number(precoRaw.replace(',', '.')) : '';
+      if (!sku) { if (typeof showToast === 'function') showToast('Informe o SKU da variação.', true); return; }
+      // SKU único em TODO o catálogo (evita colisão de estoque/kit)
+      const skuNorm = sku.trim().toUpperCase();
+      const jaExiste = produtosErp.some(pr => (pr.variacoes || []).some(v => String(v.sku || '').trim().toUpperCase() === skuNorm));
+      if (jaExiste) { if (typeof showToast === 'function') showToast('Já existe uma variação com este SKU.', true); return; }
+      const nova = { id: gerarId(), cor: '', tamanho: '', nome: nome || sku, sku, estoque, preco: preco === '' ? '' : preco, ean: '', vinculos: [], _livre: true };
+      p.variacoes = p.variacoes || [];
+      p.variacoes.push(nova);
+      p.atualizadoEm = new Date().toISOString();
+      saveProdutos();
+      if (typeof window._invalidarKitsBom === 'function') window._invalidarKitsBom();
+      if (typeof renderEstoque === 'function') { try { renderEstoque(); } catch (_) {} }
+      ov.remove();
+      if (typeof showToast === 'function') showToast('Variação "' + (nova.nome) + '" criada.');
+      try { if (typeof opts.aoCriar === 'function') opts.aoCriar(nova); } catch (_) {}
+    };
+  };
 
   // Executa uma ação-em-massa existente mirando UM produto só (reusa a lógica
   // testada de preço/desconto), depois atualiza a lista de Anúncios.
@@ -52233,9 +52323,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               ${logosProd ? `<span style="flex-shrink:0;display:inline-flex;align-items:center">${logosProd}</span>` : ''}
             </div>
             <div style="font-size:11px;color:var(--lc-info);margin-top:2px">${escapeHtml(p.skuPai||'sem SKU')} · ${nVars} variaç${nVars>1?'ões':'ão'}</div>
-            <div style="margin-top:4px">${vincBadge}</div>
+            <div style="margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">${vincBadge} ${totalTag}</div>
           </div>
-          ${totalTag}
           <button type="button" onclick="event.stopPropagation(); abrirHistoricoProduto('${p.id}')" title="Histórico do produto inteiro: vendas, devoluções, entradas, balanços e replicações de todas as variações" style="border:1px solid var(--lc-border);background:var(--lc-surface);cursor:pointer;color:#4338ca;padding:6px 9px;border-radius:8px;font-size:13px;flex-shrink:0" title="Histórico do produto">🕑</button>
           <button type="button" onclick="event.stopPropagation(); _anAbrirMenu('${p.id}', this)" title="Ações do anúncio/produto" style="border:1px solid var(--lc-border);background:var(--lc-surface);cursor:pointer;color:var(--lc-ink);padding:6px 10px;border-radius:8px;font-size:16px;line-height:1;flex-shrink:0;font-weight:700">⋯</button>
           <button type="button" class="estoque-toggle" id="seta-${p.id}" onclick="toggleVariacoesEstoque('${p.id}')" style="border:none;background:none;cursor:pointer;color:var(--lc-muted);padding:6px;display:flex;align-items:center;flex-shrink:0;transition:transform .2s" title="Expandir/recolher">
@@ -69695,8 +69784,13 @@ ${JSON.stringify(metricas, null, 2)}`
                 const mudou = agora !== ultimo;
                 _expDados = d2;
                 if (mudou) {
+                  // v33k.1194: atualiza SÓ os números dos cards/chips (dos OUTROS
+                  // etapas). NÃO re-renderiza a lista — era isso que fazia a tela
+                  // "recarregar sozinha" e repetir o motion dos pedidos. O total da
+                  // etapa em tela é mantido igual ao da lista (patch real).
                   ultimo = agora; estaveisSeguidos = 0;
-                  expRenderEtapas(); expRenderChips(); expCarregarLista({ forcar: true, silencioso: true });
+                  _expPatchContagemReal();
+                  expRenderEtapas(); expRenderChips();
                 } else {
                   estaveisSeguidos++;
                 }
@@ -69724,6 +69818,21 @@ ${JSON.stringify(metricas, null, 2)}`
     } finally {
       if (loading && !silencioso) loading.style.display = 'none';
     }
+  }
+
+  // v33k.1194: a LISTA (/expedicao/lista) devolve o total REAL da etapa/estado no
+  // mesmo instante; os CONTADORES do topo (/expedicao/contadores) podem chegar
+  // defasados enquanto a reconciliação roda. Guardamos o total real da última
+  // lista carregada e o CASAMOS no _expDados antes de desenhar os cards/chips —
+  // assim o número de cima é SEMPRE igual ao de baixo, na hora, sem poll.
+  let _expContagemReal = null;   // { etapa, estado, total }
+  function _expPatchContagemReal() {
+    const r = _expContagemReal;
+    if (!_expDados || !r) return;
+    if (r.etapa !== _expEtapaSel) return;                       // só a etapa em tela
+    if ((r.estado || null) !== (_expEstadoSel || null)) return; // e o mesmo filtro
+    if (!r.estado) { _expDados.porEtapa = _expDados.porEtapa || {}; _expDados.porEtapa[_expEtapaSel] = r.total; }
+    else { _expDados.contagens = _expDados.contagens || {}; _expDados.contagens[r.estado] = r.total; }
   }
 
   function expRenderEtapas() {
@@ -69836,6 +69945,7 @@ ${JSON.stringify(metricas, null, 2)}`
             !(_expDados.etapas[_expEtapaSel].estados || []).includes(_expEstadoSel)) {
           _expEstadoSel = null;
         }
+        _expPatchContagemReal();   // v33k.1194: mantém o topo igual à lista
         expRenderEtapas();
         expRenderChips();
       }
@@ -70062,6 +70172,10 @@ ${JSON.stringify(metricas, null, 2)}`
       // v33k.402: dados de paginação
       _expTotalPaginas = data.totalPaginas || 1;
       const totalGeral = data.totalGeral || peds.length;
+      // v33k.1194: casa o número do TOPO (card + chip "Todos") com o total REAL
+      // da lista, no mesmo instante — sem esperar a reconciliação dos contadores.
+      _expContagemReal = { etapa: _expEtapaSel, estado: _expEstadoSel || null, total: totalGeral };
+      if (_expDados) { _expPatchContagemReal(); expRenderEtapas(); expRenderChips(); }
       // v33k.401: guarda a ORDEM EXIBIDA (order_sn na sequência da tela) pra que a
       // geração de etiquetas em lote saia no PDF exatamente nessa ordem.
       _expOrdemExibida = peds.map(p => p.orderSn);
