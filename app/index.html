@@ -50318,13 +50318,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function sincronizarAnunciosAgora() {
     if (_anSyncEmAndamento) return;
     const btn = document.getElementById('anBtnSyncAnuncios');
+    // v33k.1202: _estoqueLojasSel agora são IDs DO BANCO (idBanco), então casamos
+    // as lojas locais pelo idBanco, não pelo id local.
     const lojasSel = (_estoqueLojasSel || []).map(String);
     let alvo = (lojasErp || []).filter(l => l.contaConectada);
-    if (lojasSel.length) alvo = alvo.filter(l => lojasSel.includes(String(l.id)));
+    if (lojasSel.length) alvo = alvo.filter(l => lojasSel.includes(String(l.idBanco)));
     if (!alvo.length) {
       // sem "contaConectada" marcada: cai pra todas as lojas com marketplace
       alvo = (lojasErp || []).filter(l => l.marketplace);
-      if (lojasSel.length) alvo = alvo.filter(l => lojasSel.includes(String(l.id)));
+      if (lojasSel.length) alvo = alvo.filter(l => lojasSel.includes(String(l.idBanco)));
     }
     if (!alvo.length) { if (typeof showToast === 'function') showToast('Nenhuma loja conectada para sincronizar.', true); return; }
     // v33k.921: confirmação antes de rodar — pode demorar conforme a quantidade
@@ -52217,21 +52219,45 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   window.toggleVariacoesEstoque = toggleVariacoesEstoque;
 
   function renderEstoque() {
-    // Seletor premium de loja (padrão imagem 1, igual Pedidos/Ads), multi-loja.
+    // v33k.1202: seletor de loja AO VIVO do backend (mesma fonte de Notas
+    // Fiscais: /api/lucro/minhas-lojas), usando o ID DO BANCO como valor. Antes
+    // vinha do cache local (lojasErp), cujo nome ficava preso após renomear
+    // (ex.: "Daniel 2" continuava aqui depois de virar "Renato") e cujo id local
+    // não batia com o loja_id dos produtos → a lista de anúncios zerava.
     const host = document.getElementById('estoqueLojasSel');
-    if (host && !host._montado && typeof LcAcctSel !== 'undefined' && LcAcctSel.montar) {
-      const lista = lojasErp.map(l => ({ id: l.id, nome: l.nome, marketplace: l.marketplace }));
-      _estoqueLojasComp = LcAcctSel.montar(host, lista, {
-        selecionados: (_estoqueLojasSel || []).map(String),
-        placeholder: 'Todas as lojas',
-        salvarLabel: 'Aplicar',
-        aoMudar: () => {
-          _estoqueLojasSel = _estoqueLojasComp.getSelecionados();
-          _estoquePagina = 1;
-          renderEstoque();
-        },
-      });
-      host._montado = '1';
+    if (host && typeof LcAcctSel !== 'undefined' && LcAcctSel.montar) {
+      const montarSel = (lojasLive) => {
+        const lista = (lojasLive || []).map(l => ({ id: String(l.id), nome: l.nome, marketplace: l.marketplace }));
+        // descarta seleções obsoletas (id que não existe mais na lista viva),
+        // pra NUNCA esconder tudo por causa de uma seleção velha (ex.: "Daniel 2").
+        const idsValidos = new Set(lista.map(x => x.id));
+        _estoqueLojasSel = (_estoqueLojasSel || []).map(String).filter(id => idsValidos.has(id));
+        _estoqueLojasComp = LcAcctSel.montar(host, lista, {
+          selecionados: _estoqueLojasSel,
+          placeholder: 'Todas as lojas',
+          salvarLabel: 'Aplicar',
+          aoMudar: () => {
+            _estoqueLojasSel = _estoqueLojasComp.getSelecionados();
+            _estoquePagina = 1;
+            renderEstoque();
+          },
+        });
+        host._montado = '1';
+      };
+      if (!host._montado) {
+        montarSel(_pedCacheLojas || []);
+        // se a lista viva ainda não foi buscada, busca e remonta (igual NF)
+        if (!Array.isArray(_pedCacheLojas) || !_pedCacheLojas.length) {
+          fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: hLucroAuth() })
+            .then(r => r.json())
+            .then(data => {
+              _pedCacheLojas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
+              montarSel(_pedCacheLojas);
+              renderEstoque();
+            })
+            .catch(() => {});
+        }
+      }
     }
 
     // v33k.914: abas de status (Todos/Ativos/Inativos/Rascunho/Em revisão/Excluídos)
@@ -52269,25 +52295,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (mktSel) { if (!_anMarketplacesDoProduto(p).has(mktSel)) return false; }
       // ── FILTRO DE LOJA ──
       if (lojasSel.length > 0) {
-        // v33k.1201: o produto guarda a loja pelo ID DO BANCO (p.lojaId =
-        // loja_id), mas o seletor entrega o ID LOCAL do cache. Antes o "ehDono"
-        // comparava id local × id do banco (nunca batia) e a lista zerava mesmo
-        // com produtos da loja. Agora montamos um conjunto-alvo com AMBOS os
-        // espaços de id (local + idBanco) e comparamos contra ele.
-        const idsBanco = lojasSel.map(fid => {
-          const lo = lojasErp.find(l => String(l.id) === String(fid));
-          return lo && lo.idBanco != null ? String(lo.idBanco) : null;
-        }).filter(Boolean);
-        // Guarda de segurança: se a seleção não resolve pra NENHUMA loja real do
-        // banco (seleção obsoleta no cache), NÃO esconde tudo — ignora o filtro
-        // de loja em vez de deixar o usuário sem ver produto nenhum.
-        if (idsBanco.length > 0) {
-          const alvo = new Set([...lojasSel.map(String), ...idsBanco]);
-          const ehDono = alvo.has(String(p.lojaId));
-          const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
-            alvo.has(String(vi.lojaIdBanco || vi.lojaId))));
-          if (!ehDono && !temVinculo) return false;
-        }
+        // v33k.1202: _estoqueLojasSel agora guarda o ID DO BANCO (o seletor usa a
+        // lista viva). O produto guarda a loja em p.lojaId (= loja_id, id do
+        // banco), então a comparação é direta. Seleções obsoletas já foram
+        // descartadas na montagem, então isto nunca zera a lista por engano.
+        const alvo = new Set(lojasSel.map(String));
+        const ehDono = alvo.has(String(p.lojaId));
+        const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
+          alvo.has(String(vi.lojaIdBanco || vi.lojaId))));
+        if (!ehDono && !temVinculo) return false;
       }
       if (busca) {
         const txt = (p.nome + ' ' + (p.skuPai||'') + ' ' + (p.id||'')).toLowerCase();
