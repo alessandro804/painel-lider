@@ -54951,7 +54951,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     } else {
       html += '<div style="display:grid;gap:6px">' + prods.map(p => {
         const pid = String(p.id || p.product_id || '');
-        const atual = (p.activity_price_amount != null && p.activity_price_amount !== '') ? String(p.activity_price_amount)
+        // v33k.1213: extrai o preço da promoção ATUAL de forma robusta (o TikTok
+        // varia o nome do campo por versão).
+        const _sku0 = (p.skus && p.skus[0]) || {};
+        const promoAtualRaw = (p.activity_price_amount != null && p.activity_price_amount !== '') ? p.activity_price_amount
+                            : (p.activity_price && (p.activity_price.amount != null ? p.activity_price.amount : p.activity_price))
+                            ?? p.deal_price ?? p.activity_price_final
+                            ?? (_sku0.activity_price_amount != null ? _sku0.activity_price_amount : (_sku0.activity_price && (_sku0.activity_price.amount != null ? _sku0.activity_price.amount : _sku0.activity_price)))
+                            ?? null;
+        const atual = (promoAtualRaw != null && promoAtualRaw !== '') ? String(promoAtualRaw)
                     : (p.discount != null ? String(p.discount) : '');
         // v33k.1204: enriquece com nome + foto do catálogo (como na Shopee).
         const loc = _tkResolverProdutoLocal(pid);
@@ -54960,18 +54968,26 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           : '<div style="width:44px;height:44px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#94a3b8"><span class="lc-ic" data-size="sm" data-lucide="image"></span></div>';
         const titulo = loc ? escapeHtml(loc.nome) : ('ID ' + escapeHtml(pid));
         const sub = (loc && loc.skuPai) ? ('SKU ' + escapeHtml(loc.skuPai) + ' · ' + pid) : ('ID ' + escapeHtml(pid));
-        // v33k.1212: preço ATUAL (de referência) do catálogo, mostrado riscado
-        // antes do campo de promoção — igual ao "R$ 149,90 → R$ 78,90" da Shopee.
-        const precoAtual = (loc && loc.preco != null) ? ('R$ ' + Number(loc.preco).toFixed(2).replace('.', ',')) : null;
-        const precoAtualHtml = precoAtual
-          ? '<span style="font-size:11px;color:#94a3b8;text-decoration:line-through;flex-shrink:0" title="Preço atual (referência)">' + precoAtual + '</span><span style="color:#cbd5e1;flex-shrink:0">→</span>'
+        // v33k.1213: TRÊS colunas como o usuário pediu — Preço de VENDA (referência,
+        // riscado) · PROMO ATUAL (o preço promocional que está valendo) · NOVO (campo).
+        const _fmt = (n) => 'R$ ' + Number(n).toFixed(2).replace('.', ',');
+        const vendaTxt = (loc && loc.preco != null) ? _fmt(loc.preco) : null;
+        const atualTxt = (atual !== '') ? (campoPct ? (atual + '%') : _fmt(atual)) : null;
+        const colVenda = vendaTxt
+          ? '<div style="text-align:right;flex-shrink:0"><div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:.3px">Venda</div><div style="font-size:11px;color:#94a3b8;text-decoration:line-through">' + vendaTxt + '</div></div>'
+          : '';
+        const colAtual = atualTxt
+          ? '<div style="text-align:right;flex-shrink:0"><div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:.3px">Promo atual</div><div style="font-size:11px;color:#16a34a;font-weight:700">' + atualTxt + '</div></div>'
           : '';
         const editor = encerrada
-          ? ('<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' + precoAtualHtml + '<div style="font-size:11px;color:#16a34a;font-weight:700">' + (atual !== '' ? (campoPct ? (atual + '% off') : ('R$ ' + atual)) : '—') + '</div></div>')
-          : ('<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' +
-              precoAtualHtml +
-              '<span style="font-size:11px;color:#16a34a;font-weight:700">' + (campoPct ? '%' : 'R$') + '</span>' +
-              '<input type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" value="' + escapeHtml(atual) + '" data-tkpid="' + escapeHtml(pid) + '" class="tk-preco-inp" placeholder="' + (campoPct ? 'ex 15' : 'ex 79.90') + '" style="' + _TK_INP + ';width:92px;padding:6px 8px">' +
+          ? ('<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">' + colVenda + colAtual + '</div>')
+          : ('<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">' +
+              colVenda + colAtual +
+              '<span style="color:#cbd5e1;flex-shrink:0">→</span>' +
+              '<div style="text-align:right;flex-shrink:0"><div style="font-size:9px;color:#2563eb;text-transform:uppercase;letter-spacing:.3px;font-weight:700">Novo</div>' +
+                '<div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:#2563eb;font-weight:700">' + (campoPct ? '%' : 'R$') + '</span>' +
+                '<input type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" value="' + escapeHtml(atual) + '" data-tkpid="' + escapeHtml(pid) + '" class="tk-preco-inp" placeholder="' + (campoPct ? 'ex 15' : 'ex 79,90') + '" style="' + _TK_INP + ';width:88px;padding:6px 8px"></div>' +
+              '</div>' +
             '</div>');
         const buscaChave = ((loc ? loc.nome : '') + ' ' + (loc && loc.skuPai ? loc.skuPai : '') + ' ' + pid).toLowerCase();
         return '<div data-tkrow="1" data-tksearch="' + escapeHtml(buscaChave) + '" style="display:flex;align-items:center;gap:10px;padding:9px 11px;background:#fff;border:1px solid #eef2f7;border-radius:9px">' +
