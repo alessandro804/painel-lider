@@ -21263,6 +21263,32 @@ window.LC_SVG = {
           </div>
 
           <!-- SEÇÃO 3.6: Gestão de Crons (SUPERADMIN), horários, massa, ocultar, renomear -->
+          <!-- SUPERADMIN: Certificado GLOBAL de consulta de cadastro/IE (v33k.1196) -->
+          <div class="settings-card" style="margin-top:16px;display:none" id="certGlobalCard" data-superadmin-only>
+            <div class="settings-card-header">
+              <div>
+                <div class="settings-card-title">🔐 Certificado de Consulta (Super Admin)</div>
+                <div class="settings-card-subtitle">Certificado A1 da Líder usado para <strong>consultar cadastro/IE na SEFAZ</strong> de qualquer CNPJ (usado quando a NF é rejeitada por falta de IE). Vale para todas as empresas do sistema.</div>
+              </div>
+            </div>
+            <div id="certGlobalStatus" style="margin:10px 0 14px">
+              <div class="empty-state-v2"><div class="empty-title-v2">Carregando status do certificado…</div></div>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div style="flex:1;min-width:200px">
+                <label style="display:block;font-size:12px;font-weight:600;color:var(--lc-ink-2,#334155);margin-bottom:4px">Arquivo do certificado (.pfx / .p12)</label>
+                <input type="file" id="certGlobalArquivo" accept=".pfx,.p12,application/x-pkcs12" style="font-size:13px">
+              </div>
+              <div style="width:200px">
+                <label style="display:block;font-size:12px;font-weight:600;color:var(--lc-ink-2,#334155);margin-bottom:4px">Senha do certificado</label>
+                <input type="password" id="certGlobalSenha" placeholder="senha do A1" autocomplete="off" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--lc-border,#cbd5e1);border-radius:8px;font-size:14px">
+              </div>
+              <button class="toolbar-btn" style="background:#16a34a;color:#fff;font-weight:700" onclick="_certGlobalSubir()">⬆️ Subir certificado</button>
+              <button class="toolbar-btn" onclick="_certGlobalCarregar()">🔄 Atualizar</button>
+            </div>
+            <div style="font-size:11.5px;color:var(--lc-muted,#94a3b8);margin-top:9px">O arquivo é cifrado no servidor (nunca fica exposto). Se a tabela não existir, rode a migração de consulta de cadastro (nfe_cert_consulta_global) no Supabase.</div>
+          </div>
+
           <div class="settings-card" style="margin-top:16px;display:none" id="cronsAdminCard" data-superadmin-only>
             <div class="settings-card-header">
               <div>
@@ -52209,12 +52235,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // v33k.1190: carrega o mapa de kits (base ÷ N) pra marcar/derivar a
     // disponibilidade dos kits nesta tela. Silencioso; usa cache.
     if (typeof _carregarKitsBom === 'function') { _carregarKitsBom().catch(() => {}); }
-    // v33k.1191: reconciliação da baixa de kits — roda UMA vez ao abrir o
-    // estoque (baixa da base as vendas de kit ainda não contabilizadas).
-    if (!window._kitReconcileFeito && typeof _reconciliarBaixasKit === 'function') {
-      window._kitReconcileFeito = true;
-      _reconciliarBaixasKit(true).catch(() => {});
-    }
+    // v33k.1196 (PERF): NÃO reconcilia mais automaticamente ao abrir o estoque —
+    // aquilo varria 60 dias de vendas + carregava TODOS os produtos + empurrava
+    // pros marketplaces numa requisição só, e podia deixar o back-end lento (foi o
+    // que travou os pedidos após o deploy). A baixa de kit agora é em TEMPO REAL
+    // pelo WEBHOOK; a reconciliação vira rede de segurança MANUAL, no botão
+    // "🔗 Recalcular kits".
 
     const lista = document.getElementById('estoqueLista');
     const resumo = document.getElementById('estoqueResumo');
@@ -73967,6 +73993,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (tab === 'gerais' && typeof renderConfigGerais === 'function') renderConfigGerais();
     if (tab === 'gerais' && typeof carregarAutomacoes === 'function') carregarAutomacoes();
     if (tab === 'gerais' && typeof carregarCronsAdmin === 'function') carregarCronsAdmin();
+    if (tab === 'gerais' && typeof _certGlobalCarregar === 'function') _certGlobalCarregar();
     if (tab === 'prompts' && typeof renderPromptsList === 'function') renderPromptsList();
     if (tab === 'logs' && typeof abrirLogsConfig === 'function') abrirLogsConfig();
     if (tab === 'profile' && typeof carregarCpfCnpj === 'function') carregarCpfCnpj();
@@ -74055,6 +74082,72 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // ── GESTÃO DE CRONS (SUPERADMIN) ────────────────────────────────────
   let _cronsAdminCache = [];
+  // ── CERTIFICADO GLOBAL DE CONSULTA (Super Admin) — v33k.1196 ──────────
+  function _certGlobalHeaders() {
+    return { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') };
+  }
+  async function _certGlobalCarregar() {
+    const card = document.getElementById('certGlobalCard');
+    const box = document.getElementById('certGlobalStatus');
+    if (!card || !box) return;
+    if (typeof papelAtual === 'function' && papelAtual() !== 'superadmin') { card.style.display = 'none'; return; }
+    card.style.display = '';
+    box.innerHTML = '<div style="font-size:13px;color:var(--lc-muted,#64748b)">Carregando status…</div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/nfe/consulta-cadastro/certificado-global', { headers: _certGlobalHeaders() }).then(x => x.json());
+      if (!r || !r.ok) { box.innerHTML = '<div style="font-size:13px;color:#dc2626">' + escapeHtml((r && r.erro) || 'Erro ao carregar') + '</div>'; return; }
+      if (r.semTabela) {
+        box.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px 13px;font-size:12.5px;color:#92400e">Tabela <code>nfe_cert_consulta_global</code> ainda não existe. Rode a migração no Supabase para ativar.</div>';
+        return;
+      }
+      if (!r.configurado) {
+        box.innerHTML = '<div style="background:#f1f5f9;border:1px dashed #cbd5e1;border-radius:10px;padding:11px 13px;font-size:13px;color:#475569">Nenhum certificado global configurado ainda. Suba o A1 da Líder abaixo.</div>';
+        return;
+      }
+      const venc = r.vencido;
+      box.innerHTML = '<div style="background:' + (venc ? '#fef2f2' : '#f0fdf4') + ';border:1px solid ' + (venc ? '#fecaca' : '#bbf7d0') + ';border-radius:10px;padding:11px 13px;font-size:12.5px;color:' + (venc ? '#991b1b' : '#166534') + '">' +
+        '<div style="font-weight:800;margin-bottom:3px">' + (venc ? '⚠️ Certificado VENCIDO' : '✓ Certificado ativo') + '</div>' +
+        '<div><b>Titular:</b> ' + escapeHtml(r.titular || '—') + '</div>' +
+        (r.cnpj ? '<div><b>CNPJ:</b> ' + escapeHtml(r.cnpj) + '</div>' : '') +
+        '<div><b>Validade:</b> ' + (r.validade ? new Date(r.validade).toLocaleDateString('pt-BR') : '—') + '</div>' +
+        '</div>';
+    } catch (e) {
+      box.innerHTML = '<div style="font-size:13px;color:#dc2626">Falha ao carregar: ' + escapeHtml(e.message) + '</div>';
+    }
+  }
+  window._certGlobalCarregar = _certGlobalCarregar;
+
+  async function _certGlobalSubir() {
+    const inp = document.getElementById('certGlobalArquivo');
+    const senha = (document.getElementById('certGlobalSenha') || {}).value || '';
+    const arq = inp && inp.files && inp.files[0];
+    if (!arq) { showToast('Escolha o arquivo do certificado (.pfx/.p12).', true); return; }
+    if (!senha) { showToast('Informe a senha do certificado.', true); return; }
+    if (arq.size > 5 * 1024 * 1024) { showToast('Arquivo muito grande (máx. 5 MB).', true); return; }
+    let pfxBase64;
+    try {
+      pfxBase64 = await new Promise((resolve, reject) => {
+        const rd = new FileReader();
+        rd.onload = () => { const s = String(rd.result || ''); const i = s.indexOf('base64,'); resolve(i >= 0 ? s.slice(i + 7) : s); };
+        rd.onerror = () => reject(new Error('falha ao ler o arquivo'));
+        rd.readAsDataURL(arq);
+      });
+    } catch (e) { showToast('Não consegui ler o arquivo.', true); return; }
+    const box = document.getElementById('certGlobalStatus');
+    if (box) box.innerHTML = '<div style="font-size:13px;color:var(--lc-muted,#64748b)">Enviando e validando o certificado…</div>';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/nfe/consulta-cadastro/certificado-global', {
+        method: 'POST', headers: _certGlobalHeaders(), body: JSON.stringify({ pfxBase64, senha }),
+      }).then(x => x.json());
+      if (!r || !r.ok) { showToast((r && r.erro) || 'Falha ao subir o certificado.', true); _certGlobalCarregar(); return; }
+      showToast('Certificado global salvo com sucesso.');
+      if (inp) inp.value = '';
+      const sEl = document.getElementById('certGlobalSenha'); if (sEl) sEl.value = '';
+      _certGlobalCarregar();
+    } catch (e) { showToast('Erro ao subir: ' + e.message, true); _certGlobalCarregar(); }
+  }
+  window._certGlobalSubir = _certGlobalSubir;
+
   async function carregarCronsAdmin() {
     const card = document.getElementById('cronsAdminCard');
     if (!card) return;
