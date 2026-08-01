@@ -166,6 +166,9 @@
   const _esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const soDig = (v) => String(v || '').replace(/\D/g, '');
+  // v33k.1183: trava dos inputs de NCM — só dígitos e no máximo 8 (o tamanho
+  // correto). Usado inline via oninput nos campos que pedem NCM.
+  window._ncmInput = function (el) { if (el) el.value = String(el.value || '').replace(/\D/g, '').slice(0, 8); };
 
   async function _api(path, opts) {
     const resp = await fetch(_base() + path, Object.assign({
@@ -589,7 +592,11 @@
     set('gfTelefone', e.telefone); set('gfCep', e.cep); set('gfLogradouro', e.logradouro);
     set('gfNumero', e.numero); set('gfBairro', e.bairro); set('gfComplemento', e.complemento);
     set('gfMunicipio', e.municipio); set('gfCodMunicipio', e.cod_municipio); set('gfUf', e.uf);
-    msg.innerHTML = '<span class="lc-ic" data-lucide="check"></span> Dados preenchidos' + (data.raw && data.raw.situacao ? ' · Situação: ' + _esc(data.raw.situacao) : '') + '. Revise e complete a IE.'; _hidratarIcones(msg);
+    // IE real da SEFAZ (cert global): se veio, já preenche; senão pede pra completar
+    let ieNota = '. Revise e complete a IE.';
+    if (data.ie && data.ie.ie) { set('gfIe', data.ie.ie); ieNota = ' · IE ' + _esc(data.ie.ie) + ' (SEFAZ).'; }
+    else if (data.ie && data.ie.contribuinte === false) { ieNota = ' · não contribuinte (sem IE).'; }
+    msg.innerHTML = '<span class="lc-ic" data-lucide="check"></span> Dados preenchidos' + (data.raw && data.raw.situacao ? ' · Situação: ' + _esc(data.raw.situacao) : '') + ieNota; _hidratarIcones(msg);
     msg.style.color = '#166534';
   }
 
@@ -920,6 +927,9 @@
       info_fisco: c.info_fisco || '',
       aliq_cred_sn: c.aliq_cred_sn != null ? c.aliq_cred_sn : 0,
       padrao: !!c.padrao,
+      // v33k.1177: regras editáveis de brinde/amostra (config_extra)
+      brinde: (c.config_extra && c.config_extra.brinde) || { cfop_dentro: '5910', cfop_fora: '6910', natureza: 'Remessa de brinde' },
+      amostra: (c.config_extra && c.config_extra.amostra) || { cfop_dentro: '5911', cfop_fora: '6911', natureza: 'Remessa de amostra grátis' },
     };
     window._gfAbaAtual = 'basica';
     _gfRenderEditor();
@@ -1050,6 +1060,23 @@
           '<div><label style="' + lbl + '">Informação Complementar (aparece no DANFE)</label>' +
             '<textarea id="gfcInfoComp" rows="3" style="' + inp + ';resize:vertical">' + _esc(meta.info_complementar || '') + '</textarea>' +
             '<div style="font-size:11.5px;color:#64748b;margin-top:4px">Padrão Simples: "EMPRESA OPTANTE PELO SIMPLES NACIONAL NAO GERA DIREITO A CREDITO FISCAL DE ICMS, ISS E IPI".</div></div>' +
+        '</div>' +
+        // ── BRINDE / AMOSTRA GRÁTIS (v33k.1177) ──
+        '<div style="' + card + ';margin-top:14px">' +
+          '<div style="font-weight:700;color:#0f172a;margin-bottom:4px">Brinde / Amostra grátis</div>' +
+          '<div style="font-size:11.5px;color:#64748b;margin-bottom:14px">Itens que chegam com valor R$0 (brinde da Shopee, amostra do TikTok) usam o preço de venda do produto como valor de referência e estes CFOP de remessa. Ajuste se seu contador indicar outros.</div>' +
+          '<div style="font-weight:600;color:#334155;font-size:13px;margin-bottom:8px">🎁 Brinde (Shopee e demais canais)</div>' +
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+            '<div style="flex:1 1 120px"><label style="' + lbl + '">CFOP dentro do estado</label><input id="gfcBrindeCfopD" maxlength="4" style="' + inp + '" value="' + _esc((meta.brinde && meta.brinde.cfop_dentro) || '5910') + '"></div>' +
+            '<div style="flex:1 1 120px"><label style="' + lbl + '">CFOP fora do estado</label><input id="gfcBrindeCfopF" maxlength="4" style="' + inp + '" value="' + _esc((meta.brinde && meta.brinde.cfop_fora) || '6910') + '"></div>' +
+          '</div>' +
+          '<div style="margin-bottom:16px"><label style="' + lbl + '">Natureza da operação (brinde)</label><input id="gfcBrindeNat" style="' + inp + '" value="' + _esc((meta.brinde && meta.brinde.natureza) || 'Remessa de brinde') + '"></div>' +
+          '<div style="font-weight:600;color:#334155;font-size:13px;margin-bottom:8px">🧪 Amostra grátis (TikTok)</div>' +
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+            '<div style="flex:1 1 120px"><label style="' + lbl + '">CFOP dentro do estado</label><input id="gfcAmostraCfopD" maxlength="4" style="' + inp + '" value="' + _esc((meta.amostra && meta.amostra.cfop_dentro) || '5911') + '"></div>' +
+            '<div style="flex:1 1 120px"><label style="' + lbl + '">CFOP fora do estado</label><input id="gfcAmostraCfopF" maxlength="4" style="' + inp + '" value="' + _esc((meta.amostra && meta.amostra.cfop_fora) || '6911') + '"></div>' +
+          '</div>' +
+          '<div><label style="' + lbl + '">Natureza da operação (amostra)</label><input id="gfcAmostraNat" style="' + inp + '" value="' + _esc((meta.amostra && meta.amostra.natureza) || 'Remessa de amostra grátis') + '"></div>' +
         '</div>';
     }
     return '';
@@ -1130,6 +1157,13 @@
     if (gc('gfcPadrao') !== undefined) meta.padrao = gc('gfcPadrao');
     if (g('gfcInfoFisco') !== undefined) meta.info_fisco = g('gfcInfoFisco');
     if (g('gfcInfoComp') !== undefined) meta.info_complementar = g('gfcInfoComp');
+    // v33k.1177: regras de brinde/amostra (só quando a aba está visível no DOM)
+    if (g('gfcBrindeCfopD') !== undefined) {
+      meta.brinde = { cfop_dentro: g('gfcBrindeCfopD'), cfop_fora: g('gfcBrindeCfopF'), natureza: g('gfcBrindeNat') };
+    }
+    if (g('gfcAmostraCfopD') !== undefined) {
+      meta.amostra = { cfop_dentro: g('gfcAmostraCfopD'), cfop_fora: g('gfcAmostraCfopF'), natureza: g('gfcAmostraNat') };
+    }
     window._gfClasseMeta = meta;
 
     const payload = {
@@ -1141,6 +1175,8 @@
       info_complementar: meta.info_complementar,
       info_fisco: meta.info_fisco,
       aliq_cred_sn: meta.aliq_cred_sn || 0,
+      brinde: meta.brinde,
+      amostra: meta.amostra,
     };
     const data = await _api('/api/nfe/empresas/' + meta.empresaId + '/classes/' + meta.id + '/cenarios', {
       method: 'PUT', body: JSON.stringify(payload),
@@ -1706,9 +1742,15 @@
       const ncm = String(it.ncm || '').replace(/\D/g, '');
       const ncmOk = /^\d{8}$/.test(ncm);
       const desc = (it.descricaoFiscal || it.descricao || '');
+      // v33k.1177: item que chegou R$0 = brinde/amostra → selo informando que a
+      // NF usará o preço do catálogo como valor de referência.
+      const ehBrinde = Number(it.valorUnitario || 0) <= 0;
+      const seloBrinde = ehBrinde
+        ? '<div style="margin-top:3px;font-size:10.5px;color:#9a3412;background:#ffedd5;border:1px solid #fed7aa;border-radius:20px;padding:1px 8px;display:inline-block;font-weight:700">🎁 Brinde/Amostra · valor de referência aplicado</div>'
+        : '';
       return '<tr data-prod-row="' + i + '" style="border-top:1px solid #f1f5f9">' +
         '<td style="padding:4px 6px"><input id="dpSku' + i + '" value="' + _esc(it.sku || '') + '" oninput="_dpProdSet(' + i + ',\'sku\',this.value)" placeholder="SKU" style="' + _DP_INP + ';min-width:96px"></td>' +
-        '<td style="padding:4px 6px"><input id="dpDesc' + i + '" value="' + _esc(desc) + '" maxlength="120" oninput="_dpProdSet(' + i + ',\'descricao\',this.value)" placeholder="Descrição (sai na NF)" style="' + _DP_INP + ';min-width:150px"></td>' +
+        '<td style="padding:4px 6px"><input id="dpDesc' + i + '" value="' + _esc(desc) + '" maxlength="120" oninput="_dpProdSet(' + i + ',\'descricao\',this.value)" placeholder="Descrição (sai na NF)" style="' + _DP_INP + ';min-width:150px">' + seloBrinde + '</td>' +
         '<td style="padding:4px 6px"><input id="dpQtd' + i + '" type="number" min="1" value="' + (Number(it.quantidade) || 1) + '" oninput="_dpProdSet(' + i + ',\'quantidade\',this.value)" style="' + _DP_INP + ';width:50px;text-align:center"></td>' +
         '<td style="padding:4px 6px"><input id="dpPreco' + i + '" type="number" step="0.01" min="0" value="' + Number(it.valorUnitario || 0).toFixed(2) + '" oninput="_dpProdSet(' + i + ',\'valorUnitario\',this.value)" style="' + _DP_INP + ';width:78px;text-align:right"></td>' +
         '<td style="padding:4px 6px"><input id="dpNcm' + i + '" maxlength="8" inputmode="numeric" value="' + _esc(ncm) + '" oninput="_dpProdSet(' + i + ',\'ncm\',this.value)" placeholder="8 díg." style="' + _DP_INP + ';width:84px;text-align:center;border-color:' + (ncmOk ? '#cbd5e1' : '#f59e0b') + '"></td>' +
@@ -2103,7 +2145,7 @@
         '<td style="padding:4px 6px;vertical-align:middle"><input id="rpDesc' + i + '" value="' + _esc(descNf) + '" maxlength="120" title="Descrição que sai na NF" onchange="_rpSetItem(' + i + ',\'descricao\',this.value)" style="width:100%;min-width:170px;padding:5px 7px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px"></td>' +
         '<td style="padding:5px 6px;font-size:12px;text-align:center;vertical-align:middle">' + it.quantidade + '</td>' +
         '<td style="padding:5px 6px;font-size:12px;text-align:right;white-space:nowrap;vertical-align:middle">R$ ' + Number(it.valorUnitario).toFixed(2) + '</td>' +
-        '<td style="padding:4px 6px;vertical-align:middle"><input id="rpNcm' + i + '" value="' + _esc(it.ncm || '') + '" maxlength="8" inputmode="numeric" placeholder="8 díg." onchange="_rpSetItem(' + i + ',\'ncm\',this.value)" style="width:82px;padding:5px 6px;border:1px solid ' + (it.ncm ? '#cbd5e1' : '#fbbf24') + ';border-radius:6px;font-size:12px;text-align:center"></td>' +
+        '<td style="padding:4px 6px;vertical-align:middle"><input id="rpNcm' + i + '" value="' + _esc(it.ncm || '') + '" maxlength="8" inputmode="numeric" placeholder="8 díg." oninput="_ncmInput(this)" onchange="_rpSetItem(' + i + ',\'ncm\',this.value)" style="width:82px;padding:5px 6px;border:1px solid ' + (it.ncm ? '#cbd5e1' : '#fbbf24') + ';border-radius:6px;font-size:12px;text-align:center"></td>' +
         '<td style="padding:4px 6px;vertical-align:middle"><input id="rpUnid' + i + '" value="' + _esc(it.unidade || 'UN') + '" maxlength="6" onchange="_rpSetItem(' + i + ',\'unidade\',this.value)" style="width:54px;padding:5px 6px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;text-align:center;text-transform:uppercase"></td>' +
       '</tr>';
     }).join('') : '<tr><td colspan="6" style="padding:10px;text-align:center;color:#64748b">Nenhum item</td></tr>';
@@ -2477,7 +2519,7 @@
         // NCM + IA + busca
         '<td style="' + td + '">' +
           '<div style="position:relative">' +
-            '<input id="nlNcm' + i + '" style="' + inpT + ';padding-right:64px" placeholder="Ex: 64039990" inputmode="numeric" maxlength="8">' +
+            '<input id="nlNcm' + i + '" style="' + inpT + ';padding-right:64px" placeholder="Ex: 64039990" inputmode="numeric" maxlength="8" oninput="_ncmInput(this)">' +
             '<div style="position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;gap:4px">' +
               '<button onclick="_ncmLoteSugerirIA(' + i + ')" title="Sugerir NCM com IA" style="background:#16a34a;border:none;color:#fff;font-size:10px;font-weight:700;padding:3px 5px;border-radius:5px;cursor:pointer">IA</button>' +
               '<button onclick="_ncmLoteBuscar(' + i + ')" title="Buscar NCM" style="background:#f1f5f9;border:1px solid #cbd5e1;color:#475569;padding:2px 5px;border-radius:5px;cursor:pointer;display:flex;align-items:center"><span class="lc-ic" data-lucide="search" style="width:12px;height:12px"></span></button>' +
@@ -5443,9 +5485,455 @@
           '<span class="lc-ic" data-lucide="package"></span></button>' +
         '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_verNotasDaEmpresa(' + e.id + ')" title="Notas">' +
           '<span class="lc-ic" data-lucide="receipt"></span></button>' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_empAbrirConciliacao(' + e.id + ',\'estoque\')" title="Controle de estoque por NCM (dentro da Conciliação fiscal)">' +
+          '<span class="lc-ic" data-lucide="boxes"></span></button>' +
       '</div>' +
     '</div>';
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // CONTROLE DE ESTOQUE DO CLIENTE (por NCM) — v33k.1186
+  // Entradas/saídas do kardex, agrupadas por NCM, expansíveis, com ajuste
+  // CONTÁBIL (não toca no estoque real nem no marketplace).
+  // ═══════════════════════════════════════════════════════════════════
+  window._ceCtx = null;
+  // O controle de estoque renderiza num container configurável: no modal
+  // (ceBody/ceTabs) OU embutido numa tela (ex.: dentro da Conciliação fiscal).
+  function _ceBodyEl() { const c = window._ceCtx; return document.getElementById((c && c.bodyId) || 'ceBody'); }
+  function _ceTabsEl() { const c = window._ceCtx; return document.getElementById((c && c.tabsId) || 'ceTabs'); }
+
+  // Monta o controle DENTRO de um container já existente na tela (sem modal).
+  // Usado pela aba "Estoque por NCM" da Conciliação fiscal.
+  window._ceMontarInline = function (empresaId, razao, hostId, abaInicial) {
+    const host = document.getElementById(hostId);
+    if (!host) return;
+    host.innerHTML =
+      '<div id="ceTabsInline" style="display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid var(--lc-border)"></div>' +
+      '<div id="ceBodyInline"></div>';
+    window._ceCtx = {
+      empresaId: Number(empresaId), razao: razao || '', aba: abaInicial || 'fiscal',
+      dados: null, fiscal: null, nfs: null, exp: {}, expNcm: {}, ncmFiltro: '',
+      bodyId: 'ceBodyInline', tabsId: 'ceTabsInline',
+    };
+    _ceTabs();
+    _ceRecarregar();
+  };
+
+  window.abrirEstoqueContabil = function (empresaId, razao) {
+    window._ceCtx = { empresaId: Number(empresaId), razao: razao || '', aba: 'kardex', dados: null, fiscal: null, nfs: null, exp: {}, expNcm: {}, ncmFiltro: '', bodyId: 'ceBody', tabsId: 'ceTabs' };
+    let ov = document.getElementById('ceOverlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'ceOverlay';
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:100050;display:flex;align-items:center;justify-content:center;padding:18px';
+      ov.onclick = function (ev) { if (ev.target === ov) ov.remove(); };
+      ov.innerHTML = '<div style="background:#f8fafc;border-radius:16px;width:min(940px,97vw);max-height:94vh;overflow:hidden;display:flex;flex-direction:column">' +
+        '<div style="padding:15px 20px;background:linear-gradient(135deg,#0ea5e9,#0369a1);color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">' +
+          '<div><div style="font-size:16px;font-weight:800">📦 Controle de Estoque</div>' +
+          '<div id="ceSub" style="font-size:12.5px;opacity:.92"></div></div>' +
+          '<button onclick="document.getElementById(\'ceOverlay\').remove()" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:16px">✕</button>' +
+        '</div>' +
+        '<div id="ceTabs" style="display:flex;gap:4px;padding:10px 20px 0;background:#f8fafc;flex-shrink:0;border-bottom:1px solid #e2e8f0"></div>' +
+        '<div id="ceBody" style="overflow-y:auto;flex:1;padding:16px 20px"></div>' +
+      '</div>';
+      document.body.appendChild(ov);
+    }
+    document.getElementById('ceSub').textContent = window._ceCtx.razao;
+    _ceTabs();
+    _ceRecarregar();
+  };
+
+  window._ceTabs = function () {
+    const ctx = window._ceCtx; if (!ctx) return;
+    const bar = _ceTabsEl(); if (!bar) return;
+    const tab = (id, rot) => '<button onclick="_ceIrAba(\'' + id + '\')" style="border:none;background:' + (ctx.aba === id ? '#fff' : 'transparent') +
+      ';color:' + (ctx.aba === id ? '#0369a1' : '#64748b') + ';font-weight:' + (ctx.aba === id ? '800' : '600') +
+      ';font-size:13px;padding:9px 15px;border-radius:9px 9px 0 0;cursor:pointer;border-bottom:2px solid ' + (ctx.aba === id ? '#0369a1' : 'transparent') + '">' + rot + '</button>';
+    bar.innerHTML = tab('kardex', 'Kardex (por SKU)') + tab('fiscal', 'Controle fiscal por NCM');
+  };
+
+  window._ceIrAba = function (aba) {
+    const ctx = window._ceCtx; if (!ctx) return;
+    ctx.aba = aba; _ceTabs(); _ceRecarregar();
+  };
+
+  window._ceRecarregar = async function () {
+    const ctx = window._ceCtx; if (!ctx) return;
+    if (ctx.aba === 'fiscal') return _ceRecarregarFiscal();
+    const body = _ceBodyEl(); if (!body) return;
+    body.innerHTML = '<div style="text-align:center;padding:40px;color:#64748b">Carregando movimentos…</div>';
+    let d;
+    try {
+      const qs = '?empresaId=' + ctx.empresaId + (ctx.ncmFiltro ? '&ncm=' + encodeURIComponent(ctx.ncmFiltro) : '');
+      d = await _api('/api/contabilidade/estoque/movimentos' + qs);
+    } catch (e) { body.innerHTML = '<div style="padding:24px;color:#dc2626">Falha ao carregar.</div>'; return; }
+    if (!d || !d.ok) { body.innerHTML = '<div style="padding:24px;color:#dc2626">' + _esc((d && d.erro) || 'Erro') + '</div>'; return; }
+    ctx.dados = d;
+    _ceRender();
+  };
+
+  function _ceNum(n) { return (Number(n) || 0).toLocaleString('pt-BR'); }
+
+  window._ceRender = function () {
+    const ctx = window._ceCtx; const d = ctx && ctx.dados; if (!d) return;
+    const body = _ceBodyEl();
+    const t = d.totais || { entradas: 0, saidas: 0, saldo: 0 };
+    const cardT = (rot, val, cor) => '<div style="flex:1;min-width:120px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px">' +
+      '<div style="font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.3px">' + rot + '</div>' +
+      '<div style="font-size:22px;font-weight:800;color:' + cor + ';margin-top:2px">' + val + '</div></div>';
+    // formulário de ajuste contábil
+    const formAjuste = '<div style="background:#fff;border:1px dashed #cbd5e1;border-radius:12px;padding:12px 14px;margin:14px 0">' +
+      '<div style="font-weight:700;color:#0f172a;font-size:13px;margin-bottom:8px">Ajuste contábil (não altera o anúncio no marketplace)</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+        '<div style="flex:2;min-width:130px"><label style="font-size:11px;color:#64748b;font-weight:600">SKU</label><input id="ceAjSku" placeholder="SKU do item" style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px"></div>' +
+        '<div style="width:120px"><label style="font-size:11px;color:#64748b;font-weight:600">Qtd (+entra / −sai)</label><input id="ceAjDelta" type="number" step="1" placeholder="ex: 10 ou -3" style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px"></div>' +
+        '<div style="flex:2;min-width:130px"><label style="font-size:11px;color:#64748b;font-weight:600">Motivo</label><input id="ceAjMotivo" placeholder="ex: inventário, correção" style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px"></div>' +
+        '<button class="lc-btn lc-btn--sm" style="background:#0369a1;color:#fff" onclick="_ceAjustar()">Registrar</button>' +
+      '</div></div>';
+    // filtro por NCM
+    const filtro = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">' +
+      '<input id="ceFiltroNcm" value="' + _esc(ctx.ncmFiltro || '') + '" placeholder="Filtrar por NCM (8 dígitos)" maxlength="8" style="padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;width:220px" oninput="this.value=this.value.replace(/\\D/g,\'\').slice(0,8)">' +
+      '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_ceCtx.ncmFiltro=(document.getElementById(\'ceFiltroNcm\').value||\'\');_ceRecarregar()">Filtrar</button>' +
+      (ctx.ncmFiltro ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_ceCtx.ncmFiltro=\'\';_ceRecarregar()">Limpar</button>' : '') +
+      '<span style="font-size:12px;color:#64748b;margin-left:auto">' + _ceNum(d.totalMovs) + ' movimento(s)</span></div>';
+
+    const ncms = d.ncms || [];
+    let listaHtml;
+    if (!ncms.length) {
+      listaHtml = '<div style="text-align:center;padding:36px;color:#64748b">Nenhum movimento de estoque neste período.' + (d.semTabela ? ' (histórico de estoque ainda não ativado)' : '') + '</div>';
+    } else {
+      listaHtml = ncms.map(g => {
+        const aberto = !!ctx.exp[g.ncm];
+        const rotNcm = g.ncm === 'sem-ncm' ? 'Sem NCM cadastrado' : g.ncm;
+        const linhas = aberto ? ('<div style="padding:2px 0 8px">' +
+          '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+          '<thead><tr style="color:#64748b;text-align:left">' +
+            '<th style="padding:5px 6px">Data</th><th style="padding:5px 6px">SKU</th><th style="padding:5px 6px">Movimento</th><th style="padding:5px 6px;text-align:right">Antes→Depois</th><th style="padding:5px 6px">Origem</th></tr></thead><tbody>' +
+          g.movimentos.map(m => {
+            const dt = m.criadoEm ? new Date(m.criadoEm).toLocaleString('pt-BR') : '—';
+            const ent = m.delta > 0;
+            const badge = '<span style="font-weight:700;color:' + (ent ? '#16a34a' : (m.delta < 0 ? '#dc2626' : '#64748b')) + '">' + (m.delta > 0 ? '+' : '') + _ceNum(m.delta) + '</span>';
+            const ad = (m.qtdAntes != null && m.qtdDepois != null) ? (_ceNum(m.qtdAntes) + '→' + _ceNum(m.qtdDepois)) : '—';
+            const orig = m.origem === 'ajuste_contabil' ? '<span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:6px;font-size:10.5px;font-weight:700">ajuste contábil</span>' : _esc(m.origem || '—');
+            return '<tr style="border-top:1px solid #f1f5f9"><td style="padding:5px 6px;color:#475569;white-space:nowrap">' + dt + '</td>' +
+              '<td style="padding:5px 6px"><b>' + _esc(m.sku) + '</b>' + (m.variacaoNome ? ' <span style="color:#94a3b8">' + _esc(m.variacaoNome) + '</span>' : '') + '</td>' +
+              '<td style="padding:5px 6px">' + badge + (m.motivo ? ' <span style="color:#94a3b8;font-size:11px">' + _esc(m.motivo) + '</span>' : '') + '</td>' +
+              '<td style="padding:5px 6px;text-align:right;color:#475569">' + ad + '</td>' +
+              '<td style="padding:5px 6px">' + orig + '</td></tr>';
+          }).join('') + '</tbody></table></div>') : '';
+        return '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:8px;overflow:hidden">' +
+          '<div onclick="_ceToggle(\'' + g.ncm + '\')" style="display:flex;align-items:center;gap:12px;padding:11px 14px;cursor:pointer">' +
+            '<span style="font-size:12px;color:#94a3b8;width:14px">' + (aberto ? '▾' : '▸') + '</span>' +
+            '<div style="flex:1;min-width:0"><div style="font-weight:700;color:#0f172a;font-size:13.5px">NCM ' + _esc(rotNcm) + '</div>' +
+              '<div style="font-size:11.5px;color:#64748b">' + _ceNum(g.qtdSkus) + ' SKU(s) · ' + _ceNum(g.qtdMovs) + ' movimento(s)</div></div>' +
+            '<div style="text-align:right"><span style="color:#16a34a;font-weight:700">↑ ' + _ceNum(g.entradas) + '</span> &nbsp; <span style="color:#dc2626;font-weight:700">↓ ' + _ceNum(g.saidas) + '</span></div>' +
+            '<div style="text-align:right;min-width:70px"><div style="font-size:10.5px;color:#94a3b8;text-transform:uppercase">Saldo</div><div style="font-weight:800;color:' + (g.saldo >= 0 ? '#0f172a' : '#dc2626') + '">' + (g.saldo > 0 ? '+' : '') + _ceNum(g.saldo) + '</div></div>' +
+          '</div>' + linhas + '</div>';
+      }).join('');
+    }
+
+    body.innerHTML =
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+        cardT('Entradas', '↑ ' + _ceNum(t.entradas), '#16a34a') +
+        cardT('Saídas', '↓ ' + _ceNum(t.saidas), '#dc2626') +
+        cardT('Saldo do período', (t.saldo > 0 ? '+' : '') + _ceNum(t.saldo), t.saldo >= 0 ? '#0f172a' : '#dc2626') +
+      '</div>' + formAjuste + filtro + listaHtml;
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(body); } catch (e) {} }
+  };
+
+  window._ceToggle = function (ncm) {
+    const ctx = window._ceCtx; if (!ctx) return;
+    ctx.exp[ncm] = !ctx.exp[ncm];
+    _ceRender();
+  };
+
+  window._ceAjustar = async function () {
+    const ctx = window._ceCtx; if (!ctx) return;
+    const sku = (document.getElementById('ceAjSku') || {}).value || '';
+    const delta = parseInt((document.getElementById('ceAjDelta') || {}).value, 10);
+    const motivo = (document.getElementById('ceAjMotivo') || {}).value || '';
+    if (!sku.trim()) { alert('Informe o SKU do item.'); return; }
+    if (!delta || Number.isNaN(delta)) { alert('Informe a quantidade (positiva = entrada, negativa = saída).'); return; }
+    try {
+      const r = await _api('/api/contabilidade/estoque/ajuste', {
+        method: 'POST', body: JSON.stringify({ empresaId: ctx.empresaId, sku: sku.trim(), delta, motivo: motivo.trim() }),
+      });
+      if (!r || !r.ok) { alert('Erro: ' + ((r && r.erro) || 'falha')); return; }
+      const inp = document.getElementById('ceAjDelta'); if (inp) inp.value = '';
+      const mv = document.getElementById('ceAjMotivo'); if (mv) mv.value = '';
+      _ceRecarregar();
+    } catch (e) { alert('Erro: ' + e.message); }
+  };
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ABA "CONTROLE FISCAL POR NCM" (v33k.1187)
+  // Entradas de NF de compra + lançamentos manuais (razão fiscal), saídas
+  // reais do kardex, saldo por NCM e ALERTAS de NCM vendido sem entrada.
+  // ═══════════════════════════════════════════════════════════════════
+  window._ceRecarregarFiscal = async function () {
+    const ctx = window._ceCtx; if (!ctx) return;
+    const body = _ceBodyEl(); if (!body) return;
+    body.innerHTML = '<div style="text-align:center;padding:40px;color:#64748b">Carregando controle fiscal…</div>';
+    try {
+      const [f, nfs] = await Promise.all([
+        _api('/api/contabilidade/estoque/ncm?empresaId=' + ctx.empresaId),
+        _api('/api/contabilidade/nfe-entradas?empresaId=' + ctx.empresaId).catch(() => null),
+      ]);
+      if (!f || !f.ok) { body.innerHTML = '<div style="padding:24px;color:#dc2626">' + _esc((f && f.erro) || 'Erro') + '</div>'; return; }
+      ctx.fiscal = f; ctx.nfs = nfs;
+    } catch (e) { body.innerHTML = '<div style="padding:24px;color:#dc2626">Falha ao carregar.</div>'; return; }
+    _ceRenderFiscal();
+  };
+
+  window._ceRenderFiscal = function () {
+    const ctx = window._ceCtx; const f = ctx && ctx.fiscal; if (!f) return;
+    const body = _ceBodyEl();
+    const t = f.totais || { entradas: 0, saidas: 0, saldo: 0 };
+    const cardT = (rot, val, cor) => '<div style="flex:1;min-width:120px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px">' +
+      '<div style="font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.3px">' + rot + '</div>' +
+      '<div style="font-size:22px;font-weight:800;color:' + cor + ';margin-top:2px">' + val + '</div></div>';
+
+    // ── ALERTAS ──
+    const alertas = f.alertas || [];
+    let alertaHtml = '';
+    if (alertas.length) {
+      alertaHtml = '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px 14px;margin-bottom:12px">' +
+        '<div style="font-weight:800;color:#c2410c;font-size:13px;margin-bottom:6px">⚠️ ' + alertas.length + ' alerta(s) de NCM</div>' +
+        alertas.map(a => {
+          const rot = a.tipo === 'sem_entrada'
+            ? 'vendeu <b>' + _ceNum(a.saidas) + '</b> sem nenhuma entrada registrada'
+            : 'saldo negativo: entrou ' + _ceNum(a.entradas) + ', saiu ' + _ceNum(a.saidas) + ' (' + _ceNum(a.saldo) + ')';
+          const oQueE = a.ncmDescricao || a.descricao || '';
+          return '<div style="font-size:12.5px;color:#7c2d12;padding:3px 0;border-top:1px solid #ffedd5">' +
+            '<b>NCM ' + _esc(a.ncm) + '</b>' + (oQueE ? ' <span style="color:#9a3412">· ' + _esc(oQueE) + '</span>' : '') + ' — ' + rot + '</div>';
+        }).join('') + '</div>';
+    }
+
+    // ── SUBIR XML DE NF DE ENTRADA (do fornecedor) ──
+    const uploadHtml = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px;margin-bottom:12px">' +
+      '<div style="font-weight:800;color:#0f172a;font-size:13px;margin-bottom:4px">Subir XML de nota de entrada</div>' +
+      '<div style="font-size:11.5px;color:#64748b;margin-bottom:8px">Envie o XML da NF do fornecedor. Identifico os produtos por NCM (com o nome/descrição) antes de dar entrada.</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+        '<input type="file" id="ceXmlFile" accept=".xml,text/xml,application/xml" multiple style="font-size:12.5px" onchange="_ceXmlPreview()">' +
+        '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_ceXmlPreview()">Identificar produtos</button>' +
+      '</div>' +
+      '<div id="ceXmlPreviewBox"></div>' +
+    '</div>';
+
+    // ── NOTAS DE ENTRADA (dar entrada por NCM) ──
+    const nfs = (ctx.nfs && ctx.nfs.entradas) || [];
+    let nfHtml = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px;margin-bottom:12px">' +
+      '<div style="font-weight:800;color:#0f172a;font-size:13px;margin-bottom:8px">Notas de entrada (compras)</div>';
+    if (ctx.nfs && ctx.nfs.semTabela) {
+      nfHtml += '<div style="color:#64748b;font-size:12.5px">Nenhuma nota de entrada capturada ainda para este cliente.</div>';
+    } else if (!nfs.length) {
+      nfHtml += '<div style="color:#64748b;font-size:12.5px">Nenhuma nota de entrada de compra encontrada.</div>';
+    } else {
+      nfHtml += '<div style="max-height:230px;overflow-y:auto">' + nfs.map(n => {
+        const dt = n.dataEmissao ? new Date(n.dataEmissao).toLocaleDateString('pt-BR') : '—';
+        const val = n.valorTotal != null ? ('R$ ' + Number(n.valorTotal).toLocaleString('pt-BR', { minimumFractionDigits: 2 })) : '—';
+        let acao;
+        if (n.entradaRegistrada) {
+          acao = '<span style="background:#dcfce7;color:#15803d;padding:3px 9px;border-radius:7px;font-size:11px;font-weight:700">✓ entrada dada</span>';
+        } else if (!n.temItens) {
+          acao = '<span title="Nota só como resumo (sem XML dos itens)" style="color:#94a3b8;font-size:11px">resumo (sem itens)</span>';
+        } else {
+          acao = '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="font-size:11.5px;padding:4px 9px" onclick="_ceVerItensNf(' + n.id + ')">Ver itens</button>' +
+            '<button class="lc-btn lc-btn--sm" style="background:#16a34a;color:#fff;font-size:11.5px;padding:4px 9px;margin-left:5px" onclick="_ceDarEntradaNf(' + n.id + ')">Dar entrada</button>';
+        }
+        return '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid #f1f5f9">' +
+          '<div style="flex:1;min-width:0"><div style="font-weight:600;color:#0f172a;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _esc(n.emitente || n.emitCnpj || 'NF ' + (n.chave || '').slice(25, 34)) + '</div>' +
+          '<div style="font-size:11px;color:#94a3b8">' + dt + ' · ' + val + '</div></div>' +
+          '<div style="flex-shrink:0;text-align:right">' + acao + '</div></div>';
+      }).join('') + '</div>';
+    }
+    nfHtml += '</div>';
+
+    // ── LANÇAMENTO MANUAL POR NCM ──
+    const formLanc = '<div style="background:#fff;border:1px dashed #cbd5e1;border-radius:12px;padding:12px 14px;margin-bottom:12px">' +
+      '<div style="font-weight:700;color:#0f172a;font-size:13px;margin-bottom:8px">Lançamento manual por NCM</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+        '<div style="width:160px"><label style="font-size:11px;color:#64748b;font-weight:600">NCM (8 díg.)</label><input id="ceLnNcm" maxlength="8" placeholder="ex: 61091000" style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px" oninput="this.value=this.value.replace(/\\D/g,\'\').slice(0,8)"></div>' +
+        '<div style="width:130px"><label style="font-size:11px;color:#64748b;font-weight:600">Qtd (+entra / −sai)</label><input id="ceLnQtd" type="number" step="1" placeholder="ex: 50 ou -5" style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px"></div>' +
+        '<div style="flex:2;min-width:130px"><label style="font-size:11px;color:#64748b;font-weight:600">Descrição/motivo</label><input id="ceLnDesc" placeholder="ex: inventário, entrada avulsa" style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px"></div>' +
+        '<button class="lc-btn lc-btn--sm" style="background:#0369a1;color:#fff" onclick="_ceLancarNcm()">Lançar</button>' +
+      '</div></div>';
+
+    // ── TABELA POR NCM ──
+    const ncms = f.ncms || [];
+    let listaHtml;
+    if (!ncms.length) {
+      listaHtml = '<div style="text-align:center;padding:30px;color:#64748b">Nenhum movimento fiscal por NCM ainda.' +
+        (f.semTabelaLedger ? ' <br><span style="font-size:12px">(controle fiscal por NCM ainda não ativado no banco)</span>' : '') + '</div>';
+    } else {
+      listaHtml = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12.5px">' +
+        '<thead><tr style="color:#64748b;text-align:left;background:#f8fafc">' +
+          '<th style="padding:8px 10px">NCM</th><th style="padding:8px 10px">Descrição</th>' +
+          '<th style="padding:8px 10px;text-align:right">Entradas</th><th style="padding:8px 10px;text-align:right">Saídas</th>' +
+          '<th style="padding:8px 10px;text-align:right">Saldo fiscal</th></tr></thead><tbody>' +
+        ncms.map(g => {
+          const rotNcm = g.ncm === 'sem-ncm' ? '<span style="color:#94a3b8">sem NCM</span>' : _esc(g.ncm);
+          const flag = g.semEntrada ? ' <span title="vendeu sem entrada" style="color:#c2410c">⚠️</span>' : (g.saldoNegativo ? ' <span title="saldo negativo" style="color:#dc2626">▼</span>' : '');
+          // "o que é isto": descrição oficial do NCM ou, na falta, o nome do produto
+          const oQueE = g.ncmDescricao || g.descricao || '';
+          const descCel = oQueE
+            ? '<span title="' + _esc(oQueE) + '">' + _esc(oQueE) + '</span>' + (g.ncmDescricao && g.descricao && g.descricao !== g.ncmDescricao ? ' <span style="color:#94a3b8">· ' + _esc(g.descricao) + '</span>' : '')
+            : '—';
+          return '<tr style="border-top:1px solid #f1f5f9' + (g.semEntrada ? ';background:#fff7ed' : '') + '">' +
+            '<td style="padding:7px 10px;font-weight:700">' + rotNcm + flag + '</td>' +
+            '<td style="padding:7px 10px;color:#475569;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + descCel + '</td>' +
+            '<td style="padding:7px 10px;text-align:right;color:#16a34a;font-weight:700">' + _ceNum(g.entradas) + '</td>' +
+            '<td style="padding:7px 10px;text-align:right;color:#dc2626;font-weight:700">' + _ceNum(g.saidas) + '</td>' +
+            '<td style="padding:7px 10px;text-align:right;font-weight:800;color:' + (g.saldo < 0 ? '#dc2626' : '#0f172a') + '">' + (g.saldo > 0 ? '+' : '') + _ceNum(g.saldo) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+
+    body.innerHTML =
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
+        cardT('Entradas (NF+manual)', '↑ ' + _ceNum(t.entradas), '#16a34a') +
+        cardT('Saídas (vendas reais)', '↓ ' + _ceNum(t.saidas), '#dc2626') +
+        cardT('Saldo fiscal', (t.saldo > 0 ? '+' : '') + _ceNum(t.saldo), t.saldo < 0 ? '#dc2626' : '#0f172a') +
+      '</div>' + alertaHtml + uploadHtml + nfHtml + formLanc + listaHtml;
+  };
+
+  // Lê os arquivos XML escolhidos, pede a PRÉVIA ao servidor (não grava) e
+  // mostra os produtos identificados por NCM, com nome/descrição.
+  window._ceXmlLerArquivos = function () {
+    const inp = document.getElementById('ceXmlFile');
+    const arqs = (inp && inp.files) ? Array.from(inp.files) : [];
+    return Promise.all(arqs.map(f => new Promise((resolve) => {
+      if (f.size > 8 * 1024 * 1024) { resolve({ nome: f.name, erro: 'maior que 8 MB' }); return; }
+      const r = new FileReader();
+      r.onload = () => resolve({ nome: f.name, xml: String(r.result || '') });
+      r.onerror = () => resolve({ nome: f.name, erro: 'falha ao ler' });
+      r.readAsText(f);
+    })));
+  };
+
+  window._ceXmlPreview = async function () {
+    const ctx = window._ceCtx; if (!ctx) return;
+    const box = document.getElementById('ceXmlPreviewBox'); if (!box) return;
+    const arqs = await _ceXmlLerArquivos();
+    const bons = arqs.filter(a => a.xml && !a.erro);
+    const ruins = arqs.filter(a => a.erro);
+    if (!bons.length) { box.innerHTML = ruins.length ? '<div style="color:#dc2626;font-size:12px;margin-top:8px">Nenhum arquivo válido: ' + ruins.map(r => _esc(r.nome + ' (' + r.erro + ')')).join(', ') + '</div>' : '<div style="color:#64748b;font-size:12px;margin-top:8px">Escolha um ou mais arquivos XML.</div>'; return; }
+    // junta os XMLs num só corpo (o servidor separa as notas)
+    const xml = bons.map(a => a.xml).join('\n');
+    ctx._xmlPendente = xml;
+    box.innerHTML = '<div style="color:#64748b;font-size:12px;margin-top:8px">Identificando produtos…</div>';
+    let d;
+    try {
+      d = await _api('/api/contabilidade/estoque/entrada-xml', {
+        method: 'POST', body: JSON.stringify({ empresaId: ctx.empresaId, xml, confirmar: false }),
+      });
+    } catch (e) { box.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">Erro: ' + _esc(e.message) + '</div>'; return; }
+    if (!d || !d.ok) { box.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">' + _esc((d && d.erro) || 'Falha') + '</div>'; return; }
+    _ceRenderXmlPreview(d);
+  };
+
+  window._ceRenderXmlPreview = function (d) {
+    const box = document.getElementById('ceXmlPreviewBox'); if (!box) return;
+    const notas = d.notas || [];
+    const porNcm = d.porNcm || [];
+    const novas = notas.filter(n => !n.jaRegistrada);
+    let h = '<div style="margin-top:10px;border-top:1px dashed #e2e8f0;padding-top:10px">';
+    // resumo das notas
+    h += '<div style="font-size:12px;color:#334155;margin-bottom:6px"><b>' + notas.length + '</b> nota(s) no arquivo';
+    const jaReg = notas.length - novas.length;
+    if (jaReg > 0) h += ' · <span style="color:#15803d">' + jaReg + ' já com entrada</span>';
+    h += '</div>';
+    if (d.erros && d.erros.length) {
+      h += '<div style="font-size:11.5px;color:#c2410c;margin-bottom:6px">' + d.erros.map(e => _esc(e)).join('<br>') + '</div>';
+    }
+    // produtos por NCM
+    if (porNcm.length) {
+      h += '<div style="max-height:240px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+        '<thead><tr style="color:#64748b;text-align:left;background:#f8fafc">' +
+          '<th style="padding:6px 9px">NCM</th><th style="padding:6px 9px">Produto / o que é</th><th style="padding:6px 9px;text-align:right">Qtd</th></tr></thead><tbody>' +
+        porNcm.map(g => {
+          const oQueE = g.ncmDescricao || (g.descricoes && g.descricoes[0]) || '';
+          const extra = (g.descricoes && g.descricoes[0] && g.ncmDescricao && g.descricoes[0] !== g.ncmDescricao) ? ' <span style="color:#94a3b8">· ' + _esc(g.descricoes[0]) + '</span>' : '';
+          return '<tr style="border-top:1px solid #f1f5f9"><td style="padding:6px 9px;font-weight:700">' + (g.ncm === 'sem-ncm' ? '<span style="color:#c2410c">sem NCM</span>' : _esc(g.ncm)) + '</td>' +
+            '<td style="padding:6px 9px;color:#475569">' + (oQueE ? _esc(oQueE) + extra : '—') + '</td>' +
+            '<td style="padding:6px 9px;text-align:right;font-weight:700">' + _ceNum(g.quantidade) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    } else {
+      h += '<div style="color:#64748b;font-size:12px">Nenhum produto/NCM identificado nas notas.</div>';
+    }
+    // ação de confirmar
+    if (novas.length && porNcm.length) {
+      h += '<div style="display:flex;gap:8px;align-items:center;margin-top:10px">' +
+        '<button class="lc-btn lc-btn--sm" style="background:#16a34a;color:#fff" onclick="_ceXmlConfirmar()">Dar entrada de ' + novas.length + ' nota(s)</button>' +
+        '<span style="font-size:11px;color:#64748b">Registra as entradas por NCM. Não altera o estoque do anúncio no marketplace.</span></div>';
+    } else if (!novas.length && notas.length) {
+      h += '<div style="font-size:12px;color:#15803d;margin-top:8px">Todas as notas deste arquivo já tiveram entrada registrada.</div>';
+    }
+    h += '</div>';
+    box.innerHTML = h;
+  };
+
+  window._ceXmlConfirmar = async function () {
+    const ctx = window._ceCtx; if (!ctx || !ctx._xmlPendente) return;
+    const box = document.getElementById('ceXmlPreviewBox');
+    if (box) box.innerHTML = '<div style="color:#64748b;font-size:12px;margin-top:8px">Registrando entradas…</div>';
+    let d;
+    try {
+      d = await _api('/api/contabilidade/estoque/entrada-xml', {
+        method: 'POST', body: JSON.stringify({ empresaId: ctx.empresaId, xml: ctx._xmlPendente, confirmar: true }),
+      });
+    } catch (e) { if (box) box.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">Erro: ' + _esc(e.message) + '</div>'; return; }
+    if (!d || !d.ok) { if (box) box.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">' + _esc((d && d.erro) || 'Falha') + '</div>'; return; }
+    ctx._xmlPendente = null;
+    alert('Entrada por XML concluída: ' + (d.registrado || 0) + ' lançamento(s) por NCM' + (d.jaExistiam ? ', ' + d.jaExistiam + ' nota(s) já existiam' : '') + '.');
+    _ceRecarregarFiscal();
+  };
+
+  window._ceVerItensNf = async function (entradaId) {
+    const ctx = window._ceCtx; if (!ctx) return;
+    let d;
+    try {
+      d = await _api('/api/contabilidade/nfe-entradas/' + entradaId + '/itens?empresaId=' + ctx.empresaId);
+    } catch (e) { alert('Erro: ' + e.message); return; }
+    if (!d || !d.ok) { alert('Erro: ' + ((d && d.erro) || 'falha')); return; }
+    const porNcm = d.porNcm || [];
+    const linhas = porNcm.map(g => {
+      const oQueE = g.ncmDescricao || (g.descricoes && g.descricoes[0]) || '';
+      return 'NCM ' + (g.ncm === 'sem-ncm' ? '(sem NCM)' : g.ncm) + '  →  ' + g.quantidade + ' un' + (oQueE ? '  (' + oQueE + ')' : '');
+    }).join('\n');
+    alert('Itens da NF (agrupados por NCM):\n\n' + linhas + '\n\nClique em "Dar entrada" para lançar estas quantidades no controle fiscal.');
+  };
+
+  window._ceDarEntradaNf = async function (entradaId) {
+    const ctx = window._ceCtx; if (!ctx) return;
+    if (!confirm('Dar entrada dos produtos desta NF no controle fiscal por NCM?\n\nIsto registra as ENTRADAS por NCM. Não altera o estoque do anúncio no marketplace.')) return;
+    try {
+      const r = await _api('/api/contabilidade/estoque/entrada-nf', {
+        method: 'POST', body: JSON.stringify({ empresaId: ctx.empresaId, entradaId }),
+      });
+      if (!r || !r.ok) { alert('Erro: ' + ((r && r.erro) || 'falha')); return; }
+      alert('Entrada registrada: ' + r.ncms + ' NCM(s), ' + _ceNum(r.totalQtd) + ' unidade(s).');
+      _ceRecarregarFiscal();
+    } catch (e) { alert('Erro: ' + e.message); }
+  };
+
+  window._ceLancarNcm = async function () {
+    const ctx = window._ceCtx; if (!ctx) return;
+    const ncm = ((document.getElementById('ceLnNcm') || {}).value || '').replace(/\D/g, '');
+    const qtd = parseInt((document.getElementById('ceLnQtd') || {}).value, 10);
+    const desc = (document.getElementById('ceLnDesc') || {}).value || '';
+    if (ncm.length !== 8) { alert('Informe um NCM válido (8 dígitos).'); return; }
+    if (!qtd || Number.isNaN(qtd)) { alert('Informe a quantidade (positiva = entrada, negativa = saída).'); return; }
+    try {
+      const r = await _api('/api/contabilidade/estoque/lancamento-ncm', {
+        method: 'POST', body: JSON.stringify({ empresaId: ctx.empresaId, ncm, quantidade: qtd, descricao: desc.trim() }),
+      });
+      if (!r || !r.ok) { alert('Erro: ' + ((r && r.erro) || 'falha')); return; }
+      ['ceLnNcm', 'ceLnQtd', 'ceLnDesc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+      _ceRecarregarFiscal();
+    } catch (e) { alert('Erro: ' + e.message); }
+  };
 
   function _empLista(emps) {
     let h = '<div style="background:var(--lc-surface);border:1px solid var(--lc-border);' +
@@ -5501,8 +5989,9 @@
   }
   window._empAbrirPainel = _empAbrirPainel;
 
-  function _empAbrirConciliacao(id) {
+  function _empAbrirConciliacao(id, aba) {
     window._contabEmpresaFoco = id;
+    window._concSubAba = aba || 'conc';
     goTo('contabConciliacaoScreen');
   }
   window._empAbrirConciliacao = _empAbrirConciliacao;
@@ -5564,28 +6053,45 @@
       return;
     }
 
+    const subAba = (window._concSubAba || 'conc');
+    const stBtn = (id, rot) => '<button onclick="_concIrAba(\'' + id + '\')" style="border:none;background:' + (subAba === id ? 'var(--lc-surface)' : 'transparent') +
+      ';color:' + (subAba === id ? 'var(--lc-primary)' : 'var(--lc-muted)') + ';font-weight:' + (subAba === id ? '800' : '600') +
+      ';font-size:13px;padding:9px 15px;border-radius:9px 9px 0 0;cursor:pointer;border-bottom:2px solid ' + (subAba === id ? 'var(--lc-primary)' : 'transparent') + '">' + rot + '</button>';
     alvo.innerHTML =
-      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:14px">' +
         '<div>' +
           '<div style="font-size:var(--lc-fs-2xl);font-weight:800;color:var(--lc-ink);letter-spacing:-.6px">Conciliação fiscal</div>' +
           '<div style="font-size:var(--lc-fs-sm);color:var(--lc-muted);margin-top:3px">' +
-            'Pedidos do marketplace × notas emitidas</div>' +
+            'Pedidos × notas e o controle de estoque por NCM do cliente</div>' +
         '</div>' +
         '<div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">' +
-          _cSeletorMes('_contabConcMes') +
+          '<span id="concMesWrap"' + (subAba === 'estoque' ? ' style="display:none"' : '') + '>' + _cSeletorMes('_contabConcMes') + '</span>' +
           '<button class="lc-btn lc-btn--ghost" onclick="_contabConcTrocar()">Trocar empresa</button>' +
         '</div>' +
       '</div>' +
-      '<div id="concCorpo"><div style="text-align:center;padding:60px;color:var(--lc-muted)">' +
-      '<span class="lc-ic" data-lucide="refresh-cw"></span> Cruzando os dados…</div></div>';
+      '<div style="display:flex;gap:4px;border-bottom:1px solid var(--lc-border);margin-bottom:16px">' +
+        stBtn('conc', 'Pedidos × Notas') + stBtn('estoque', 'Estoque por NCM') +
+      '</div>' +
+      '<div id="concCorpo"' + (subAba === 'estoque' ? ' style="display:none"' : '') + '><div style="text-align:center;padding:60px;color:var(--lc-muted)">' +
+      '<span class="lc-ic" data-lucide="refresh-cw"></span> Cruzando os dados…</div></div>' +
+      '<div id="concEstoqueHost"' + (subAba === 'conc' ? ' style="display:none"' : '') + '></div>';
     _hidratarIcones(alvo);
     window._concCtx = { empresaId: foco, competencia: _cCompAtual(), filtro: 'acao', pagina: 1, busca: '' };
-    if (typeof _concCarregar === 'function') await _concCarregar();
+    if (subAba === 'estoque') {
+      if (window._ceMontarInline) window._ceMontarInline(foco, '', 'concEstoqueHost', 'fiscal');
+    } else if (typeof _concCarregar === 'function') { await _concCarregar(); }
   }
   window.renderContabConciliacao = renderContabConciliacao;
 
+  // alterna entre "Pedidos × Notas" e "Estoque por NCM" na Conciliação fiscal
+  window._concIrAba = function (aba) {
+    window._concSubAba = aba;
+    renderContabConciliacao();
+  };
+
   function _contabConcEmpresa(id) {
     window._contabEmpresaFoco = id;
+    if (!window._concSubAba) window._concSubAba = 'conc';
     renderContabConciliacao();
   }
   window._contabConcEmpresa = _contabConcEmpresa;
@@ -7628,6 +8134,23 @@
     _dfState.sel = new Set();
     _dfState.pagina = 1;
 
+    // v33k.1190: quais SKUs já são KIT (emitidos por composição). A linha desses
+    // produtos passa a dizer que a emissão segue as regras de kit, e o "editar"
+    // vai pro modal certo, em vez de mostrar campos fiscais soltos que não se
+    // aplicam (o NCM/CFOP real vem dos componentes).
+    _dfState.kitSkus = new Set();
+    try {
+      const rk = await _api('/api/nfe/kits');
+      if (rk && rk.ok && Array.isArray(rk.kits)) {
+        _kfState.kits = rk.kits;   // adianta o estado pro editor abrir já com os dados
+        rk.kits.forEach(k => {
+          if (k && k.ativo !== false && Array.isArray(k.itens) && k.itens.length) {
+            _dfState.kitSkus.add(_kfNorm(k.sku));
+          }
+        });
+      }
+    } catch (_) { /* sem kits carregados: as linhas seguem normais */ }
+
     // ── esqueleto ESTÁTICO (v33k.536): filtros e painel de massa não são mais
     //    re-renderizados, só stats, contadores e a tabela. Isso permite usar o
     //    seletor premium de lojas (LcAcctSel) e não perde o foco da busca. ──
@@ -7663,7 +8186,8 @@
           '<div style="font-size:13px;font-weight:700;color:#0f766e">Kits na Nota</div>' +
           '<div style="font-size:11.5px;color:#0f766e;opacity:.85">Um kit vendido sai na nota como vários itens, diga de que cada um é feito</div>' +
         '</div>' +
-        '<button class="lc-btn lc-btn--sm" style="background:#0d9488;color:#fff" onclick="abrirKitsFiscais()">Abrir</button>' +
+        '<button class="lc-btn lc-btn--sm" style="background:#0f766e;color:#fff" onclick="abrirMontarKitsPorAnuncio()" title="Montar kits escolhendo o anúncio e a unidade base">📦 Montar por anúncio</button>' +
+        '<button class="lc-btn lc-btn--sm" style="background:#0d9488;color:#fff" onclick="abrirKitsFiscais()">Abrir lista</button>' +
       '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' +
         '<input id="dfBusca" placeholder="🔍 Buscar SKU ou nome…" oninput="_dfSetBusca(this.value)" style="' + inp + ';flex:1;min-width:170px">' +
@@ -7790,6 +8314,25 @@
     });
   }
 
+  // v33k.1190: este SKU é um kit ativo (com composição)?
+  function _dfEhKit(sku) {
+    return !!(_dfState.kitSkus && _dfState.kitSkus.has(_kfNorm(sku)));
+  }
+  // Abre o editor de kit a partir da tela de Configuração de produto, garantindo
+  // que o estado do módulo de kits (variações, skus, kits) esteja carregado.
+  async function _dfEditarKit(sku) {
+    try {
+      if (!_kfState.variacoes || !_kfState.variacoes.length) _kfState.variacoes = _kfColetarVariacoes();
+      if (!_kfState.skus || !_kfState.skus.length) _kfState.skus = (typeof _dfColetarSkus === 'function') ? _dfColetarSkus() : [];
+      if (!_kfState.kits || !_kfState.kits.length) {
+        const r = await _api('/api/nfe/kits');
+        _kfState.kits = (r && r.ok && Array.isArray(r.kits)) ? r.kits : [];
+      }
+    } catch (_) {}
+    if (typeof _kfCompor === 'function') _kfCompor(sku);
+  }
+  window._dfEditarKit = _dfEditarKit;
+
   function _dfRender() {
     const el = document.getElementById('dfConteudo');
     if (!el) return;
@@ -7849,6 +8392,22 @@
       const foto = it.foto
         ? '<img src="' + _esc(it.foto) + '" loading="lazy" style="width:34px;height:34px;border-radius:8px;object-fit:cover;border:1px solid #e2e8f0" onerror="this.outerHTML=\'' + fotoPlaceholder.replace(/'/g, '&#39;') + '\'">'
         : fotoPlaceholder;
+      // v33k.1190: SKU que é KIT → não mostra os campos fiscais soltos (o NCM/CFOP
+      // real vem da composição). Avisa que a emissão segue as regras de kit e leva
+      // o "editar" pro modal correto.
+      if (_dfEhKit(it.sku)) {
+        return '<tr style="border-top:1px solid #f1f5f9;background:#f0fdfa">' +
+          '<td style="padding:5px 8px;text-align:center"><input type="checkbox" ' + checked + ' onclick="_dfToggle(\'' + skuJs + '\')" style="width:16px;height:16px"></td>' +
+          '<td style="padding:4px 6px">' + foto + '</td>' +
+          '<td style="padding:5px 8px;font-size:12px;white-space:nowrap"><span style="font-size:10.5px;font-weight:700;color:#0f766e;background:#ccfbf1;padding:1px 6px;border-radius:99px">📦 kit</span> ' + _esc(it.sku) + '</td>' +
+          '<td colspan="6" style="padding:8px 10px">' +
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+              '<div style="flex:1;min-width:180px;font-size:12px;color:#0f766e"><b>Este produto será emitido seguindo as regras de kit</b> — na NF ele se desmembra nos componentes da composição. Os campos fiscais desta linha não se aplicam.</div>' +
+              '<button class="lc-btn lc-btn--sm" style="background:#0d9488;color:#fff" onclick="_dfEditarKit(\'' + skuJs + '\')">✏️ Editar kit</button>' +
+            '</div>' +
+          '</td>' +
+        '</tr>';
+      }
       return '<tr style="border-top:1px solid #f1f5f9">' +
         '<td style="padding:5px 8px;text-align:center"><input type="checkbox" ' + checked + ' onclick="_dfToggle(\'' + skuJs + '\')" style="width:16px;height:16px"></td>' +
         '<td style="padding:4px 6px">' + foto + '</td>' +
@@ -8216,6 +8775,10 @@
 
     const el = document.getElementById('kfConteudo');
     el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;padding:10px 13px;margin-bottom:12px">' +
+        '<div style="flex:1;min-width:150px;font-size:12.5px;color:#0f766e"><b>Jeito rápido:</b> monte vários kits de um anúncio de uma vez (ex.: Toalha de rosto → Kit 3, 6, 9…), cada um = N × unidade base.</div>' +
+        '<button class="lc-btn lc-btn--sm" style="background:#0f766e;color:#fff" onclick="abrirMontarKitsPorAnuncio()">📦 Montar por anúncio</button>' +
+      '</div>' +
       '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;color:#1e3a8a;line-height:1.5">' +
         '<b>Como funciona:</b> escolha o SKU que é kit e liste os componentes. ' +
         'Vincular o componente a uma variação do catálogo (pelo SKU dela) é o caminho ' +
@@ -8794,7 +9357,257 @@
       }
     });
     _kfRender();
+    _dfSyncKitSkus();   // v33k.1190: mantém o aviso de kit na tela fiscal em dia
+    if (typeof window._invalidarKitsBom === 'function') window._invalidarKitsBom();  // estoque re-lê os kits
   }
+
+  // v33k.1190: reconstrói o conjunto de SKUs-kit e reatualiza a tela de
+  // Configuração de produto (se estiver aberta), pra o aviso não ficar defasado
+  // depois de criar/editar/remover um kit.
+  function _dfSyncKitSkus() {
+    if (!_dfState || !_dfState.kitSkus) return;
+    const novo = new Set();
+    (_kfState.kits || []).forEach(k => {
+      if (k && k.ativo !== false && Array.isArray(k.itens) && k.itens.length) novo.add(_kfNorm(k.sku));
+    });
+    _dfState.kitSkus = novo;
+    if (document.getElementById('dadosFiscaisOverlay') && typeof _dfRender === 'function') _dfRender();
+  }
+  window._dfSyncKitSkus = _dfSyncKitSkus;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // MONTAR KITS POR ANÚNCIO (v33k.1190)
+  // Em vez de configurar SKU por SKU, escolhe o ANÚNCIO pai (ex.: "Toalha de
+  // rosto") e o PRODUTO BASE (a unidade de 1). Cada variação-kit (Kit 3, 6, 9…)
+  // é mapeada para "N × variação base" num clique, com sugestão automática da
+  // quantidade (pelo número no nome) e casamento por cor. Salva vários kits de
+  // uma vez em /api/nfe/kits.
+  // ═══════════════════════════════════════════════════════════════════
+  const _mkState = { produtoId: null, baseId: null, linhas: [], carregando: false };
+
+  function _mkProdutos() {
+    const arr = (typeof produtosErp !== 'undefined' && Array.isArray(produtosErp)) ? produtosErp : [];
+    return arr
+      .filter(p => p.status !== 'excluido' && Array.isArray(p.variacoes) && p.variacoes.length)
+      .map(p => ({ id: p.id != null ? String(p.id) : '', nome: p.nome || ('Produto ' + p.id), variacoes: p.variacoes }))
+      .filter(p => p.id)
+      .sort((a, b) => String(a.nome).localeCompare(String(b.nome), 'pt-BR'));
+  }
+  function _mkProdutoPorId(id) { return _mkProdutos().find(p => p.id === String(id)) || null; }
+  function _mkVarLabel(v) { return [v.cor, v.tamanho].filter(Boolean).join(' ') || (v.nome || '') || (v.sku || ''); }
+  function _mkVarsDe(id) {
+    const p = _mkProdutoPorId(id); if (!p) return [];
+    return (p.variacoes || []).map(v => ({
+      sku: String(v.sku || '').trim(), label: _mkVarLabel(v), cor: v.cor || '', tamanho: v.tamanho || '',
+      variacaoId: v.id != null ? String(v.id) : null,
+    })).filter(v => v.sku);
+  }
+  function _mkQtdDoNome(label) {
+    const m = String(label || '').match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : '';
+  }
+  // casa a variação-kit com a variação base de MESMA cor (quando o base tem cor);
+  // se o base tem só 1 variação, usa ela pra todas.
+  function _mkBaseSugerido(kitVar, baseVars) {
+    if (!baseVars.length) return '';
+    if (baseVars.length === 1) return baseVars[0].sku;
+    const alvo = _kfNorm(kitVar.cor || kitVar.label);
+    const hit = baseVars.find(b => alvo && (_kfNorm(b.cor) === _kfNorm(kitVar.cor) && kitVar.cor)) ||
+                baseVars.find(b => alvo && _kfNorm(b.label).includes(_kfNorm(kitVar.cor)) && kitVar.cor);
+    return hit ? hit.sku : '';
+  }
+
+  async function abrirMontarKitsPorAnuncio(preProdutoId) {
+    _mkState.produtoId = (preProdutoId != null && String(preProdutoId) !== '') ? String(preProdutoId) : null;
+    _mkState.baseId = _mkState.produtoId;   // base padrão = o próprio anúncio
+    _mkState.linhas = [];
+    // garante os kits carregados (pra saber o que já é kit)
+    try {
+      const r = await _api('/api/nfe/kits');
+      _kfState.kits = (r && r.ok && Array.isArray(r.kits)) ? r.kits : (_kfState.kits || []);
+    } catch (_) {}
+    _overlay('mkOverlay',
+      '<div><h2 style="margin:0;font-size:16px"><span class="lc-ic" data-lucide="package-plus"></span> Montar kits por anúncio</h2>' +
+      '<div style="font-size:12px;opacity:.9;margin-top:2px">Escolha o anúncio e a unidade base; cada variação-kit vira N × base</div></div>',
+      '<div id="mkConteudo"></div>', 900);
+    if (_mkState.produtoId) _mkMontarLinhas();
+    _mkRender();
+  }
+
+  function _mkRender() {
+    const el = document.getElementById('mkConteudo'); if (!el) return;
+    const produtos = _mkProdutos();
+    const optProd = (sel) => produtos.map(p => '<option value="' + _esc(p.id) + '"' + (String(sel) === p.id ? ' selected' : '') + '>' + _esc(p.nome) + '</option>').join('');
+
+    let corpo = '';
+    // ── seletores ──
+    corpo +=
+      '<div style="' + card + '">' +
+        '<label style="' + lbl + '"><span class="lc-ic" data-lucide="package-search"></span> Anúncio (produto que tem as variações-kit)</label>' +
+        '<select id="mkProduto" onchange="_mkSetProduto(this.value)" style="' + inp + '">' +
+          '<option value="">— escolha o anúncio —</option>' + optProd(_mkState.produtoId) +
+        '</select>' +
+        (_mkState.produtoId ?
+          '<label style="' + lbl + ';margin-top:12px"><span class="lc-ic" data-lucide="box"></span> Produto base (a unidade de 1) — pode ser o mesmo anúncio se tiver uma variação de 1 unidade</label>' +
+          '<select id="mkBase" onchange="_mkSetBase(this.value)" style="' + inp + '">' +
+            '<option value="">— escolha o produto base —</option>' + optProd(_mkState.baseId) +
+          '</select>' : '') +
+      '</div>';
+
+    // ── tabela de mapeamento ──
+    if (_mkState.produtoId && _mkState.baseId) {
+      const baseVars = _mkVarsDe(_mkState.baseId);
+      const optBase = (selSku) => '<option value="">— base —</option>' + baseVars.map(b =>
+        '<option value="' + _esc(b.sku) + '"' + (_kfNorm(b.sku) === _kfNorm(selSku) ? ' selected' : '') + '>' + _esc(b.label || b.sku) + '</option>').join('');
+
+      const linhasHtml = _mkState.linhas.map((ln, i) => {
+        const jaKit = !!ln.jaKit;
+        return '<tr style="border-top:1px solid #f1f5f9' + (ln.ehKit ? ';background:#f0fdf4' : '') + '">' +
+          '<td style="padding:6px 8px"><input type="checkbox" ' + (ln.ehKit ? 'checked' : '') + ' onchange="_mkToggle(' + i + ',this.checked)" style="width:16px;height:16px"></td>' +
+          '<td style="padding:6px 8px;font-size:12.5px"><div style="font-weight:600;color:#0f172a">' + _esc(ln.label || ln.sku) + '</div>' +
+            '<div style="font-size:11px;color:#94a3b8">' + _esc(ln.sku) + (jaKit ? ' · <span style="color:#16a34a">já é kit</span>' : '') + '</div></td>' +
+          '<td style="padding:6px 8px"><select onchange="_mkSetLinha(' + i + ',\'baseSku\',this.value)" style="width:100%;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px">' + optBase(ln.baseSku) + '</select></td>' +
+          '<td style="padding:6px 8px;text-align:center"><input type="number" min="1" step="1" value="' + _esc(String(ln.qtd || '')) + '" onchange="_mkSetLinha(' + i + ',\'qtd\',this.value)" placeholder="N" style="width:64px;padding:6px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;text-align:center"></td>' +
+          '</tr>';
+      }).join('');
+
+      corpo +=
+        '<div style="' + card + ';padding:0;overflow:hidden">' +
+          '<div style="padding:11px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+            '<div style="font-weight:700;font-size:13px;color:#334155">Variações do anúncio → composição</div>' +
+            '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_mkAutoPreencher()">↺ Sugerir automático</button>' +
+          '</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+            '<thead><tr style="background:#fff">' +
+              '<th style="padding:6px 8px;width:34px">Kit?</th>' +
+              '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Variação (o que é vendido)</th>' +
+              '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#475569">Unidade base</th>' +
+              '<th style="padding:6px 8px;font-size:11px;color:#475569">Qtd de base</th>' +
+            '</tr></thead><tbody>' + (linhasHtml || '<tr><td colspan="4" style="padding:16px;text-align:center;color:#64748b">Este anúncio não tem variações com SKU.</td></tr>') + '</tbody>' +
+          '</table>' +
+        '</div>' +
+        '<div style="font-size:11.5px;color:#64748b;margin:-6px 2px 12px">Marque as variações que são kit, escolha de qual unidade base cada uma é feita e quantas unidades. Ex.: “Kit 3” = 3 × Toalha de rosto. O NCM sai do cadastro fiscal da unidade base.</div>' +
+        '<div style="display:flex;justify-content:space-between;gap:8px">' +
+          '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'mkOverlay\').remove()">Fechar</button>' +
+          '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_mkSalvar()"><span class="lc-ic" data-lucide="save"></span> Salvar kits</button>' +
+        '</div>';
+    }
+
+    el.innerHTML = corpo;
+    _hidratarIcones(el);
+  }
+
+  function _mkSetProduto(id) {
+    _mkState.produtoId = id || null;
+    // base padrão = o próprio anúncio (caso tenha variação de 1 un)
+    if (id && !_mkState.baseId) _mkState.baseId = id;
+    _mkMontarLinhas();
+    _mkRender();
+  }
+  function _mkSetBase(id) {
+    _mkState.baseId = id || null;
+    // limpa bases que não pertencem ao novo produto base (senão fica um SKU órfão)
+    const validos = new Set(_mkVarsDe(_mkState.baseId).map(b => _kfNorm(b.sku)));
+    _mkState.linhas.forEach(ln => { if (ln.baseSku && !validos.has(_kfNorm(ln.baseSku))) ln.baseSku = ''; });
+    _mkAutoPreencher(true);   // re-sugere base/qtd com o novo base
+    _mkRender();
+  }
+  function _mkMontarLinhas() {
+    const kitVars = _mkVarsDe(_mkState.produtoId);
+    _mkState.linhas = kitVars.map(v => {
+      const kitExistente = _kfState.kits.find(k => _kfNorm(k.sku) === _kfNorm(v.sku) && Array.isArray(k.itens) && k.itens.length);
+      const comp0 = kitExistente ? kitExistente.itens[0] : null;
+      return {
+        sku: v.sku, label: v.label, cor: v.cor,
+        ehKit: !!kitExistente,
+        jaKit: !!kitExistente,
+        kitId: kitExistente ? kitExistente.id : null,
+        baseSku: comp0 ? (comp0.variacaoSku || '') : '',
+        qtd: comp0 ? (comp0.quantidade || '') : '',
+      };
+    });
+    _mkAutoPreencher(true);
+  }
+  // Preenche base+qtd sugeridos nas linhas que ainda estão vazias (não sobrescreve
+  // o que já veio de um kit existente, a menos que force=false explícito).
+  function _mkAutoPreencher(soVazias) {
+    const baseVars = _mkVarsDe(_mkState.baseId);
+    _mkState.linhas.forEach(ln => {
+      if (!ln.baseSku || !soVazias) {
+        const sug = _mkBaseSugerido(ln, baseVars);
+        if (sug && (!ln.baseSku || !soVazias)) ln.baseSku = sug;
+      }
+      if (ln.qtd == null || ln.qtd === '' || !soVazias) {
+        const n = _mkQtdDoNome(ln.label);
+        if (n) ln.qtd = n;
+      }
+      // marca como kit se tem base + qtd e ainda não estava definido
+      if (!ln.jaKit && ln.baseSku && ln.qtd) ln.ehKit = true;
+    });
+    if (!soVazias) _mkRender();
+  }
+  function _mkToggle(i, on) { if (_mkState.linhas[i]) { _mkState.linhas[i].ehKit = !!on; _mkRender(); } }
+  function _mkSetLinha(i, campo, valor) {
+    const ln = _mkState.linhas[i]; if (!ln) return;
+    if (campo === 'qtd') ln.qtd = valor === '' ? '' : Math.max(1, parseInt(valor, 10) || 0);
+    else ln[campo] = valor;
+    if (ln.baseSku && ln.qtd) ln.ehKit = true;
+  }
+
+  async function _mkSalvar() {
+    const alvo = _mkState.linhas.filter(ln => ln.ehKit);
+    if (!alvo.length) return _toast('Marque pelo menos uma variação como kit.', true);
+    // valida
+    for (const ln of alvo) {
+      if (!ln.baseSku) return _toast('Falta escolher a unidade base de "' + (ln.label || ln.sku) + '".', true);
+      if (!ln.qtd || ln.qtd < 1) return _toast('Falta a quantidade de base de "' + (ln.label || ln.sku) + '".', true);
+    }
+    const prod = _mkProdutoPorId(_mkState.produtoId);
+    const baseVars = _mkVarsDe(_mkState.baseId);
+    let ok = 0, erro = 0;
+    for (const ln of alvo) {
+      const base = baseVars.find(b => _kfNorm(b.sku) === _kfNorm(ln.baseSku));
+      const baseLabel = base ? (base.label || base.sku) : ln.baseSku;
+      try {
+        const r = await _api('/api/nfe/kits', {
+          method: 'POST',
+          body: JSON.stringify({
+            sku: ln.sku,
+            descricao: ((prod && prod.nome) ? prod.nome + ' - ' : '') + (ln.label || ln.sku),
+            ativo: true,
+            itens: [{
+              ordem: 1,
+              descricao: baseLabel,
+              ncm: '', cest: '', unidade: 'UN',
+              quantidade: Number(ln.qtd),
+              variacaoSku: base ? base.sku : ln.baseSku,
+              produtoId: _mkState.baseId,
+              variacaoId: base ? base.variacaoId : null,
+            }],
+          }),
+        });
+        if (r && r.ok) ok++; else erro++;
+      } catch (_) { erro++; }
+    }
+    // recarrega kits e sincroniza avisos
+    try {
+      const r = await _api('/api/nfe/kits');
+      _kfState.kits = (r && r.ok && Array.isArray(r.kits)) ? r.kits : _kfState.kits;
+    } catch (_) {}
+    if (typeof _dfSyncKitSkus === 'function') _dfSyncKitSkus();
+    if (typeof window._invalidarKitsBom === 'function') window._invalidarKitsBom();  // estoque re-lê os kits
+    if (typeof _kfRender === 'function' && document.getElementById('kfConteudo')) _kfRender();
+    _mkMontarLinhas(); _mkRender();
+    _toast(ok + ' kit(s) salvo(s)' + (erro ? ', ' + erro + ' com erro' : '') + '.', erro > 0);
+  }
+
+  window.abrirMontarKitsPorAnuncio = abrirMontarKitsPorAnuncio;
+  window._mkSetProduto = _mkSetProduto;
+  window._mkSetBase = _mkSetBase;
+  window._mkToggle = _mkToggle;
+  window._mkSetLinha = _mkSetLinha;
+  window._mkAutoPreencher = function () { _mkAutoPreencher(false); };
+  window._mkSalvar = _mkSalvar;
 
   window.abrirKitsFiscais = abrirKitsFiscais;
   window._kfSetBusca = _kfSetBusca;
@@ -18864,6 +19677,7 @@ window.LC_SVG = {
           <div id="prodVariacoesList"></div>
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
             <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px" onclick="addVariacaoProduto()">+ Adicionar variação</button>
+            <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#ecfeff;color:#155e75;border-color:#06b6d4" onclick="addVariacaoLivre()" title="Variação SEM cor/tamanho: você dá um nome livre (ex: 110V, Kit A, Sabor Morango) + SKU/preço/estoque">+ Variação livre</button>
             <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#f3e8ff;color:#6b21a8;border-color:#a855f7" onclick="autoCriarVariacoesPorCor()" title="Pra cada cor cadastrada, cria variações com os mesmos tamanhos das outras cores (matriz cor × tamanho)">🪄 Auto-criar variações</button>
             <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#fef3c7;color:#92400e;border-color:#f59e0b" onclick="gerarSkusVariacoesAutomatico()" title="Gera SKU pra cada variação combinando SKU do produto + cor + tamanho">🏷️ Gerar SKUs</button>
             <button type="button" class="modal-v2-btn modal-v2-btn-secondary" style="flex:1;min-width:140px;background:#fef3c7;color:#92400e;border-color:#f59e0b" onclick="gerarEansVariacoesAutomatico()" title="Gera EAN-13 válido com prefixo 789 (Brasil) pra cada variação, só pra uso no ML">🔢 Gerar EANs</button>
@@ -19293,6 +20107,7 @@ window.LC_SVG = {
            de anúncios na hora (novo anúncio que ainda não apareceu na lista). -->
       <button onclick="abrirSincronizarEstoques()" title="Sincronizar o estoque com os anúncios agora" style="padding:9px 12px;border:1px solid #16a34a;background:#16a34a;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">🔄 Estoque</button>
       <button id="anBtnSyncAnuncios" onclick="sincronizarAnunciosAgora()" title="Buscar anúncios novos nos marketplaces e casar por SKU agora" style="padding:9px 12px;border:1px solid #4f46e5;background:#4f46e5;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">🏷️ Anúncios</button>
+      <button id="btnRecalcularKits" onclick="_recalcularTodosKits()" title="Recalcular a disponibilidade dos kits a partir do estoque das bases e empurrar aos anúncios (kit = base ÷ N)" style="padding:9px 12px;border:1px solid #0d9488;background:#0d9488;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap;display:none">🔗 Recalcular kits</button>
     </div>
 
     <!-- v33k.914: abas de status agregado (Todos/Ativos/Inativos/Rascunho/Em revisão/Excluídos) -->
@@ -19386,6 +20201,7 @@ window.LC_SVG = {
           <button class="promo-chip-v2 chip-shopee" data-promo="shopee" onclick="filtrarPromocoes('shopee')"><span class="promo-chip-dot" style="background:#ee4d2d"></span> Shopee</button>
           <button class="promo-chip-v2 chip-relampago" data-promo="relampago" onclick="filtrarPromocoes('relampago')"><span class="lc-ic" data-size="sm" data-lucide="zap" style="color:#dc2626"></span> Relâmpago</button>
           <button class="promo-chip-v2 chip-ml" data-promo="mercadolivre" onclick="filtrarPromocoes('mercadolivre')"><span class="promo-chip-dot" style="background:#ffe600;border:1px solid #d4c200"></span> Mercado Livre</button>
+          <button class="promo-chip-v2 chip-tiktok" data-promo="tiktok" onclick="filtrarPromocoes('tiktok')"><span class="promo-chip-dot" style="background:#111827"></span> TikTok</button>
           <button class="promo-chip-v2 chip-cupom" data-promo="cupom" onclick="filtrarPromocoes('cupom')"><span class="lc-ic" data-size="sm" data-lucide="ticket" style="color:#7c3aed"></span> Cupons</button>
         </div>
         <!-- Grupo 2: status (começa em Ativas) -->
@@ -19405,12 +20221,6 @@ window.LC_SVG = {
         </button>
         <button class="lc-btn lc-btn--primary lc-btn--sm" onclick="abrirNovaPromocao()">
           <span class="lc-ic" data-size="sm" data-lucide="plus"></span> Nova promoção
-        </button>
-        <button class="lc-btn lc-btn--sm" id="btnPromoTikTok" style="background:#111827;border:1px solid #111827;color:#fff;font-weight:700" onclick="tkPromoAbrir()" title="Criar e gerenciar promoções do TikTok (desconto direto e oferta relâmpago)">
-          <span class="lc-ic" data-size="sm" data-lucide="music-2"></span> Promoções TikTok
-        </button>
-        <button class="lc-btn lc-btn--sm" style="background:#ecfdf5;border:1px solid #16a34a;color:#15803d;font-weight:700" onclick="abrirEditarAutomacao('motor_relampago_auto')">
-          <span class="lc-ic" data-size="sm" data-lucide="zap" style="color:#16a34a"></span> Automação
         </button>
       </div>
     </div>
@@ -23590,6 +24400,9 @@ window.LC_SVG = {
   
   async function adicionarFotoCorDemanda(cor, files) {
     if (!files || !files.length) return;
+    // v33k.1178: filtro de 2 MB antes de subir
+    { const _r = _filtrarImagens2MB(files); if (_r.grandes.length) _avisarImagensGrandes(_r.grandes); files = _r.validas; }
+    if (!files.length) return;
     if (!window._demandaFotosPorCor[cor]) window._demandaFotosPorCor[cor] = [];
     
     // v32g.7: aplica limite por marketplace (Shopee=1, ML=10)
@@ -25432,6 +26245,32 @@ Retorne JSON: {"ID": "valor", ...}`;
   let _imagensDemandaSessao = [];
   let _demandaIdAtual = null; // setado em editarDemanda
   
+  // ═══ FILTRO DE TAMANHO DE IMAGEM — 2 MB (v33k.1178) ═══════════════════
+  // Barra imagens acima de 2 MB ANTES de entrarem no fluxo de upload (era a
+  // causa provável do erro silencioso ao criar anúncio). Separa válidas ×
+  // grandes; o chamador avisa o usuário sobre as que ficaram de fora.
+  const LIMITE_IMG_BYTES = 2 * 1024 * 1024;
+  function _filtrarImagens2MB(files) {
+    const validas = [], grandes = [];
+    Array.from(files || []).forEach((f) => {
+      if (!f) return;
+      if (Number(f.size) > LIMITE_IMG_BYTES) grandes.push({ nome: f.name || 'imagem', mb: Number(f.size) / 1048576 });
+      else validas.push(f);
+    });
+    return { validas, grandes };
+  }
+  function _avisarImagensGrandes(grandes) {
+    if (!grandes || !grandes.length) return;
+    const lista = grandes.map((g) => g.nome + ' (' + g.mb.toFixed(1) + ' MB)').join(', ');
+    const msg = (grandes.length === 1)
+      ? ('⚠ A imagem ' + lista + ' passa de 2 MB e não foi adicionada. Reduza ou comprima e tente de novo.')
+      : ('⚠ ' + grandes.length + ' imagens passam de 2 MB e não foram adicionadas: ' + lista + '. Reduza ou comprima e tente de novo.');
+    if (typeof showToast === 'function') showToast(msg, true);
+    else alert(msg);
+  }
+  window._filtrarImagens2MB = _filtrarImagens2MB;
+  window._avisarImagensGrandes = _avisarImagensGrandes;
+
   async function _persistirImagensNaDemanda() {
     // Se a demanda já está salva localmente, atualiza as imagens dela imediatamente
     if (!_demandaIdAtual) return;
@@ -25450,7 +26289,10 @@ Retorne JSON: {"ID": "valor", ...}`;
   
   async function adicionarImagensDemanda(files) {
     if (!files || files.length === 0) return;
-    const arr = Array.from(files).filter(f => f.type.startsWith('image/'));
+    const somenteImgs = Array.from(files).filter(f => f.type.startsWith('image/'));
+    // v33k.1178: filtro de 2 MB antes de subir (avisa o que ficou de fora)
+    const { validas: arr, grandes } = _filtrarImagens2MB(somenteImgs);
+    if (grandes.length) _avisarImagensGrandes(grandes);
     if (arr.length === 0) return;
     
     // v32g.7: limite de 9 fotos gerais (Shopee usa como galeria do anúncio)
@@ -41573,7 +42415,10 @@ REGRAS DURAS:
     const p = produtosErp.find(x => String(x.id) === String(_produtoEditandoId));
     if (!p) return;
     if (!p.fotosShopee) p.fotosShopee = [];
-    
+    // v33k.1178: filtro de 2 MB antes de subir
+    { const _r = _filtrarImagens2MB(files); if (_r.grandes.length) _avisarImagensGrandes(_r.grandes); files = _r.validas; }
+    if (!files.length) return;
+
     for (const file of files) {
       if (p.fotosShopee.length >= 9) { 
         showToast('Shopee permite no máx 9 fotos', true); 
@@ -42197,16 +43042,18 @@ REGRAS DURAS:
     
     let bloqueadas = 0;
     let aSubir = [];
-    
-    Array.from(files).forEach(file => {
-      if (!file.type.startsWith('image/')) return;
-      if (fotosAntesNaCor + aSubir.length >= LIMITE_POR_COR) { 
-        bloqueadas++; 
-        return; 
+
+    // v33k.1178: separa as imagens acima de 2 MB e avisa
+    const { validas: _imgsOk, grandes: _imgsGrandes } = _filtrarImagens2MB(Array.from(files).filter(f => f.type.startsWith('image/')));
+    if (_imgsGrandes.length) _avisarImagensGrandes(_imgsGrandes);
+    _imgsOk.forEach(file => {
+      if (fotosAntesNaCor + aSubir.length >= LIMITE_POR_COR) {
+        bloqueadas++;
+        return;
       }
       aSubir.push(file);
     });
-    
+
     if (bloqueadas > 0) {
       showToast(`Limite de ${LIMITE_POR_COR} fotos por cor. ${bloqueadas} ignorada(s)`, true);
     }
@@ -42361,6 +43208,13 @@ REGRAS DURAS:
     _variacoesProduto.push({ id: gerarId(), cor: '', tamanho: '', nome: '', sku: '', estoque: 0, preco: '' });
     renderVariacoesProduto();
   }
+  // v33k.1182: variação LIVRE — sem cor/tamanho. O vendedor dá um rótulo livre
+  // (ex.: "110V", "Kit A", "Sabor Morango") + SKU/preço/estoque. Para quem tem
+  // variações que não são cor nem tamanho.
+  function addVariacaoLivre() {
+    _variacoesProduto.push({ id: gerarId(), cor: '', tamanho: '', nome: '', sku: '', estoque: 0, preco: '', _livre: true });
+    renderVariacoesProduto();
+  }
   function renderVariacoesProduto() {
     const cont = document.getElementById('prodVariacoesList');
     if (!cont) return;
@@ -42487,7 +43341,7 @@ REGRAS DURAS:
       // "P", "M", "G", "Único" nunca eram detectados.
       // AGORA: tenta extrair o tamanho sempre que ele estiver faltando, e
       // reconhece os formatos usados no varejo de calçado/vestuário.
-      if (!v.tamanho && v.nome) {
+      if (!v._livre && !v.tamanho && v.nome) {
         const nomeStr = String(v.nome);
         // 1º) faixa de tamanho colada (ex.: "Branco 35/36"), trata ANTES do
         // split, senão o "36" sobra e vira parte da cor ("Branco 36").
@@ -42548,12 +43402,14 @@ REGRAS DURAS:
       return `
       <div class="var-item"${v._promoInativa ? ' style="border-left:3px solid #f59e0b"' : ''}>
         ${v._origemReconciliacao ? `<div style="font-size:10px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:5px;padding:3px 7px;margin-bottom:5px">🆕 Variação trazida do anúncio Shopee, confira e ative pra promoção quando quiser</div>` : ''}
-        <div class="var-item-row">
+        ${v._livre
+          ? `<div class="var-item-row"><input type="text" value="${escapeHtml(v.nome||'')}" placeholder="Nome da variação (ex: 110V, Kit A, Sabor Morango)" oninput="_variacoesProduto[${i}].nome = this.value" style="flex:1"></div>`
+          : `<div class="var-item-row">
           ${corSelectHtml}
           <input type="text" value="${escapeHtml(v.tamanho||'')}" placeholder="Tamanho (ex: 40)"
                  oninput="_variacoesProduto[${i}].tamanho = this.value; sincronizarNomeVariacao(${i})">
         </div>
-        ${dimsExtraHtml}
+        ${dimsExtraHtml}`}
         <div class="var-item-row">
           <input type="text" value="${escapeHtml(v.sku||'')}" placeholder="SKU da variação (ex: 100-preto-40)"
                  oninput="_variacoesProduto[${i}].sku = this.value">
@@ -43680,6 +44536,21 @@ REGRAS DURAS:
       ? [..._fotosProdutoSessao]
       : fotosUniao;
     
+    // v33k.1182: variações LIVRES (sem cor/tamanho) → viram 1 dimensão "Variação"
+    // (o nome livre vira o valor), pra o publish montar o tier corretamente e o
+    // sync casar pela assinatura genérica. Só afeta produtos com variação livre.
+    (function _normalizarVariacoesLivres() {
+      const livres = (_variacoesProduto || []).filter(v => v && v._livre);
+      if (!livres.length) return;
+      const DIM = 'Variação';
+      livres.forEach(v => { v.valores = v.valores || {}; v.valores[DIM] = v.nome || ''; });
+      if (!_esquemaVariacoesSessao || !Array.isArray(_esquemaVariacoesSessao.dimensoes) || !_esquemaVariacoesSessao.dimensoes.length) {
+        _esquemaVariacoesSessao = { dimensoes: [DIM] };
+      } else if (!_esquemaVariacoesSessao.dimensoes.includes(DIM)) {
+        _esquemaVariacoesSessao.dimensoes.push(DIM);
+      }
+    })();
+
     const dados = {
       nome,
       skuPai: document.getElementById('prodSku').value.trim(),
@@ -44889,10 +45760,20 @@ REGRAS DURAS:
         title: String(p.nome || '').slice(0, 60), // ML limita título a 60; nome base pode ter até 100
         category_id: categoriaMkt,
         // Preço no item: no modelo novo COM variações fica nas variações; mas
-        // se for VARIAÇÃO ÚNICA (item simples), o preço/estoque ficam no item.
-        price: ehVariacaoUnica ? (parseFloat((p.variacoes[0]||{}).preco) || p.preco) : (modeloNovo ? undefined : p.preco),
+        // se for item SIMPLES (SEM variações — 0 — OU variação única), o
+        // preço/estoque ficam no item.
+        // v33k.1185 FIX: usa `!temVariacoes` em vez de `ehVariacaoUnica`. Antes,
+        // produto SEM variações (length 0) não era "variação única", então
+        // price/available_quantity saíam `undefined` no modelo novo → o ML
+        // recusava por item sem preço/estoque. Agora todo item simples leva
+        // preço/estoque na raiz.
+        price: !temVariacoes
+          ? (parseFloat((p.variacoes[0]||{}).preco) || parseFloat(p.preco) || 0)
+          : (modeloNovo ? undefined : p.preco),
         // estoque no item só quando é item simples (sem variations[])
-        available_quantity: ehVariacaoUnica ? (parseInt((p.variacoes[0]||{}).estoque) || 0) : undefined,
+        available_quantity: !temVariacoes
+          ? (parseInt((p.variacoes[0]||{}).estoque) || parseInt(p.estoque) || parseInt(p.estoqueTotal) || 0)
+          : undefined,
         currency_id: 'BRL',
         // ITEM_CONDITION: a API só aceita "New" para anúncios novos
         condition: 'new',
@@ -49460,6 +50341,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       { ic: '💲', rot: 'Definir preço', ac: 'preco' },
       { ic: '🏷️', rot: 'Definir desconto', ac: 'desconto' },
       { ic: '🧾', rot: 'Configurar fiscal (NCM)', ac: 'fiscal' },
+      { ic: '📦', rot: 'Montar/vincular kit', ac: 'kit' },
       { sep: true },
       { ic: '🟢', rot: 'Ativar', ac: 'ativar' },
       { ic: '⚪', rot: 'Desativar', ac: 'desativar' },
@@ -49504,6 +50386,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       case 'duplicar': if (typeof abrirDuplicarAnuncio === 'function') abrirDuplicarAnuncio(id); break;
       case 'vinculos': if (typeof abrirGerenciarVinculos === 'function') abrirGerenciarVinculos(id); break;
       case 'fiscal':   if (typeof abrirDadosFiscaisProdutos === 'function') abrirDadosFiscaisProdutos(); break;
+      case 'kit':      if (typeof window.abrirMontarKitsPorAnuncio === 'function') window.abrirMontarKitsPorAnuncio(id); break;
       case 'preco':    await _anComSelecaoUnica(id, acaoMassaAjustarPreco); break;
       case 'desconto': await _anComSelecaoUnica(id, acaoMassaReguaPromocao); break;
       case 'ativar':    await _anMudarStatusProduto(id, 'ativo'); break;
@@ -51168,11 +52051,19 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const logosVar = _logosDistintosDeVinculos(v.vinculos, 12);
       // v33k.1141: tags de ativos/não ativos POR VARIAÇÃO (mesma leitura do produto)
       const tagStatusVar = _chipStatusVariacao(v);
+      // v33k.1190: variação que é KIT tem estoque DERIVADO da base (base ÷ N) —
+      // não se edita direto; mostra selo e a composição no tooltip.
+      const ehKit = (typeof _ehVarKit === 'function') && _ehVarKit(v.sku);
+      const kitTag = ehKit ? `<span title="Disponibilidade derivada da base: ${escapeHtml(_kitCompTexto(v.sku))}" style="display:inline-block;margin-top:3px;font-size:10px;font-weight:700;color:#0f766e;background:#ccfbf1;padding:1px 6px;border-radius:99px">🔗 kit (deriva da base)</span>` : '';
+      const skuAttr = escapeHtml(v.sku || '');
+      const inputEstoque = ehKit
+        ? `<input type="number" class="estoque-var-input" data-sku="${skuAttr}" value="${estoque}" readonly title="Kit: disponibilidade derivada da base (${escapeHtml(_kitCompTexto(v.sku))}). Ajuste o estoque da base." style="background:#f0fdfa;color:#0f766e;cursor:not-allowed">`
+        : `<input type="number" class="estoque-var-input ${baixo}" data-sku="${skuAttr}" value="${estoque}" onchange="atualizarEstoqueVar('${p.id}','${v.id}',this.value)">`;
       return `<div class="estoque-var-linha">
         <input type="checkbox" class="estoque-check" ${checked} onchange="toggleEstoqueSel('${selId}')">
-        <div class="estoque-var-nome"><span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">${escapeHtml(v.nome||'Variação')}${logosVar ? `<span style="flex-shrink:0">${logosVar}</span>` : ''}</span><div class="estoque-var-sku">${escapeHtml(v.sku||'sem SKU')}</div>${tagStatusVar ? `<div style="margin-top:3px">${tagStatusVar}</div>` : ''}</div>
+        <div class="estoque-var-nome"><span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">${escapeHtml(v.nome||'Variação')}${logosVar ? `<span style="flex-shrink:0">${logosVar}</span>` : ''}</span><div class="estoque-var-sku">${escapeHtml(v.sku||'sem SKU')}</div>${tagStatusVar ? `<div style="margin-top:3px">${tagStatusVar}</div>` : ''}${kitTag ? `<div>${kitTag}</div>` : ''}</div>
         ${iconeCasamento}
-        <input type="number" class="estoque-var-input ${baixo}" value="${estoque}" onchange="atualizarEstoqueVar('${p.id}','${v.id}',this.value)">
+        ${inputEstoque}
         <!-- v33k.599: selo PERSISTENTE do push. O toast some em 3s; este fica. -->
         <span data-sku-selo="${escapeHtml(v.sku||'')}" style="display:none;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;white-space:nowrap"></span>
         ${btnEntrada}
@@ -51225,6 +52116,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // v33k.914: abas de status (Todos/Ativos/Inativos/Rascunho/Em revisão/Excluídos)
     _anRenderTabs();
     renderEstoqueStats();   // cards de contagem estão ocultos; mantém a chamada por compat.
+    // v33k.1190: carrega o mapa de kits (base ÷ N) pra marcar/derivar a
+    // disponibilidade dos kits nesta tela. Silencioso; usa cache.
+    if (typeof _carregarKitsBom === 'function') { _carregarKitsBom().catch(() => {}); }
+    // v33k.1191: reconciliação da baixa de kits — roda UMA vez ao abrir o
+    // estoque (baixa da base as vendas de kit ainda não contabilizadas).
+    if (!window._kitReconcileFeito && typeof _reconciliarBaixasKit === 'function') {
+      window._kitReconcileFeito = true;
+      _reconciliarBaixasKit(true).catch(() => {});
+    }
 
     const lista = document.getElementById('estoqueLista');
     const resumo = document.getElementById('estoqueResumo');
@@ -51445,6 +52345,161 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     renderEstoque();
   }
   
+  // ═══════════════════════════════════════════════════════════════════
+  // ESTOQUE DE KITS — disponibilidade derivada da base (v33k.1190, camada 1)
+  // Kit disponível = piso(estoque_base / N). Ao mudar a base, recalcula todos
+  // os kits feitos dela e re-empurra pros anúncios. Não toca no fluxo de venda.
+  // ═══════════════════════════════════════════════════════════════════
+  let _kitsBom = null;   // { porKit: Map(normSku→{sku,comps[]}), porBase: Map(normSku→Set(kitSku)) }
+  const _kitNorm = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+
+  async function _carregarKitsBom(force) {
+    if (_kitsBom && !force) return _kitsBom;
+    const bom = { porKit: new Map(), porBase: new Map() };
+    try {
+      const r = await fetch(BACKEND_URL + '/api/nfe/kits', { headers: { 'x-api-token': getApiToken() } });
+      const d = await r.json().catch(() => null);
+      const kits = (d && d.ok && Array.isArray(d.kits)) ? d.kits : [];
+      kits.forEach(k => {
+        if (!k || k.ativo === false) return;
+        const comps = (k.itens || [])
+          .filter(c => c && c.variacao_sku && Number(c.quantidade) > 0)
+          .map(c => ({ baseSku: String(c.variacao_sku), qty: Number(c.quantidade) }));
+        if (!comps.length) return;
+        bom.porKit.set(_kitNorm(k.sku), { sku: k.sku, comps });
+        comps.forEach(c => {
+          const b = _kitNorm(c.baseSku);
+          if (!bom.porBase.has(b)) bom.porBase.set(b, new Set());
+          bom.porBase.get(b).add(k.sku);
+        });
+      });
+    } catch (_) {}
+    _kitsBom = bom;
+    // mostra/esconde o botão "Recalcular kits" conforme existirem kits
+    try { const bt = document.getElementById('btnRecalcularKits'); if (bt) bt.style.display = bom.porKit.size ? '' : 'none'; } catch (_) {}
+    return bom;
+  }
+  window._carregarKitsBom = _carregarKitsBom;
+  window._invalidarKitsBom = function () { _kitsBom = null; };
+
+  function _ehVarKit(sku) { return !!(_kitsBom && sku && _kitsBom.porKit.has(_kitNorm(sku))); }
+  function _kitCompDe(sku) { return _kitsBom ? (_kitsBom.porKit.get(_kitNorm(sku)) || null) : null; }
+  function _kitCompTexto(sku) {
+    const info = _kitCompDe(sku); if (!info) return '';
+    return info.comps.map(c => c.qty + ' × ' + c.baseSku).join(' + ');
+  }
+  window._ehVarKit = _ehVarKit; window._kitCompTexto = _kitCompTexto;
+
+  function _estoqueDeSku(sku) {
+    const n = _kitNorm(sku);
+    for (const p of produtosErp) for (const v of (p.variacoes || [])) if (_kitNorm(v.sku) === n) return parseInt(v.estoque) || 0;
+    return null;
+  }
+  function _localizarVarPorSku(sku) {
+    const n = _kitNorm(sku);
+    for (const p of produtosErp) for (const v of (p.variacoes || [])) if (_kitNorm(v.sku) === n) return { p, v };
+    return null;
+  }
+  // disponibilidade derivada de um kit = min piso(base/qtd); null se base desconhecida
+  function _dispKit(kitSku) {
+    const info = _kitCompDe(kitSku);
+    if (!info || !info.comps.length) return null;
+    let disp = Infinity;
+    for (const c of info.comps) {
+      const est = _estoqueDeSku(c.baseSku);
+      if (est == null) return null;
+      disp = Math.min(disp, Math.floor(est / c.qty));
+    }
+    return isFinite(disp) ? Math.max(0, disp) : null;
+  }
+  function _aplicarDispKit(kitSku, disp) {
+    const loc = _localizarVarPorSku(kitSku);
+    let mudou = false;
+    if (loc) {
+      if ((parseInt(loc.v.estoque) || 0) !== disp) { loc.v.estoque = disp; loc.p.atualizadoEm = new Date().toISOString(); mudou = true; }
+      const sel = (window.CSS && CSS.escape) ? CSS.escape(String(loc.v.sku)) : String(loc.v.sku);
+      const inp = document.querySelector('.estoque-var-input[data-sku="' + sel + '"]');
+      if (inp) inp.value = disp;
+    }
+    _agendarPushEstoqueTempoReal(kitSku, disp);   // empurra pros anúncios do kit
+    return mudou;
+  }
+
+  const _kitRecalcTimers = {};
+  function _recalcularKitsDaBase(baseSku) {
+    if (!_kitsBom) return;
+    const kits = _kitsBom.porBase.get(_kitNorm(baseSku));
+    if (!kits || !kits.size) return;
+    const chave = _kitNorm(baseSku);
+    if (_kitRecalcTimers[chave]) clearTimeout(_kitRecalcTimers[chave]);
+    _kitRecalcTimers[chave] = setTimeout(() => {
+      delete _kitRecalcTimers[chave];
+      let mudou = false;
+      kits.forEach(kitSku => {
+        const disp = _dispKit(kitSku);
+        if (disp == null) return;
+        if (_aplicarDispKit(kitSku, disp)) mudou = true;
+      });
+      if (mudou) saveProdutos();
+    }, 700);
+  }
+  window._recalcularKitsDaBase = _recalcularKitsDaBase;
+
+  // ── CAMADA 2: reconciliação — baixa da base pelas vendas de kit ──────
+  // Chama o servidor, que reivindica cada venda de kit UMA vez e desconta a
+  // base; aqui aplicamos os novos saldos no cache e recalculamos/empurramos.
+  async function _reconciliarBaixasKit(silencioso) {
+    await _carregarKitsBom();
+    if (!_kitsBom || !_kitsBom.porKit.size) return { aplicadas: 0 };
+    let d;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/marketplaces/kits/reconciliar', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ dias: 60 }),
+      });
+      d = await r.json().catch(() => null);
+    } catch (_) { return { aplicadas: 0 }; }
+    if (!d || !d.ok) return { aplicadas: 0 };
+    const bases = Array.isArray(d.basesAtualizadas) ? d.basesAtualizadas : [];
+    if (bases.length) {
+      bases.forEach(b => {
+        const loc = _localizarVarPorSku(b.sku);
+        if (loc) {
+          loc.v.estoque = Math.max(0, parseInt(b.novoEstoque) || 0);
+          loc.p.atualizadoEm = new Date().toISOString();
+          const sel = (window.CSS && CSS.escape) ? CSS.escape(String(loc.v.sku)) : String(loc.v.sku);
+          const inp = document.querySelector('.estoque-var-input[data-sku="' + sel + '"]');
+          if (inp) inp.value = loc.v.estoque;
+        }
+      });
+      saveProdutos();
+      bases.forEach(b => { _agendarPushEstoqueTempoReal(b.sku, _estoqueDeSku(b.sku)); _recalcularKitsDaBase(b.sku); });
+    }
+    if (!silencioso && typeof showToast === 'function') {
+      showToast((d.aplicadas || 0) + ' venda(s) de kit baixada(s) da base' + (d.semTabela ? ' · ative a migração kit_baixas_processadas' : '') + '.', !!d.semTabela);
+    }
+    return { aplicadas: d.aplicadas || 0 };
+  }
+  window._reconciliarBaixasKit = _reconciliarBaixasKit;
+
+  // Recalcula TODOS os kits (setup inicial ou sob demanda pelo botão):
+  // primeiro reconcilia as vendas (baixa a base), depois deriva a disponibilidade.
+  async function _recalcularTodosKits() {
+    await _reconciliarBaixasKit(true);
+    await _carregarKitsBom(true);
+    if (!_kitsBom || !_kitsBom.porKit.size) { if (typeof showToast === 'function') showToast('Nenhum kit configurado.', true); return; }
+    let mudou = false, n = 0, semBase = 0;
+    _kitsBom.porKit.forEach((info, kitN) => {
+      const disp = _dispKit(info.sku);
+      if (disp == null) { semBase++; return; }
+      if (_aplicarDispKit(info.sku, disp)) mudou = true;
+      n++;
+    });
+    if (mudou) saveProdutos();
+    if (typeof showToast === 'function') showToast(n + ' kit(s) recalculado(s) e enviado(s)' + (semBase ? ' · ' + semBase + ' sem base no catálogo' : '') + '.', semBase > 0);
+  }
+  window._recalcularTodosKits = _recalcularTodosKits;
+
   function atualizarEstoqueVar(produtoId, variacaoId, valor) {
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) return;
@@ -51479,6 +52534,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // anúncios daquele SKU (nunca a loja inteira). O cron continua como rede de
     // segurança (reconciliação diária).
     _agendarPushEstoqueTempoReal(v.sku, v.estoque);
+    // v33k.1190: se este SKU é BASE de algum kit, recalcula a disponibilidade
+    // derivada dos kits (base ÷ N) e re-empurra pros anúncios deles.
+    if (_kitsBom && v.sku && _kitsBom.porBase.has(_kitNorm(v.sku))) _recalcularKitsDaBase(v.sku);
   }
 
   // ── AJUSTE INTERNO NO HISTÓRICO (v33k.599) ───────────────────────────
@@ -53814,6 +54872,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       else if (_filtroPromo === 'cupom') passaTipo = (p.tipo === 'cupom');
       else if (_filtroPromo === 'shopee') passaTipo = (promoMarketplace(p) === 'shopee');
       else if (_filtroPromo === 'mercadolivre') passaTipo = (promoMarketplace(p) === 'mercadolivre');
+      else if (_filtroPromo === 'tiktok') passaTipo = (promoMarketplace(p) === 'tiktok');
       // 'todos' → passa
       // status
       let passaStatus = true;
@@ -53845,7 +54904,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const tipoLabel = { promocao: 'Promoção', relampago: 'Relâmpago', cupom: 'Cupom' };
     const tipoIcone = { promocao: 'tag', relampago: 'zap', cupom: 'ticket' };
     const statusLabel = { agendada: 'Agendada', ativa: 'Ativa', encerrada: 'Encerrada' };
-    const mktLabel = { shopee: 'Shopee', mercadolivre: 'Mercado Livre' };
+    const mktLabel = { shopee: 'Shopee', mercadolivre: 'Mercado Livre', tiktok: 'TikTok' };
 
     // ordena: ativas primeiro, depois agendadas, depois encerradas (por status REAL)
     const ordemStatus = { ativa: 0, agendada: 1, encerrada: 2 };
@@ -53863,10 +54922,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const stDot = stReal === 'ativa' ? '<span class="promo-hero-pulse" style="width:7px;height:7px"></span>' : '';
       // cor da barra lateral por marketplace (relâmpago tem cor própria)
       const mkt = promoMarketplace(p);
-      const corClasse = p.tipo === 'relampago' ? 'mkt-relampago' : (mkt === 'shopee' ? 'mkt-shopee' : (mkt === 'mercadolivre' ? 'mkt-ml' : (p.tipo === 'cupom' ? 'mkt-cupom' : '')));
+      const corClasse = p.tipo === 'relampago' ? 'mkt-relampago' : (mkt === 'shopee' ? 'mkt-shopee' : (mkt === 'tiktok' ? 'mkt-tiktok' : (mkt === 'mercadolivre' ? 'mkt-ml' : (p.tipo === 'cupom' ? 'mkt-cupom' : ''))));
       const mktTag = p.tipo === 'relampago'
         ? '<span class="promo-card-mkt mkt-tag-relampago"><span class="lc-ic" data-size="sm" data-lucide="zap"></span> Relâmpago</span>'
-        : (mkt && mktLabel[mkt] ? '<span class="promo-card-mkt mkt-tag-' + (mkt === 'shopee' ? 'shopee' : 'ml') + '">' + mktLabel[mkt] + '</span>' : '');
+        : (mkt === 'tiktok'
+          ? '<span class="promo-card-mkt" style="background:#111827;color:#fff;border:1px solid #111827">TikTok</span>'
+          : (mkt && mktLabel[mkt] ? '<span class="promo-card-mkt mkt-tag-' + (mkt === 'shopee' ? 'shopee' : 'ml') + '">' + mktLabel[mkt] + '</span>' : ''));
+      // v33k.1184: selo de "efetivada" no marketplace (Shopee/ML/TikTok/Shein)
+      const _efetivada = !!(p.efetivadoShopee || p.efetivadoML || p.efetivadoTiktok || p.efetivadoShein);
+      const efetivadoTag = _efetivada
+        ? '<span class="promo-card-mkt" style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0" title="Enviada ao marketplace">✓ ' + (p.efetivadoShein ? 'Aplicada' : 'Enviada') + '</span>'
+        : '';
 
       return '<div class="promo-card-v2 ' + corClasse + '" onclick="abrirEditarPromocao(\'' + p.id + '\')">' +
         '<div class="promo-card-faixa">' +
@@ -53882,7 +54948,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               '<span class="promo-card-desconto">' + descVal + '</span>' +
               '<span class="promo-card-desconto-unit">' + descUnit + ' OFF</span>' +
             '</div>' +
-            mktTag +
+            '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">' + efetivadoTag + mktTag + '</div>' +
           '</div>' +
         '</div>' +
       '</div>';
@@ -53896,6 +54962,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const loja = lojasErp.find(l => String(l.id) === String(p.lojaId));
     const mkt = loja ? String(loja.marketplace || '').toLowerCase() : '';
     if (mkt.includes('shopee')) return 'shopee';
+    if (mkt.includes('tiktok') || mkt.includes('tik')) return 'tiktok';
     if (mkt.includes('mercado') || mkt.includes('livre') || mkt === 'ml' || mkt === 'mercadolivre') return 'mercadolivre';
     return null;
   }
@@ -53953,19 +55020,29 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         // filtro de tipo/marketplace
         if (_filtroPromo === 'shopee') return p.marketplace === 'shopee';
         if (_filtroPromo === 'mercadolivre') return p.marketplace === 'mercadolivre';
+        if (_filtroPromo === 'tiktok') return p.marketplace === 'tiktok';
         if (_filtroPromo === 'relampago' || _filtroPromo === 'cupom') return false;
         return true; // 'todos'
       })
       .filter(p => _filtroStatus === 'todos' || p.estado === _filtroStatus)
       .forEach(p => {
-        const ehShopee = p.marketplace === 'shopee';
-        const corClasse = ehShopee ? 'mkt-shopee' : 'mkt-ml';
+        // v33k.1184: 3 marketplaces (Shopee/ML/TikTok). ANTES: tudo que não era
+        // Shopee virava "Mercado Livre" — por isso a promoção do TikTok aparecia
+        // com selo ML. Agora cada um tem selo, cor e roteamento próprios.
+        const _mk = String(p.marketplace || '').toLowerCase();
+        const ehShopee = _mk === 'shopee';
+        const ehTiktok = _mk === 'tiktok';
+        const corClasse = ehShopee ? 'mkt-shopee' : (ehTiktok ? 'mkt-tiktok' : 'mkt-ml');
         const stClass = p.estado === 'ativa' ? 's-ativa' : (p.estado === 'agendada' ? 's-agendada' : 's-encerrada');
         const stDot = p.estado === 'ativa' ? '<span class="promo-hero-pulse" style="width:7px;height:7px"></span>' : '';
         const stLabel = p.estado === 'ativa' ? 'Ativa' : (p.estado === 'agendada' ? 'Agendada' : 'Encerrada');
         const periodo = ehShopee ? (fmtData(p.startTime) + ' → ' + fmtData(p.endTime)) : ((p.inicio || '?') + ' → ' + (p.fim || '?'));
-        const mktTag = ehShopee ? '<span class="promo-card-mkt mkt-tag-shopee">Shopee</span>' : '<span class="promo-card-mkt mkt-tag-ml">Mercado Livre</span>';
-        const tipoMkt = ehShopee ? 'shopee' : 'ml';
+        const mktTag = ehShopee
+          ? '<span class="promo-card-mkt mkt-tag-shopee">Shopee</span>'
+          : (ehTiktok
+            ? '<span class="promo-card-mkt" style="background:#111827;color:#fff;border:1px solid #111827">TikTok</span>'
+            : '<span class="promo-card-mkt mkt-tag-ml">Mercado Livre</span>');
+        const tipoMkt = ehShopee ? 'shopee' : (ehTiktok ? 'tiktok' : 'ml');
         const nomeEsc = escapeHtml((p.nome || '').replace(/'/g, ''));
         const ref = "'" + tipoMkt + "'," + p.lojaId + ",'" + p.id + "','" + p.estado + "','" + nomeEsc + "'";
         cards.push('<div class="promo-card-v2 ' + corClasse + '" onclick="abrirGerenciadorCard(' + ref + ')">' +
@@ -54006,6 +55083,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const p = _promocoesMkt.find(x => String(x.id) === String(id) && String(x.lojaId) === String(lojaId));
       const st = estado === 'ativa' ? 'started' : (estado === 'agendada' ? 'pending' : 'finished');
       gerenciarCampanhaML(id, nome || (p ? p.nome : ''), p ? p.inicio : '', p ? p.fim : '', st, lojaId, (p && p.promotionType) || 'SELLER_CAMPAIGN');
+    } else if (tipo === 'tiktok') {
+      // v33k.1184: clicar no card TikTok abre o gerenciador de produtos daquela
+      // promoção (add/remover anúncios, ajustar preços) — no lugar do botão antigo.
+      _tkPromoLoja = lojaId;
+      try { tkPromoAbrir(); } catch (_) {}
+      setTimeout(() => { try { tkPromoDetalhe(String(id)); } catch (_) {} }, 80);
     }
   }
   window.abrirGerenciadorCard = abrirGerenciadorCard;
@@ -55000,15 +56083,19 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       atualizadoEm: new Date().toISOString()
     };
 
-    // Coleta e valida os itens com preço, pra Shopee E pra Mercado Livre
+    // Coleta e valida os itens com preço — Shopee, Mercado Livre, TikTok e Shein
     const ehShopee = (typeof _promoLojaEhShopee === 'function' && _promoLojaEhShopee());
     const ehML = (typeof _promoLojaEhML === 'function' && _promoLojaEhML());
-    if ((ehShopee || ehML) && tipo !== 'cupom') {
+    const ehTiktok = (typeof _promoLojaEhTiktok === 'function' && _promoLojaEhTiktok());
+    const ehShein = (typeof _promoLojaEhShein === 'function' && _promoLojaEhShein());
+    if ((ehShopee || ehML || ehTiktok || ehShein) && tipo !== 'cupom') {
       const v = validarItensPromo();
       if (!v.ok) { showToast(v.msg, true); return; }
       dados.itens = v.itens;
       if (ehShopee) dados.efetivadoShopee = false;
       if (ehML) dados.efetivadoML = false;
+      if (ehTiktok) dados.efetivadoTiktok = false;
+      if (ehShein) dados.efetivadoShein = false;
     }
     
     let promoSalva;
@@ -55026,6 +56113,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (ehML && tipo !== 'cupom' && dados.itens && dados.itens.length) {
       _criarCampanhaMLDeProm(promoSalva);  // assíncrono, mostra progresso
       return; // não fecha o modal ainda; a função fecha ao terminar
+    }
+    // v33k.1184: TikTok → cria a atividade de promoção + adiciona os produtos.
+    if (ehTiktok && tipo !== 'cupom' && dados.itens && dados.itens.length) {
+      _criarPromocaoTiktokDeProm(promoSalva);
+      return;
+    }
+    // v33k.1184: Shein → aplica o preço promocional direto nos anúncios (a Shein
+    // não tem atividade de promoção via API; a "promoção" é a mudança de preço).
+    if (ehShein && tipo !== 'cupom' && dados.itens && dados.itens.length) {
+      _aplicarPrecoSheinDeProm(promoSalva);
+      return;
     }
 
     closePromocao();
@@ -55176,6 +56274,18 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     return !!(loja && String(loja.marketplace || '').toLowerCase() === 'mercadolivre');
   }
   window._promoLojaEhML = _promoLojaEhML;
+
+  // v33k.1184: detectores p/ TikTok e Shein no "Nova promoção".
+  function _promoLojaMkt() {
+    const sel = document.getElementById('promoLoja');
+    if (!sel) return '';
+    const loja = (typeof lojasErp !== 'undefined' ? lojasErp : []).find(l => String(l.id) === String(sel.value));
+    return loja ? String(loja.marketplace || '').toLowerCase() : '';
+  }
+  function _promoLojaEhTiktok() { const m = _promoLojaMkt(); return m.includes('tiktok') || m.includes('tik'); }
+  function _promoLojaEhShein() { return _promoLojaMkt().includes('shein'); }
+  window._promoLojaEhTiktok = _promoLojaEhTiktok;
+  window._promoLojaEhShein = _promoLojaEhShein;
 
   // Produtos da loja selecionada no modal
   function _promoProdutosDaLoja() {
@@ -55368,9 +56478,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const lista = document.getElementById('promoItensLista');
     if (!wrap || !lista) return;
 
-    // Mostra o bloco pra Shopee OU Mercado Livre (tipo != cupom)
+    // Mostra o bloco pra Shopee, Mercado Livre, TikTok OU Shein (tipo != cupom)
     const tipo = document.getElementById('promoTipo').value;
-    if ((!_promoLojaEhShopee() && !_promoLojaEhML()) || tipo === 'cupom') {
+    if ((!_promoLojaEhShopee() && !_promoLojaEhML() && !_promoLojaEhTiktok() && !_promoLojaEhShein()) || tipo === 'cupom') {
       wrap.style.display = 'none';
       return;
     }
@@ -55492,14 +56602,25 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const itens = coletarItensPromo();
     if (itens.length === 0) return { ok: false, msg: 'Selecione ao menos um anúncio para a promoção.' };
     const ehML = (typeof _promoLojaEhML === 'function' && _promoLojaEhML());
+    const ehTiktok = (typeof _promoLojaEhTiktok === 'function' && _promoLojaEhTiktok());
+    const descTipo = (document.getElementById('promoDescTipo') || {}).value || 'percentual';
+    // v33k.1184: TikTok com desconto percentual usa a % da promoção (não exige
+    // preço por item); com preço fixo/relâmpago exige o preço por produto.
+    const tkPercentual = ehTiktok && descTipo === 'percentual';
+    const tkPreco = ehTiktok && descTipo !== 'percentual';
+    if (tkPercentual) {
+      const pct = parseFloat((document.getElementById('promoDesconto') || {}).value) || 0;
+      if (!(pct > 0)) return { ok: false, msg: 'Informe o percentual de desconto da promoção.' };
+      return { ok: true, itens };
+    }
     for (const it of itens) {
-      if (ehML) {
-        // ML: preço por PRODUTO (precoAnuncio). Não exige preço por variação.
+      if (ehML || tkPreco) {
+        // ML / TikTok preço fixo: preço por PRODUTO (precoAnuncio)
         if (it.precoAnuncio === null || it.precoAnuncio === undefined || it.precoAnuncio <= 0) {
           return { ok: false, msg: 'Há produtos sem preço promocional. Preencha o preço de todos ou desmarque.' };
         }
       } else {
-        // Shopee: preço por variação
+        // Shopee / Shein: preço por variação
         for (const v of it.variacoes) {
           if (v.preco === null || v.preco <= 0) {
             return { ok: false, msg: 'Há variações sem preço promocional. Preencha todas ou desmarque o anúncio.' };
@@ -55626,6 +56747,102 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     renderPromocoes();
   }
   window._criarCampanhaMLDeProm = _criarCampanhaMLDeProm;
+
+  // v33k.1184: TikTok → cria a atividade de promoção e adiciona os produtos
+  // selecionados (com % de desconto ou preço fixo, conforme o tipo).
+  async function _criarPromocaoTiktokDeProm(promo) {
+    const loja = lojasErp.find(l => String(l.id) === String(promo.lojaId));
+    if (!loja) { showToast('Loja não encontrada', true); closePromocao(); renderPromocoes(); return; }
+    const lojaIdBanco = loja.idBanco || loja.id;
+    const iniEp = Math.floor(new Date((promo.inicio || '') + 'T' + (promo.horaInicio || '00:00')).getTime() / 1000);
+    const fimEp = Math.floor(new Date((promo.fim || '') + 'T' + (promo.horaFim || '23:59')).getTime() / 1000);
+    if (!iniEp || !fimEp || fimEp <= iniEp) { showToast('Defina início e fim válidos (fim depois do início).', true); return; }
+    if (iniEp <= Math.floor(Date.now() / 1000)) { showToast('No TikTok o início da promoção precisa ser no futuro.', true); return; }
+    const descTipo = promo.descTipo || 'percentual';
+    const tkTipo = promo.tipo === 'relampago' ? 'FLASHSALE' : (descTipo === 'percentual' ? 'DIRECT_DISCOUNT' : 'FIXED_PRICE');
+    const pct = parseFloat(promo.desconto) || 0;
+    // resolve o productId TikTok de cada produto selecionado (via vínculo)
+    const produtos = [];
+    (promo.itens || []).forEach(it => {
+      const prod = produtosErp.find(p => String(p.id) === String(it.produtoId));
+      if (!prod) return;
+      const vinc = (prod.variacoes || []).flatMap(v => v.vinculos || [])
+        .find(vi => /tiktok/i.test(vi.marketplace || '') && String(vi.lojaIdBanco || vi.lojaId) === String(lojaIdBanco));
+      if (!vinc || !vinc.anuncioId) return;
+      const entry = { productId: String(vinc.anuncioId) };
+      if (tkTipo === 'DIRECT_DISCOUNT') entry.discountPct = pct;
+      else entry.precoFixo = Number(it.precoAnuncio || prod.preco || 0);
+      if (!produtos.some(x => x.productId === entry.productId)) produtos.push(entry);
+    });
+    if (!produtos.length) { showToast('Nenhum anúncio TikTok vinculado aos produtos selecionados.', true); return; }
+
+    showToast('💾 Criando promoção no TikTok…');
+    try {
+      const rC = await fetch(BACKEND_URL + '/api/tiktok/loja/' + lojaIdBanco + '/promocoes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ tipo: tkTipo, titulo: promo.nome || undefined, inicio: iniEp, fim: fimEp, productLevel: 'PRODUCT' }),
+      });
+      const dC = await rC.json();
+      if (!dC.ok || !dC.activityId) { showToast('Erro ao criar promoção TikTok: ' + (dC.erro || '?'), true); return; }
+      const rP = await fetch(BACKEND_URL + '/api/tiktok/loja/' + lojaIdBanco + '/promocao/' + dC.activityId + '/produtos', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ tipo: tkTipo, productLevel: 'PRODUCT', produtos }),
+      });
+      const dP = await rP.json();
+      if (dP.ok) {
+        promo.efetivadoTiktok = true; promo.tiktokActivityId = dC.activityId; savePromocoes();
+        showToast('✓ Promoção criada no TikTok com ' + produtos.length + ' anúncio(s).');
+      } else {
+        showToast('Promoção criada, mas falhou ao adicionar produtos: ' + (dP.erro || '?'), true);
+      }
+    } catch (e) { showToast('Erro: ' + e.message, true); }
+    closePromocao(); renderPromocoes();
+    try { atualizarPromocoesMkt(); } catch (_) {}
+  }
+  window._criarPromocaoTiktokDeProm = _criarPromocaoTiktokDeProm;
+
+  // v33k.1184: Shein → NÃO tem atividade de promoção na API; a "promoção" é
+  // aplicar o preço promocional direto nos anúncios (por SKU), em massa.
+  async function _aplicarPrecoSheinDeProm(promo) {
+    const loja = lojasErp.find(l => String(l.id) === String(promo.lojaId));
+    if (!loja) { showToast('Loja não encontrada', true); closePromocao(); renderPromocoes(); return; }
+    const lojaIdBanco = loja.idBanco || loja.id;
+    const descTipo = promo.descTipo || 'percentual';
+    const pct = parseFloat(promo.desconto) || 0;
+    const itens = [];
+    (promo.itens || []).forEach(it => {
+      const prod = produtosErp.find(p => String(p.id) === String(it.produtoId));
+      if (!prod) return;
+      (prod.variacoes || []).forEach(v => {
+        const sku = v.sku; if (!sku) return;
+        const provar = (it.variacoes || []).find(x => String(x.variacaoId) === String(v.id));
+        let preco = (provar && provar.preco > 0) ? provar.preco : (it.precoAnuncio > 0 ? it.precoAnuncio : null);
+        if (preco == null && descTipo === 'percentual' && pct > 0) {
+          const base = parseFloat(v.preco) || parseFloat(prod.preco) || 0;
+          if (base > 0) preco = +(base * (1 - pct / 100)).toFixed(2);
+        }
+        if (preco > 0) itens.push({ supplierSku: String(sku), preco: Number(preco) });
+      });
+    });
+    if (!itens.length) { showToast('Nenhuma variação Shein com SKU/preço pra aplicar.', true); return; }
+
+    showToast('💾 Aplicando preços promocionais na Shein…');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/shein/loja/' + lojaIdBanco + '/produtos/preco', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        body: JSON.stringify({ itens }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        promo.efetivadoShein = true; savePromocoes();
+        showToast('✓ Preço promocional aplicado em ' + itens.length + ' SKU(s) na Shein.');
+      } else {
+        showToast('Erro ao aplicar preço na Shein: ' + (d.erro || '?'), true);
+      }
+    } catch (e) { showToast('Erro: ' + e.message, true); }
+    closePromocao(); renderPromocoes();
+  }
+  window._aplicarPrecoSheinDeProm = _aplicarPrecoSheinDeProm;
 
   // Efetiva uma promoção no Mercado Livre: cria a campanha (SELLER_CAMPAIGN) e
   // adiciona cada item selecionado com seu preço promocional.
@@ -60300,7 +61517,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         }, 40);
       }
     }
-    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); }
+    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); if (typeof admCarregarCertConsulta === 'function') admCarregarCertConsulta(); }
     else if (typeof window.admSaudePararAuto === 'function') { window.admSaudePararAuto(); }
     if (screenId === 'produtosScreen') {
       // v32i.1: carrega página 1 do backend (paginação). Se já tem itens carregados
@@ -64401,6 +65618,32 @@ REGRAS DE OURO:
   }
   window._relConfig = _relConfig;
 
+  // Logo do SISTEMA (Lider 10), lido da própria sidebar (é o logo do produto).
+  // Usado nos relatórios do lojista (ex.: Lucro), que devem levar a marca do
+  // sistema, e NÃO o logo configurável da Líder Commerce/contabilidade.
+  function _logoSistema() {
+    try {
+      const img = document.querySelector('.sidebar-logo img, #lcGlobalSidebar .sidebar-logo img');
+      if (img && img.src && /^data:image\//i.test(img.src)) return img.src;
+    } catch (e) {}
+    return LOGO_LIDER; // fallback: nunca deixa o relatório sem marca
+  }
+  window._logoSistema = _logoSistema;
+  // REGRA ÚNICA DE LOGO DOS PDFs (v33k.1190):
+  // Todo PDF com logo usa a marca do SISTEMA (Lider 10), EXCETO quando quem
+  // gera é o usuário AGÊNCIA (admin/superadmin) — que emite relatórios para os
+  // clientes dele com a marca própria configurada em Configurações.
+  function _logoPdf(_rc) {
+    const ehAgencia = (typeof papelAtual === 'function')
+      && (papelAtual() === 'admin' || papelAtual() === 'superadmin');
+    if (ehAgencia && _rc && _rc.logo) return { logo: _rc.logo, formato: _rc.logoFormato || 'PNG' };
+    return { logo: _logoSistema(), formato: 'PNG' };
+  }
+  window._logoPdf = _logoPdf;
+  // alias histórico (relatório de lucro) — mesma regra
+  function _logoRelatorioLucro(_rc) { return _logoPdf(_rc); }
+  window._logoRelatorioLucro = _logoRelatorioLucro;
+
   const LOGO_LIDER = 'data:image/jpeg;base64,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';
   // Gera o PDF de apresentação do fechamento (padrão verde, estilo slides)
   function _gerarPdfFechamento(f, opts) {
@@ -64415,7 +65658,7 @@ REGRAS DE OURO:
       // ---------- SLIDE 1: CAPA ----------
       doc.setFillColor(248, 250, 249); doc.rect(0, 0, W, H, 'F');
       doc.setFillColor(...VERDE); doc.rect(0, 0, 12, H, 'F');
-      try { doc.addImage(_rc.logo, _rc.logoFormato, W-70, 22, 45, 45); } catch(e) {}
+      try { const _lg = _logoPdf(_rc); if (_lg.logo) doc.addImage(_lg.logo, _lg.formato, W-70, 22, 45, 45); } catch(e) {}
       doc.setTextColor(...ESCURO); doc.setFont('helvetica', 'bold');
       doc.setFontSize(46); doc.text('FATURAMENTO', 30, 80);
       doc.setTextColor(...VERDE); doc.setFontSize(64); doc.text('MENSAL', 30, 105);
@@ -64503,7 +65746,7 @@ REGRAS DE OURO:
       doc.addPage();
       doc.setFillColor(248, 250, 249); doc.rect(0,0,W,H,'F');
       doc.setFillColor(...VERDE); doc.rect(W-12,0,12,H,'F');
-      try { doc.addImage(_rc.logo, _rc.logoFormato, 28, 22, 38, 38); } catch(e) {}
+      try { const _lg = _logoPdf(_rc); if (_lg.logo) doc.addImage(_lg.logo, _lg.formato, 28, 22, 38, 38); } catch(e) {}
       doc.setTextColor(...ESCURO); doc.setFont('helvetica','bold'); doc.setFontSize(40);
       doc.text('OBRIGADO PELA', 28, 95);
       doc.setTextColor(...VERDE); doc.setFontSize(54); doc.text('CONFIANÇA', 28, 120);
@@ -67244,7 +68487,7 @@ ${JSON.stringify(metricas, null, 2)}`
       // ───────── CAPA ─────────
       fundo();
       doc.setFillColor(...VERDE); doc.rect(0, 0, 10, H, 'F');
-      try { if (_rc.logo) doc.addImage(_rc.logo, _rc.logoFormato, W-62, 18, 42, 42); } catch(e) {}
+      try { const _lg = _logoRelatorioLucro(_rc); if (_lg.logo) doc.addImage(_lg.logo, _lg.formato, W-62, 18, 42, 42); } catch(e) {}
       doc.setTextColor(...ESCURO); doc.setFont('helvetica','bold');
       doc.setFontSize(32); doc.text('RELATÓRIO', MX, 46);
       doc.setTextColor(...VERDE); doc.setFontSize(32); doc.text('DE LUCROS', MX, 59);
@@ -67785,7 +69028,7 @@ ${JSON.stringify(metricas, null, 2)}`
     // ═══════════ CAPA ═══════════
     fundo();
     doc.setFillColor(...VERDE); doc.rect(0, 0, 10, H, 'F'); // barra lateral segue a cor do topo
-    try { if (_rc.logo) doc.addImage(_rc.logo, _rc.logoFormato, W-62, 18, 42, 42); } catch(e) {}
+    try { const _lg = _logoRelatorioLucro(_rc); if (_lg.logo) doc.addImage(_lg.logo, _lg.formato, W-62, 18, 42, 42); } catch(e) {}
     doc.setTextColor(...ESCURO); doc.setFont('helvetica','bold');
     doc.setFontSize(30); doc.text('RELATÓRIO', MX, 44);
     doc.setTextColor(...ROXO); doc.setFontSize(30); doc.text('ROBUSTO', MX, 56);
@@ -70380,11 +71623,13 @@ ${JSON.stringify(metricas, null, 2)}`
           // v33k.1085: estimativa do TikTok diz COMO foi calculada. "estimada"
           // sozinho não deixa claro se é chute ou conta em cima de dado real.
           : linhaLucro('Taxa da plataforma' + (p.taxaEstimada
-              ? (p.taxaEstimativaMedida
-                  ? ' (estimada, ' + String(p.taxaEstimativaPct).replace('.', ',') + '% medido em ' + p.taxaEstimativaAmostra + ' pedidos já liquidados)'
-                  : (p.taxaEstimativaPct != null
-                      ? ' (estimada, ' + String(p.taxaEstimativaPct).replace('.', ',') + '% padrão do marketplace)'
-                      : ' (estimada)'))
+              ? (p.taxaEstimativaFonte === 'tabela_oficial'
+                  ? ' (estimada pela tabela do TikTok' + (p.taxaEstimativaMedida ? ', afiliado medido na conta' : '') + ')'
+                  : (p.taxaEstimativaMedida
+                      ? ' (estimada, ' + String(p.taxaEstimativaPct).replace('.', ',') + '% medido em ' + p.taxaEstimativaAmostra + ' pedidos já liquidados)'
+                      : (p.taxaEstimativaPct != null
+                          ? ' (estimada, ' + String(p.taxaEstimativaPct).replace('.', ',') + '% padrão do marketplace)'
+                          : ' (estimada)')))
               : ''), '− ' + formatBRL(p.taxaPlataforma), p.taxaEstimada ? 'var(--lc-warning)' : null)) +
         // v33k.1043: de onde vem cada centavo deduzido. Só aparece quando o
         // marketplace informa a decomposição (hoje TikTok). "estimada" nunca
@@ -70403,7 +71648,11 @@ ${JSON.stringify(metricas, null, 2)}`
                   + (Number(i.freq) < 100 ? (', em ' + String(i.freq).replace('.', ',') + '% das vendas') : '') + ')</span></span>'
                   + '<span>− ' + formatBRL(i.valor) + '</span></div>';
               }).join('')
-            + '<div style="font-size:10px;color:var(--lc-muted-2);margin-top:3px">Percentuais medidos nos pedidos desta loja que já foram liquidados.</div>'
+            + '<div style="font-size:10px;color:var(--lc-muted-2);margin-top:3px">'
+            + (p.taxaEstimativaFonte === 'tabela_oficial'
+                ? 'Comissão e taxa por item pela tabela oficial do TikTok (a partir de 15/07/2026). A comissão de influenciador é estimativa' + (p.taxaEstimativaMedida ? ' medida nesta conta.' : ' — some quando o pedido liquidar com o valor real.')
+                : 'Percentuais medidos nos pedidos desta loja que já foram liquidados.')
+            + '</div>'
             + '</div>'
           : '') +
         (p.freteVendedor > 0 ? linhaLucro('Frete (você paga)', '− ' + formatBRL(p.freteVendedor)) : '') +
@@ -71309,7 +72558,21 @@ ${JSON.stringify(metricas, null, 2)}`
       _nfaCodMunicipio = e.cod_municipio || '';
       // se a Receita não trouxe o IBGE, busca pelo CEP (o ViaCEP sempre traz)
       if (!_nfaCodMunicipio && _nfaDig(e.cep).length === 8) await nfaBuscarCep(true);
-      msg.textContent = '✓ Dados preenchidos' + (d.raw && d.raw.situacao ? ' · ' + d.raw.situacao : '');
+      // ★ Inscrição Estadual real, consultada na SEFAZ com o certificado global
+      const chkIsento = document.getElementById('nfaIeIsento');
+      const ieEl = document.getElementById('nfaIe');
+      let ieMsg = '';
+      if (d.ie && d.ie.ie && ieEl) {                 // contribuinte com IE → preenche
+        if (chkIsento) chkIsento.checked = false;
+        ieEl.disabled = false; ieEl.style.background = '#fff'; ieEl.style.color = '#0f172a';
+        ieEl.value = d.ie.ie;
+        ieMsg = ' · IE ' + d.ie.ie + ' (SEFAZ)';
+      } else if (d.ie && d.ie.contribuinte === false && chkIsento) {  // não contribuinte
+        chkIsento.checked = true;
+        if (ieEl) { ieEl.value = ''; ieEl.disabled = true; ieEl.style.background = '#f1f5f9'; ieEl.style.color = '#94a3b8'; }
+        ieMsg = ' · sem IE (não contribuinte)';
+      }
+      msg.textContent = '✓ Dados preenchidos' + (d.raw && d.raw.situacao ? ' · ' + d.raw.situacao : '') + ieMsg;
       msg.style.color = '#166534';
     } catch (err) { msg.textContent = 'Erro: ' + err.message; msg.style.color = '#b91c1c'; }
   }
@@ -86260,6 +87523,30 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       </div>
     </div>
 
+    <!-- CERTIFICADO GLOBAL DE CONSULTA À SEFAZ (só super admin) -->
+    <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div>
+          <h3 style="margin:0">🔑 Certificado de consulta à SEFAZ</h3>
+          <div style="font-size:12px;color:#6b7280">O A1 da Líder usado para buscar a Inscrição Estadual real em toda consulta de CNPJ do sistema.</div>
+        </div>
+        <button class="toolbar-btn" style="font-size:12px" onclick="admCarregarCertConsulta()">↻ Atualizar</button>
+      </div>
+      <div id="admCertConsultaStatus" style="font-size:13px;color:#374151;margin-bottom:12px"><em style="color:#9ca3af">Carregando…</em></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <label style="display:block;font-size:12px;color:#6b7280;margin-bottom:4px">Arquivo .pfx / .p12</label>
+          <input type="file" id="admCertConsultaFile" accept=".pfx,.p12" style="font-size:12px">
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;color:#6b7280;margin-bottom:4px">Senha do certificado</label>
+          <input type="password" id="admCertConsultaSenha" placeholder="senha" autocomplete="off" style="font-size:13px;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px">
+        </div>
+        <button class="primary-btn" id="admCertConsultaBtn" onclick="admEnviarCertConsulta()">Enviar certificado</button>
+      </div>
+      <div style="font-size:11px;color:#9ca3af;margin-top:10px;line-height:1.5">Guardado cifrado (AES-256). As consultas ficam registradas na SEFAZ sob este CNPJ. Estados AM, MA, PA e PI não oferecem o serviço; SP pode limitar consulta em massa.</div>
+    </div>
+
     <!-- SAÚDE DA INFRAESTRUTURA (só super admin) -->
     <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
@@ -86738,6 +88025,62 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } catch(e) { grid.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
   }
   window.renderAdmMetricas = renderAdmMetricas;
+
+  // ═══ CERTIFICADO GLOBAL DE CONSULTA À SEFAZ (só super admin) ═══
+  // O A1 da Líder que serve de chave-mestra pra buscar a IE de qualquer CNPJ.
+  async function admCarregarCertConsulta() {
+    const el = document.getElementById('admCertConsultaStatus');
+    if (!el) return;
+    if (papelAtual() !== 'superadmin') return;
+    el.innerHTML = '<em style="color:#9ca3af">Carregando…</em>';
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/nfe/consulta-cadastro/certificado-global', { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
+      if (!r.ok) { el.innerHTML = '<span style="color:#dc2626">Erro: '+escapeHtml(r.erro||'falha')+'</span>'; return; }
+      if (!r.configurado) {
+        el.innerHTML = r.semTabela
+          ? '<span style="color:#b45309">⚠ Rode a migração v1175 (nfe_cert_consulta_global) no Supabase antes de subir o certificado.</span>'
+          : '<span style="color:#b45309">Nenhum certificado configurado. Suba o A1 da Líder abaixo.</span>';
+        return;
+      }
+      const venc = r.vencido ? ' <b style="color:#dc2626">(VENCIDO)</b>' : '';
+      const val = r.validade ? new Date(r.validade).toLocaleDateString('pt-BR') : '—';
+      el.innerHTML = '✅ <b>'+escapeHtml(r.titular||'certificado ativo')+'</b>'+venc
+        + '<br><span style="color:#6b7280;font-size:12px">CNPJ: '+escapeHtml(r.cnpj||'—')+' · válido até '+val+'</span>';
+    } catch(e){ el.innerHTML = '<span style="color:#dc2626">Erro: '+escapeHtml(e.message)+'</span>'; }
+  }
+  window.admCarregarCertConsulta = admCarregarCertConsulta;
+
+  async function admEnviarCertConsulta() {
+    const fileEl = document.getElementById('admCertConsultaFile');
+    const senhaEl = document.getElementById('admCertConsultaSenha');
+    const btn = document.getElementById('admCertConsultaBtn');
+    const f = fileEl && fileEl.files && fileEl.files[0];
+    if (!f) { showToast('Escolha o arquivo .pfx do certificado.', true); return; }
+    if (!senhaEl || !senhaEl.value) { showToast('Digite a senha do certificado.', true); return; }
+    const txt0 = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+    try {
+      const b64 = await new Promise((resolve, reject) => {
+        const rd = new FileReader();
+        rd.onload = () => { const s = String(rd.result||''); resolve(s.includes(',') ? s.split(',')[1] : s); };
+        rd.onerror = () => reject(new Error('falha ao ler o arquivo'));
+        rd.readAsDataURL(f);
+      });
+      const r = await (await fetch(BACKEND_URL + '/api/nfe/consulta-cadastro/certificado-global', {
+        method:'POST',
+        headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken(),'Content-Type':'application/json'},
+        body: JSON.stringify({ pfxBase64: b64, senha: senhaEl.value }),
+      })).json();
+      if (!r.ok) { showToast('Erro: '+(r.erro||'falha'), true); }
+      else {
+        showToast('✅ Certificado de consulta salvo. As buscas de CNPJ já trazem a IE.');
+        senhaEl.value = ''; if (fileEl) fileEl.value = '';
+        admCarregarCertConsulta();
+      }
+    } catch(e){ showToast('Erro: '+e.message, true); }
+    if (btn) { btn.disabled = false; btn.textContent = txt0; }
+  }
+  window.admEnviarCertConsulta = admEnviarCertConsulta;
 
   // Reconciliação de produtos órfãos (superadmin): simula, mostra, e aplica sob confirmação.
   async function reconciliarProdutos() {
@@ -88682,12 +90025,12 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const money = v => 'R$ ' + (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
       const planoNome = E.plano==='ouro' ? 'OURO' : 'PRATA';
       const mktNome = E.marketplace === 'ml' ? 'Mercado Livre' : 'Shopee';
-      const logo = _rc.logo;
+      const _lgPdf = _logoPdf(_rc); const logo = _lgPdf.logo;
 
       // ───── CAPA ─────
       doc.setFillColor(248,250,249); doc.rect(0,0,W,H,'F');
       doc.setFillColor(...VERDE); doc.rect(0,0,12,H,'F');
-      if (logo) { try { doc.addImage(logo,_rc.logoFormato,W-72,20,48,48); } catch(e){} }
+      if (logo) { try { doc.addImage(logo,_lgPdf.formato,W-72,20,48,48); } catch(e){} }
       doc.setTextColor(...ESCURO); doc.setFont(FONTE,'bold');
       doc.setFontSize(42); doc.text('ESTRATÉGIA', 30, 78);
       doc.setTextColor(...VERDE); doc.setFontSize(58); doc.text('COMERCIAL', 30, 100);
@@ -88971,7 +90314,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const W=297, H=210;
       const _rc=_relConfig(); const VERDE=_rc.corPrimaria, ESCURO=_rc.corSecundaria, CINZA=_rc.corTexto, AZUL=[37,99,235], DOURADO=[202,138,4], ROXO=[124,58,237];
       const money = v => 'R$ ' + (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-      const logo = _rc.logo;
+      const _lgPdf = _logoPdf(_rc); const logo = _lgPdf.logo;
 
       const imposto = E.imposto || 0;
       const fatLucroMes = 50000; // faturamento de referência da fase Lucro
@@ -89043,7 +90386,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       // ───── CAPA ─────
       doc.setFillColor(248,250,249); doc.rect(0,0,W,H,'F');
       doc.setFillColor(...ROXO); doc.rect(0,0,12,H,'F');
-      if (logo) { try { doc.addImage(logo,_rc.logoFormato,W-72,20,48,48); } catch(e){} }
+      if (logo) { try { doc.addImage(logo,_lgPdf.formato,W-72,20,48,48); } catch(e){} }
       doc.setTextColor(...ESCURO); doc.setFont(FONTE,'bold');
       doc.setFontSize(40); doc.text('QUAL PLANO', 30, 74);
       doc.setTextColor(...ROXO); doc.setFontSize(54); doc.text('É MELHOR PRA VOCÊ?', 30, 96);
