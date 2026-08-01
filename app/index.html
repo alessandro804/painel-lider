@@ -27226,45 +27226,37 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (!data.ok || !Array.isArray(data.lojas)) return;
       
       let mudou = false;
-      
-      // 1. Casa lojas LOCAIS com lojas do banco (por nome+marketplace)
-      // → preenche idBanco e info de conta conectada
-      lojasErp.forEach(local => {
-        const correspondente = data.lojas.find(b => 
-          b.nome === local.nome && b.marketplace === local.marketplace
-        );
-        if (correspondente) {
-          if (!local.idBanco) {
-            local.idBanco = correspondente.id;
-            mudou = true;
+
+      // v33k.1201: o BANCO é a fonte da verdade. Para cada loja do banco, casa
+      // com a local por idBanco (preferencial, sobrevive a renomeação) OU, só se
+      // ainda não tiver idBanco, por nome+marketplace (legado). Ao casar, o NOME
+      // LOCAL é atualizado pelo do banco — antes, renomear uma loja deixava o
+      // nome antigo preso no cache (ex.: "Daniel 2" continuava aparecendo em
+      // Anúncios depois de virar "Renato"), virando um item órfão que não casava
+      // com nenhum produto e zerava a lista. Agora o rename propaga.
+      data.lojas.forEach(banco => {
+        let local = lojasErp.find(l => l.idBanco != null && String(l.idBanco) === String(banco.id));
+        if (!local) local = lojasErp.find(l => l.idBanco == null && l.nome === banco.nome && l.marketplace === banco.marketplace);
+        if (local) {
+          if (local.idBanco == null) { local.idBanco = banco.id; mudou = true; }
+          // rename propaga do banco pro cache local
+          if (banco.nome && local.nome !== banco.nome) {
+            console.log('[lojas] nome atualizado no cache:', local.nome, '→', banco.nome);
+            local.nome = banco.nome; mudou = true;
           }
-          // Atualiza info de conta conectada (independente de já ter idBanco)
-          if (correspondente.contaConectada !== local.contaConectada) {
-            const acabouDeConectar = !local.contaConectada && !!correspondente.contaConectada;
-            local.contaConectada = correspondente.contaConectada;
+          if (banco.contaConectada !== local.contaConectada) {
+            const acabouDeConectar = !local.contaConectada && !!banco.contaConectada;
+            local.contaConectada = banco.contaConectada;
             mudou = true;
             // v33k.1023: é aqui que os quatro marketplaces se encontram -
             // qualquer um deles passa por esta reconciliação ao conectar.
-            // Disparar daqui evita repetir a mesma regra em quatro callbacks.
             if (acabouDeConectar && typeof _ciDispararSeNova === 'function') {
               _ciDispararSeNova(local);
             }
           }
-          if (correspondente.conta) {
-            local.contaInfo = correspondente.conta;
-          }
-        }
-      });
-      
-      // 2. IMPORTA lojas do banco que NÃO existem localmente
-      // Isso resolve o caso de "outro navegador", onde o localStorage não tem
-      // as lojas, mas elas existem no banco (conectadas em outro navegador).
-      data.lojas.forEach(banco => {
-        const jaTemLocal = lojasErp.some(l => 
-          String(l.idBanco) === String(banco.id) ||
-          (l.nome === banco.nome && l.marketplace === banco.marketplace)
-        );
-        if (!jaTemLocal) {
+          if (banco.conta) local.contaInfo = banco.conta;
+        } else {
+          // Loja do banco que não existe localmente (ex.: conectada em outro navegador).
           lojasErp.push({
             id: gerarId(),
             idBanco: banco.id,
@@ -27278,7 +27270,20 @@ Retorne JSON: {"ID": "valor", ...}`;
           console.log('[lojas] importada loja do banco:', banco.nome, '(' + banco.marketplace + ')');
         }
       });
-      
+
+      // v33k.1201: DEDUP por idBanco — se um bug antigo deixou entradas
+      // duplicadas da mesma loja (uma com nome velho, outra importada), colapsa
+      // pra uma só, mantendo a que já é referenciada pela seleção quando possível.
+      const vistos = new Set();
+      const antes = lojasErp.length;
+      lojasErp = lojasErp.filter(l => {
+        if (l.idBanco == null) return true;                 // sem idBanco: mantém
+        const k = String(l.idBanco);
+        if (vistos.has(k)) return false;
+        vistos.add(k); return true;
+      });
+      if (lojasErp.length !== antes) mudou = true;
+
       if (mudou) {
         saveLojas();
         // Re-renderiza se as telas relevantes estiverem abertas
@@ -52264,19 +52269,25 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (mktSel) { if (!_anMarketplacesDoProduto(p).has(mktSel)) return false; }
       // ── FILTRO DE LOJA ──
       if (lojasSel.length > 0) {
-        // Produto aparece se é dono de alguma loja selecionada OU tem vínculo de
-        // anúncio com alguma delas (produto consolidado vive em 1 lojaId mas tem
-        // anúncios em várias lojas, deve aparecer no filtro de cada uma).
-        const ehDono = lojasSel.includes(String(p.lojaId));
+        // v33k.1201: o produto guarda a loja pelo ID DO BANCO (p.lojaId =
+        // loja_id), mas o seletor entrega o ID LOCAL do cache. Antes o "ehDono"
+        // comparava id local × id do banco (nunca batia) e a lista zerava mesmo
+        // com produtos da loja. Agora montamos um conjunto-alvo com AMBOS os
+        // espaços de id (local + idBanco) e comparamos contra ele.
         const idsBanco = lojasSel.map(fid => {
           const lo = lojasErp.find(l => String(l.id) === String(fid));
-          return lo ? String(lo.idBanco) : null;
+          return lo && lo.idBanco != null ? String(lo.idBanco) : null;
         }).filter(Boolean);
-        const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi => {
-          const lid = String(vi.lojaIdBanco || vi.lojaId);
-          return lojasSel.includes(lid) || idsBanco.includes(lid);
-        }));
-        if (!ehDono && !temVinculo) return false;
+        // Guarda de segurança: se a seleção não resolve pra NENHUMA loja real do
+        // banco (seleção obsoleta no cache), NÃO esconde tudo — ignora o filtro
+        // de loja em vez de deixar o usuário sem ver produto nenhum.
+        if (idsBanco.length > 0) {
+          const alvo = new Set([...lojasSel.map(String), ...idsBanco]);
+          const ehDono = alvo.has(String(p.lojaId));
+          const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
+            alvo.has(String(vi.lojaIdBanco || vi.lojaId))));
+          if (!ehDono && !temVinculo) return false;
+        }
       }
       if (busca) {
         const txt = (p.nome + ' ' + (p.skuPai||'') + ' ' + (p.id||'')).toLowerCase();
@@ -61632,7 +61643,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         }, 40);
       }
     }
-    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); if (typeof admCarregarCertConsulta === 'function') admCarregarCertConsulta(); }
+    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmErros === 'function') renderAdmErros(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); if (typeof admCarregarCertConsulta === 'function') admCarregarCertConsulta(); }
     else if (typeof window.admSaudePararAuto === 'function') { window.admSaudePararAuto(); }
     if (screenId === 'produtosScreen') {
       // v32i.1: carrega página 1 do backend (paginação). Se já tem itens carregados
@@ -72711,6 +72722,18 @@ ${JSON.stringify(metricas, null, 2)}`
         chkIsento.checked = true;
         if (ieEl) { ieEl.value = ''; ieEl.disabled = true; ieEl.style.background = '#f1f5f9'; ieEl.style.color = '#94a3b8'; }
         ieMsg = ' · sem IE (não contribuinte)';
+      } else if (d.ie && d.ie.indisponivel) {
+        // v33k.1201: a SEFAZ não retornou a IE (serviço fora, timeout, UF sem
+        // consulta em massa…). Antes ficava SILENCIOSO e o campo vazio parecia
+        // bug. Agora avisamos e deixamos o operador preencher à mão.
+        if (ieEl) { ieEl.disabled = false; ieEl.style.background = '#fff'; ieEl.style.color = '#0f172a'; }
+        const motivo = d.ie.semCertGlobal
+          ? 'certificado global de consulta não configurado no Super Admin'
+          : (d.ie.motivo || 'a SEFAZ não retornou o cadastro agora');
+        msg.textContent = '✓ Dados preenchidos' + (d.raw && d.raw.situacao ? ' · ' + d.raw.situacao : '')
+          + ' · ⚠ IE não veio da SEFAZ (' + motivo + '). Preencha a IE à mão ou marque "não contribuinte".';
+        msg.style.color = '#b45309';
+        return;
       }
       msg.textContent = '✓ Dados preenchidos' + (d.raw && d.raw.situacao ? ' · ' + d.raw.situacao : '') + ieMsg;
       msg.style.color = '#166534';
@@ -87800,6 +87823,30 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       </div>
     </div>
 
+    <!-- CENTRAL DE PROBLEMAS / ERROS (só super admin) -->
+    <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div>
+          <h3 class="adm2-sec-title">🐞 Central de problemas</h3>
+          <div style="font-size:12px;color:#6b7280;margin-top:2px">Falhas de operação de <b>todos os usuários</b> — exportar anúncio, emitir NF, tarefas. Ataque até tudo ficar verde.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:12px;color:#6b7280;display:flex;align-items:center;gap:5px"><input type="checkbox" id="admErrosVerTodos" onchange="renderAdmErros()"> incluir dispensados</label>
+          <button class="toolbar-btn" style="font-size:12px" onclick="admDispensarTodosErros()">✓ Dispensar todos</button>
+          <button class="toolbar-btn" style="font-size:12px" onclick="renderAdmErros()">↻ Atualizar</button>
+        </div>
+      </div>
+      <div id="admErrosResumo" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px">
+        <em style="color:#9ca3af;font-size:13px">Carregando problemas...</em>
+      </div>
+      <div class="adm2-chart-wrap" id="admChartErrosWrap" style="margin-bottom:12px;display:none">
+        <h4>Problemas por área</h4>
+        <div class="sub">Onde estão concentrados os erros abertos — priorize a barra maior.</div>
+        <div class="adm2-chart-canvas-box" style="height:200px"><canvas id="admChartErros"></canvas></div>
+      </div>
+      <div id="admErrosLista"><em style="color:#9ca3af;font-size:13px">Carregando...</em></div>
+    </div>
+
     <!-- CERTIFICADO GLOBAL DE CONSULTA À SEFAZ (só super admin) -->
     <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
@@ -88408,6 +88455,117 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   window.admCertFileNome = admCertFileNome;
 
+  // ═══ CENTRAL DE PROBLEMAS / ERROS (v33k.1201, só super admin) ═══
+  const ADM_AREA_COR = { anuncio:'#7c3aed', nf:'#2563eb', processamento:'#d97706', webhook:'#0d9488', estoque:'#0891b2', sistema:'#db2777' };
+  async function renderAdmErros() {
+    const resumoEl = document.getElementById('admErrosResumo');
+    const listaEl = document.getElementById('admErrosLista');
+    if (!resumoEl || !listaEl) return;
+    if (papelAtual() !== 'superadmin') return;
+    const verTodos = !!(document.getElementById('admErrosVerTodos') && document.getElementById('admErrosVerTodos').checked);
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/saude/erros?status=' + (verTodos?'todos':'aberto'), { headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
+      if (!r.ok) { listaEl.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro ao carregar problemas</span>'; return; }
+      if (r.semTabela) {
+        resumoEl.innerHTML = '';
+        listaEl.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:12px 14px;border-radius:10px;font-size:12px;line-height:1.5">'
+          + '<b>📋 Central de problemas ainda não ativada.</b><br>' + escapeHtml(r.aviso || 'Rode a migração no Supabase.')
+          + '<div style="margin-top:6px;color:#78716c">Arquivo: <code>MIGRACAO_ERROS_SISTEMA.md</code>. Depois clique em Atualizar.</div></div>';
+        const w = document.getElementById('admChartErrosWrap'); if (w) w.style.display = 'none';
+        return;
+      }
+      const resu = r.resumo || {};
+      const areaLabel = r.areaLabel || {};
+      const total = resu.totalProblemas || 0;
+      // ── cartões de resumo ──
+      const kpi = (v, l, cor) => '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:14px">'
+        + '<div style="font-size:26px;font-weight:800;color:'+cor+';line-height:1">'+v+'</div>'
+        + '<div style="font-size:12px;color:#374151;font-weight:600;margin-top:4px">'+l+'</div></div>';
+      if (total === 0 && !verTodos) {
+        resumoEl.innerHTML = '<div style="grid-column:1/-1;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;display:flex;align-items:center;gap:10px">'
+          + '<span style="font-size:26px">✅</span><div><div style="font-weight:800;color:#166534;font-size:15px">Tudo verde!</div>'
+          + '<div style="font-size:12px;color:#15803d">Nenhum problema aberto no sistema agora.</div></div></div>';
+      } else {
+        resumoEl.innerHTML = [
+          kpi(total, 'Problemas abertos', total>0?'#dc2626':'#16a34a'),
+          kpi(resu.totalOcorrencias||0, 'Ocorrências (total)', '#d97706'),
+          kpi(resu.usuariosAfetados||0, 'Usuários afetados', '#7c3aed'),
+        ].join('');
+      }
+      // ── gráfico por área ──
+      const wrap = document.getElementById('admChartErrosWrap');
+      const areas = (resu.porArea || []).filter(([,n]) => n > 0);
+      if (wrap) {
+        if (areas.length && typeof Chart !== 'undefined') {
+          wrap.style.display = 'flex';
+          _admChart('admChartErros', {
+            type: 'bar',
+            data: {
+              labels: areas.map(([a]) => areaLabel[a] || a),
+              datasets: [{ label: 'Problemas', data: areas.map(([,n]) => n), backgroundColor: areas.map(([a]) => ADM_AREA_COR[a] || '#6b7280'), borderRadius: 4, maxBarThickness: 54 }],
+            },
+            options: {
+              indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+              animation: _reduzMovimento() ? false : { duration: 700, easing: 'easeOutCubic' },
+              plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => ' ' + (c.parsed.x||0) + ' problema(s)' } } },
+              scales: { x: { beginAtZero: true, grid: { color: '#f1f5f9' }, ticks: { precision: 0, color: '#9ca3af', font: { size: 11 } } }, y: { grid: { display: false }, ticks: { color: '#374151', font: { size: 12 } } } },
+            },
+          });
+        } else { wrap.style.display = 'none'; }
+      }
+      // ── lista de problemas ──
+      const erros = r.erros || [];
+      if (!erros.length) {
+        listaEl.innerHTML = verTodos
+          ? '<em style="color:#9ca3af;font-size:13px">Nenhum problema registrado.</em>'
+          : '';
+        return;
+      }
+      const fmtData = (iso) => { try { return new Date(iso).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); } catch(_) { return ''; } };
+      listaEl.innerHTML = erros.map(e => {
+        const cor = ADM_AREA_COR[e.area] || '#6b7280';
+        const dispensado = e.status === 'dispensado';
+        const conta = e.usuario_email ? escapeHtml(e.usuario_email) : (e.usuario_id!=null ? ('Conta #'+e.usuario_id) : 'Sistema (global)');
+        const mk = e.marketplace ? ('<span style="font-size:11px;color:#6b7280"> · '+escapeHtml(e.marketplace)+'</span>') : '';
+        const nOcor = e.ocorrencias || 1;
+        return '<div style="border:1px solid '+(dispensado?'#e5e7eb':'#fed7aa')+';background:'+(dispensado?'#f8fafc':'#fff7ed')+';border-radius:10px;padding:12px;margin-bottom:8px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">'
+          + '<span style="background:'+cor+';color:#fff;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px">'+escapeHtml(areaLabel[e.area]||e.area||'—')+'</span>'
+          + (nOcor>1?'<span style="background:#fee2e2;color:#991b1b;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px">'+nOcor+'× ocorrências</span>':'')
+          + (dispensado?'<span style="background:#e5e7eb;color:#6b7280;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">dispensado</span>':'')
+          + '</div>'
+          + '<div style="font-size:13px;color:#1f2937;font-weight:600;line-height:1.4">'+escapeHtml(e.mensagem||'Falha sem mensagem')+'</div>'
+          + '<div style="font-size:11px;color:#6b7280;margin-top:4px">👤 '+conta+mk+' · último: '+fmtData(e.ultimo_em)+(e.operacao?(' · '+escapeHtml(e.operacao)):'')+'</div>'
+          + '</div>'
+          + (dispensado?'':'<button class="toolbar-btn" style="font-size:11px;flex-shrink:0" onclick="admDispensarErro('+e.id+')">Dispensar</button>')
+          + '</div></div>';
+      }).join('');
+    } catch(e) { listaEl.innerHTML = '<span style="color:#dc2626;font-size:12px">Erro: '+e.message+'</span>'; }
+  }
+  window.renderAdmErros = renderAdmErros;
+
+  async function admDispensarErro(id) {
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/saude/erros/'+id+'/dispensar', { method:'POST', headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken()} })).json();
+      if (!r.ok) { showToast('Erro ao dispensar: '+(r.erro||''), true); return; }
+      renderAdmErros();
+    } catch(e) { showToast('Erro: '+e.message, true); }
+  }
+  window.admDispensarErro = admDispensarErro;
+
+  async function admDispensarTodosErros() {
+    if (!await lcConfirm('Dispensar TODOS os problemas abertos?\n\nEles somem da lista, mas se qualquer um voltar a acontecer, reaparece automaticamente (bug que volta não está resolvido).')) return;
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/saude/erros/dispensar', { method:'POST', headers:{'Authorization':'Bearer '+getTokenLogin(),'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({}) })).json();
+      if (!r.ok) { showToast('Erro: '+(r.erro||''), true); return; }
+      showToast('✅ '+(r.dispensados||0)+' problema(s) dispensado(s).');
+      renderAdmErros();
+    } catch(e) { showToast('Erro: '+e.message, true); }
+  }
+  window.admDispensarTodosErros = admDispensarTodosErros;
+
   // ═══ CERTIFICADO GLOBAL DE CONSULTA À SEFAZ (só super admin) ═══
   // O A1 da Líder que serve de chave-mestra pra buscar a IE de qualquer CNPJ.
   async function admCarregarCertConsulta() {
@@ -88695,8 +88853,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
       // ── SEÇÃO POR MARKETPLACE ──
       const porMk = r.porMarketplace || {};
-      // ordem: shopee, mercadolivre, shein, tiktok, depois o resto
-      const ordemMk = ['shopee','mercadolivre','shein','tiktok'].filter(m => porMk[m]);
+      // v33k.1201: SEMPRE mostra os 4 canônicos (Shopee, Mercado Livre, Shein,
+      // TikTok), mesmo com zero pushes. Um marketplace "sem push" é sinal de que
+      // a integração pode estar quebrada — some silenciosamente era o problema.
+      const ordemMk = ['shopee','mercadolivre','shein','tiktok'].slice();
       Object.keys(porMk).forEach(m => { if (!ordemMk.includes(m)) ordemMk.push(m); });
 
       // ── GRÁFICO: volume de pushes por marketplace nas últimas 24h (barras) ──
@@ -89047,7 +89207,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         <label class="form-label" style="font-size:12px">Empresa do subusuário (dono das lojas)</label>
         <select class="form-input" id="admDonoId">
           <option value="">selecione a empresa</option>
-          ${_admUsuarios.filter(x=>x.papel==='admin').map(a=>`<option value="${a.id}" ${(u&&u.dono_id===a.id)?'selected':''}>${escapeHtml(a.nome)} (${escapeHtml(a.email)})</option>`).join('')}
+          ${_admUsuarios.filter(x=>x.papel==='admin'||x.papel==='marketplace').map(a=>`<option value="${a.id}" ${(u&&u.dono_id===a.id)?'selected':''}>${escapeHtml(a.nome)} (${escapeHtml(a.email)})</option>`).join('')}
         </select>
         <div style="font-size:11px;color:#6b7280;margin-top:4px">O colaborador verá apenas as lojas desta empresa.</div>
       </div>
