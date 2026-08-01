@@ -54726,6 +54726,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!ov) {
       ov = document.createElement('div'); ov.id = 'tkPromoOverlay'; ov.className = 'modal-overlay';
       ov.style.zIndex = '10080';
+      // v33k.1212: centraliza vertical (o .modal-overlay padrão gruda no rodapé, o
+      // que deixava o modal "torto"); igual ao modal da Shopee.
+      ov.style.alignItems = 'center';
       ov.onclick = (e) => { if (e.target === ov) ov.classList.remove('active'); };
       ov.innerHTML =
         '<div class="modal" onclick="event.stopPropagation()" style="max-width:760px;width:96%;max-height:88vh;display:flex;flex-direction:column;padding:0;overflow:hidden">' +
@@ -54737,6 +54740,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             '<button onclick="document.getElementById(\'tkPromoOverlay\').classList.remove(\'active\')" style="background:#374151;border:none;color:#fff;width:32px;height:32px;border-radius:8px;cursor:pointer;flex:none">✕</button>' +
           '</div>' +
           '<div id="tkPromoBody" style="overflow-y:auto;flex:1 1 auto;background:#f8fafc"></div>' +
+          // v33k.1213: rodapé FIXO (igual ao da Shopee) — a barra de ações mora aqui.
+          '<div id="tkPromoFooter" style="display:none;padding:12px 16px;border-top:1px solid #e5e7eb;background:#fff;flex:none;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between"></div>' +
         '</div>';
       document.body.appendChild(ov);
     }
@@ -54754,7 +54759,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   window.tkPromoTrocarLoja = tkPromoTrocarLoja;
 
   function _tkBody() { return document.getElementById('tkPromoBody'); }
-  function _tkLoading(msg) { const b = _tkBody(); if (b) b.innerHTML = '<div style="padding:40px;text-align:center;color:#94a3b8;font-size:13px">' + escapeHtml(msg || 'Carregando…') + '</div>'; }
+  function _tkFooter() { return document.getElementById('tkPromoFooter'); }
+  // esconde o rodapé fixo (usado nas telas que não têm ações de rodapé).
+  function _tkEscondeFooter() { const f = _tkFooter(); if (f) { f.style.display = 'none'; f.innerHTML = ''; } }
+  function _tkLoading(msg) { _tkEscondeFooter(); const b = _tkBody(); if (b) b.innerHTML = '<div style="padding:40px;text-align:center;color:#94a3b8;font-size:13px">' + escapeHtml(msg || 'Carregando…') + '</div>'; }
 
   async function tkPromoCarregar() {
     _tkLoading('Carregando promoções da loja…');
@@ -54770,6 +54778,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
 
   function _tkRenderLista() {
+    _tkEscondeFooter();
     const b = _tkBody(); if (!b) return;
     const ordem = { ativa: 0, agendada: 1, encerrada: 2 };
     const ativ = [..._tkPromoAtiv].sort((a, b2) => (ordem[_tkEstado(a)] ?? 3) - (ordem[_tkEstado(b2)] ?? 3));
@@ -54882,7 +54891,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           if (String(vi.marketplace || '').toLowerCase() === 'tiktok' && String(vi.anuncioId) === pid) {
             const f0 = p.fotos && p.fotos[0];
             const foto = f0 ? (f0.url || f0) : null;
-            return { nome: p.nome || ('Produto ' + pid), foto, skuPai: p.skuPai || '' };
+            // v33k.1212: preço "de" (referência) = menor preço das variações do
+            // produto — mostra o preço atual ao lado do campo de promoção (padrão Shopee).
+            const precos = (p.variacoes || []).map(x => Number(x.preco)).filter(n => n > 0);
+            const preco = precos.length ? Math.min.apply(null, precos) : null;
+            return { nome: p.nome || ('Produto ' + pid), foto, skuPai: p.skuPai || '', preco };
           }
         }
       }
@@ -54920,21 +54933,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // PUT = adiciona OU edita).
     const encerrada = estado === 'encerrada';
     const campoPct = info.campo === 'pct'; // DIRECT_DISCOUNT usa %, senão R$
-    html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:6px 0 8px">' +
-      '<div style="font-size:12.5px;font-weight:800;color:#334155">Produtos na promoção (' + prods.length + ')</div>' +
-      ((prods.length && !encerrada) ?
-        // v33k.1210: MESMO padrão da Shopee — Definir / Baixar / Aumentar + contador.
-        ('<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
-          '<span id="tkSelCount" style="font-size:11.5px;color:#94a3b8">0 marcada(s)</span>' +
-          '<input id="tkMassaValor" type="text" inputmode="decimal" placeholder="' + (campoPct ? '%' : 'R$') + '" style="' + _TK_INP + ';width:88px">' +
-          '<button onclick="tkPromoAplicarMassa(' + (campoPct ? 'true' : 'false') + ')" style="padding:6px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px" title="Define este valor nas marcadas">= Definir</button>' +
-          '<button onclick="tkPromoAjustarMassa(-1,' + (campoPct ? 'true' : 'false') + ')" style="padding:6px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-size:12px" title="Diminui este valor das marcadas">− Baixar</button>' +
-          '<button onclick="tkPromoAjustarMassa(1,' + (campoPct ? 'true' : 'false') + ')" style="padding:6px 10px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-size:12px" title="Aumenta este valor nas marcadas">+ Aumentar</button>' +
-          '<button onclick="tkPromoRemoverSelecionados(\'' + activityId + '\',\'' + tipo + '\')" style="padding:6px 10px;background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;cursor:pointer;font-size:12px" title="Tira da promoção os produtos marcados">🗑 Remover selecionados</button>' +
-          '<span style="width:1px;height:18px;background:#e5e7eb"></span>' +
-          '<button onclick="tkPromoSalvarPrecos(\'' + activityId + '\',\'' + tipo + '\')" style="padding:6px 12px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700">💾 Salvar no TikTok</button>' +
-        '</div>') : '') +
-    '</div>';
+    // v33k.1213: cabeçalho enxuto (título + dica), no padrão do modal da Shopee.
+    // A BARRA DE AÇÕES foi pro RODAPÉ FIXO (igual à Shopee) — montada mais abaixo.
+    if (prods.length && !encerrada) {
+      html += '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;font-size:12px;color:#1e40af;margin:2px 0 10px">💡 Edite o preço promocional de cada produto. Marque as caixas e use "Definir / Baixar / Aumentar" pra mudar vários de uma vez. Só o que mudar é enviado ao TikTok.</div>';
+    }
+    html += '<div style="font-size:12.5px;font-weight:800;color:#334155;margin:6px 0 8px">Produtos na promoção (' + prods.length + ')</div>';
     // v33k.1211: busca + marcar tudo (padrão Shopee)
     if (prods.length && !encerrada) {
       html += '<div style="display:flex;gap:8px;align-items:center;margin:0 0 8px;flex-wrap:wrap">' +
@@ -54956,10 +54960,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           : '<div style="width:44px;height:44px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#94a3b8"><span class="lc-ic" data-size="sm" data-lucide="image"></span></div>';
         const titulo = loc ? escapeHtml(loc.nome) : ('ID ' + escapeHtml(pid));
         const sub = (loc && loc.skuPai) ? ('SKU ' + escapeHtml(loc.skuPai) + ' · ' + pid) : ('ID ' + escapeHtml(pid));
+        // v33k.1212: preço ATUAL (de referência) do catálogo, mostrado riscado
+        // antes do campo de promoção — igual ao "R$ 149,90 → R$ 78,90" da Shopee.
+        const precoAtual = (loc && loc.preco != null) ? ('R$ ' + Number(loc.preco).toFixed(2).replace('.', ',')) : null;
+        const precoAtualHtml = precoAtual
+          ? '<span style="font-size:11px;color:#94a3b8;text-decoration:line-through;flex-shrink:0" title="Preço atual (referência)">' + precoAtual + '</span><span style="color:#cbd5e1;flex-shrink:0">→</span>'
+          : '';
         const editor = encerrada
-          ? ('<div style="font-size:11px;color:#16a34a;font-weight:700">' + (atual !== '' ? (campoPct ? (atual + '% off') : ('R$ ' + atual)) : '—') + '</div>')
-          : ('<div style="display:flex;align-items:center;gap:5px;flex-shrink:0">' +
-              '<span style="font-size:11px;color:#94a3b8;font-weight:700">' + (campoPct ? '%' : 'R$') + '</span>' +
+          ? ('<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' + precoAtualHtml + '<div style="font-size:11px;color:#16a34a;font-weight:700">' + (atual !== '' ? (campoPct ? (atual + '% off') : ('R$ ' + atual)) : '—') + '</div></div>')
+          : ('<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' +
+              precoAtualHtml +
+              '<span style="font-size:11px;color:#16a34a;font-weight:700">' + (campoPct ? '%' : 'R$') + '</span>' +
               '<input type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" value="' + escapeHtml(atual) + '" data-tkpid="' + escapeHtml(pid) + '" class="tk-preco-inp" placeholder="' + (campoPct ? 'ex 15' : 'ex 79.90') + '" style="' + _TK_INP + ';width:92px;padding:6px 8px">' +
             '</div>');
         const buscaChave = ((loc ? loc.nome : '') + ' ' + (loc && loc.skuPai ? loc.skuPai : '') + ' ' + pid).toLowerCase();
@@ -54994,6 +55005,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
     html += '</div>';
     _tkBody().innerHTML = html;
+
+    // v33k.1213: RODAPÉ FIXO no padrão da Shopee (mass bar + ações embaixo).
+    const foot = _tkFooter();
+    if (foot) {
+      if (prods.length && !encerrada) {
+        foot.style.display = 'flex';
+        foot.innerHTML =
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+            '<span id="tkSelCount" style="font-size:12px;color:#6b7280">0 marcada(s)</span>' +
+            '<input id="tkMassaValor" type="text" inputmode="decimal" placeholder="' + (campoPct ? '%' : 'R$') + '" style="width:80px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">' +
+            '<button onclick="tkPromoAplicarMassa(' + (campoPct ? 'true' : 'false') + ')" style="padding:6px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px" title="Define este valor nas marcadas">= Definir</button>' +
+            '<button onclick="tkPromoAjustarMassa(-1,' + (campoPct ? 'true' : 'false') + ')" style="padding:6px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-size:12px" title="Diminui este valor das marcadas">− Baixar</button>' +
+            '<button onclick="tkPromoAjustarMassa(1,' + (campoPct ? 'true' : 'false') + ')" style="padding:6px 10px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-size:12px" title="Aumenta este valor nas marcadas">+ Aumentar</button>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+            '<button onclick="tkPromoRemoverSelecionados(\'' + activityId + '\',\'' + tipo + '\')" style="padding:9px 13px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700;font-size:12.5px">🗑 Remover selecionados</button>' +
+            '<button onclick="tkPromoSalvarPrecos(\'' + activityId + '\',\'' + tipo + '\')" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12.5px">💾 Salvar no TikTok</button>' +
+          '</div>';
+      } else {
+        _tkEscondeFooter();
+      }
+    }
     if (window.lucide && lucide.createIcons) try { lucide.createIcons(); } catch (e) {}
     if (estado !== 'encerrada') _tkCarregarProdutosLoja();
   }
