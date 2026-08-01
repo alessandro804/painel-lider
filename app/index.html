@@ -52300,6 +52300,41 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // usuário poderia ver; camada 2 (loja) só restringe. Se a loja zerar tudo mas
     // existirem produtos, mostramos todos e avisamos — em vez de "Nenhum anúncio"
     // com o catálogo cheio (era o bug que sumia com os 622 produtos).
+    // v33k.1205: um produto "pai" na lista representa o grupo — mas os anúncios
+    // podem estar nos FILHOS MESCLADOS (duplicadoDeId), que não entram na lista.
+    // Sem considerar os filhos, o filtro de loja/marketplace escondia produtos
+    // cujo anúncio daquela loja vivia no filho (foi o caso do Renato: 14 produtos
+    // da loja 32 estavam todos em filhos mesclados). Aqui agregamos pai + filhos.
+    const _filhosPorPai = {};
+    (produtosErp || []).forEach(x => {
+      if (x.duplicadoDeId != null) {
+        const k = String(x.duplicadoDeId);
+        (_filhosPorPai[k] = _filhosPorPai[k] || []).push(x);
+      }
+    });
+    const _paiEFilhos = (p) => [p].concat(_filhosPorPai[String(p.id)] || []);
+    // vínculos efetivos (do pai + dos filhos mesclados)
+    const _vincsEfetivos = (p) => {
+      const out = [];
+      _paiEFilhos(p).forEach(x => (x.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => out.push(vi))));
+      return out;
+    };
+    // marketplaces efetivos (pai + filhos), pra o filtro de marketplace bater igual
+    const _mktsEfetivos = (p) => {
+      const set = new Set();
+      _paiEFilhos(p).forEach(x => {
+        (x.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => { const m = String(vi.marketplace || '').toLowerCase(); if (m) set.add(m); }));
+        const mk = x.marketplaces || {};
+        Object.keys(mk).forEach(k => { if (mk[k] && mk[k].exportado) set.add(String(k).toLowerCase()); });
+      });
+      return set;
+    };
+    // lojas "dono" efetivas (loja_id do pai + dos filhos)
+    const _lojasDono = (p) => {
+      const set = new Set();
+      _paiEFilhos(p).forEach(x => { if (x.lojaId) set.add(String(x.lojaId)); });
+      return set;
+    };
     const passaSemLoja = (p) => {
       const tabs = _anTabsDoProduto(p);
       if (abaSel === 'excluido') { if (!tabs.has('excluido')) return false; }
@@ -52307,7 +52342,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         if (tabs.has('excluido')) return false;         // excluídos só na aba deles
         if (abaSel !== 'todos' && !tabs.has(abaSel)) return false;
       }
-      if (mktSel) { if (!_anMarketplacesDoProduto(p).has(mktSel)) return false; }
+      if (mktSel) { if (!_mktsEfetivos(p).has(mktSel)) return false; }
       if (busca) {
         const txt = (p.nome + ' ' + (p.skuPai||'') + ' ' + (p.id||'')).toLowerCase();
         if (!txt.includes(busca)) return false;
@@ -52316,11 +52351,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     };
     const passaLoja = (p) => {
       const alvo = new Set(lojasSel.map(String));
-      const ehDono = alvo.has(String(p.lojaId));
-      const temVinculo = (p.variacoes||[]).some(v => (v.vinculos||[]).some(vi =>
-        alvo.has(String(vi.lojaIdBanco || vi.lojaId))));
-      // produto de catálogo sem vínculo de loja nenhum sempre passa.
-      const semLojaAlguma = !String(p.lojaId || '') && !(p.variacoes||[]).some(v => (v.vinculos||[]).length);
+      const dono = _lojasDono(p);
+      const ehDono = [...dono].some(id => alvo.has(id));
+      const vincs = _vincsEfetivos(p);
+      const temVinculo = vincs.some(vi => alvo.has(String(vi.lojaIdBanco || vi.lojaId)));
+      // produto de catálogo sem vínculo de loja nenhum (nem pai nem filhos) sempre passa.
+      const semLojaAlguma = !dono.size && !vincs.length;
       return ehDono || temVinculo || semLojaAlguma;
     };
     const baseSemLoja = _anProdutosBase().filter(passaSemLoja);
@@ -54861,17 +54897,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           '<span style="font-size:15px;font-weight:800;color:#1e293b">' + escapeHtml(a.titulo || 'Promoção') + '</span></div>' +
         '<div style="font-size:11.5px;color:#64748b;margin-bottom:14px">' + escapeHtml(info.rot || tipo) + ' · ' + _tkEpLabel(a.inicio) + ' → ' + _tkEpLabel(a.fim) + '</div>';
 
-    // produtos atuais
-    html += '<div style="font-size:12.5px;font-weight:800;color:#334155;margin:6px 0 8px">Produtos na promoção (' + prods.length + ')</div>';
+    // produtos atuais — v33k.1205: agora com EDIÇÃO DE PREÇO em massa (como na
+    // Shopee). Cada linha tem checkbox + input de preço; a barra de cima aplica um
+    // valor aos marcados e salva no TikTok (mesmo endpoint validado do add, que é
+    // PUT = adiciona OU edita).
+    const encerrada = estado === 'encerrada';
+    const campoPct = info.campo === 'pct'; // DIRECT_DISCOUNT usa %, senão R$
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:6px 0 8px">' +
+      '<div style="font-size:12.5px;font-weight:800;color:#334155">Produtos na promoção (' + prods.length + ')</div>' +
+      ((prods.length && !encerrada) ?
+        ('<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+          '<input id="tkMassaValor" type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" placeholder="' + (campoPct ? '% p/ marcados' : 'R$ p/ marcados') + '" style="' + _TK_INP + ';width:140px">' +
+          '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="tkPromoAplicarMassa(' + (campoPct ? 'true' : 'false') + ')">Aplicar aos marcados</button>' +
+          '<button class="lc-btn lc-btn--primary lc-btn--sm" style="background:#16a34a;border-color:#16a34a" onclick="tkPromoSalvarPrecos(\'' + activityId + '\',\'' + tipo + '\')"><span class="lc-ic" data-size="sm" data-lucide="save"></span> Salvar preços no TikTok</button>' +
+        '</div>') : '') +
+    '</div>';
     if (!prods.length) {
       html += '<div style="padding:16px;background:#fff;border:1px dashed #e2e8f0;border-radius:10px;text-align:center;color:#94a3b8;font-size:12.5px">Nenhum produto ainda.</div>';
     } else {
       html += '<div style="display:grid;gap:6px">' + prods.map(p => {
         const pid = String(p.id || p.product_id || '');
-        const valor = (p.activity_price_amount != null && p.activity_price_amount !== '')
-          ? ('R$ ' + p.activity_price_amount)
-          : (p.discount != null ? (p.discount + '% off') : '—');
-        const encerrada = estado === 'encerrada';
+        const atual = (p.activity_price_amount != null && p.activity_price_amount !== '') ? String(p.activity_price_amount)
+                    : (p.discount != null ? String(p.discount) : '');
         // v33k.1204: enriquece com nome + foto do catálogo (como na Shopee).
         const loc = _tkResolverProdutoLocal(pid);
         const foto = (loc && loc.foto)
@@ -54879,12 +54926,19 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           : '<div style="width:44px;height:44px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#94a3b8"><span class="lc-ic" data-size="sm" data-lucide="image"></span></div>';
         const titulo = loc ? escapeHtml(loc.nome) : ('ID ' + escapeHtml(pid));
         const sub = (loc && loc.skuPai) ? ('SKU ' + escapeHtml(loc.skuPai) + ' · ' + pid) : ('ID ' + escapeHtml(pid));
+        const editor = encerrada
+          ? ('<div style="font-size:11px;color:#16a34a;font-weight:700">' + (atual !== '' ? (campoPct ? (atual + '% off') : ('R$ ' + atual)) : '—') + '</div>')
+          : ('<div style="display:flex;align-items:center;gap:5px;flex-shrink:0">' +
+              '<span style="font-size:11px;color:#94a3b8;font-weight:700">' + (campoPct ? '%' : 'R$') + '</span>' +
+              '<input type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" value="' + escapeHtml(atual) + '" data-tkpid="' + escapeHtml(pid) + '" class="tk-preco-inp" placeholder="' + (campoPct ? 'ex 15' : 'ex 79.90') + '" style="' + _TK_INP + ';width:92px;padding:6px 8px">' +
+            '</div>');
         return '<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;background:#fff;border:1px solid #eef2f7;border-radius:9px">' +
+          (encerrada ? '' : '<input type="checkbox" class="tk-preco-chk" data-tkpid="' + escapeHtml(pid) + '" style="width:15px;height:15px;flex-shrink:0">') +
           foto +
           '<div style="flex:1;min-width:0">' +
             '<div style="font-size:12.5px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + titulo + '</div>' +
-            '<div style="font-size:10.5px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + sub + '</div>' +
-            '<div style="font-size:11px;color:#16a34a;font-weight:700;margin-top:1px">' + escapeHtml(valor) + '</div></div>' +
+            '<div style="font-size:10.5px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + sub + '</div></div>' +
+          editor +
           (encerrada ? '' : '<button class="lc-btn lc-btn--sm" style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c" onclick="tkPromoRemoverProduto(\'' + activityId + '\',\'' + pid + '\')" title="Remover da promoção"><span class="lc-ic" data-size="sm" data-lucide="trash-2"></span></button>') +
         '</div>';
       }).join('') + '</div>';
@@ -54913,6 +54967,55 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (estado !== 'encerrada') _tkCarregarProdutosLoja();
   }
   window.tkPromoDetalhe = tkPromoDetalhe;
+
+  // v33k.1205: aplica o valor da barra aos produtos MARCADOS (edição em massa).
+  function tkPromoAplicarMassa(campoPct) {
+    const v = (document.getElementById('tkMassaValor') || {}).value;
+    if (v === '' || v == null || !isFinite(Number(v)) || Number(v) <= 0) { lcAlert('Informe um ' + (campoPct ? 'percentual' : 'preço') + ' válido.', { tipo: 'aviso' }); return; }
+    let n = 0;
+    document.querySelectorAll('.tk-preco-chk').forEach(chk => {
+      if (!chk.checked) return;
+      const pid = chk.getAttribute('data-tkpid');
+      const inp = document.querySelector('.tk-preco-inp[data-tkpid="' + (window.CSS && CSS.escape ? CSS.escape(pid) : pid) + '"]');
+      if (inp) { inp.value = v; n++; }
+    });
+    if (!n) lcAlert('Marque ao menos um produto (a caixinha à esquerda).', { tipo: 'aviso' });
+  }
+  window.tkPromoAplicarMassa = tkPromoAplicarMassa;
+
+  // pura e testável: monta o payload de preços do TikTok a partir das linhas.
+  // rows: [{ pid, valor }]. campoPct=true → DIRECT_DISCOUNT (%), senão preço fixo.
+  function _tkMontarPayloadPrecos(rows, campoPct) {
+    const produtos = [];
+    for (const row of (rows || [])) {
+      const pid = String(row.pid || '');
+      const val = Number(row.valor);
+      if (!pid) continue;
+      if (row.valor === '' || row.valor == null || !isFinite(val) || val <= 0) continue; // ignora vazios
+      if (campoPct && val >= 100) return { ok: false, erro: 'O desconto precisa ser menor que 100%.' };
+      produtos.push(campoPct ? { productId: pid, discountPct: Math.round(val) } : { productId: pid, precoFixo: val });
+    }
+    return { ok: true, produtos };
+  }
+  window._tkMontarPayloadPrecos = _tkMontarPayloadPrecos;
+
+  // salva os preços editados no TikTok (mesmo endpoint validado do add = PUT).
+  async function tkPromoSalvarPrecos(activityId, tipo) {
+    const campoPct = (_TK_TIPOS[tipo] || {}).campo === 'pct';
+    const rows = Array.from(document.querySelectorAll('.tk-preco-inp')).map(inp => ({
+      pid: inp.getAttribute('data-tkpid'), valor: inp.value,
+    }));
+    const built = _tkMontarPayloadPrecos(rows, campoPct);
+    if (!built.ok) { lcAlert(built.erro, { tipo: 'aviso' }); return; }
+    if (!built.produtos.length) { lcAlert('Preencha ao menos um ' + (campoPct ? 'desconto' : 'preço') + ' válido para salvar.', { tipo: 'aviso' }); return; }
+    _tkLoading('Salvando ' + built.produtos.length + ' preço(s) no TikTok…');
+    const r = await _tkApi('POST', '/loja/' + _tkPromoLoja + '/promocao/' + activityId + '/produtos', { tipo, productLevel: 'PRODUCT', produtos: built.produtos });
+    if (!r.ok) { lcAlert('Falha ao salvar os preços: ' + (r.erro || 'erro.'), { tipo: 'perigo' }); await tkPromoDetalhe(activityId, tipo); return; }
+    if (r.falhas && r.falhas.length) lcAlert('Salvo, mas ' + r.falhas.length + ' produto(s) falharam (confira no Seller Center do TikTok).', { tipo: 'aviso' });
+    else lcAlert('Preços atualizados no TikTok.', { tipo: 'sucesso' });
+    await tkPromoDetalhe(activityId, tipo);
+  }
+  window.tkPromoSalvarPrecos = tkPromoSalvarPrecos;
 
   async function _tkCarregarProdutosLoja() {
     const cont = document.getElementById('tkAddLista'); if (!cont) return;
