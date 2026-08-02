@@ -27257,9 +27257,14 @@ Retorne JSON: {"ID": "valor", ...}`;
         saveLojas();
         return data.loja.id;
       }
+      // v33k.1280: o motivo da recusa fica GUARDADO na loja. Antes ele morria
+      // aqui num console.warn e a tela mostrava "aguarde, está sendo criada",
+      // tratando falha como se fosse demora. A pessoa esperava para sempre.
+      loja._erroBanco = data.erro || 'O servidor recusou a criação da loja.';
       console.warn('[garantirLojaNoBanco] backend rejeitou:', data.erro);
       return null;
     } catch (e) {
+      loja._erroBanco = 'Não consegui falar com o servidor: ' + e.message;
       console.warn('[garantirLojaNoBanco] erro:', e.message);
       return null;
     }
@@ -30088,6 +30093,11 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Chamado pela reconciliação quando uma loja acabou de ficar conectada.
   async function _ciDispararSeNova(loja) {
     if (!loja || !loja.idBanco) return;
+    // v33k.1280: canal SEM OAuth (Frente de Caixa) não tem catálogo nem pedidos
+    // pra importar. Como a loja de balcão nasce marcada como "conectada", ela
+    // caía aqui e disparava uma carga inicial contra uma API que não existe:
+    // trabalho inútil no servidor e painel lento sem motivo aparente.
+    if (MK_INFO[loja.marketplace] && MK_INFO[loja.marketplace].semOauth) return;
     const chave = String(loja.idBanco);
     if (_ciEstado.disparadas.has(chave)) return;   // já disparei nesta sessão
     await _ciCarregarStatus();
@@ -30870,10 +30880,17 @@ Retorne JSON: {"ID": "valor", ...}`;
     saveLojas();
     
     // Cria no banco também
-    await garantirLojaNoBanco(novaLoja);
+    const _idBanco = await garantirLojaNoBanco(novaLoja);
     
     closeAddLoja();
-    showToast('✓ Loja "' + nome + '" criada');
+    if (!_idBanco) {
+      // Falhou: dizer isso agora é muito melhor que deixar a pessoa descobrir
+      // dez minutos depois numa tela que pede pra esperar.
+      showToast('A loja foi criada aqui, mas o servidor recusou: ' + (novaLoja._erroBanco || 'motivo desconhecido'), true);
+      renderLojasConexoes();
+      return;
+    }
+    showToast('Loja "' + nome + '" criada');
     renderLojasConexoes();
     if (typeof _ciAtualizarPainel === 'function') _ciAtualizarPainel();
     
@@ -33645,6 +33662,12 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (typeof recursoBloqueado === 'function' && recursoBloqueado('sincronizar')) return;
     const loja = lojasErp.find(l => String(l.id) === String(lojaLocalId));
     if (!loja) return;
+    // v33k.1280: no balcão a venda NASCE aqui, não vem de fora. Sincronizar não
+    // é lento nem falho: é sem sentido, e a mensagem precisa dizer isso.
+    if (MK_INFO[loja.marketplace] && MK_INFO[loja.marketplace].semOauth) {
+      showToast('O Frente de Caixa não sincroniza: as vendas dele nascem no balcão.');
+      return;
+    }
     const lojaIdBanco = await garantirLojaNoBanco(loja);
     if (!lojaIdBanco) { showToast('⚠️ Loja não está no banco'); return; }
 
@@ -60937,7 +60960,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1276-local-id-historico';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1280-loja-pdv-erro-visivel';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -88004,7 +88027,23 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       _pdvLojaSel = lojas[0].idBanco || null;
     }
     if (!_pdvLojaSel) {
-      box.innerHTML = '<div style="padding:24px;text-align:center;color:#64748b">A loja ainda está sendo criada no banco. Aguarde alguns segundos e recarregue.</div>';
+      const pendente = lojas.find(l => !l.idBanco) || {};
+      const motivo = pendente._erroBanco || '';
+      // Erro de canal inválido tem uma causa quase certa: backend antigo. Dizer
+      // isso poupa a pessoa de procurar o problema no lugar errado.
+      const dica = /inv[aá]lid/i.test(motivo)
+        ? 'O servidor não reconhece o canal "Frente de Caixa". Isso acontece quando o backend ainda está numa versão anterior à do painel. Suba o backend e tente de novo.'
+        : '';
+      box.innerHTML = '<div style="background:#fff;border:1px solid #fecaca;border-radius:14px;padding:22px;max-width:620px;margin:0 auto">'
+        + '<div style="display:flex;gap:9px;align-items:flex-start;margin-bottom:10px">'
+        + '<span class="lc-ic" data-lucide="circle-alert" style="color:#b91c1c;flex:0 0 auto"></span>'
+        + '<div><div style="font-weight:800;color:#0f172a;font-size:15px">A loja "' + escapeHtml(pendente.nome || '') + '" não foi criada no servidor</div>'
+        + (motivo ? '<div style="font-size:13px;color:#b91c1c;margin-top:4px">' + escapeHtml(motivo) + '</div>' : '')
+        + (dica ? '<div style="font-size:12.5px;color:#64748b;margin-top:7px">' + dica + '</div>' : '')
+        + '</div></div>'
+        + '<button class="lc-btn" onclick="pdvTentarCriarLoja()"><span class="lc-ic" data-size="sm" data-lucide="refresh-cw"></span> Tentar de novo</button>'
+        + '</div>';
+      if (window.lucide && lucide.createIcons) try { lucide.createIcons(); } catch (e) {}
       return;
     }
 
@@ -88140,6 +88179,21 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
 
   function pdvTrocarLoja(id) { _pdvLojaSel = id; renderPdv(); }
+
+  // Retentativa MANUAL, de propósito. Um retry automático em laço bateria no
+  // servidor sem parar enquanto a causa (backend desatualizado) continuasse lá,
+  // e é justamente esse tipo de laço que deixa o painel pesado.
+  async function pdvTentarCriarLoja() {
+    const pendente = _pdvLojas().find(l => !l.idBanco);
+    if (!pendente) { renderPdv(); return; }
+    delete pendente._erroBanco;
+    showToast('Criando a loja no servidor...');
+    const id = await garantirLojaNoBanco(pendente);
+    if (!id) { showToast(pendente._erroBanco || 'O servidor recusou de novo', true); renderPdv(); return; }
+    _pdvLojaSel = id;
+    showToast('Loja criada');
+    renderPdv();
+  }
 
   async function pdvPreparar() {
     const r = await _pdvApi('/api/pdv/loja/' + _pdvLojaSel + '/preparar', { method: 'POST', body: JSON.stringify({}) });
