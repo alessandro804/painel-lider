@@ -18996,6 +18996,7 @@ window.LC_SVG = {
       <button class="ads-tab-btn" id="adsTabAnuncios" onclick="adsTrocarSubaba('anuncios')" style="padding:10px 16px;border:none;background:none;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid transparent;color:#6b7280">Anúncios</button>
       <button class="ads-tab-btn" id="adsTabResumo" onclick="adsTrocarSubaba('resumo')" style="padding:10px 16px;border:none;background:none;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid transparent;color:#6b7280">Resumo por loja</button>
       <button class="ads-tab-btn" id="adsTabSaldoHist" onclick="adsTrocarSubaba('saldo_hist')" style="padding:10px 16px;border:none;background:none;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid transparent;color:#6b7280">Histórico de saldo</button>
+      <button class="ads-tab-btn" id="adsTabAnalista" onclick="adsTrocarSubaba('analista')" style="padding:10px 16px;border:none;background:none;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid transparent;color:#6b7280">🧠 Analista</button>
     </div>
 
     <!-- Filtro de loja (compartilhado com Pedidos/Financeiro) + período (à direita, igual Pedidos) -->
@@ -31047,7 +31048,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   function adsTrocarSubaba(qual) {
     _adsSubaba = qual;
     // estado visual das abas
-    [['anuncios','adsTabAnuncios'],['resumo','adsTabResumo'],['saldo_hist','adsTabSaldoHist']].forEach(([k,id]) => {
+    [['anuncios','adsTabAnuncios'],['resumo','adsTabResumo'],['saldo_hist','adsTabSaldoHist'],['analista','adsTabAnalista']].forEach(([k,id]) => {
       const b = document.getElementById(id);
       if (!b) return;
       const ativo = (k === qual);
@@ -31092,6 +31093,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (_adsSubaba === 'anuncios') { await renderAdsAnuncios(cont, meuToken); return; }
       if (_adsSubaba === 'resumo')   { await renderAdsResumo(cont, meuToken); return; }
       if (_adsSubaba === 'saldo_hist') { await renderAdsSaldoHist(cont, meuToken); return; }
+      if (_adsSubaba === 'analista') { await renderAdsAnalista(cont, meuToken); return; }
     } catch (e) {
       if (meuToken === _adsRenderToken) cont.innerHTML = '<div style="padding:16px;color:#b91c1c">Erro: ' + e.message + '</div>';
     }
@@ -32924,6 +32926,157 @@ Retorne JSON: {"ID": "valor", ...}`;
     cont.innerHTML = html;
   }
   window.renderAdsSaldoHist = renderAdsSaldoHist;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SUBABA ANALISTA (Analista Supremo) — consome /api/ads/loja/:id/analista
+  // Análise por loja: score de 4 camadas, categorias, e a fala (RESUMO,
+  // MOVIMENTAÇÕES, PROBLEMAS, AÇÕES, OPORTUNIDADES). Só leitura.
+  // ═══════════════════════════════════════════════════════════════════════
+  let _adsAnalistaLoja = null;
+
+  function _anCorScore(v) {
+    if (v == null) return '#94a3b8';
+    if (v >= 75) return '#16a34a';
+    if (v >= 50) return '#d97706';
+    return '#dc2626';
+  }
+  function _anCorBanda(b) {
+    return b === 'Bom' ? '#16a34a' : (b === 'Atenção' ? '#d97706' : '#dc2626');
+  }
+  const _AN_CAT = {
+    vencedor:  { cor: '#16a34a', label: 'Vencedores' },
+    potencial: { cor: '#2563eb', label: 'Potenciais' },
+    problema:  { cor: '#dc2626', label: 'Problemas' },
+    morto:     { cor: '#4b5563', label: 'Mortos' },
+    inativo:   { cor: '#cbd5e1', label: 'Inativos' },
+    ok:        { cor: '#94a3b8', label: 'Estáveis' },
+  };
+
+  function adsAnalistaTrocarLoja(id) {
+    _adsAnalistaLoja = id ? parseInt(id, 10) : null;
+    renderAdsSubaba();
+  }
+  window.adsAnalistaTrocarLoja = adsAnalistaTrocarLoja;
+
+  async function renderAdsAnalista(cont, meuToken) {
+    const { dias } = adsParams();
+
+    // lista de lojas disponíveis (do cache; se vazio, tenta o hidden select)
+    let lojas = Array.isArray(_adsCacheLojas) ? _adsCacheLojas.slice() : [];
+    if (!lojas.length) { cont.innerHTML = blocoVazio('Selecione uma conta acima para o analista.', ''); return; }
+
+    // loja escolhida: a do estado, senão a 1ª selecionada no topo, senão a 1ª da lista
+    if (!_adsAnalistaLoja) {
+      const sel = (typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || [];
+      _adsAnalistaLoja = sel.length ? parseInt(sel[0], 10) : parseInt(lojas[0].id, 10);
+    }
+
+    const opts = lojas.map(l =>
+      '<option value="' + l.id + '"' + (parseInt(l.id, 10) === _adsAnalistaLoja ? ' selected' : '') + '>' +
+      escapeHtml(l.nome || ('Loja ' + l.id)) + '</option>').join('');
+    const seletor = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px">' +
+      '<span style="font-size:12px;color:#94a3b8;font-weight:600">Loja:</span>' +
+      '<select onchange="adsAnalistaTrocarLoja(this.value)" style="padding:8px 12px;border:1px solid #d1d5db;border-radius:10px;font-size:14px;font-weight:600;color:#1e293b;font-family:inherit;max-width:340px">' + opts + '</select>' +
+      '<span style="font-size:12px;color:#94a3b8">janela de ' + dias + ' dias (morte em 30d)</span>' +
+    '</div>';
+
+    cont.innerHTML = seletor + '<div style="padding:40px;text-align:center;color:#9ca3af">Analisando a loja…</div>';
+
+    let r;
+    try {
+      r = await fetch(BACKEND_URL + '/api/ads/loja/' + _adsAnalistaLoja + '/analista?dias=' + dias, { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+    } catch (e) {
+      if (meuToken != null && meuToken !== _adsRenderToken) return;
+      cont.innerHTML = seletor + '<div style="padding:16px;color:#b91c1c">Erro ao analisar: ' + escapeHtml(e.message) + '</div>';
+      return;
+    }
+    if (meuToken != null && meuToken !== _adsRenderToken) return;
+    if (!r || !r.ok) { cont.innerHTML = seletor + '<div style="padding:16px;color:#b91c1c">Erro: ' + escapeHtml((r && r.erro) || 'falha') + '</div>'; return; }
+
+    const t = r.totais || {}, sc = r.score || {}, cob = r.cobertura || {}, conc = r.concentracao || {}, rel = r.relatorio || {};
+    const pct = (v) => (v == null ? '—' : v + '%');
+
+    // contagem por categoria
+    const contagem = {};
+    (r.itens || []).forEach(i => { contagem[i.categoria] = (contagem[i.categoria] || 0) + 1; });
+
+    // ── cabeçalho: score geral + camadas ──
+    const bandaCor = _anCorBanda(sc.banda);
+    const camada = (lbl, v) => {
+      const cor = _anCorScore(v);
+      const larg = v == null ? 0 : Math.max(3, Math.min(100, v));
+      return '<div style="flex:1;min-width:120px">' +
+        '<div style="display:flex;justify-content:space-between;font-size:12px;color:#64748b;margin-bottom:4px"><span>' + lbl + '</span><strong style="color:' + cor + '">' + (v == null ? 'sem dado' : v) + '</strong></div>' +
+        '<div style="height:7px;background:#eef2f7;border-radius:999px;overflow:hidden"><div style="height:100%;width:' + larg + '%;background:' + cor + '"></div></div>' +
+      '</div>';
+    };
+    let html = seletor;
+    html += '<div style="border:1px solid #e5e7eb;border-radius:18px;padding:20px;margin-bottom:16px;background:linear-gradient(135deg,#fff,#f8fafc)">' +
+      '<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">' +
+        '<div style="text-align:center;min-width:110px">' +
+          '<div style="font-size:44px;font-weight:800;line-height:1;color:' + bandaCor + '">' + (sc.geral == null ? '—' : sc.geral) + '</div>' +
+          '<div style="font-size:13px;font-weight:700;color:' + bandaCor + ';margin-top:4px">' + (sc.banda || '') + '</div>' +
+          '<div style="font-size:11px;color:#94a3b8;margin-top:2px">Score geral</div>' +
+        '</div>' +
+        '<div style="flex:1;display:flex;gap:16px;flex-wrap:wrap;min-width:260px">' +
+          camada('Tráfego', sc.trafego) + camada('Conversão', sc.conversao) + camada('Produtos', sc.produtos) + camada('Estratégia', sc.estrategia) +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:16px;padding-top:14px;border-top:1px solid #eef2f7;font-size:13px;color:#64748b">' +
+        '<span>Receita 7d: <strong style="color:#16a34a;font-size:15px">' + fmtBRL(t.receita || 0) + '</strong></span>' +
+        '<span>Gasto Ads: <strong style="color:#1e293b;font-size:15px">' + fmtBRL(t.gasto || 0) + '</strong></span>' +
+        '<span>ACOS: <strong style="color:' + corAcos(t.acos) + ';font-size:15px">' + pct(t.acos) + '</strong> <span style="font-size:11px">(meta ' + pct(r.meta) + ')</span></span>' +
+        '<span>ROAS: <strong style="color:#1e293b;font-size:15px">' + (t.roas == null ? '—' : t.roas) + '</strong></span>' +
+        (t.tendReceitaPct != null ? '<span>Tendência: <strong style="color:' + (t.tendReceitaPct >= 0 ? '#16a34a' : '#dc2626') + ';font-size:15px">' + (t.tendReceitaPct >= 0 ? '+' : '') + t.tendReceitaPct + '%</strong></span>' : '') +
+      '</div>' +
+    '</div>';
+
+    // ── chips de categoria ──
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">';
+    ['vencedor', 'potencial', 'problema', 'morto', 'ok', 'inativo'].forEach(k => {
+      const n = contagem[k] || 0; if (!n && (k === 'inativo' || k === 'ok')) return;
+      const c = _AN_CAT[k];
+      html += '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:' + c.cor + '18;border:1px solid ' + c.cor + '55;font-size:12px;font-weight:700;color:' + c.cor + '">' +
+        '<span style="width:8px;height:8px;border-radius:50%;background:' + c.cor + '"></span>' + n + ' ' + c.label + '</span>';
+    });
+    html += '</div>';
+
+    // ── seções da fala ──
+    const bloco = (titulo, arr, cor, vazioMsg) => {
+      const items = (arr && arr.length) ? arr : (vazioMsg ? [vazioMsg] : []);
+      if (!items.length) return '';
+      const li = items.map(x => '<div style="padding:9px 0;border-bottom:1px solid #f1f5f9;font-size:13.5px;line-height:1.5;color:#334155">' + escapeHtml(x) + '</div>').join('');
+      return '<div style="border:1px solid #e5e7eb;border-radius:16px;padding:16px 18px;background:#fff">' +
+        '<div style="font-size:13px;font-weight:800;letter-spacing:.04em;color:' + cor + ';text-transform:uppercase;margin-bottom:6px">' + titulo + '</div>' +
+        li +
+      '</div>';
+    };
+
+    html += '<div style="display:grid;gap:14px">';
+    html += bloco('Resumo', rel.resumo, '#1e293b');
+    html += bloco('Movimentações da semana', rel.movimentacoes, '#7c3aed', 'Sem altas ou quedas relevantes na semana.');
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">';
+    html += bloco('Problemas', rel.problemas, '#dc2626', 'Nenhum alerta crítico.');
+    html += bloco('Oportunidades', rel.oportunidades, '#16a34a', 'Nenhuma oportunidade destacada no período.');
+    html += '</div>';
+    html += bloco('Ações recomendadas', rel.acoes, '#2563eb', 'Nada a ajustar agora.');
+    html += '</div>';
+
+    // ── rodapé: concentração + cobertura (honesto sobre margem) ──
+    let rodape = '';
+    if (conc.top1Pct != null) {
+      rodape += 'Concentração: o carro-chefe é ' + conc.top1Pct + '% da receita, o top-3 soma ' + conc.top3Pct + '% (' + conc.nComVenda + ' produtos venderam). ';
+    }
+    if (cob.pctComCusto != null) {
+      rodape += cob.pctComCusto >= 50
+        ? ('Margem calculada em ' + cob.pctComCusto + '% dos itens (custo cadastrado).')
+        : ('Margem indisponível: só ' + (cob.pctComCusto || 0) + '% dos itens têm custo cadastrado. Cadastre custos para o analista avaliar lucro.');
+    }
+    if (rodape) html += '<div style="margin-top:14px;font-size:12px;color:#94a3b8;line-height:1.5">' + escapeHtml(rodape) + '</div>';
+
+    cont.innerHTML = html;
+  }
+  window.renderAdsAnalista = renderAdsAnalista;
 
   async function renderAdsResumo(cont, meuToken) {
     const { dias } = adsParams();
@@ -60440,7 +60593,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1114-descricao-danfe';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1219-analista-supremo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
