@@ -20760,6 +20760,34 @@ window.LC_SVG = {
 </div>
 
 <!-- ===== DROPSHIPPING ===== -->
+<div class="screen" id="estoquesScreen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"></div>
+        <div class="sidebar-header-text">
+          <div class="sidebar-title">Lider 10</div>
+          <div class="sidebar-subtitle">Estoques</div>
+        </div>
+        <button class="lc-side-toggle" onclick="lcToggleSidebar()" title="Recolher menu" aria-label="Recolher menu"><span class="lc-ic" data-lucide="chevron-left"></span></button>
+      </div>
+      <nav class="sidebar-menu" id="sidebarMenuEstoques"></nav>
+    </aside>
+    <main class="main-area">
+      <div class="top-bar">
+        <div class="page-title-bar">
+          <button class="back-btn" onclick="goTo('operacaoScreen')">&#8592;</button>
+          <div class="page-title-text">Estoques</div>
+        </div>
+        <div class="top-actions"><div class="user-avatar">A</div></div>
+      </div>
+      <div class="content" id="estoquesContent" style="max-width:960px;margin:0 auto;padding:20px">
+        <div style="text-align:center;padding:40px;color:#64748b">Carregando...</div>
+      </div>
+    </main>
+  </div>
+</div>
+
 <div class="screen" id="pdvScreen">
   <div class="app-layout">
     <aside class="sidebar">
@@ -30212,7 +30240,54 @@ Retorne JSON: {"ID": "valor", ...}`;
   window._ciDispararSeNova = _ciDispararSeNova;
   window._ciCarregarStatus = _ciCarregarStatus;
 
+  // Estoque de cada loja (v33k.1345). Fica em Lojas & Conexões porque é lá que
+  // estão TODAS as lojas, inclusive as de marketplace, que também precisam
+  // dizer de qual estoque vendem.
+  let _lcVinculosEstoque = null;
+
+  async function _lcCarregarVinculosEstoque() {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/estoque/vinculos', { headers: hLucroAuth() });
+      const d = await r.json();
+      _lcVinculosEstoque = d && d.ok ? d : null;
+    } catch (e) { _lcVinculosEstoque = null; }
+  }
+
+  function _lcSeletorEstoque(loja) {
+    // Sem a informação carregada ou com um estoque só, não há escolha a fazer:
+    // mostrar um seletor de uma opção é pedir uma decisão que não existe.
+    if (!_lcVinculosEstoque || !loja.idBanco) return '';
+    const locais = _lcVinculosEstoque.locais || [];
+    if (locais.length < 2) return '';
+    const info = (_lcVinculosEstoque.lojas || []).find(l => l.id === loja.idBanco);
+    const atual = info && info.localIds && info.localIds.length ? info.localIds[0] : null;
+    const opts = locais.map(l => '<option value="' + l.id + '"' + (l.id === atual ? ' selected' : '') + '>'
+      + escapeHtml(l.nome) + '</option>').join('');
+    return '<div style="margin-top:8px;font-size:11.5px;color:#64748b">Vende do estoque'
+      + '<select onchange="lcTrocarEstoqueDaLoja(' + loja.idBanco + ', this.value)" '
+      + 'style="width:100%;margin-top:3px;padding:5px 7px;border:1px solid #cbd5e1;border-radius:7px;font-size:12px">'
+      + (atual ? '' : '<option value="">Escolher...</option>') + opts + '</select></div>';
+  }
+
+  async function lcTrocarEstoqueDaLoja(lojaId, localId) {
+    if (!localId) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/estoque/vinculos/' + lojaId, {
+        method: 'PUT',
+        headers: hLucroAuth({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ localId: Number(localId) }),
+      });
+      const d = await r.json();
+      if (!d.ok) { showToast(d.erro || 'Não consegui vincular o estoque', true); return; }
+      showToast('Esta loja passa a vender do estoque "' + d.local.nome + '"');
+      await _lcCarregarVinculosEstoque();
+      renderLojasConexoes();
+    } catch (e) { showToast('Falha ao vincular: ' + e.message, true); }
+  }
+  window.lcTrocarEstoqueDaLoja = lcTrocarEstoqueDaLoja;
+
   async function renderLojasConexoes(opts) {
+    if (!_lcVinculosEstoque) await _lcCarregarVinculosEstoque();
     opts = opts || {};
     const lista = document.getElementById('lojasConexoesLista');
     if (!lista) return;
@@ -30408,7 +30483,8 @@ Retorne JSON: {"ID": "valor", ...}`;
             <span style="font-size:11.5px;font-weight:700;color:#15803d">Loja física</span>
           </div>
           <div style="font-weight:800;color:#1e2a47;font-size:15px">${escapeHtml(loja.nome)}</div>
-          <div style="font-size:12px;color:#64748b;flex:1">Venda no balcão. Não usa conexão com marketplace: o preparo (CNPJ, estoque e caixa) é feito na tela do Frente de Caixa.</div>
+          <div style="font-size:12px;color:#64748b;flex:1">Venda no balcão. Não usa conexão com marketplace: o preparo (CNPJ e caixa) é feito na tela do Frente de Caixa.</div>
+          ${_lcSeletorEstoque(loja)}
           <button class="lc-btn lc-btn--sm" onclick="goTo('pdvScreen')" style="width:100%">
             <span class="lc-ic" data-size="sm" data-lucide="settings"></span> Preparar no Frente de Caixa
           </button>
@@ -30442,6 +30518,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
     }
 
+    const _seletorEstoque = _lcSeletorEstoque(loja);
     const userId = status && status.userIdMarketplace ? status.userIdMarketplace : null;
     const borderCard = conectada && !tokenExpirado ? '#bbf7d0' : (tokenExpirado ? '#fde68a' : '#e5e7eb');
     const topBar = conectada && !tokenExpirado ? '#22c55e' : (tokenExpirado ? '#f59e0b' : (loja.idBanco ? '#ef4444' : '#cbd5e1'));
@@ -30536,6 +30613,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           <button onclick="abrirAjustesLoja('${loja.id}')" title="Ajustes da loja (imposto, ACOS, NF, CNPJ)" style="flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;background:#eef2ff;border:1px solid #c7d2fe;color:#4f46e5;font-size:11px;font-weight:700;padding:6px 10px;border-radius:9px;cursor:pointer" onmouseover="this.style.background='#e0e7ff'" onmouseout="this.style.background='#eef2ff'">⚙️ Ajustes</button>
         </div>
         ${expiraTxt ? `<div style="font-size:11px;color:#94a3b8;line-height:1.5;margin-bottom:12px">${expiraTxt}</div>` : ''}
+        ${_seletorEstoque}
 
         ${(function () {
           // v33k.900: o vínculo cliente↔loja é recurso EXCLUSIVO de agência -
@@ -48501,6 +48579,14 @@ São o mesmo produto?`;
           // (v33j.5) agora manda o preço de VENDA CHEIO (original_price) em varExt.preco
           // - não mais o promocional. Se houver promo ativa, o backend manda varExt._promo.
           if (varExt.preco != null && Number(varExt.preco) > 0) varInterna.preco = varExt.preco;
+          // MODO SOMBRA (v33k.1350): antes de sobrescrever, ANOTA o que o
+          // marketplace disse. Não muda nada aqui: a linha abaixo continua
+          // sendo a que manda, exatamente como sempre foi. O sombra só junta
+          // evidência pra decidir, com dado real, se um dia o nosso estoque
+          // pode virar a fonte da verdade.
+          if (varExt.estoque != null && varInterna.sku && lojaIdBanco) {
+            _sombraFila.push({ lojaId: lojaIdBanco, sku: varInterna.sku, estoqueMarketplace: varExt.estoque });
+          }
           if (varExt.estoque != null) varInterna.estoque = varExt.estoque;
           // _promo: o cron sincronizar_precos_promo é o dono autoritativo (lê das
           // campanhas). Só absorvemos o _promo da importação se a variação ainda
@@ -48849,6 +48935,8 @@ São o mesmo produto?`;
       if (_scr && _scr.classList.contains('active') && typeof renderEstoque === 'function') renderEstoque();
     } catch (_) {}
 
+    // Observações do sombra vão embora aqui, uma vez só, depois de tudo salvo.
+    _sombraEnviar();
     return stats;
   }
   
@@ -60850,7 +60938,8 @@ Responda APENAS com JSON válido (sem markdown), formato:
       { id: 'promocoes', ic: 'ticket', label: 'Promoções', screen: 'promocoesScreen' },
       { id: 'ads', ic: 'chart-column', label: 'Ads', screen: 'adsScreen' },
       { id: 'lucro', ic: 'trending-up', label: 'Lucro', screen: 'lucroScreen' },
-      { id: 'pdv', ic: 'store', label: 'Frente de Caixa', screen: 'pdvScreen' }
+      { id: 'pdv', ic: 'store', label: 'Frente de Caixa', screen: 'pdvScreen' },
+      { id: 'estoques', ic: 'boxes', label: 'Estoques', screen: 'estoquesScreen' }
     ]},
     { id: 'lojas', ic: 'store', label: 'Lojas & Conexões', screen: 'lojasConexoesScreen' },
     { id: 'dropshipping', ic: 'boxes', label: 'Dropshipping', screen: 'dropInicioScreen', children: [
@@ -60960,7 +61049,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1325-estoques-leva1';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1350-modo-sombra';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -61634,7 +61723,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // Operações, Lojas & Conexões e Configurações. NÃO vê Financeiro, Comercial,
     // Marketing (áreas de agência). Em Configurações, só Gerais/Logs/Perfil (gating
     // interno em renderSettings) e sem disparos de WhatsApp.
-    marketplace: ['homeScreen','operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','adsScreen','lucroScreen','pedidosScreen','notasFiscaisScreen','pdvScreen','lojasConexoesScreen','dropInicioScreen','settingsScreen','loginScreen'],
+    marketplace: ['homeScreen','operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','adsScreen','lucroScreen','pedidosScreen','notasFiscaisScreen','pdvScreen','estoquesScreen','lojasConexoesScreen','dropInicioScreen','settingsScreen','loginScreen'],
     demo: ['operacaoScreen','produtosScreen','estoqueScreen','promocoesScreen','homeScreen','settingsScreen','loginScreen'],
     // v33k.912 CONTABILIDADE: SOMENTE Notas Fiscais. Configurações entra na
     // Fase 6 (cadastro de colaboradores). Esta lista é a trava da interface;
@@ -61662,6 +61751,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     { screen: 'adsScreen',           label: 'Operações · Ads' },
     { screen: 'notasFiscaisScreen',  label: 'Operações · Notas Fiscais' },
     { screen: 'pdvScreen',           label: 'Operações · Frente de Caixa' },
+    { screen: 'estoquesScreen',      label: 'Operações · Estoques (balanço e aprovações)' },
     { screen: 'lucroScreen',         label: 'Lucro' },
     { screen: 'lojasConexoesScreen', label: 'Lojas & Conexões' },
     { screen: 'dropInicioScreen',    label: 'Dropshipping' },
@@ -62619,6 +62709,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (screenId === 'pedidosScreen') renderPedidos();
     if (screenId === 'notasFiscaisScreen') renderNotasFiscais();
     if (screenId === 'pdvScreen') renderPdv();
+    if (screenId === 'estoquesScreen') renderEstoques();
     if (screenId === 'marketingScreen') renderMarketing();
     if (screenId === 'operacaoScreen') { renderOperacao(); iniciarVidaEscritorio(); }
     else { pararVidaEscritorio(); }
@@ -62755,7 +62846,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         <span class="sidebar-label">${item.label}</span>
       </div>`;
     }).join('');
-    ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao','sidebarMenuContabNotas','sidebarMenuContabPerfil','sidebarMenuPdv'].forEach(id => {
+    ['sidebarMenuGlobal','sidebarMenuHome','sidebarMenuFinancial','sidebarMenuAllTx','sidebarMenuCommercial','sidebarMenuSettings','mktSidebarMenu','opSidebarMenu','sidebarMenuNotasFiscais','sidebarMenuPedidos','sidebarMenuContabHome','sidebarMenuContabEmpresas','sidebarMenuContabFechamento','sidebarMenuContabConciliacao','sidebarMenuContabNotas','sidebarMenuContabPerfil','sidebarMenuPdv','sidebarMenuEstoques'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.innerHTML = html;
     });
@@ -88180,6 +88271,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + '</div>'
       + '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px">'
       + '<label style="display:flex;gap:6px;align-items:center;font-size:13px;color:#334155;cursor:pointer"><input type="checkbox" id="pdvCfgCpf" ' + (cfg.exigir_cpf ? 'checked' : '') + '> Pedir CPF em toda venda</label>'
+      + '<label style="display:flex;gap:6px;align-items:center;font-size:13px;color:#334155;cursor:pointer"><input type="checkbox" id="pdvCfgSemEstoque" ' + (cfg.permitir_venda_sem_estoque !== false ? 'checked' : '') + '> Deixar vender mesmo sem saldo no sistema</label>'
       + '<label style="display:flex;gap:6px;align-items:center;font-size:13px;color:#334155;cursor:pointer"><input type="checkbox" id="pdvCfgKiosk" ' + (cfg.kiosk ? 'checked' : '') + '> Modo kiosk (trava a tela nesta loja e neste caixa)</label>'
       + '</div>'
       + '<div style="margin-top:14px"><button class="lc-btn" onclick="pdvSalvarConfig()"><span class="lc-ic" data-size="sm" data-lucide="save"></span> Salvar regras</button></div>'
@@ -88247,6 +88339,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       desconto_pix_percentual: Number(document.getElementById('pdvCfgPix').value),
       modelo_fiscal_padrao: document.getElementById('pdvCfgFiscal').value,
       exigir_cpf: document.getElementById('pdvCfgCpf').checked,
+      permitir_venda_sem_estoque: document.getElementById('pdvCfgSemEstoque').checked,
       kiosk: document.getElementById('pdvCfgKiosk').checked,
       formas_habilitadas: formas,
     };
@@ -88678,6 +88771,17 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     };
     let r = await _pdvApi('/api/pdv-venda/finalizar', { method: 'POST', body: JSON.stringify(corpo) });
 
+    if (!r.ok && r.podeVenderSemEstoque) {
+      // Não travamos a venda, mas o operador precisa saber o que está fazendo:
+      // o estoque vai ficar negativo até alguém conferir.
+      const seguir = await lcConfirm(r.erro + '\n\nO sistema pode estar com a contagem errada.\n'
+        + 'Vender assim mesmo deixa o estoque NEGATIVO até o balanço corrigir, e isso aparece '
+        + 'na lista de conferência de quem cuida dos estoques.\n\nProsseguir com a venda?');
+      if (!seguir) { pdvRenderBalcao(); return; }
+      corpo.confirmarSemEstoque = true;
+      r = await _pdvApi('/api/pdv-venda/finalizar', { method: 'POST', body: JSON.stringify(corpo) });
+    }
+
     if (!r.ok && r.exigeLiberacao) {
       const quem = await lcPrompt('Desconto acima do limite deste perfil (teto ' + r.teto + '%).\nNome do gerente que autoriza:');
       if (quem) {
@@ -88694,6 +88798,18 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     }
     _pdvUltimaVenda = r.venda;
     showToast('Venda ' + r.venda.numero + ' concluída' + (r.troco > 0 ? ' · troco ' + _pdvBRL(r.troco) : ''));
+    // Vendeu no balcão, o anúncio baixa junto. Sem isso a loja física venderia
+    // a última peça e o marketplace continuaria anunciando ela.
+    if (_pdvEstado && _pdvEstado.local && _pdvEstado.local.abastece_marketplaces) {
+      for (const l of (r.carrinho && r.carrinho.linhas) || []) {
+        const saldo = await _pdvApi('/api/estoque/onde-tem?sku=' + encodeURIComponent(l.sku));
+        const aqui = saldo.ok ? (saldo.locais.find(x => x.id === _pdvEstado.local.id) || {}).quantidade : null;
+        if (aqui != null) await pdvRefletirNosAnuncios(l.sku, aqui);
+      }
+    }
+    if ((r.negativos || []).length) {
+      showToast('Atenção: ' + r.negativos.map(n => n.sku + ' ficou em ' + n.saldo).join(', ') + '. Confira o estoque.', true);
+    }
     if (r.espelho && r.espelho.ok === false) {
       // Mostrar o erro REAL. "Avise o suporte" não ajuda ninguém quando quem
       // opera o sistema é quem o mantém, e esconde a única pista útil.
@@ -89238,6 +89354,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
 
   async function pdvCarregarEstoque() {
+    await pdvCarregarNegativos();
     const r = await _pdvApi('/api/estoque/resumo');
     _pdvEstResumo = r.ok ? r : null;
     // Abre direto no estoque que a loja usa: é onde o operador do balcão
@@ -89360,7 +89477,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const total = lista.length;
     lista = lista.slice(0, 200);
 
-    let html = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
+    let html = _pdvFaixaNegativos();
+    html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
       + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px">'
       + (_pdvVariosEstoques() ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvVoltarEstoques()">&#8592; Estoques</button>' : '')
       + '<h3 style="margin:0;font-size:15px;color:#0f172a">' + escapeHtml(local.nome) + '</h3>'
@@ -89395,7 +89513,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           + '<div style="font-size:11.5px;color:#64748b">' + escapeHtml([v.variacao, v.sku].filter(Boolean).join(' · ')) + '</div>'
           + '</div>'
           + '<div style="width:74px;text-align:right;font-size:15px;font-weight:800;color:' + cor + '">' + q + '</div>'
-          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAjustarEstoque(\'' + escapeHtml(v.sku) + '\')">Ajustar</button>'
+              // Balanço saiu daqui: ele pode DERRUBAR saldo e vive na tela de
+          // Estoques, atrás da permissão. No balcão sobra o que a operadora
+          // precisa: registrar o que chegou.
+          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvEntradaRapida(\'' + escapeHtml(v.sku) + '\')">Entrada</button>'
           + '</div>';
       }).join('') + '</div>';
       if (total > lista.length) {
@@ -89423,31 +89544,33 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   function pdvFiltrarComSaldo(v) { _pdvEstSoComSaldo = !!v; pdvRenderEstoque(); }
 
-  async function pdvAjustarEstoque(sku) {
+  async function pdvEntradaRapida(sku) {
     const atual = _pdvEstSaldos[sku] || 0;
-    const novo = await lcPrompt('Quantas unidades de ' + sku + ' existem NESTA loja?\n\nSaldo atual: ' + atual, String(atual));
-    if (novo === null) return;
-    const alvo = Math.max(0, parseInt(novo, 10) || 0);
-    const delta = alvo - atual;
-    if (delta === 0) { showToast('Saldo já era esse'); return; }
-    const motivo = await lcPrompt('O que aconteceu?', delta > 0 ? 'Entrada de mercadoria' : 'Acerto de inventário');
+    const quanto = await lcPrompt('Quantas unidades de ' + sku + ' CHEGARAM?\n\nSaldo atual: ' + atual, '1');
+    if (quanto === null) return;
+    const delta = Math.abs(parseInt(quanto, 10) || 0);
+    if (delta === 0) { showToast('Informe a quantidade que chegou', true); return; }
+    const motivo = await lcPrompt('De onde veio?', 'Entrada de mercadoria');
     if (motivo === null) return;
 
     const r = await _pdvApi('/api/estoque/movimento', {
       method: 'POST',
       body: JSON.stringify({
         localId: _pdvEstLocalAberto, sku, delta,
-        origem: delta > 0 ? 'entrada' : 'inventario',
-        motivo,
-        // Contagem de inventário pode legitimamente derrubar o saldo abaixo do
-        // que o sistema achava que tinha. Venda nunca pode.
-        permitirNegativo: false,
+        origem: 'entrada', motivo, permitirNegativo: false,
       }),
     });
     if (!r.ok) { showToast(r.erro || 'Não consegui ajustar', true); return; }
     _pdvEstSaldos[sku] = r.quantidade;
     const tocadas = r.espelho && r.espelho.variacoesTocadas;
-    showToast('Saldo de ' + sku + ' agora é ' + r.quantidade + (tocadas ? ' · anúncios atualizados' : ''));
+    let extra = '';
+    const local = _pdvLocalAberto();
+    if (local && local.abastece_marketplaces) {
+      const push = await pdvRefletirNosAnuncios(sku, r.quantidade);
+      if (push && push.erro) extra = ' · anúncios NÃO atualizados';
+      else if (push && push.anuncios) extra = ' · ' + push.anuncios + ' anúncio(s) atualizado(s)';
+    }
+    showToast('+' + delta + ' em ' + sku + ' · saldo ' + r.quantidade + extra);
     pdvRenderEstoque();
   }
 
@@ -89557,31 +89680,34 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       });
       if (!r.ok) { showToast(r.erro || 'Não consegui lançar', true); return; }
       _pdvEstSaldos[sku] = r.quantidade;
-      showToast('+' + qtd + ' em ' + sku + ' · saldo ' + r.quantidade);
+      let extra = '';
+      const localAtual = _pdvLocalAberto();
+      if (localAtual && localAtual.abastece_marketplaces) {
+        const push = await pdvRefletirNosAnuncios(sku, r.quantidade);
+        if (push && push.erro) extra = ' · anúncios NÃO atualizados';
+        else if (push && push.anuncios) extra = ' · ' + push.anuncios + ' anúncio(s)';
+      }
+      showToast('+' + qtd + ' em ' + sku + ' · saldo ' + r.quantidade + extra);
     } else {
       // Enviar e receber são a MESMA operação vista dos dois lados. Quem opera
       // o CD lança a saída; para a loja de destino aquilo já é a entrada, sem
       // ninguém precisar digitar de novo do outro lado.
+      // TRANSFERÊNCIA VIRA PEDIDO (v33k.1335). A loja pede, quem cuida dos
+      // estoques aprova. A mercadoria só muda de endereço na aprovação, e o
+      // saldo é conferido lá, não aqui.
       const outroId = Number((document.getElementById('pdvPainelOutro') || {}).value);
       const enviando = _pdvPainelModo === 'enviar';
       const origemId = enviando ? _pdvEstLocalAberto : outroId;
       const destinoId = enviando ? outroId : _pdvEstLocalAberto;
-      let r = await _pdvApi('/api/estoque/transferir', {
+      const motivo = await lcPrompt('Por que precisa desta transferência? (quem aprova vai ler)', '');
+      if (motivo === null) return;
+      const r = await _pdvApi('/api/estoque/transferencias', {
         method: 'POST',
-        body: JSON.stringify({ origemId, destinoId, sku, quantidade: qtd,
-          produtoId: _pdvPainelItem.produtoId, variacaoId: _pdvPainelItem.variacaoId }),
+        body: JSON.stringify({ origemId, destinoId, sku, quantidade: qtd, motivo }),
       });
-      if (!r.ok && r.exigeNota) {
-        // CNPJs diferentes é operação com nota (CFOP 5152/6152).
-        if (!(await lcConfirm(r.erro + '\n\nMover só o saldo mesmo assim?'))) return;
-        r = await _pdvApi('/api/estoque/transferir', {
-          method: 'POST',
-          body: JSON.stringify({ origemId, destinoId, sku, quantidade: qtd, confirmarSemNota: true }),
-        });
-      }
-      if (!r.ok) { showToast(r.erro || 'Não consegui transferir', true); return; }
-      showToast(qtd + ' unidade(s) ' + (enviando ? 'enviada(s)' : 'recebida(s)'));
-      await pdvCarregarSaldosDoLocal();
+      if (!r.ok) { showToast(r.erro || 'Não consegui pedir a transferência', true); return; }
+      showToast('Pedido enviado: ' + qtd + 'x ' + sku + '. A mercadoria se move quando for aprovado.'
+        + (r.saldoNaOrigem != null ? ' Hoje a origem tem ' + r.saldoNaOrigem + '.' : ''));
     }
     await pdvCarregarEstoqueResumo();
     // Mantém o painel aberto e o item selecionado: quem dá entrada em caixa de
@@ -89749,6 +89875,342 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
   function pdvFecharOndeTem() {
     const o = document.getElementById('pdvOndeTemOverlay');
+    if (o) o.remove();
+  }
+
+
+  // ── conferência de saldos negativos (v33k.1330) ────────────────────
+  // Saldo negativo é o rastro de uma venda feita sem saldo no sistema. Ele é a
+  // própria pendência: some quando o balanço acerta, sem tabela paralela pra
+  // manter em dia.
+  let _pdvNegativos = [];
+
+  async function pdvCarregarNegativos() {
+    const r = await _pdvApi('/api/estoque/negativos');
+    _pdvNegativos = (r.ok && r.negativos) || [];
+  }
+
+  function _pdvFaixaNegativos() {
+    if (!_pdvNegativos.length) return '';
+    const lista = _pdvNegativos.slice(0, 6).map(n =>
+      '<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0">'
+      + '<span>' + escapeHtml(n.sku) + ' <span style="color:#94a3b8">em ' + escapeHtml(n.local) + '</span></span>'
+      + '<b>' + n.saldo + '</b></div>').join('');
+    return '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px;margin-bottom:14px;color:#92400e">'
+      + '<div style="font-weight:800;font-size:13.5px;margin-bottom:4px">' + _pdvNegativos.length + ' item(ns) com saldo negativo</div>'
+      + '<div style="font-size:12.5px;margin-bottom:8px">Vendeu mais do que o sistema tinha. Costuma ser contagem errada, entrada não lançada ou mercadoria enviada para a loja errada. Faça o balanço nos dois estoques envolvidos para acertar.</div>'
+      + lista
+      + (_pdvNegativos.length > 6 ? '<div style="font-size:12px;margin-top:5px">e mais ' + (_pdvNegativos.length - 6) + '...</div>' : '')
+      + '</div>';
+  }
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  // TELA DE ESTOQUES (v33k.1335)
+  // ───────────────────────────────────────────────────────────────────
+  // Quem tem esta tela cuida do estoque da conta inteira: aprova as
+  // transferências pedidas pelas lojas, faz balanço e acompanha os saldos
+  // negativos. A operadora do balcão não tem esta tela, e a trava real está no
+  // backend: esconder botão não impede ninguém de chamar a rota.
+  // ═══════════════════════════════════════════════════════════════════
+  let _estResumo = null;
+  let _estPedidos = [];
+  let _estNegativos = [];
+  let _estLocalSel = null;
+
+  async function _estApi(path, opts) {
+    const o = Object.assign({ headers: hLucroAuth({ 'Content-Type': 'application/json' }) }, opts || {});
+    const r = await fetch(BACKEND_URL + path, o);
+    return await r.json().catch(() => ({ ok: false, erro: 'Resposta inválida do servidor.' }));
+  }
+
+  function _estBRL(v) { return 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ','); }
+
+  async function renderEstoques() {
+    const box = document.getElementById('estoquesContent');
+    if (!box) return;
+    box.innerHTML = '<div style="text-align:center;padding:40px;color:#64748b">Carregando...</div>';
+
+    const [res, ped, neg] = await Promise.all([
+      _estApi('/api/estoque/resumo'),
+      _estApi('/api/estoque/transferencias?status=pendente'),
+      _estApi('/api/estoque/negativos'),
+    ]);
+    _estResumo = res.ok ? res : null;
+    _estPedidos = (ped.ok && ped.pedidos) || [];
+    _estNegativos = (neg.ok && neg.negativos) || [];
+
+    if (!_estResumo) {
+      box.innerHTML = '<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:12px;padding:16px">'
+        + escapeHtml(res.erro || 'Não consegui carregar os estoques.') + '</div>';
+      return;
+    }
+
+    let html = '';
+
+    // ── pedidos aguardando decisão: primeiro, porque alguém está esperando ──
+    if (_estPedidos.length) {
+      html += '<div style="background:#fff;border:1px solid #fde68a;border-radius:14px;padding:18px;margin-bottom:14px">'
+        + '<h3 style="margin:0 0 4px;font-size:15px;color:#0f172a">' + _estPedidos.length + ' transferência(s) aguardando você</h3>'
+        + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">A mercadoria só sai do lugar quando você aprova. O saldo é conferido na hora da aprovação, não na hora do pedido.</div>'
+        + _estPedidos.map(p => {
+          const origem = _estNomeLocal(p.origem_id);
+          const destino = _estNomeLocal(p.destino_id);
+          return '<div style="border:1px solid #eef2f7;border-radius:10px;padding:11px 13px;margin-bottom:8px">'
+            + '<div style="font-size:13.5px;color:#1e293b"><b>' + p.quantidade + 'x ' + escapeHtml(p.sku) + '</b>'
+            + ' · ' + escapeHtml(origem) + ' &#8594; ' + escapeHtml(destino) + '</div>'
+            + '<div style="font-size:11.5px;color:#64748b;margin-top:3px">'
+            + (p.solicitante_nome ? 'Pedido por ' + escapeHtml(p.solicitante_nome) : 'Pedido')
+            + (p.motivo ? ' · ' + escapeHtml(p.motivo) : '') + '</div>'
+            + '<div style="display:flex;gap:6px;margin-top:9px">'
+            + '<button class="lc-btn lc-btn--sm" onclick="estDecidir(' + p.id + ',true)">Aprovar</button>'
+            + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="estDecidir(' + p.id + ',false)">Recusar</button>'
+            + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="estOndeTem(\'' + escapeHtml(p.sku) + '\')">Onde tem</button>'
+            + '</div></div>';
+        }).join('')
+        + '</div>';
+    }
+
+    // ── saldos negativos ──
+    if (_estNegativos.length) {
+      html += '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:14px;padding:16px;margin-bottom:14px;color:#92400e">'
+        + '<div style="font-weight:800;font-size:14px;margin-bottom:4px">' + _estNegativos.length + ' item(ns) com saldo negativo</div>'
+        + '<div style="font-size:12.5px;margin-bottom:10px">Saiu mais do que o sistema tinha. Quase sempre é contagem errada, entrada não lançada ou mercadoria enviada para a loja errada. Confira nos dois estoques envolvidos e acerte pelo balanço.</div>'
+        + _estNegativos.slice(0, 12).map(n => '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:4px 0;border-bottom:1px solid #fef3c7">'
+          + '<span>' + escapeHtml(n.sku) + ' <span style="opacity:0.7">em ' + escapeHtml(n.local) + '</span></span>'
+          + '<span><b style="margin-right:8px">' + n.saldo + '</b>'
+          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="estBalancear(' + n.localId + ',\'' + escapeHtml(n.sku) + '\')">Balanço</button></span>'
+          + '</div>').join('')
+        + '</div>';
+    }
+
+    // ── os estoques ──
+    const t = _estResumo.totais || {};
+    html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px">'
+      + '<h3 style="margin:0;font-size:15px;color:#0f172a">Estoques da conta</h3>'
+      + '<div style="font-size:12.5px;color:#64748b">' + (t.estoques || 0) + ' estoques · ' + (t.unidades || 0) + ' unidades · <b style="color:#15803d">' + _estBRL(t.valorVenda) + '</b></div>'
+      + '</div>'
+      + '<div style="font-size:12px;color:#94a3b8;margin-top:4px">Valor a preço de venda do catálogo.</div>'
+      + '<div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px">'
+      + (_estResumo.locais || []).map(l => '<div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px">'
+        + '<div style="font-weight:800;color:#0f172a;font-size:14px">' + escapeHtml(l.nome) + '</div>'
+        + '<div style="font-size:22px;font-weight:800;color:#0f172a;margin-top:6px">' + l.unidades + '<span style="font-size:12px;color:#64748b;font-weight:600"> un</span></div>'
+        + '<div style="font-size:13px;color:#15803d;font-weight:700">' + _estBRL(l.valorVenda) + '</div>'
+        + '<div style="font-size:11.5px;color:#64748b;margin-top:6px">' + l.itens + ' itens'
+        + (l.abastece_marketplaces ? ' · abastece marketplaces' : ' · só presencial') + '</div>'
+        + '<button class="lc-btn lc-btn--secondary lc-btn--sm" style="width:100%;margin-top:9px" onclick="estBalancear(' + l.id + ')">Fazer balanço</button>'
+        + '</div>').join('')
+      + '</div>'
+      + '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'
+      + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="estOndeTem()"><span class="lc-ic" data-size="sm" data-lucide="search"></span> Onde tem um produto</button>'
+      + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="estVerSombra()">Conferência com os marketplaces</button>'
+      + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="estHistoricoPedidos()">Transferências decididas</button>'
+      + '</div></div>';
+
+    box.innerHTML = html;
+    if (window.lucide && lucide.createIcons) try { lucide.createIcons(); } catch (e) {}
+  }
+
+  function _estNomeLocal(id) {
+    const l = (_estResumo && _estResumo.locais || []).find(x => x.id === Number(id));
+    return l ? l.nome : ('Estoque ' + id);
+  }
+
+  async function estDecidir(id, aprovar) {
+    let observacao = null;
+    if (!aprovar) {
+      observacao = await lcPrompt('Por que está recusando? (a pessoa que pediu vai ler)', '');
+      if (observacao === null) return;
+    }
+    const r = await _estApi('/api/estoque/transferencias/' + id + '/decidir', {
+      method: 'POST', body: JSON.stringify({ aprovar: !!aprovar, observacao }),
+    });
+    if (!r.ok) {
+      if (r.semSaldo) { showToast('Não dá para aprovar: o saldo caiu desde o pedido. ' + (r.erro || ''), true); }
+      else if (r.semPermissao) { showToast(r.erro, true); }
+      else { showToast(r.erro || 'Não consegui decidir', true); }
+      renderEstoques();
+      return;
+    }
+    showToast(aprovar ? 'Transferência aprovada, mercadoria movida' : 'Transferência recusada');
+    renderEstoques();
+  }
+
+  async function estBalancear(localId, skuPreenchido) {
+    const sku = skuPreenchido || await lcPrompt('Bipe ou digite o SKU:', '');
+    if (!sku) return;
+    const onde = await _estApi('/api/estoque/onde-tem?sku=' + encodeURIComponent(sku));
+    const atual = onde.ok ? (onde.locais.find(l => l.id === Number(localId)) || {}).quantidade : null;
+    const contado = await lcPrompt('Conte as unidades de ' + sku + ' em ' + _estNomeLocal(localId)
+      + '\n\nO sistema diz ' + (atual != null ? atual : '?') + '. Digite quanto TEM de verdade:', '');
+    if (contado === null) return;
+    const motivo = await lcPrompt('O que explica a diferença?', 'Balanço de estoque');
+    if (motivo === null) return;
+
+    const r = await _estApi('/api/estoque/balanco', {
+      method: 'POST',
+      body: JSON.stringify({ localId, sku, contado: Number(contado), motivo }),
+    });
+    if (!r.ok) { showToast(r.erro || 'Não consegui fazer o balanço', true); return; }
+    if (r.semEfeito) { showToast('O saldo já era esse, nada mudou'); return; }
+    let extra = '';
+    const loc = (_estResumo && _estResumo.locais || []).find(l => l.id === Number(localId));
+    if (loc && loc.abastece_marketplaces && typeof pdvRefletirNosAnuncios === 'function') {
+      const push = await pdvRefletirNosAnuncios(sku, r.quantidade);
+      if (push && push.erro) extra = ' · anúncios NÃO atualizados';
+      else if (push && push.anuncios) extra = ' · ' + push.anuncios + ' anúncio(s) atualizado(s)';
+    }
+    showToast(sku + ' em ' + _estNomeLocal(localId) + ': de ' + r.antes + ' para ' + r.quantidade + extra);
+    renderEstoques();
+  }
+
+  async function estOndeTem(skuPreenchido) {
+    const sku = skuPreenchido || await lcPrompt('Bipe ou digite o SKU:', '');
+    if (!sku) return;
+    const r = await _estApi('/api/estoque/onde-tem?sku=' + encodeURIComponent(sku));
+    if (!r.ok) { showToast(r.erro || 'Não consegui consultar', true); return; }
+    const linhas = (r.locais || []).map(l => '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13.5px">'
+      + '<span style="color:#334155">' + escapeHtml(l.nome) + '</span>'
+      + '<b style="color:' + (l.quantidade > 0 ? '#15803d' : '#94a3b8') + '">' + l.quantidade + '</b></div>').join('');
+    document.body.insertAdjacentHTML('beforeend',
+      '<div id="estOndeOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100003;display:flex;align-items:center;justify-content:center;padding:20px" onclick="if(event.target.id===\'estOndeOverlay\')estFecharOnde()">'
+      + '<div style="background:#fff;border-radius:16px;padding:22px;max-width:420px;width:100%;max-height:80vh;overflow:auto">'
+      + '<div style="font-size:16px;font-weight:800;color:#0f172a">' + escapeHtml(r.sku) + '</div>'
+      + '<div style="font-size:12.5px;color:#64748b;margin:4px 0 14px">Total na conta: <b style="color:#0f172a">' + r.total + ' unidades</b></div>'
+      + (linhas || '<div style="font-size:13px;color:#94a3b8">Nenhum estoque cadastrado.</div>')
+      + '<button class="lc-btn lc-btn--secondary" style="width:100%;margin-top:14px" onclick="estFecharOnde()">Fechar</button>'
+      + '</div></div>');
+  }
+
+  function estFecharOnde() {
+    const o = document.getElementById('estOndeOverlay');
+    if (o) o.remove();
+  }
+
+  async function estHistoricoPedidos() {
+    const r = await _estApi('/api/estoque/transferencias');
+    if (!r.ok) { showToast(r.erro || 'Não consegui carregar', true); return; }
+    const decididos = (r.pedidos || []).filter(p => p.status !== 'pendente').slice(0, 40);
+    const linhas = decididos.length
+      ? decididos.map(p => '<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px">'
+        + '<b>' + p.quantidade + 'x ' + escapeHtml(p.sku) + '</b> · ' + escapeHtml(_estNomeLocal(p.origem_id)) + ' &#8594; ' + escapeHtml(_estNomeLocal(p.destino_id))
+        + '<div style="font-size:11.5px;color:#64748b;margin-top:2px">'
+        + (p.status === 'aprovada' ? 'Aprovada' : 'Recusada')
+        + (p.aprovador_nome ? ' por ' + escapeHtml(p.aprovador_nome) : '')
+        + (p.observacao ? ' · ' + escapeHtml(p.observacao) : '') + '</div></div>').join('')
+      : '<div style="font-size:13px;color:#94a3b8">Nenhuma transferência decidida ainda.</div>';
+    document.body.insertAdjacentHTML('beforeend',
+      '<div id="estHistOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100003;display:flex;align-items:center;justify-content:center;padding:20px" onclick="if(event.target.id===\'estHistOverlay\')estFecharHist()">'
+      + '<div style="background:#fff;border-radius:16px;padding:22px;max-width:520px;width:100%;max-height:80vh;overflow:auto">'
+      + '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:12px">Transferências decididas</div>'
+      + linhas
+      + '<button class="lc-btn lc-btn--secondary" style="width:100%;margin-top:14px" onclick="estFecharHist()">Fechar</button>'
+      + '</div></div>');
+  }
+
+  function estFecharHist() {
+    const o = document.getElementById('estHistOverlay');
+    if (o) o.remove();
+  }
+
+
+  // ── reflexo nos marketplaces (v33k.1340) ───────────────────────────
+  // Reaproveita a MESMA rotina que a tela de Anúncios usa há tempos para
+  // replicar estoque (_anunciosPorSku + _separarAnunciosReplicaveis +
+  // _ctxEstoqueDoSku). Escrever um caminho novo de push seria criar um segundo
+  // jeito de fazer a mesma coisa, e um dia os dois divergiriam.
+  async function pdvRefletirNosAnuncios(sku, quantidade) {
+    try {
+      if (typeof _anunciosPorSku !== 'function' || typeof _separarAnunciosReplicaveis !== 'function') return null;
+      const { ativos, pulados } = _separarAnunciosReplicaveis(_anunciosPorSku(sku));
+      if (!ativos.length) return { anuncios: 0, pulados: (pulados || []).length };
+      const ctx = (typeof _ctxEstoqueDoSku === 'function') ? _ctxEstoqueDoSku(sku) : {};
+      const r = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({ sku, estoque: Math.max(0, parseInt(quantidade, 10) || 0), anuncios: ativos, ...ctx }),
+      });
+      const d = await r.json();
+      return { anuncios: (d.dados && d.dados.sucesso) || 0, falhas: (d.dados && d.dados.falhas) || 0 };
+    } catch (e) {
+      // O saldo já mudou no banco; o push é consequência. Falhar aqui não
+      // desfaz o lançamento, só deixa o anúncio desatualizado até a próxima
+      // replicação, e isso precisa aparecer pra pessoa.
+      console.warn('[pdv] push do estoque falhou:', e.message);
+      return { erro: e.message };
+    }
+  }
+
+
+  // ── modo sombra: observa a sincronização, não interfere ────────────
+  // A fila acumula durante a importação e é enviada uma vez só no fim. Enviar
+  // por variação faria dezenas de requisições no meio de uma rotina que já é
+  // pesada, e observação não pode atrapalhar o observado.
+  let _sombraFila = [];
+
+  async function _sombraEnviar() {
+    if (!_sombraFila.length) return;
+    const lote = _sombraFila.splice(0, _sombraFila.length);
+    try {
+      for (let i = 0; i < lote.length; i += 400) {
+        await fetch(BACKEND_URL + '/api/estoque/sombra', {
+          method: 'POST',
+          headers: hLucroAuth({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ observacoes: lote.slice(i, i + 400) }),
+        });
+      }
+    } catch (e) {
+      // Falhar aqui não pode aparecer pro usuário nem interromper a sync.
+      console.warn('[sombra] não enviei as observações:', e.message);
+    }
+  }
+
+
+  // ── conferência com os marketplaces (modo sombra) ──────────────────
+  // Enquanto houver divergência do tipo "marketplace com mais", virar a chave
+  // e deixar o nosso estoque mandar derrubaria estoque que existe de verdade.
+  // Este painel é o que decide a hora de virar.
+  async function estVerSombra() {
+    const r = await _estApi('/api/estoque/sombra');
+    if (!r.ok) { showToast(r.erro || 'Não consegui carregar', true); return; }
+    if (r.migracaoPendente) { showToast('Rode a migração do modo sombra primeiro', true); return; }
+
+    const maior = (r.porTipo && r.porTipo.marketplace_maior) || 0;
+    const menor = (r.porTipo && r.porTipo.marketplace_menor) || 0;
+    const linhas = (r.divergencias || []).slice(0, 40).map(dv =>
+      '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:12.5px">'
+      + '<span style="color:#334155">' + escapeHtml(dv.sku) + ' <span style="color:#94a3b8">loja ' + dv.loja_id + '</span></span>'
+      + '<span>aqui <b>' + dv.esperado + '</b> · lá <b>' + dv.marketplace_diz + '</b> '
+      + '<b style="color:' + (dv.tipo === 'marketplace_maior' ? '#b91c1c' : '#92400e') + '">'
+      + (dv.diferenca > 0 ? '+' : '') + dv.diferenca + '</b></span></div>').join('');
+
+    document.body.insertAdjacentHTML('beforeend',
+      '<div id="estSombraOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100003;display:flex;align-items:center;justify-content:center;padding:20px" onclick="if(event.target.id===\'estSombraOverlay\')estFecharSombra()">'
+      + '<div style="background:#fff;border-radius:16px;padding:22px;max-width:560px;width:100%;max-height:82vh;overflow:auto">'
+      + '<div style="font-size:16px;font-weight:800;color:#0f172a">Conferência com os marketplaces</div>'
+      + '<div style="font-size:12.5px;color:#64748b;margin:4px 0 14px">Comparação silenciosa entre o nosso estoque e o que cada marketplace informa. Nada é alterado por aqui: serve para decidir se o nosso estoque já pode mandar no dos anúncios.</div>'
+      + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
+      + '<div style="flex:1;min-width:150px;background:' + (maior ? '#fef2f2' : '#f0fdf4') + ';border:1px solid ' + (maior ? '#fecaca' : '#bbf7d0') + ';border-radius:10px;padding:11px">'
+      + '<div style="font-size:22px;font-weight:800;color:' + (maior ? '#b91c1c' : '#15803d') + '">' + maior + '</div>'
+      + '<div style="font-size:11.5px;color:#64748b">marketplace com MAIS que aqui</div></div>'
+      + '<div style="flex:1;min-width:150px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px">'
+      + '<div style="font-size:22px;font-weight:800;color:#92400e">' + menor + '</div>'
+      + '<div style="font-size:11.5px;color:#64748b">marketplace com MENOS (venda a caminho)</div></div>'
+      + '</div>'
+      + (r.total === 0
+        ? '<div style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;border-radius:10px;padding:12px;font-size:13px">Nenhuma divergência registrada até agora.</div>'
+        : (r.seguroParaVirar
+          ? '<div style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;border-radius:10px;padding:12px;font-size:13px;margin-bottom:12px">Só há divergência para menos, que costuma ser venda que ainda não chegou aqui. Este é o cenário esperado.</div>'
+          : '<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:10px;padding:12px;font-size:13px;margin-bottom:12px">Existe marketplace com estoque MAIOR que o nosso. Se o nosso estoque mandasse hoje, esses anúncios perderiam quantidade que existe de verdade. Investigue antes de virar a chave.</div>'))
+      + linhas
+      + '<button class="lc-btn lc-btn--secondary" style="width:100%;margin-top:14px" onclick="estFecharSombra()">Fechar</button>'
+      + '</div></div>');
+  }
+
+  function estFecharSombra() {
+    const o = document.getElementById('estSombraOverlay');
     if (o) o.remove();
   }
 
