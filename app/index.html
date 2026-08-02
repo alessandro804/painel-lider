@@ -60960,7 +60960,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1285-estoque-balcao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1325-estoques-leva1';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -88129,9 +88129,22 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
     // ── estoque ──
     if (r.local) {
+      const disp = r.locaisDisponiveis || [];
+      const opts = disp.map(l => '<option value="' + l.id + '"' + (l.id === r.local.id ? ' selected' : '') + '>'
+        + escapeHtml(l.nome) + (l.abastece_marketplaces ? ' (abastece marketplaces)' : '') + '</option>').join('');
       html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
-        + '<h3 style="margin:0 0 4px;font-size:15px;color:#0f172a">Estoque da loja</h3>'
-        + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">Local: <b>' + escapeHtml(r.local.nome) + '</b></div>'
+        + '<h3 style="margin:0 0 4px;font-size:15px;color:#0f172a">Estoque desta loja</h3>'
+        + (disp.length > 1
+          ? '<div style="font-size:12.5px;color:#64748b;margin-bottom:10px">Esta loja vende a partir de qual estoque?</div>'
+            + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">'
+            + '<select class="form-input" id="pdvLocalSel" style="max-width:320px">' + opts + '</select>'
+            + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvTrocarEstoqueDaLoja()">Usar este estoque</button>'
+            + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvCriarEstoque()"><span class="lc-ic" data-size="sm" data-lucide="plus"></span> Novo estoque</button>'
+            + '</div>'
+          // Um estoque só: nada a escolher. Mostrar um seletor de uma opção é
+          // pedir uma decisão que não existe.
+          : '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">Usando <b>' + escapeHtml(r.local.nome) + '</b>, o estoque da conta. '
+            + '<a href="javascript:void(0)" onclick="pdvCriarEstoque()" style="color:#0f766e">Criar um estoque separado</a></div>')
         + '<label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">'
         + '<input type="checkbox" id="pdvAbastece" ' + (r.local.abastece_marketplaces ? 'checked' : '') + ' onchange="pdvSalvarAbastecimento(this.checked)" style="margin-top:3px">'
         + '<span style="font-size:13.5px;color:#334155">O estoque desta loja também abastece os marketplaces'
@@ -88554,6 +88567,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       const vId = _pdvUltimaVenda.id;
       html += '<div style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;font-size:12px;color:#475569">'
         + 'Última: <b>' + escapeHtml(_pdvUltimaVenda.numero) + '</b> · ' + _pdvBRL(_pdvUltimaVenda.total)
+        + '<div style="margin-top:6px"><button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvReespelhar()">Regravar vendas nos relatórios</button></div>'
         + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
         + '<button class="lc-btn lc-btn--sm" onclick="pdvEmitirNota(' + vId + ')"><span class="lc-ic" data-size="sm" data-lucide="file-text"></span> Emitir cupom</button>'
         + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvImprimirCupom(' + vId + ')">Reimprimir</button>'
@@ -88681,7 +88695,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     _pdvUltimaVenda = r.venda;
     showToast('Venda ' + r.venda.numero + ' concluída' + (r.troco > 0 ? ' · troco ' + _pdvBRL(r.troco) : ''));
     if (r.espelho && r.espelho.ok === false) {
-      showToast('Venda gravada, mas não entrou nos relatórios ainda. Avise o suporte.', true);
+      // Mostrar o erro REAL. "Avise o suporte" não ajuda ninguém quando quem
+      // opera o sistema é quem o mantém, e esconde a única pista útil.
+      showToast('Venda OK, mas fora dos relatórios: ' + (r.espelho.erro || 'motivo desconhecido'), true);
+      console.warn('[pdv] espelho recusado:', r.espelho.erro);
     }
     pdvLimpar();
   }
@@ -89212,49 +89229,158 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     return out;
   }
 
+  let _pdvEstLocalAberto = null;
+  let _pdvEstResumo = null;
+  let _pdvForcarListaEstoques = false;
+
+  function _pdvVariosEstoques() {
+    return !!(_pdvEstResumo && (_pdvEstResumo.locais || []).length > 1);
+  }
+
   async function pdvCarregarEstoque() {
-    if (!_pdvEstado || !_pdvEstado.local) return;
-    const r = await _pdvApi('/api/estoque/locais/' + _pdvEstado.local.id + '/saldos');
+    const r = await _pdvApi('/api/estoque/resumo');
+    _pdvEstResumo = r.ok ? r : null;
+    // Abre direto no estoque que a loja usa: é onde o operador do balcão
+    // trabalha. Quem cuida da rede sobe um nível e vê todos.
+    if (!_pdvEstLocalAberto && _pdvEstado && _pdvEstado.local) _pdvEstLocalAberto = _pdvEstado.local.id;
+    await pdvCarregarSaldosDoLocal();
+  }
+
+  async function pdvCarregarSaldosDoLocal() {
     _pdvEstSaldos = {};
-    if (r.ok) (r.saldos || []).forEach(s => { _pdvEstSaldos[String(s.sku).toUpperCase()] = Number(s.quantidade) || 0; });
+    if (!_pdvEstLocalAberto) return;
+    const r = await _pdvApi('/api/estoque/locais/' + _pdvEstLocalAberto + '/saldos');
+    if (r.ok) (r.saldos || []).forEach(x => { _pdvEstSaldos[String(x.sku).toUpperCase()] = Number(x.quantidade) || 0; });
+  }
+
+  function _pdvLocalAberto() {
+    if (!_pdvEstResumo) return null;
+    return (_pdvEstResumo.locais || []).find(l => l.id === _pdvEstLocalAberto) || null;
+  }
+
+  async function pdvAbrirLocal(id) {
+    _pdvForcarListaEstoques = false;
+    _pdvEstLocalAberto = id;
+    _pdvPainelModo = null;
+    _pdvEstBusca = '';
+    await pdvCarregarSaldosDoLocal();
+    pdvRenderEstoque();
+  }
+
+  async function pdvVoltarEstoques() {
+    _pdvForcarListaEstoques = true;
+    _pdvPainelModo = null;
+    await pdvCarregarEstoqueResumo();
+    pdvRenderEstoque();
+  }
+
+  async function pdvCarregarEstoqueResumo() {
+    const r = await _pdvApi('/api/estoque/resumo');
+    _pdvEstResumo = r.ok ? r : null;
   }
 
   function pdvRenderEstoque() {
     const box = document.getElementById('pdvEstoqueBox');
     if (!box) return;
-    if (!_pdvEstado || !_pdvEstado.local) {
-      box.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:16px;color:#92400e;font-size:13.5px">'
-        + 'Esta loja ainda não tem local de estoque. Use "Preparar automaticamente" na aba Preparo da loja.</div>';
+    if (!_pdvEstResumo) {
+      box.innerHTML = '<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:12px;padding:16px">Não consegui carregar os estoques.</div>';
       return;
     }
+    // SIMPLES POR PADRÃO (v33k.1320): a tela de "escolher estoque" só existe
+    // pra quem tem mais de um. Com um estoque só ela apareceria sempre com um
+    // card único, cobrando um clique pra chegar onde a pessoa sempre vai.
+    if (_pdvForcarListaEstoques && _pdvVariosEstoques()) { pdvRenderListaEstoques(box); return; }
+
+    if (!_pdvEstLocalAberto) {
+      const doBalcao = _pdvEstado && _pdvEstado.local ? _pdvEstado.local.id : null;
+      const primeiro = (_pdvEstResumo.locais || [])[0];
+      _pdvEstLocalAberto = doBalcao || (primeiro ? primeiro.id : null);
+    }
+    if (!_pdvEstLocalAberto) {
+      box.innerHTML = '<div style="padding:26px;text-align:center;color:#64748b">Nenhum estoque nesta conta ainda.</div>';
+      return;
+    }
+    pdvRenderItensDoLocal(box);
+  }
+
+  // ── nível 1: todos os estoques ────────────────────────────────────
+  function pdvRenderListaEstoques(box) {
+    const t = _pdvEstResumo.totais || {};
+    let html = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px">'
+      + '<h3 style="margin:0;font-size:15px;color:#0f172a">Estoques</h3>'
+      + '<div style="font-size:12.5px;color:#64748b">' + (t.estoques || 0) + ' estoques · ' + (t.unidades || 0) + ' unidades · ' + _pdvBRL(t.valorVenda) + '</div>'
+      + '</div>'
+      + '<div style="font-size:12px;color:#94a3b8;margin-top:4px">Valor a preço de venda do catálogo.</div>'
+      + '<div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">'
+      + (_pdvEstResumo.locais || []).map(l => {
+        const daLoja = _pdvEstado && _pdvEstado.local && _pdvEstado.local.id === l.id;
+        return '<div onclick="pdvAbrirLocal(' + l.id + ')" style="cursor:pointer;border:1px solid ' + (daLoja ? '#99f6e4' : '#e2e8f0') + ';border-radius:12px;padding:14px;background:' + (daLoja ? '#f0fdfa' : '#fff') + '">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+          + '<div style="font-weight:800;color:#0f172a;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(l.nome) + '</div>'
+          + (daLoja ? '<span style="background:#0f766e;color:#fff;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:999px;flex:none">Este balcão</span>' : '')
+          + '</div>'
+          + '<div style="font-size:22px;font-weight:800;color:#0f172a;margin-top:8px">' + l.unidades + '<span style="font-size:12px;color:#64748b;font-weight:600"> un</span></div>'
+          + '<div style="font-size:13px;color:#15803d;font-weight:700">' + _pdvBRL(l.valorVenda) + '</div>'
+          + '<div style="font-size:11.5px;color:#64748b;margin-top:6px">' + l.itens + ' itens'
+          + (l.abastece_marketplaces ? ' · abastece marketplaces' : ' · só presencial')
+          + (l.itensSemPreco ? ' · ' + l.itensSemPreco + ' sem preço' : '') + '</div>'
+          + (_pdvVariosEstoques()
+            ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" style="margin-top:9px;width:100%" onclick="event.stopPropagation();pdvAbrirAbastecimento(' + l.id + ')">Quais lojas abastece</button>'
+            : '')
+          + '</div>';
+      }).join('')
+      + '</div>'
+      // O GERAL é uma VISÃO, não um endereço: ninguém dá entrada nem vende
+      // dele. Ele existe pra responder "quanto eu tenho no total" sem obrigar
+      // a somar cartão por cartão.
+      + '<div style="margin-top:14px;border-top:1px solid #f1f5f9;padding-top:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+      + '<div><div style="font-weight:800;color:#0f172a;font-size:14px">Geral</div>'
+      + '<div style="font-size:11.5px;color:#64748b">Soma de todos os estoques. Só consulta.</div></div>'
+      + '<div style="text-align:right"><div style="font-size:18px;font-weight:800;color:#0f172a">' + (t.unidades || 0) + ' un</div>'
+      + '<div style="font-size:12.5px;color:#15803d;font-weight:700">' + _pdvBRL(t.valorVenda) + '</div></div>'
+      + '</div>'
+      + '</div>';
+    box.innerHTML = html;
+    if (window.lucide && lucide.createIcons) try { lucide.createIcons(); } catch (e) {}
+  }
+
+  // ── nível 2: itens de um estoque ──────────────────────────────────
+  function pdvRenderItensDoLocal(box) {
+    const local = _pdvLocalAberto();
+    if (!local) { _pdvEstLocalAberto = null; pdvRenderEstoque(); return; }
 
     const termo = _pdvEstBusca.trim().toLowerCase();
     let lista = _pdvVariacoesDoCatalogo();
     if (termo) {
       lista = lista.filter(v => (v.nome || '').toLowerCase().includes(termo)
-        || v.sku.toLowerCase().includes(termo)
-        || (v.variacao || '').toLowerCase().includes(termo));
+        || v.sku.toLowerCase().includes(termo) || (v.variacao || '').toLowerCase().includes(termo));
     }
     if (_pdvEstSoComSaldo) lista = lista.filter(v => (_pdvEstSaldos[v.sku] || 0) > 0);
     const total = lista.length;
     lista = lista.slice(0, 200);
 
-    const comSaldo = Object.values(_pdvEstSaldos).filter(q => q > 0).length;
-    const unidades = Object.values(_pdvEstSaldos).reduce((s, q) => s + (q > 0 ? q : 0), 0);
-
     let html = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
-      + '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;margin-bottom:4px">'
-      + '<h3 style="margin:0;font-size:15px;color:#0f172a">Estoque de ' + escapeHtml(_pdvEstado.local.nome) + '</h3>'
-      + '<div style="font-size:12.5px;color:#64748b">' + comSaldo + ' itens com saldo · ' + unidades + ' unidades</div>'
+      + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px">'
+      + (_pdvVariosEstoques() ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvVoltarEstoques()">&#8592; Estoques</button>' : '')
+      + '<h3 style="margin:0;font-size:15px;color:#0f172a">' + escapeHtml(local.nome) + '</h3>'
+      + '<div style="margin-left:auto;font-size:12.5px;color:#64748b">' + local.itens + ' itens · ' + local.unidades + ' un · <b style="color:#15803d">' + _pdvBRL(local.valorVenda) + '</b></div>'
       + '</div>'
-      + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">O catálogo é o mesmo do sistema. Aqui você só diz quanto tem <b>nesta loja</b>. Item sem saldo não pode ser vendido no balcão.</div>'
+      + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">O catálogo é o mesmo do sistema. Aqui você só diz quanto tem <b>neste estoque</b>.</div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-      + '<input class="form-input" id="pdvEstBusca" value="' + escapeHtml(_pdvEstBusca) + '" placeholder="Nome, SKU ou variação" style="max-width:320px" onkeydown="if(event.key===\'Enter\')pdvBuscarEstoque()">'
+      + '<input class="form-input" id="pdvEstBusca" value="' + escapeHtml(_pdvEstBusca) + '" placeholder="Nome, SKU ou variação" style="max-width:300px" onkeydown="if(event.key===\'Enter\')pdvBuscarEstoque()">'
       + '<button class="lc-btn" onclick="pdvBuscarEstoque()"><span class="lc-ic" data-size="sm" data-lucide="search"></span> Buscar</button>'
       + '<label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:#334155;cursor:pointer">'
       + '<input type="checkbox" ' + (_pdvEstSoComSaldo ? 'checked' : '') + ' onchange="pdvFiltrarComSaldo(this.checked)"> Só com saldo</label>'
-      + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvTransferirEstoque()"><span class="lc-ic" data-size="sm" data-lucide="arrow-left-right"></span> Transferir de outro local</button>'
-      + '</div>';
+      + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAbrirPainelEstoque(\'entrada\')"><span class="lc-ic" data-size="sm" data-lucide="plus"></span> Dar entrada</button>'
+      + (_pdvVariosEstoques() ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvOndeTem()"><span class="lc-ic" data-size="sm" data-lucide="search"></span> Tem em outro estoque?</button>' : '')
+      // Transferência só faz sentido havendo para onde transferir.
+      + (_pdvVariosEstoques()
+        ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAbrirPainelEstoque(\'receber\')"><span class="lc-ic" data-size="sm" data-lucide="arrow-down-left"></span> Receber de outro</button>'
+          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAbrirPainelEstoque(\'enviar\')"><span class="lc-ic" data-size="sm" data-lucide="arrow-up-right"></span> Enviar para outro</button>'
+        : '')
+      + '</div>'
+      + '<div id="pdvPainelEstoque"></div>';
 
     if (!lista.length) {
       html += '<div style="padding:26px;text-align:center;color:#94a3b8;font-size:13px">'
@@ -89276,9 +89402,18 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         html += '<div style="font-size:12px;color:#94a3b8;margin-top:8px">Mostrando 200 de ' + total + '. Use a busca para chegar mais perto.</div>';
       }
     }
+    // Porta de entrada discreta pro caso raro. Quem nunca precisar de mais de
+    // um estoque não vê nada além desta linha.
+    html += _pdvVariosEstoques()
+      ? '<div style="font-size:12px;color:#94a3b8;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:10px">'
+        + '<a href="javascript:void(0)" onclick="pdvVoltarEstoques()" style="color:#0f766e">Ver todos os estoques</a></div>'
+      : '<div style="font-size:12px;color:#94a3b8;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:10px">'
+        + 'Trabalha com estoques separados (loja e depósito, por exemplo)? '
+        + '<a href="javascript:void(0)" onclick="pdvCriarEstoque()" style="color:#0f766e">Criar outro estoque</a></div>';
     html += '</div>';
     box.innerHTML = html;
     if (window.lucide && lucide.createIcons) try { lucide.createIcons(); } catch (e) {}
+    pdvDesenharPainelEstoque();
   }
 
   function pdvBuscarEstoque() {
@@ -89301,7 +89436,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const r = await _pdvApi('/api/estoque/movimento', {
       method: 'POST',
       body: JSON.stringify({
-        localId: _pdvEstado.local.id, sku, delta,
+        localId: _pdvEstLocalAberto, sku, delta,
         origem: delta > 0 ? 'entrada' : 'inventario',
         motivo,
         // Contagem de inventário pode legitimamente derrubar o saldo abaixo do
@@ -89316,40 +89451,146 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     pdvRenderEstoque();
   }
 
-  async function pdvTransferirEstoque() {
-    const locais = await _pdvApi('/api/estoque/locais');
-    if (!locais.ok) { showToast(locais.erro || 'Não consegui listar os locais', true); return; }
-    const outros = (locais.locais || []).filter(l => l.id !== _pdvEstado.local.id);
-    if (!outros.length) { showToast('Não há outro local de estoque para transferir', true); return; }
+  // ── entrada e transferência, em painel (v33k.1305) ────────────────
+  // A versão anterior usava uma sequência de prompts encadeados: escolha o
+  // local, digite o SKU, digite a quantidade. Quem faz isso 40 vezes por dia
+  // com caixa de mercadoria aberta na frente desiste no terceiro item. Aqui é
+  // uma linha só, com busca no catálogo e o saldo atual à vista.
+  let _pdvPainelModo = null;
+  let _pdvPainelItem = null;
+  let _pdvLocaisCache = [];
 
-    const opcoes = outros.map((l, i) => (i + 1) + ') ' + l.nome).join('\n');
-    const escolha = await lcPrompt('De qual local vem a mercadoria?\n\n' + opcoes, '1');
-    if (escolha === null) return;
-    const origem = outros[(parseInt(escolha, 10) || 1) - 1];
-    if (!origem) { showToast('Local inválido', true); return; }
-
-    const sku = await lcPrompt('SKU da variação:', '');
-    if (!sku) return;
-    const qtd = await lcPrompt('Quantas unidades?', '1');
-    if (qtd === null || !Number(qtd)) return;
-
-    let r = await _pdvApi('/api/estoque/transferir', {
-      method: 'POST',
-      body: JSON.stringify({ origemId: origem.id, destinoId: _pdvEstado.local.id, sku, quantidade: Number(qtd) }),
-    });
-    if (!r.ok && r.exigeNota) {
-      // CNPJs diferentes é operação com nota (CFOP 5152/6152). O sistema move o
-      // saldo só depois de a pessoa confirmar que sabe disso.
-      if (!(await lcConfirm(r.erro + '\n\nMover só o saldo mesmo assim?'))) return;
-      r = await _pdvApi('/api/estoque/transferir', {
-        method: 'POST',
-        body: JSON.stringify({ origemId: origem.id, destinoId: _pdvEstado.local.id, sku, quantidade: Number(qtd), confirmarSemNota: true }),
-      });
+  async function pdvAbrirPainelEstoque(modo) {
+    if (_pdvPainelModo === modo) { _pdvPainelModo = null; pdvDesenharPainelEstoque(); return; }
+    _pdvPainelModo = modo;
+    _pdvPainelItem = null;
+    if (!_pdvLocaisCache.length) {
+      const r = await _pdvApi('/api/estoque/locais');
+      _pdvLocaisCache = (r.ok && r.locais) || [];
     }
-    if (!r.ok) { showToast(r.erro || 'Não consegui transferir', true); return; }
-    showToast(r.quantidade + ' unidade(s) transferida(s) de ' + origem.nome);
-    await pdvCarregarEstoque();
+    pdvDesenharPainelEstoque();
+  }
+
+  function pdvDesenharPainelEstoque() {
+    const box = document.getElementById('pdvPainelEstoque');
+    if (!box) return;
+    if (!_pdvPainelModo) { box.innerHTML = ''; return; }
+    const aqui = _pdvLocalAberto();
+    if (!aqui) { box.innerHTML = ''; return; }
+
+    const modo = _pdvPainelModo;                 // entrada | receber | enviar
+    const ehTransf = (modo === 'receber' || modo === 'enviar');
+    const outros = (_pdvEstResumo.locais || []).filter(l => l.id !== aqui.id);
+
+    if (ehTransf && !outros.length) {
+      box.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px;margin-top:12px;font-size:13px;color:#92400e">'
+        + 'Só existe um estoque nesta conta. Crie outro em Preparo da loja para poder transferir.</div>';
+      return;
+    }
+
+    const titulo = modo === 'entrada' ? 'Dar entrada em ' + escapeHtml(aqui.nome)
+      : (modo === 'receber' ? 'Receber mercadoria em ' + escapeHtml(aqui.nome)
+        : 'Enviar mercadoria de ' + escapeHtml(aqui.nome));
+    const rotuloLocal = modo === 'receber' ? 'De qual estoque' : 'Para qual estoque';
+    const item = _pdvPainelItem;
+
+    box.innerHTML = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:14px;margin-top:12px">'
+      + '<div style="font-weight:700;color:#0f172a;font-size:13.5px;margin-bottom:10px">' + titulo + '</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'
+      + (ehTransf
+        ? '<div><label style="display:block;font-size:11.5px;color:#475569;margin-bottom:3px">' + rotuloLocal + '</label>'
+          + '<select class="form-input" id="pdvPainelOutro" style="max-width:220px;font-size:12.5px;padding:7px 9px">'
+          + outros.map(l => '<option value="' + l.id + '">' + escapeHtml(l.nome) + '</option>').join('') + '</select></div>'
+        : '')
+      + '<div style="flex:1;min-width:220px"><label style="display:block;font-size:11.5px;color:#475569;margin-bottom:3px">Produto</label>'
+      + '<input class="form-input" id="pdvPainelBusca" placeholder="Bipe o código ou digite nome / SKU" style="font-size:12.5px;padding:7px 9px" oninput="pdvPainelBuscar()" '
+      + 'value="' + escapeHtml(item ? (item.nome + ' · ' + item.sku) : '') + '"></div>'
+      + '<div><label style="display:block;font-size:11.5px;color:#475569;margin-bottom:3px">Quantidade</label>'
+      + '<input class="form-input" id="pdvPainelQtd" type="number" min="1" value="1" style="width:100px;font-size:12.5px;padding:7px 9px"></div>'
+      + '<button class="lc-btn" onclick="pdvPainelConfirmar()">' + (modo === 'entrada' ? 'Lançar entrada' : (modo === 'receber' ? 'Receber' : 'Enviar')) + '</button>'
+      + '<button class="lc-btn lc-btn--secondary" onclick="pdvAbrirPainelEstoque(\'' + modo + '\')">Fechar</button>'
+      + '</div>'
+      + '<div id="pdvPainelSugestoes"></div>'
+      + (item
+        ? '<div style="font-size:12px;color:#334155;margin-top:9px">Selecionado: <b>' + escapeHtml(item.nome) + '</b> · '
+          + escapeHtml(item.sku) + ' · saldo aqui: <b>' + (_pdvEstSaldos[item.sku] || 0) + '</b></div>'
+        : '<div style="font-size:12px;color:#94a3b8;margin-top:9px">Escolha o produto na lista acima.</div>')
+      + '</div>';
+  }
+
+  function pdvPainelBuscar() {
+    const el = document.getElementById('pdvPainelBusca');
+    const alvo = document.getElementById('pdvPainelSugestoes');
+    if (!el || !alvo) return;
+    const t = (el.value || '').trim().toLowerCase();
+    if (t.length < 2) { alvo.innerHTML = ''; return; }
+    const achados = _pdvVariacoesDoCatalogo().filter(v =>
+      (v.nome || '').toLowerCase().includes(t) || v.sku.toLowerCase().includes(t)
+      || (v.variacao || '').toLowerCase().includes(t)).slice(0, 8);
+    if (!achados.length) { alvo.innerHTML = '<div style="font-size:12px;color:#94a3b8;margin-top:7px">Nada encontrado.</div>'; return; }
+    window._pdvPainelAchados = achados;
+    alvo.innerHTML = '<div style="border:1px solid #e2e8f0;border-radius:9px;margin-top:8px;background:#fff;max-height:170px;overflow:auto">'
+      + achados.map((v, i) => '<div onclick="pdvPainelEscolher(' + i + ')" style="padding:7px 10px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12.5px">'
+        + '<b>' + escapeHtml(v.nome) + '</b> <span style="color:#64748b">' + escapeHtml([v.variacao, v.sku].filter(Boolean).join(' · ')) + '</span>'
+        + '<span style="float:right;color:#0f766e;font-weight:700">' + (_pdvEstSaldos[v.sku] || 0) + '</span></div>').join('')
+      + '</div>';
+  }
+
+  function pdvPainelEscolher(i) {
+    _pdvPainelItem = (window._pdvPainelAchados || [])[i] || null;
+    pdvDesenharPainelEstoque();
+  }
+
+  async function pdvPainelConfirmar() {
+    if (!_pdvPainelItem) { showToast('Escolha o produto', true); return; }
+    const qtd = Math.max(1, parseInt((document.getElementById('pdvPainelQtd') || {}).value, 10) || 0);
+    const sku = _pdvPainelItem.sku;
+
+    if (_pdvPainelModo === 'entrada') {
+      const r = await _pdvApi('/api/estoque/movimento', {
+        method: 'POST',
+        body: JSON.stringify({
+          localId: _pdvEstLocalAberto, sku, delta: qtd,
+          origem: 'entrada', motivo: 'Entrada de mercadoria',
+          produtoId: _pdvPainelItem.produtoId, variacaoId: _pdvPainelItem.variacaoId,
+        }),
+      });
+      if (!r.ok) { showToast(r.erro || 'Não consegui lançar', true); return; }
+      _pdvEstSaldos[sku] = r.quantidade;
+      showToast('+' + qtd + ' em ' + sku + ' · saldo ' + r.quantidade);
+    } else {
+      // Enviar e receber são a MESMA operação vista dos dois lados. Quem opera
+      // o CD lança a saída; para a loja de destino aquilo já é a entrada, sem
+      // ninguém precisar digitar de novo do outro lado.
+      const outroId = Number((document.getElementById('pdvPainelOutro') || {}).value);
+      const enviando = _pdvPainelModo === 'enviar';
+      const origemId = enviando ? _pdvEstLocalAberto : outroId;
+      const destinoId = enviando ? outroId : _pdvEstLocalAberto;
+      let r = await _pdvApi('/api/estoque/transferir', {
+        method: 'POST',
+        body: JSON.stringify({ origemId, destinoId, sku, quantidade: qtd,
+          produtoId: _pdvPainelItem.produtoId, variacaoId: _pdvPainelItem.variacaoId }),
+      });
+      if (!r.ok && r.exigeNota) {
+        // CNPJs diferentes é operação com nota (CFOP 5152/6152).
+        if (!(await lcConfirm(r.erro + '\n\nMover só o saldo mesmo assim?'))) return;
+        r = await _pdvApi('/api/estoque/transferir', {
+          method: 'POST',
+          body: JSON.stringify({ origemId, destinoId, sku, quantidade: qtd, confirmarSemNota: true }),
+        });
+      }
+      if (!r.ok) { showToast(r.erro || 'Não consegui transferir', true); return; }
+      showToast(qtd + ' unidade(s) ' + (enviando ? 'enviada(s)' : 'recebida(s)'));
+      await pdvCarregarSaldosDoLocal();
+    }
+    await pdvCarregarEstoqueResumo();
+    // Mantém o painel aberto e o item selecionado: quem dá entrada em caixa de
+    // mercadoria lança vários seguidos, e reabrir tudo a cada item é o que faz
+    // a pessoa desistir e deixar o estoque desatualizado.
+    const qtdEl = document.getElementById('pdvPainelQtd');
     pdvRenderEstoque();
+    pdvDesenharPainelEstoque();
+    if (qtdEl) { const q = document.getElementById('pdvPainelQtd'); if (q) q.focus(); }
   }
 
   // ── vínculo do CNPJ direto daqui ───────────────────────────────────
@@ -89375,6 +89616,140 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (!v.ok) { showToast(v.erro || 'Não consegui vincular', true); return; }
     showToast('CNPJ vinculado a esta loja');
     renderPdv();
+  }
+
+
+  // Vendas que ficaram fora dos relatórios por falha na gravação do espelho.
+  // A venda é fato consumado: o conserto é regravar, não refazer.
+  async function pdvReespelhar() {
+    const r = await _pdvApi('/api/pdv-venda/reespelhar', {
+      method: 'POST', body: JSON.stringify({ lojaId: _pdvLojaSel, limite: 50 }),
+    });
+    if (!r.ok) { showToast(r.erro || 'Não consegui regravar', true); return; }
+    if (r.falhas && r.falhas.length) {
+      showToast(r.regravadas + ' regravada(s), ' + r.falhas.length + ' falharam: ' + r.falhas[0].erro, true);
+      console.warn('[pdv] falhas ao regravar:', r.falhas);
+      return;
+    }
+    showToast(r.regravadas + ' venda(s) regravada(s) nos relatórios');
+  }
+
+
+  // O balcão APONTA para um estoque, não é dono dele. Uma rede pode ter um
+  // estoque compartilhado, um por loja, ou grupos, sem o sistema impor.
+  async function pdvTrocarEstoqueDaLoja() {
+    const localId = (document.getElementById('pdvLocalSel') || {}).value;
+    if (!localId) return;
+    const r = await _pdvApi('/api/pdv/loja/' + _pdvLojaSel + '/estoque', {
+      method: 'PUT', body: JSON.stringify({ localId: Number(localId) }),
+    });
+    if (!r.ok) { showToast(r.erro || 'Não consegui trocar o estoque', true); return; }
+    showToast('Esta loja passa a usar o estoque "' + r.local.nome + '"');
+    renderPdv();
+  }
+
+  async function pdvCriarEstoque() {
+    const nome = await lcPrompt('Nome do estoque novo (ex: Loja Centro, Depósito 2):', '');
+    if (!nome) return;
+    const abastece = await lcConfirm('Este estoque também abastece os anúncios dos marketplaces?');
+    const r = await _pdvApi('/api/pdv/estoques', {
+      method: 'POST', body: JSON.stringify({ nome, abasteceMarketplaces: !!abastece }),
+    });
+    if (!r.ok) { showToast(r.erro || 'Não consegui criar', true); return; }
+    showToast('Estoque "' + r.local.nome + '" criado com ' + (r.skusListados || 0) + ' produtos zerados.');
+    renderPdv();
+  }
+
+
+  // ── qual estoque abastece quais lojas (v33k.1315) ──────────────────
+  // Sem este mapa o push manda um número só para todos os anúncios, e duas
+  // lojas físicas com saldos diferentes do mesmo SKU anunciariam a quantidade
+  // uma da outra.
+  let _pdvAbastLocal = null;
+
+  async function pdvAbrirAbastecimento(localId) {
+    const r = await _pdvApi('/api/estoque/locais/' + localId + '/lojas');
+    if (!r.ok) { showToast(r.erro || 'Não consegui carregar', true); return; }
+    if (r.migracaoPendente) { showToast('Rode a migração do abastecimento antes de configurar isto', true); return; }
+    _pdvAbastLocal = r;
+
+    const marcadas = new Set((r.lojaIds || []).map(String));
+    const porMkt = {};
+    (r.lojas || []).forEach(l => { (porMkt[l.marketplace] = porMkt[l.marketplace] || []).push(l); });
+
+    const corpo = Object.keys(porMkt).length
+      ? Object.keys(porMkt).sort().map(mk => '<div style="margin-bottom:12px">'
+        + '<div style="font-size:12px;font-weight:700;color:#64748b;text-transform:capitalize;margin-bottom:5px">' + escapeHtml(mk) + '</div>'
+        + porMkt[mk].map(l => '<label style="display:flex;gap:7px;align-items:center;font-size:13px;color:#334155;padding:4px 0;cursor:pointer">'
+          + '<input type="checkbox" class="pdvAbastLoja" value="' + l.id + '" ' + (marcadas.has(String(l.id)) ? 'checked' : '') + '> '
+          + escapeHtml(l.nome) + '</label>').join('')
+        + '</div>').join('')
+      : '<div style="font-size:13px;color:#94a3b8">Nenhuma loja de marketplace cadastrada nesta conta.</div>';
+
+    const html = '<div id="pdvAbastOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100003;display:flex;align-items:center;justify-content:center;padding:20px" onclick="if(event.target.id===\'pdvAbastOverlay\')pdvFecharAbastecimento()">'
+      + '<div style="background:#fff;border-radius:16px;padding:22px;max-width:460px;width:100%;max-height:80vh;overflow:auto">'
+      + '<div style="font-size:16px;font-weight:800;color:#0f172a">' + escapeHtml(r.local.nome) + '</div>'
+      + '<div style="font-size:12.5px;color:#64748b;margin:4px 0 14px">Marque as lojas que vendem a partir deste estoque. Cada loja anuncia a soma dos estoques que a abastecem.</div>'
+      + corpo
+      + '<div style="display:flex;gap:8px;margin-top:16px">'
+      + '<button class="lc-btn lc-btn--secondary" style="flex:1" onclick="pdvFecharAbastecimento()">Cancelar</button>'
+      + '<button class="lc-btn" style="flex:1" onclick="pdvSalvarAbastecimentoLojas(' + r.local.id + ')">Salvar</button>'
+      + '</div></div></div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+  }
+
+  function pdvFecharAbastecimento() {
+    const o = document.getElementById('pdvAbastOverlay');
+    if (o) o.remove();
+  }
+
+  async function pdvSalvarAbastecimentoLojas(localId) {
+    const lojaIds = Array.from(document.querySelectorAll('.pdvAbastLoja'))
+      .filter(c => c.checked).map(c => Number(c.value));
+    const r = await _pdvApi('/api/estoque/locais/' + localId + '/lojas', {
+      method: 'PUT', body: JSON.stringify({ lojaIds }),
+    });
+    if (!r.ok) { showToast(r.erro || 'Não consegui salvar', true); return; }
+    pdvFecharAbastecimento();
+    showToast(lojaIds.length
+      ? 'Este estoque abastece ' + r.lojaIds.length + ' loja(s)'
+      : 'Este estoque passa a ser só presencial');
+    await pdvCarregarEstoqueResumo();
+    pdvRenderEstoque();
+  }
+
+
+  // ── "tem em outro estoque?" ────────────────────────────────────────
+  // O caso real: cliente quer 200, a loja tem 50. Sem esta consulta a venda
+  // se perde por falta de informação, não por falta de mercadoria.
+  async function pdvOndeTem(skuPreenchido) {
+    const sku = skuPreenchido || await lcPrompt('Bipe ou digite o SKU do produto:', _pdvEstBusca || '');
+    if (!sku) return;
+    const r = await _pdvApi('/api/estoque/onde-tem?sku=' + encodeURIComponent(sku));
+    if (!r.ok) { showToast(r.erro || 'Não consegui consultar', true); return; }
+
+    const linhas = (r.locais || []).map(l => {
+      const aqui = l.id === _pdvEstLocalAberto;
+      return '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13.5px">'
+        + '<span style="color:#334155">' + escapeHtml(l.nome) + (aqui ? ' <b style="color:#0f766e">(aqui)</b>' : '') + '</span>'
+        + '<b style="color:' + (l.quantidade > 0 ? '#15803d' : '#94a3b8') + '">' + l.quantidade + '</b></div>';
+    }).join('');
+
+    const html = '<div id="pdvOndeTemOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100003;display:flex;align-items:center;justify-content:center;padding:20px" onclick="if(event.target.id===\'pdvOndeTemOverlay\')pdvFecharOndeTem()">'
+      + '<div style="background:#fff;border-radius:16px;padding:22px;max-width:420px;width:100%;max-height:80vh;overflow:auto">'
+      + '<div style="font-size:16px;font-weight:800;color:#0f172a">' + escapeHtml(r.sku) + '</div>'
+      + '<div style="font-size:12.5px;color:#64748b;margin:4px 0 14px">Total na rede: <b style="color:#0f172a">' + r.total + ' unidades</b>'
+      + (r.comSaldo ? ' em ' + r.comSaldo + ' estoque(s)' : ', nenhum estoque com saldo') + '</div>'
+      + (linhas || '<div style="font-size:13px;color:#94a3b8">Nenhum estoque cadastrado.</div>')
+      + '<div style="font-size:12px;color:#64748b;margin-top:12px">Para trazer mercadoria de outro estoque, use "Receber de outro".</div>'
+      + '<button class="lc-btn lc-btn--secondary" style="width:100%;margin-top:12px" onclick="pdvFecharOndeTem()">Fechar</button>'
+      + '</div></div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+  }
+
+  function pdvFecharOndeTem() {
+    const o = document.getElementById('pdvOndeTemOverlay');
+    if (o) o.remove();
   }
 
   function goToSyncSettings() {
