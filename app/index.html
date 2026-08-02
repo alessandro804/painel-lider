@@ -362,7 +362,11 @@
           _campo('gfFantasia', 'Nome Fantasia', v('nome_fantasia')) +
           _campoComDica('gfIe', 'Inscrição Estadual', v('ie'), 'Preencha manualmente, a IE não vem na consulta do CNPJ') +
           _selectRegime('gfCrt', v('crt', 1)) +
-          _selectAmbiente('gfAmbiente', v('ambiente', 2)) +
+          // v33k.1455: o ambiente saiu daqui. Existiam DOIS lugares pra trocar
+          // (este e o da Numeração fiscal), e eles podiam discordar entre si.
+          // Ficou o de baixo, que mostra junto a série e o próximo número, que
+          // é a informação que muda de sentido conforme o ambiente.
+          _campoOculto('gfAmbiente', v('ambiente', 2)) +
           _campo('gfEmail', 'E-mail', v('email')) +
           _campo('gfTelefone', 'Telefone', v('telefone')) +
         '</div>' +
@@ -391,6 +395,15 @@
             '<div id="gfSeriesConteudo" style="text-align:center;padding:16px;color:#94a3b8"><span class="lc-ic" data-lucide="refresh-cw"></span> Carregando numeração…</div>' +
           '</div>') +
 
+      // ── 5. NFC-e (cupom fiscal do Frente de Caixa) ──
+      (ehNovo
+        ? ''
+        : '<div style="' + card + '" id="gfCscBox">' +
+            '<div style="font-weight:700;color:#0f172a;margin-bottom:6px">5. Cupom fiscal (NFC-e) do Frente de Caixa</div>' +
+            '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">A venda no balcão sai como <b>NFC-e</b>, que é outro documento: numeração própria e um segredo próprio, o CSC, gerado no portal da SEFAZ junto com o credenciamento. Sem ele o cupom não é emitido. Não tem relação com a numeração da NF-e acima.</div>' +
+            '<div id="gfCscConteudo" style="text-align:center;padding:16px;color:#94a3b8"><span class="lc-ic" data-lucide="refresh-cw"></span> Carregando…</div>' +
+          '</div>') +
+
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
         '<button class="lc-btn lc-btn--ghost" onclick="_carregarEmpresasVoltar()">Cancelar</button>' +
         '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_gfSalvarEmpresa(' + (emp.id || 'null') + ')">💾 Salvar empresa</button>' +
@@ -400,9 +413,63 @@
     _hidratarIcones(document.getElementById('gfConteudo'));
     // carrega a numeração se a empresa já existe
     if (!ehNovo) _gfCarregarSeries(emp.id, Number(emp.ambiente) || 2);
+    if (!ehNovo) _gfCarregarCsc(emp.id);
   }
 
   // ── Numeração fiscal: carrega séries + próximos números da empresa ──
+  // ── 5. CSC da NFC-e (v33k.1455) ─────────────────────────────────────
+  // O cupom do balcão é NFC-e, documento diferente da NF-e: numeração própria e
+  // um segredo próprio (o CSC), que assina o QR Code. Fica aqui, na mesma tela
+  // onde a pessoa configura o resto do fiscal, e também no Preparo da loja.
+  async function _gfCarregarCsc(empresaId) {
+    const alvo = document.getElementById('gfCscConteudo');
+    if (!alvo) return;
+    let d;
+    try {
+      d = await _api('/api/nfe/empresas/' + empresaId + '/csc');
+    } catch (e) { d = { ok: false, erro: e.message }; }
+    if (!d || !d.ok) {
+      alvo.innerHTML = '<div style="color:#b91c1c;font-size:13px">Não consegui carregar: ' + _esc((d && d.erro) || 'erro') + '</div>';
+      return;
+    }
+    const amb = Number(d.empresa.ambiente) === 1 ? 'produção' : 'homologação';
+    alvo.style.textAlign = 'left';
+    alvo.style.color = '';
+    alvo.innerHTML =
+      (d.temCsc
+        ? '<div style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;border-radius:9px;padding:10px 12px;font-size:13px;margin-bottom:12px">'
+          + 'CSC cadastrado (ID ' + _esc(d.cscId || '') + ')' + (d.seriePadraoNfce ? ' · série ' + d.seriePadraoNfce : '')
+          + '. Preencher de novo substitui o antigo.</div>'
+        : '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:9px;padding:10px 12px;font-size:13px;margin-bottom:12px">'
+          + 'Sem CSC. O Frente de Caixa vende normalmente, mas o cupom fiscal não é emitido.</div>')
+      + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:10px 12px;font-size:12.5px;color:#475569;margin-bottom:12px">'
+      + 'O CSC vem em duas partes: o <b>código</b> (36 caracteres) e o <b>ID</b> (número curto, quase sempre 1 ou 2). '
+      + 'Esta empresa está em <b>' + amb + '</b>, e cada ambiente tem o seu CSC: use o correspondente.</div>'
+      + '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;align-items:end">'
+      + '<div><label style="' + lbl + '">Código CSC</label><input id="gfCscCodigo" style="' + inp + '" placeholder="cole os 36 caracteres" autocomplete="off"></div>'
+      + '<div><label style="' + lbl + '">ID do CSC</label><input id="gfCscId" style="' + inp + '" value="' + _esc(d.cscId || '') + '" inputmode="numeric" placeholder="1"></div>'
+      + '<div><label style="' + lbl + '">Série da NFC-e</label><input id="gfCscSerie" style="' + inp + '" value="' + (d.seriePadraoNfce || 65) + '" inputmode="numeric"></div>'
+      + '</div>'
+      + '<div style="font-size:11.5px;color:#94a3b8;margin-top:6px">A numeração da NFC-e é independente da NF-e. Se você já emite NFC-e por outro sistema neste CNPJ, use uma série diferente da dele.</div>'
+      + '<div style="text-align:right;margin-top:12px">'
+      + '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_gfSalvarCsc(' + empresaId + ')">Salvar CSC</button></div>';
+  }
+
+  async function _gfSalvarCsc(empresaId) {
+    const g = (id) => (document.getElementById(id) || {}).value || '';
+    const d = await _api('/api/nfe/empresas/' + empresaId + '/csc', {
+      method: 'POST',
+      body: JSON.stringify({
+        csc: g('gfCscCodigo').trim(),
+        cscId: g('gfCscId').trim(),
+        seriePadraoNfce: g('gfCscSerie').trim(),
+      }),
+    });
+    if (!d.ok) return _toast(d.erro || 'Não consegui salvar o CSC', true);
+    _toast('CSC salvo. O Frente de Caixa já pode emitir cupom.');
+    _gfCarregarCsc(empresaId);
+  }
+
   async function _gfCarregarSeries(empresaId, ambienteEmpresa) {
     const el = document.getElementById('gfSeriesConteudo');
     if (!el) return;
@@ -573,6 +640,12 @@
       .map(([v, t]) => '<option value="' + v + '"' + (Number(sel) === v ? ' selected' : '') + '>' + t + '</option>').join('');
     return '<div><label style="' + lbl + '">Regime Tributário *</label><select id="' + id + '" style="' + inp + '">' + opts + '</select></div>';
   }
+  // Mantém o valor no formulário sem oferecer a troca aqui: quem salva a
+  // empresa continua enviando o ambiente atual, sem alterá-lo por engano.
+  function _campoOculto(id, valor) {
+    return '<input type="hidden" id="' + id + '" value="' + String(valor == null ? '' : valor) + '">';
+  }
+
   function _selectAmbiente(id, sel) {
     const opts = [[2, 'Homologação (teste)'], [1, 'Produção (valor fiscal)']]
       .map(([v, t]) => '<option value="' + v + '"' + (Number(sel) === v ? ' selected' : '') + '>' + t + '</option>').join('');
@@ -61182,7 +61255,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1440-pagamento-zero';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1455-csc-config-fiscal';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -62007,6 +62080,22 @@ Responda APENAS com JSON válido (sem markdown), formato:
     } catch (e) { return { extra: [], bloqueadas: [] }; }
   }
   window._paginasOverrideUsuario = _paginasOverrideUsuario;
+
+  // ── CONSULTOR IA: recurso de AGÊNCIA (v33k.1445) ───────────────────
+  // Ele fala de estratégia de operação e é parte do pacote de agência. Para
+  // quem só opera marketplace ele é ruído, e aparecia pra todo mundo por
+  // descuido. O super ADM libera caso a caso pelo mesmo override de páginas
+  // que já existe, sem precisar de um controle novo.
+  function _podeVerConsultorIa() {
+    try {
+      const papel = (typeof papelAtual === 'function') ? papelAtual() : 'admin';
+      const ov = _paginasOverrideUsuario();
+      if (ov.bloqueadas.includes('consultorIa')) return false;   // bloqueio vence tudo
+      if (ov.extra.includes('consultorIa')) return true;         // liberação explícita
+      return papel === 'admin' || papel === 'superadmin';        // padrão: só agência
+    } catch (e) { return false; }
+  }
+  window._podeVerConsultorIa = _podeVerConsultorIa;
 
   function podeAcessarTela(screenId) {
     if (TELAS_SEMPRE_LIBERADAS.includes(screenId)) return true;
@@ -63382,7 +63471,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
 
     try { window.lcHydrateIcons && window.lcHydrateIcons(document.getElementById('homeScreen')); } catch(e){}
     const fab = document.getElementById('consultorFab');
-    if (fab) fab.style.display = 'flex';
+    if (fab) fab.style.display = _podeVerConsultorIa() ? 'flex' : 'none';
 
     // scroll-reveal: blocos abaixo da dobra aparecem ao rolar até eles.
     // O gráfico de evolução só é (re)animado quando entra na tela.
@@ -87586,6 +87675,12 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   
   function openConsultorModal() {
+    // Trava real, não só o botão escondido: quem descobrir a função no console
+    // não abre o chat sem ter o recurso liberado.
+    if (typeof _podeVerConsultorIa === 'function' && !_podeVerConsultorIa()) {
+      showToast('O Consultor IA não está liberado nesta conta.', true);
+      return;
+    }
     document.getElementById('consultorOverlay').classList.add('active');
     renderChatHistory();
     updateConsultorStatus();
@@ -88339,7 +88434,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         const borda = bloqueia ? '#fecaca' : '#fde68a';
         // Cada pendência traz o botão que a resolve. Mandar a pessoa procurar
         // a tela certa em outro canto do sistema é o oposto de simples.
-        const acao = p.chave === 'cnpj'
+        const acao = p.chave === 'csc'
+          ? '<button class="lc-btn lc-btn--sm" style="margin-top:8px" onclick="pdvCadastrarCsc()">Cadastrar o CSC</button>'
+          : p.chave === 'cnpj'
           ? '<button class="lc-btn lc-btn--sm" style="margin-top:8px" onclick="pdvVincularCnpj()">Vincular CNPJ agora</button>'
           : (p.chave === 'local' || p.chave === 'caixa' || p.chave === 'config'
             ? '<div style="font-size:12px;color:#64748b;margin-top:4px">Resolvido pelo botão abaixo.</div>' : '');
@@ -90916,6 +91013,62 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (o) o.remove();
   }
 
+
+
+  // ── CSC da NFC-e (v33k.1450) ───────────────────────────────────────
+  // Sem ele o cupom não sai. Ele é gerado no portal da SEFAZ do estado, junto
+  // com o credenciamento para NFC-e, e vem em duas partes: o código e o ID.
+  async function pdvCadastrarCsc() {
+    const empresaId = _pdvEstado && _pdvEstado.empresa && _pdvEstado.empresa.id;
+    if (!empresaId) { showToast('Vincule o CNPJ desta loja antes de cadastrar o CSC', true); return; }
+
+    const r = await _pdvApi('/api/nfe/empresas/' + empresaId + '/csc');
+    if (!r.ok) { showToast(r.erro || 'Não consegui carregar', true); return; }
+    const amb = Number(r.empresa.ambiente) === 1 ? 'Produção' : 'Homologação';
+
+    const inp = 'width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px';
+    document.body.insertAdjacentHTML('beforeend',
+      '<div id="pdvCscOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100003;display:flex;align-items:center;justify-content:center;padding:20px" onclick="if(event.target.id===\'pdvCscOverlay\')pdvFecharCsc()">'
+      + '<div style="background:#fff;border-radius:16px;padding:22px;max-width:460px;width:100%;max-height:85vh;overflow:auto">'
+      + '<div style="font-size:16px;font-weight:800;color:#0f172a">CSC para emitir NFC-e</div>'
+      + '<div style="font-size:12.5px;color:#64748b;margin:4px 0 6px">' + escapeHtml(r.empresa.razao_social || '') + ' · ' + escapeHtml(r.empresa.uf || '') + ' · ambiente ' + amb + '</div>'
+      + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:11px 13px;font-size:12.5px;color:#475569;margin-bottom:14px">'
+      + 'O CSC é gerado no portal da SEFAZ do seu estado, na área de credenciamento para NFC-e. Ele vem em duas partes: o <b>código</b> (36 caracteres) e o <b>ID</b> (um número curto, quase sempre 1 ou 2). '
+      + '<b>Homologação e produção têm CSCs diferentes</b>, então use o do ambiente em que a empresa está.</div>'
+      + (r.temCsc ? '<div style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;border-radius:9px;padding:9px 11px;font-size:12.5px;margin-bottom:12px">Já existe um CSC salvo (ID ' + escapeHtml(r.cscId || '') + '). Preencher de novo substitui o antigo.</div>' : '')
+      + '<label style="display:block;font-size:12.5px;font-weight:600;color:#334155;margin-bottom:4px">Código CSC</label>'
+      + '<input id="pdvCscCodigo" style="' + inp + '" placeholder="cole aqui os 36 caracteres" autocomplete="off">'
+      + '<label style="display:block;font-size:12.5px;font-weight:600;color:#334155;margin:12px 0 4px">ID do CSC</label>'
+      + '<input id="pdvCscId" style="' + inp + '" value="' + escapeHtml(r.cscId || '') + '" placeholder="1" inputmode="numeric">'
+      + '<label style="display:block;font-size:12.5px;font-weight:600;color:#334155;margin:12px 0 4px">Série da NFC-e</label>'
+      + '<input id="pdvCscSerie" style="' + inp + '" value="' + (r.seriePadraoNfce || 65) + '" inputmode="numeric">'
+      + '<div style="font-size:11.5px;color:#94a3b8;margin-top:4px">A numeração da NFC-e é separada da NF-e. Se você já emite NFC-e por outro sistema, use uma série diferente da dele.</div>'
+      + '<div style="display:flex;gap:8px;margin-top:16px">'
+      + '<button class="lc-btn lc-btn--secondary" style="flex:1" onclick="pdvFecharCsc()">Cancelar</button>'
+      + '<button class="lc-btn" style="flex:1" onclick="pdvSalvarCsc(' + empresaId + ')">Salvar CSC</button>'
+      + '</div></div></div>');
+    const el = document.getElementById('pdvCscCodigo');
+    if (el) el.focus();
+  }
+
+  function pdvFecharCsc() {
+    const o = document.getElementById('pdvCscOverlay');
+    if (o) o.remove();
+  }
+
+  async function pdvSalvarCsc(empresaId) {
+    const csc = (document.getElementById('pdvCscCodigo') || {}).value || '';
+    const cscId = (document.getElementById('pdvCscId') || {}).value || '';
+    const serie = (document.getElementById('pdvCscSerie') || {}).value || '';
+    const r = await _pdvApi('/api/nfe/empresas/' + empresaId + '/csc', {
+      method: 'POST',
+      body: JSON.stringify({ csc: csc.trim(), cscId: cscId.trim(), seriePadraoNfce: serie.trim() }),
+    });
+    if (!r.ok) { showToast(r.erro || 'Não consegui salvar', true); return; }
+    pdvFecharCsc();
+    showToast('CSC salvo. A loja já pode emitir NFC-e.');
+    renderPdv();
+  }
 
   function goToSyncSettings() {
     goTo('settingsScreen');
