@@ -54620,6 +54620,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   let _filtroLoja = 'todas';       // filtro por loja
   const _MKT_CACHE_MS = 5 * 60 * 1000; // 5 min
   let _flashSalesCarregando = false;
+  let _promoUltimaFalha = false;   // v33k.1216: última atualização falhou? (mostra aviso, não zera a tela)
 
   async function carregarFlashSalesShopee(force) {
     const agora = Date.now();
@@ -54637,15 +54638,30 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (refreshIc) refreshIc.classList.add('motor-rel-spin');
     try {
       const q = force ? '?force=1' : '';
+      // v33k.1216: fetch com timeout (25s). Se o backend demorar demais, aborta
+      // e caímos no tratamento de falha — SEM zerar a tela.
+      const _fetchTO = (url) => {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 25000);
+        return fetch(url, { headers: { 'x-api-token': getApiToken() }, signal: ctrl.signal })
+          .then(x => x.json()).catch(() => null).finally(() => clearTimeout(t));
+      };
       const [fsR, pmR] = await Promise.all([
-        fetch(BACKEND_URL + '/api/motor-relampago/flash-sales-ativas' + q, { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()).catch(() => null),
-        fetch(BACKEND_URL + '/api/motor-relampago/promocoes-marketplaces' + q, { headers: { 'x-api-token': getApiToken() } }).then(x => x.json()).catch(() => null),
+        _fetchTO(BACKEND_URL + '/api/motor-relampago/flash-sales-ativas' + q),
+        _fetchTO(BACKEND_URL + '/api/motor-relampago/promocoes-marketplaces' + q),
       ]);
-      _flashSalesShopee = (fsR && fsR.ok && Array.isArray(fsR.flashSales)) ? fsR.flashSales : [];
-      _promocoesMkt = (pmR && pmR.ok && Array.isArray(pmR.promocoes)) ? pmR.promocoes : [];
-      _mktCacheTs = Date.now();
+      // v33k.1216: só SUBSTITUI o que temos quando a resposta veio OK. Antes, uma
+      // falha/timeout do backend fazia `= []` e ZERAVA a tela (aparecia "0 ativas"
+      // e "Nenhuma promoção" mesmo havendo promoções). Agora mantemos o último
+      // valor bom e sinalizamos a falha pro usuário poder tentar de novo.
+      const fsOk = fsR && fsR.ok && Array.isArray(fsR.flashSales);
+      const pmOk = pmR && pmR.ok && Array.isArray(pmR.promocoes);
+      if (fsOk) _flashSalesShopee = fsR.flashSales;
+      if (pmOk) _promocoesMkt = pmR.promocoes;
+      if (fsOk || pmOk) _mktCacheTs = Date.now();
+      _promoUltimaFalha = !(fsOk && pmOk);
     } catch (e) {
-      // mantém o que tinha
+      _promoUltimaFalha = true; // mantém o que tinha
     } finally {
       _flashSalesCarregando = false;
       if (refreshIc) refreshIc.classList.remove('motor-rel-spin');
@@ -54986,7 +55002,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               '<span style="color:#cbd5e1;flex-shrink:0">→</span>' +
               '<div style="text-align:right;flex-shrink:0"><div style="font-size:9px;color:#2563eb;text-transform:uppercase;letter-spacing:.3px;font-weight:700">Novo</div>' +
                 '<div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:#2563eb;font-weight:700">' + (campoPct ? '%' : 'R$') + '</span>' +
-                '<input type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" value="' + escapeHtml(atual) + '" data-tkpid="' + escapeHtml(pid) + '" class="tk-preco-inp" placeholder="' + (campoPct ? 'ex 15' : 'ex 79,90') + '" style="' + _TK_INP + ';width:88px;padding:6px 8px"></div>' +
+                '<input type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" value="' + escapeHtml(atual) + '" data-tkpid="' + escapeHtml(pid) + '" data-tkbase="' + (loc && loc.preco != null ? loc.preco : '') + '" class="tk-preco-inp" placeholder="' + (campoPct ? 'ex 15' : 'ex 79,90') + '" style="' + _TK_INP + ';width:88px;padding:6px 8px"></div>' +
               '</div>' +
             '</div>');
         const buscaChave = ((loc ? loc.nome : '') + ' ' + (loc && loc.skuPai ? loc.skuPai : '') + ' ' + pid).toLowerCase();
@@ -55159,20 +55175,56 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window._tkMontarPayloadPrecos = _tkMontarPayloadPrecos;
 
+  // v33k.1214: pura e testável — separa o que VAI (payload) do que é PULADO.
+  // Regra do TikTok: o preço promocional TEM que ser MENOR que o preço de venda
+  // (senão "Discount is below the limit"). rows: [{pid, valor, base}].
+  function _tkSepararPrecos(rows, campoPct) {
+    const produtos = []; const pulados = [];
+    for (const row of (rows || [])) {
+      const pid = String(row.pid || '');
+      const v = _parsePrecoPromo(row.valor);
+      if (!pid || v == null || v <= 0) continue;   // vazio/zero: não mexe
+      if (campoPct) {
+        if (v >= 100) { pulados.push({ pid, motivo: 'desconto ≥ 100%' }); continue; }
+        produtos.push({ productId: pid, discountPct: Math.round(v) });
+      } else {
+        const base = _parsePrecoPromo(row.base);
+        if (base != null && base > 0 && v >= base) {
+          pulados.push({ pid, motivo: 'promo R$ ' + v.toFixed(2) + ' ≥ venda R$ ' + base.toFixed(2) });
+          continue;
+        }
+        produtos.push({ productId: pid, precoFixo: v });
+      }
+    }
+    return { produtos, pulados };
+  }
+  window._tkSepararPrecos = _tkSepararPrecos;
+
   // salva os preços editados no TikTok (mesmo endpoint validado do add = PUT).
   async function tkPromoSalvarPrecos(activityId, tipo) {
     const campoPct = (_TK_TIPOS[tipo] || {}).campo === 'pct';
     const rows = Array.from(document.querySelectorAll('.tk-preco-inp')).map(inp => ({
-      pid: inp.getAttribute('data-tkpid'), valor: inp.value,
+      pid: inp.getAttribute('data-tkpid'), valor: inp.value, base: inp.getAttribute('data-tkbase'),
     }));
-    const built = _tkMontarPayloadPrecos(rows, campoPct);
-    if (!built.ok) { lcAlert(built.erro, { tipo: 'aviso' }); return; }
-    if (!built.produtos.length) { lcAlert('Preencha ao menos um ' + (campoPct ? 'desconto' : 'preço') + ' válido para salvar.', { tipo: 'aviso' }); return; }
-    _tkLoading('Salvando ' + built.produtos.length + ' preço(s) no TikTok…');
-    const r = await _tkApi('POST', '/loja/' + _tkPromoLoja + '/promocao/' + activityId + '/produtos', { tipo, productLevel: 'PRODUCT', produtos: built.produtos });
-    if (!r.ok) { lcAlert('Falha ao salvar os preços: ' + (r.erro || 'erro.'), { tipo: 'perigo' }); await tkPromoDetalhe(activityId, tipo); return; }
-    if (r.falhas && r.falhas.length) lcAlert('Salvo, mas ' + r.falhas.length + ' produto(s) falharam (confira no Seller Center do TikTok).', { tipo: 'aviso' });
-    else lcAlert('Preços atualizados no TikTok.', { tipo: 'sucesso' });
+    const { produtos, pulados } = _tkSepararPrecos(rows, campoPct);
+    if (!produtos.length && !pulados.length) { lcAlert('Preencha ao menos um ' + (campoPct ? 'desconto' : 'preço') + ' válido para salvar.', { tipo: 'aviso' }); return; }
+    if (!produtos.length) {
+      lcAlert('Nenhum preço válido para enviar.\n\n' + pulados.length + ' produto(s) pulado(s): o preço promocional precisa ser MENOR que o preço de venda.', { tipo: 'aviso' });
+      return;
+    }
+    _tkLoading('Salvando ' + produtos.length + ' preço(s) no TikTok…');
+    const r = await _tkApi('POST', '/loja/' + _tkPromoLoja + '/promocao/' + activityId + '/produtos', { tipo, productLevel: 'PRODUCT', produtos });
+    const falhasApi = (r && Array.isArray(r.falhas)) ? r.falhas.length : 0;
+    if (!r || !r.ok) {
+      lcAlert('Falha ao salvar: ' + ((r && r.erro) || 'erro.') + (pulados.length ? ('\n\n(' + pulados.length + ' já haviam sido pulados por preço ≥ venda.)') : ''), { tipo: 'perigo' });
+      await tkPromoDetalhe(activityId, tipo); return;
+    }
+    // resumo claro (o pedido do usuário): X ok, Y pulados, Z recusados.
+    const okCount = Math.max(0, produtos.length - falhasApi);
+    let msg = '✅ ' + okCount + ' preço(s) enviado(s) ao TikTok com sucesso.';
+    if (pulados.length) msg += '\n⏭️ ' + pulados.length + ' pulado(s): preço promocional ≥ preço de venda (não é desconto).';
+    if (falhasApi) msg += '\n⚠️ ' + falhasApi + ' recusado(s) pelo TikTok (confira no Seller Center).';
+    lcAlert(msg, { tipo: (pulados.length || falhasApi) ? 'aviso' : 'sucesso' });
     await tkPromoDetalhe(activityId, tipo);
   }
   window.tkPromoSalvarPrecos = tkPromoSalvarPrecos;
@@ -55729,6 +55781,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       }
     }
 
+    // v33k.1216: se a última atualização falhou, avisa (os números podem ser o
+    // último valor conhecido, não zerado) — em vez de o usuário achar que não há
+    // promoção nenhuma quando na verdade foi só uma falha de rede/timeout.
+    const avisoFalha = _promoUltimaFalha
+      ? '<div class="promo-metricas-aviso" style="margin-top:8px;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:6px 10px">⚠️ Não consegui atualizar agora (rede/marketplace lento). Mostrando o último dado conhecido — clique em <b>Atualizar</b> pra tentar de novo.</div>'
+      : '';
+
     host.innerHTML = '<div class="promo-metricas-v2">' +
       '<div class="promo-metricas-head"><span class="promo-hero-pulse"></span> Visão geral das promoções</div>' +
       '<div class="promo-metricas-grid">' +
@@ -55737,6 +55796,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         metrica(descMedio != null ? descMedio + '%' : '—', 'Desconto médio', 'nas ativas') +
         metrica(proximaTxt, 'Próxima a encerrar', proximaSub) +
       '</div>' +
+      avisoFalha +
     '</div>';
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(host); } catch(e){} }
   }
