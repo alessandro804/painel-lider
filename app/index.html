@@ -53476,15 +53476,66 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const delta = (antesReal == null) ? null : (v.estoque - antesReal);
       const motivo = (delta == null) ? 'Ajuste de estoque no painel'
         : (delta > 0 ? 'Entrada avulsa (painel)' : 'Saída avulsa (painel)');
-      fetch(BACKEND_URL + '/api/marketplaces/estoque-ajuste-interno', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
-        body: JSON.stringify({ movimentos: [{
-          sku: v.sku, produtoId: String(p.id), variacaoId: String(v.id), variacaoNome: nome,
-          qtdAntes: antesReal, qtdDepois: v.estoque, origem: 'ajuste', motivo,
-        }] }),
-      }).catch(() => {});   // silencioso: o histórico nunca atrapalha a edição
+      // v33k.1430: GRAVA NO BANCO, não só no histórico.
+      //
+      // `saveProdutos()` escreve apenas o cache do localStorage (o envio à
+      // nuvem está desativado no código). Até aqui, o estoque digitado nesta
+      // tela só chegava ao banco pela VOLTA do marketplace: empurra, a sync
+      // traz de volta e grava. Com anúncio inativo essa volta não existe, e o
+      // número ficava preso no navegador, sumindo em outra máquina.
+      //
+      // Agora o ajuste vai pro estoque padrão, que é a origem do número. De lá
+      // ele reescreve o catálogo e aparece igual em todas as telas.
+      _persistirAjusteDeEstoque({
+        sku: v.sku, produtoId: String(p.id), variacaoId: String(v.id),
+        variacaoNome: nome, antes: antesReal, depois: v.estoque, motivo,
+      });
     }, 1400);   // > 1200ms do push, pra não competir com ele
+  }
+
+  let _localPadraoId = null;
+  async function _idDoEstoquePadrao() {
+    if (_localPadraoId) return _localPadraoId;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/estoque/locais', { headers: hLucroAuth() }).then(x => x.json());
+      if (r && r.ok) {
+        const padrao = (r.locais || []).find(l => l.padrao) || (r.locais || [])[0];
+        if (padrao) _localPadraoId = padrao.id;
+      }
+    } catch (e) { /* sem a camada de estoque, cai no histórico simples */ }
+    return _localPadraoId;
+  }
+
+  async function _persistirAjusteDeEstoque(m) {
+    const localId = await _idDoEstoquePadrao();
+    if (localId) {
+      try {
+        const r = await fetch(BACKEND_URL + '/api/estoque/balanco', {
+          method: 'POST',
+          headers: hLucroAuth({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            localId, sku: m.sku, contado: m.depois, motivo: m.motivo,
+            produtoId: m.produtoId, variacaoId: m.variacaoId,
+          }),
+        }).then(x => x.json());
+        if (r && r.ok) return;
+        // Sem permissão de Estoques (colaborador) ou outra recusa: o ajuste
+        // não pode sumir em silêncio, a pessoa precisa saber que não gravou.
+        if (r && r.semPermissao) {
+          showToast('Seu acesso não permite alterar estoque. O valor não foi gravado.', true);
+          return;
+        }
+      } catch (e) { /* cai no registro simples abaixo */ }
+    }
+    // Sem a camada de estoque disponível, ao menos o histórico é registrado.
+    fetch(BACKEND_URL + '/api/marketplaces/estoque-ajuste-interno', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+      body: JSON.stringify({ movimentos: [{
+        sku: m.sku, produtoId: m.produtoId, variacaoId: m.variacaoId, variacaoNome: m.variacaoNome,
+        qtdAntes: m.antes, qtdDepois: m.depois, origem: 'ajuste', motivo: m.motivo,
+      }] }),
+    }).catch(() => {});
   }
 
   // ── PUSH DE ESTOQUE EM TEMPO REAL (v33k.383) ─────────────────────────
@@ -61131,7 +61182,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1425-rede-layout';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1440-pagamento-zero';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -88639,19 +88690,38 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // é o que permite mostrar, na linha do carrinho, quanto tem e quanto sobra
   // depois da venda, em vez de descobrir o problema só ao finalizar.
   let _pdvSaldoBalcao = {};
+  let _pdvSaldoCarregado = false;
 
   async function pdvCarregarSaldoDoBalcao() {
     _pdvSaldoBalcao = {};
+    _pdvSaldoCarregado = false;
     if (!_pdvEstado || !_pdvEstado.local) return;
     const r = await _pdvApi('/api/estoque/locais/' + _pdvEstado.local.id + '/saldos');
-    if (r.ok) (r.saldos || []).forEach(x => { _pdvSaldoBalcao[String(x.sku).toUpperCase()] = Number(x.quantidade) || 0; });
+    if (!r.ok) return;
+    (r.saldos || []).forEach(x => { _pdvSaldoBalcao[String(x.sku).trim().toUpperCase()] = Number(x.quantidade) || 0; });
+    // SKU que não tem linha neste estoque é ZERO, não "desconhecido": mostrar
+    // nada seria esconder justamente o caso em que falta mercadoria.
+    _pdvSaldoCarregado = true;
+  }
+
+  // O mapa de saldos vem do backend com SKU em CAIXA ALTA (ele normaliza tudo).
+  // O carrinho guardava o SKU como veio do catálogo, muitas vezes minúsculo, e
+  // a busca no mapa falhava calada: o estoque simplesmente não aparecia.
+  const _pdvSkuNorm = (v) => String(v == null ? '' : v).trim().toUpperCase();
+
+  function _pdvSaldoDoBalcao(sku) {
+    if (!_pdvSaldoCarregado) return null;
+    const k = _pdvSkuNorm(sku);
+    if (!k) return null;
+    return _pdvSaldoBalcao[k] != null ? _pdvSaldoBalcao[k] : 0;
   }
 
   // Quanto sobra deste SKU se a venda for concluída como está.
   function _pdvSobraDepois(sku) {
-    const tem = _pdvSaldoBalcao[sku];
+    const tem = _pdvSaldoDoBalcao(sku);
     if (tem == null) return null;
-    const noCarrinho = _pdvCarrinho.filter(i => i.sku === sku).reduce((s2, i) => s2 + i.quantidade, 0);
+    const k = _pdvSkuNorm(sku);
+    const noCarrinho = _pdvCarrinho.filter(i => _pdvSkuNorm(i.sku) === k).reduce((s2, i) => s2 + i.quantidade, 0);
     return { antes: tem, depois: tem - noCarrinho };
   }
 
@@ -88928,15 +88998,24 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       return;
     }
     window._pdvSugestoes = r.itens;
-    alvo.innerHTML = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:12px;max-height:260px;overflow:auto">'
-      + r.itens.slice(0, 20).map((it, i) =>
-        '<div onclick="pdvEscolherSugestao(' + i + ')" style="padding:9px 13px;border-bottom:1px solid #f1f5f9;cursor:pointer;display:flex;gap:10px;align-items:center">'
-        + '<div style="flex:1;min-width:0">'
-        + '<div style="font-size:13.5px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(it.nome || '') + '</div>'
-        + '<div style="font-size:11.5px;color:#64748b">' + escapeHtml([it.variacao, it.sku].filter(Boolean).join(' · '))
-        + (it.estoque != null ? ' · estoque ' + it.estoque : '') + '</div></div>'
-        + '<div style="font-size:14px;font-weight:800;color:#0f766e;flex:none">' + _pdvBRL(it.preco) + '</div>'
-        + '</div>').join('')
+    alvo.innerHTML = _pdvHtmlSugestoes(r.itens);
+  }
+
+  // Uma única forma de desenhar a lista. Existiam duas (uma da busca ao digitar
+  // e outra do Enter), e a lista mudava de cara conforme o caminho usado.
+  function _pdvHtmlSugestoes(itens) {
+    return '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:12px;max-height:280px;overflow:auto">'
+      + (itens || []).slice(0, 20).map((it, i) => {
+        const saldo = _pdvSaldoDoBalcao(it.sku);
+        return '<div onclick="pdvEscolherSugestao(' + i + ')" style="padding:9px 13px;border-bottom:1px solid #f1f5f9;cursor:pointer;display:flex;gap:10px;align-items:center">'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-size:13.5px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(it.nome || '') + '</div>'
+          + '<div style="font-size:11.5px;color:#64748b">' + escapeHtml([it.variacao, it.sku].filter(Boolean).join(' · '))
+          + (saldo != null ? ' · <b style="color:' + (saldo > 0 ? '#15803d' : '#b45309') + '">' + saldo + ' neste estoque</b>' : '')
+          + '</div></div>'
+          + '<div style="font-size:14px;font-weight:800;color:#0f766e;flex:none">' + _pdvBRL(it.preco) + '</div>'
+          + '</div>';
+      }).join('')
       + '</div>';
   }
 
@@ -88962,13 +89041,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       el.select();
       return;
     }
-    document.getElementById('pdvSugestoes').innerHTML =
-      '<div style="border:1px solid #e2e8f0;border-radius:10px;margin-bottom:10px;max-height:190px;overflow:auto">'
-      + r.itens.slice(0, 20).map((it, i) =>
-        '<div onclick="pdvEscolherSugestao(' + i + ')" style="padding:8px 11px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:13px">'
-        + '<b>' + escapeHtml(it.nome || '') + '</b> <span style="color:#64748b">' + escapeHtml([it.variacao, it.sku].filter(Boolean).join(' · ')) + '</span>'
-        + '<span style="float:right;color:#0f172a;font-weight:700">' + _pdvBRL(it.preco) + '</span></div>').join('')
-      + '</div>';
+    document.getElementById('pdvSugestoes').innerHTML = _pdvHtmlSugestoes(r.itens);
     window._pdvSugestoes = r.itens;
   }
 
@@ -89083,7 +89156,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       idempotencia: chave,
       itens: _pdvCarrinho,
       desconto: _pdvDesconto,
-      pagamentos: _pdvPagamentos,
+      // Linhas zeradas não vão: são sobra da divisão de pagamento, e mandar
+      // uma delas fazia o servidor recusar a venda inteira.
+      pagamentos: _pdvPagamentos.filter(p => Number(p.valor) > 0),
     };
     let r = await _pdvApi('/api/pdv-venda/finalizar', { method: 'POST', body: JSON.stringify(corpo) });
 
