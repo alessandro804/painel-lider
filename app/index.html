@@ -21265,6 +21265,21 @@ window.LC_SVG = {
             </div>
           </div>
 
+          <!-- Analista de Ads: liga/desliga por loja + atalho pra pagina dele -->
+          <div class="settings-card" style="margin-top:16px" id="analistaAutomacaoCard">
+            <div class="settings-card-header">
+              <div>
+                <div class="settings-card-title">🧠 Analista de Ads</div>
+                <div class="settings-card-subtitle">O analista revisa as decisões do Motor de Ads com o contexto da loja (tendência, grade furada, suas diretrizes) antes de aplicar. Ligue ou desligue por loja.</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px">
+              <select id="analistaCardLoja" onchange="analistaCardCarregarFlag()" style="padding:9px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:13px;font-family:inherit"><option>Carregando lojas…</option></select>
+              <select id="analistaCardFlag" onchange="analistaCardSalvarFlag()" style="padding:9px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:13px;font-family:inherit"><option value="0">Inativo</option><option value="1">Ativo</option></select>
+              <button class="toolbar-btn" onclick="abrirAnalista(analistaCardLojaId())">Ver mais sobre o analista →</button>
+            </div>
+          </div>
+
           <!-- SEÇÃO 3.6: Gestão de Crons (SUPERADMIN), horários, massa, ocultar, renomear -->
           <!-- SUPERADMIN: Certificado GLOBAL de consulta de cadastro/IE (v33k.1196) -->
           <div class="settings-card" style="margin-top:16px;display:none" id="certGlobalCard" data-superadmin-only>
@@ -32972,6 +32987,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       '<span style="font-size:13px;color:#64748b">Analisando:</span>' +
       '<strong style="font-size:15px;color:#1e293b">' + escapeHtml(nomeLoja) + '</strong>' + _multi +
       '<span style="font-size:12px;color:#94a3b8">· janela de ' + dias + ' dias (morte em 30d)</span>' +
+      '<button onclick="adsAnalistaPdf(' + lojaId + ',' + dias + ')" style="margin-left:auto;padding:7px 14px;border:1px solid #d1d5db;border-radius:9px;background:#fff;color:#334155;font-weight:700;font-size:12.5px;cursor:pointer;font-family:inherit">⬇ Baixar PDF</button>' +
     '</div>';
 
     cont.innerHTML = seletor + '<div style="padding:40px;text-align:center;color:#9ca3af">Analisando a loja…</div>';
@@ -33070,11 +33086,92 @@ Retorne JSON: {"ID": "valor", ...}`;
 
     // ── painel do Motor inteligente (chave + comparativo) ──
     html += '<div id="adsMotorPainel" style="margin-top:22px"></div>';
+    html += '<div id="adsDiretrizes" style="margin-top:18px"></div>';
 
     cont.innerHTML = html;
     try { renderAdsMotorPainel(lojaId); } catch (e) {}
+    try { renderAdsDiretrizes(lojaId, nomeLoja); } catch (e) {}
   }
   window.renderAdsAnalista = renderAdsAnalista;
+
+  async function adsAnalistaPdf(lojaId, dias) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + lojaId + '/analista-pdf?dias=' + (dias || 7), { headers: { 'x-api-token': getApiToken() } });
+      if (!r.ok) { alert('Não consegui gerar o PDF agora.'); return; }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+    } catch (e) { alert('Erro ao gerar o PDF: ' + e.message); }
+  }
+  window.adsAnalistaPdf = adsAnalistaPdf;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DIRETRIZES: comando manual do usuário (geral + por loja) que o motor respeita
+  // ═══════════════════════════════════════════════════════════════════════
+  async function renderAdsDiretrizes(lojaId, nomeLoja) {
+    const host = document.getElementById('adsDiretrizes');
+    if (!host) return;
+    let r;
+    try {
+      r = await fetch(BACKEND_URL + '/api/ads/diretrizes', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+    } catch (e) { host.innerHTML = ''; return; }
+    if (!r || !r.ok) { host.innerHTML = ''; return; }
+
+    const daLoja = (r.porLoja || []).filter(d => String(d.loja_id_banco) === String(lojaId));
+    const item = (d, tag) => {
+      const rec = d.intent ? '<span style="color:#16a34a">✓ entendido</span>' : '<span style="color:#d97706">guardado como observação</span>';
+      return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid #f1f5f9">' +
+        '<div style="font-size:12.5px;color:#334155"><span style="font-size:10px;font-weight:700;color:#64748b;background:#f1f5f9;padding:1px 6px;border-radius:6px">' + tag + '</span> ' + escapeHtml(d.texto) + '<div style="font-size:11px;margin-top:2px">' + rec + '</div></div>' +
+        '<button onclick="adsDiretrizRemove(' + d.id + ',' + lojaId + ')" style="border:none;background:none;color:#dc2626;cursor:pointer;font-size:14px;font-weight:700">✕</button>' +
+      '</div>';
+    };
+    let lista = '';
+    (r.gerais || []).forEach(d => lista += item(d, 'GERAL'));
+    daLoja.forEach(d => lista += item(d, 'ESTA LOJA'));
+    if (!lista) lista = '<div style="font-size:12px;color:#94a3b8;padding:6px 0">Nenhuma diretriz ainda. Escreva um comando abaixo (ex.: "pode manter os Ads mesmo gastando sem vender").</div>';
+
+    host.innerHTML =
+      '<div style="border:1px solid #e5e7eb;border-radius:16px;padding:18px;background:#fff">' +
+        '<div style="font-size:14px;font-weight:800;color:#1e293b">🗣️ Diretrizes pro analista</div>' +
+        '<div style="font-size:12px;color:#64748b;margin-top:3px;margin-bottom:10px">Um comando seu que o analista passa a respeitar e leva pro aprendizado. Por loja predomina sobre a geral.</div>' +
+        lista +
+        '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+          '<input id="adsDiretrizInput" type="text" placeholder="Ex.: pode manter os Ads mesmo gastando sem vender" style="flex:1;min-width:220px;padding:9px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:13px;font-family:inherit" />' +
+          '<select id="adsDiretrizEscopo" style="padding:9px 10px;border:1px solid #d1d5db;border-radius:9px;font-size:13px;font-family:inherit"><option value="loja">Só ' + escapeHtml(nomeLoja || 'esta loja') + '</option><option value="geral">Todas as lojas</option></select>' +
+          '<button onclick="adsDiretrizAdd(' + lojaId + ')" style="padding:9px 16px;border:none;border-radius:9px;background:#2563eb;color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">Salvar</button>' +
+        '</div>' +
+      '</div>';
+  }
+  window.renderAdsDiretrizes = renderAdsDiretrizes;
+
+  async function adsDiretrizAdd(lojaId) {
+    const inp = document.getElementById('adsDiretrizInput');
+    const esc = document.getElementById('adsDiretrizEscopo');
+    const texto = inp && inp.value.trim();
+    if (!texto) return;
+    const escopo = esc ? esc.value : 'loja';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/diretrizes', {
+        method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texto, lojaId: escopo === 'geral' ? null : lojaId }),
+      }).then(x => x.json());
+      if (!r || !r.ok) throw new Error((r && r.erro) || 'falha');
+      if (!r.reconhecida) {
+        alert('Diretriz guardada. Ainda não sei aplicar esse comando automaticamente, então por ora ele fica como observação pro analista. Comandos como "manter Ads mesmo sem vender" eu já aplico.');
+      }
+    } catch (e) { alert('Não consegui salvar: ' + e.message); }
+    renderAdsDiretrizes(lojaId);
+  }
+  window.adsDiretrizAdd = adsDiretrizAdd;
+
+  async function adsDiretrizRemove(id, lojaId) {
+    try {
+      await fetch(BACKEND_URL + '/api/ads/diretrizes/' + id, { method: 'DELETE', headers: { 'x-api-token': getApiToken() } });
+    } catch (e) {}
+    renderAdsDiretrizes(lojaId);
+  }
+  window.adsDiretrizRemove = adsDiretrizRemove;
 
   // ═══════════════════════════════════════════════════════════════════════
   // MOTOR INTELIGENTE: chave por loja + comparativo (motor-hoje vs c/ analista)
@@ -33190,10 +33287,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     html += '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px">' +
       '<div style="flex:1;min-width:160px;border:1px solid #e5e7eb;border-radius:14px;padding:16px;text-align:center;background:linear-gradient(135deg,#fff,#f8fafc)">' +
         '<div style="font-size:34px;font-weight:800;color:' + corTaxa(resumo.taxaGeral) + ';line-height:1">' + (resumo.taxaGeral == null ? '—' : resumo.taxaGeral + '%') + '</div>' +
-        '<div style="font-size:12px;color:#94a3b8;margin-top:4px">taxa de acerto geral</div>' +
+        '<div style="font-size:12px;color:#94a3b8;margin-top:4px">taxa de sucesso</div>' +
       '</div>' +
-      '<div style="flex:1;min-width:120px;border:1px solid #e5e7eb;border-radius:14px;padding:16px;text-align:center"><div style="font-size:26px;font-weight:800;color:#16a34a">' + resumo.acertos + '</div><div style="font-size:12px;color:#94a3b8">acertos</div></div>' +
-      '<div style="flex:1;min-width:120px;border:1px solid #e5e7eb;border-radius:14px;padding:16px;text-align:center"><div style="font-size:26px;font-weight:800;color:#dc2626">' + resumo.erros + '</div><div style="font-size:12px;color:#94a3b8">erros</div></div>' +
+      '<div style="flex:1;min-width:120px;border:1px solid #e5e7eb;border-radius:14px;padding:16px;text-align:center"><div style="font-size:26px;font-weight:800;color:#16a34a">' + resumo.acertos + '</div><div style="font-size:12px;color:#94a3b8">funcionaram</div></div>' +
+      '<div style="flex:1;min-width:120px;border:1px solid #e5e7eb;border-radius:14px;padding:16px;text-align:center"><div style="font-size:26px;font-weight:800;color:#d97706">' + resumo.erros + '</div><div style="font-size:12px;color:#94a3b8">não ajudaram</div></div>' +
       '<div style="flex:1;min-width:120px;border:1px solid #e5e7eb;border-radius:14px;padding:16px;text-align:center"><div style="font-size:26px;font-weight:800;color:#94a3b8">' + (r.pendentes || 0) + '</div><div style="font-size:12px;color:#94a3b8">aguardando 7 dias</div></div>' +
     '</div>';
 
@@ -33220,8 +33317,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     // evidência: eventos recentes
     if ((r.eventos || []).length) {
       const badge = (res) => {
-        const c = res === 'acerto' ? '#16a34a' : (res === 'erro' ? '#dc2626' : '#94a3b8');
-        const txt = res === 'acerto' ? 'acerto' : (res === 'erro' ? 'erro' : 'neutro');
+        const c = res === 'acerto' ? '#16a34a' : (res === 'erro' ? '#d97706' : '#94a3b8');
+        const txt = res === 'acerto' ? 'funcionou' : (res === 'erro' ? 'não ajudou' : 'neutro');
         return '<span style="font-size:11px;font-weight:700;color:' + c + ';background:' + c + '18;padding:2px 8px;border-radius:999px">' + txt + '</span>';
       };
       html += '<div style="font-size:13px;font-weight:800;color:#1e293b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px">Evidência (mudanças recentes já avaliadas)</div>';
@@ -60759,7 +60856,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1222-aprendizado';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1228-pdf-cliente-positivo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -66295,7 +66392,8 @@ REGRAS DE OURO:
           method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
           body: JSON.stringify({ numero: telefone, texto: textoWa, perfil: 'financeiro' }),
         });
-        const pdf = _gerarPdfFechamento(f, { retornarBase64: true });
+        const _an = await _analistaBlocoConsolidado();
+        const pdf = _gerarPdfFechamento(f, { retornarBase64: true, analista: _an });
         if (pdf && pdf.dataUri) {
           const up = await fetch(BACKEND_URL + '/api/upload-foto/pdf', {
             method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
@@ -66382,7 +66480,8 @@ REGRAS DE OURO:
           });
           // 2) Anexa o PDF: faz upload pro Storage (URL pública) e envia por URL
           //    (a Evolution lida melhor com URL do que com base64 grande).
-          const pdf = _gerarPdfFechamento(f, { retornarBase64: true });
+          const _an = await _analistaBlocoConsolidado();
+          const pdf = _gerarPdfFechamento(f, { retornarBase64: true, analista: _an });
           if (pdf && pdf.dataUri) {
             try {
               const up = await fetch(BACKEND_URL + '/api/upload-foto/pdf', {
@@ -66490,15 +66589,32 @@ REGRAS DE OURO:
   }
   window.cancelarFechamento = cancelarFechamento;
 
-  function gerarPdfFechamento() {
+  // Busca o resumo consolidado do analista para as lojas do usuário (ou as selecionadas).
+  async function _analistaBlocoConsolidado(lojasArg) {
+    try {
+      let lojas = (Array.isArray(lojasArg) && lojasArg.length) ? lojasArg.slice() : ((typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || []);
+      if (!lojas.length) {
+        const r = await fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') } }).then(x => x.json());
+        const ls = (r && (r.lojas || r.minhasLojas)) || (Array.isArray(r) ? r : []);
+        lojas = ls.map(l => l.id);
+      }
+      if (!lojas.length) return null;
+      const c = await fetch(BACKEND_URL + '/api/ads/analista-consolidado', { method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ lojas, dias: 7 }) }).then(x => x.json());
+      return (c && c.ok) ? c : null;
+    } catch (e) { return null; }
+  }
+  window._analistaBlocoConsolidado = _analistaBlocoConsolidado;
+
+  async function gerarPdfFechamento() {
     const f = _coletarFechamento();
     if (!f.cliente) { showToast('Selecione um cliente primeiro', true); return; }
-    _gerarPdfFechamento(f);
+    const analista = await _analistaBlocoConsolidado();
+    _gerarPdfFechamento(f, { analista: analista });
   }
   window.gerarPdfFechamento = gerarPdfFechamento;
-  function gerarPdfFechamentoSalvo(id) {
+  async function gerarPdfFechamentoSalvo(id) {
     const f = fechamentos.find(x => x.id === id);
-    if (f) _gerarPdfFechamento(f);
+    if (f) { const analista = await _analistaBlocoConsolidado(); _gerarPdfFechamento(f, { analista: analista }); }
   }
   window.gerarPdfFechamentoSalvo = gerarPdfFechamentoSalvo;
 
@@ -66654,6 +66770,44 @@ REGRAS DE OURO:
       doc.setTextColor(...CINZA); doc.setFont('helvetica','normal'); doc.setFontSize(9);
       doc.text('OBS: As vendas canceladas ou devolvidas referem-se ao mês anterior. As ocorridas no mês', 24, H-16);
       doc.text('atual serão contabilizadas apenas no próximo fechamento.', 24, H-11);
+
+      // ---------- SLIDE: ANÁLISE DE ADS (resumo consolidado do analista) ----------
+      if (opts && opts.analista && opts.analista.ok) {
+        const A = opts.analista, sc = A.score || {}, t = A.totais || {}, dd = A.destaques || {};
+        doc.addPage();
+        doc.setFillColor(255, 255, 255); doc.rect(0, 0, W, H, 'F');
+        doc.setFillColor(...VERDE); doc.rect(0, 0, W, 22, 'F');
+        doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(22);
+        doc.text('ANÁLISE DE ADS', 18, 15);
+        let ay = 42;
+        doc.setTextColor(...ESCURO); doc.setFont('helvetica', 'bold'); doc.setFontSize(40);
+        doc.text(String(sc.geral == null ? '—' : sc.geral), 24, ay);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(13); doc.setTextColor(...CINZA);
+        doc.text('/ 100   ' + (sc.banda ? '(' + sc.banda + ')' : ''), 62, ay);
+        doc.setFontSize(10); doc.setTextColor(...ESCURO);
+        doc.text([['Tráfego', sc.trafego], ['Conversão', sc.conversao], ['Produtos', sc.produtos], ['Estratégia', sc.estrategia]].map(function (c) { return c[0] + ': ' + (c[1] == null ? '—' : c[1]); }).join('     '), 24, ay + 10);
+        var _money = function (v) { return 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+        doc.setTextColor(...CINZA); doc.setFontSize(10);
+        doc.text('Receita: ' + _money(t.receita) + '     Gasto Ads: ' + _money(t.gasto) + '     ACOS: ' + (t.acos == null ? '—' : t.acos + '%') + '     ROAS: ' + (t.roas == null ? '—' : t.roas), 24, ay + 18);
+        ay += 30;
+        var _bloco = function (titulo, arr, cor) {
+          if (!arr || !arr.length) return;
+          if (ay > H - 24) return;
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...cor);
+          doc.text(titulo, 24, ay); ay += 6;
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...ESCURO);
+          arr.forEach(function (txt) {
+            doc.splitTextToSize('•  ' + String(txt), W - 48).forEach(function (l) { if (ay > H - 14) return; doc.text(l, 26, ay); ay += 5.2; });
+            ay += 1.5;
+          });
+          ay += 4;
+        };
+        _bloco('O que melhorou', dd.crescimentos, VERDE);
+        _bloco('Oportunidades', dd.oportunidades, ESCURO);
+        // Documento do cliente: só o que é positivo. Pontos de atenção ficam na análise interna.
+        doc.setTextColor(...CINZA); doc.setFont('helvetica', 'italic'); doc.setFontSize(8);
+        doc.text('Resumo consolidado das lojas: ' + (A.lojas || []).join(', '), 24, H - 8);
+      }
 
       // ---------- SLIDE 4: AGRADECIMENTO ----------
       doc.addPage();
@@ -69892,7 +70046,8 @@ ${JSON.stringify(metricas, null, 2)}`
     } catch (e) { showToast('Erro: ' + e.message, true); return; }
 
     try {
-      _montarPDFRobusto(data);
+      const analista = await _analistaBlocoConsolidado(lojaIds);
+      _montarPDFRobusto(data, { analista: analista });
       showToast('Relatório robusto gerado');
     } catch (e) {
       showToast('Erro ao gerar PDF: ' + e.message, true);
@@ -69900,7 +70055,7 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.lucroGerarPDFRobusto = lucroGerarPDFRobusto;
 
-  function _montarPDFRobusto(data) {
+  function _montarPDFRobusto(data, opts) {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const W = 210, H = 297, MX = 18;
@@ -70237,6 +70392,43 @@ ${JSON.stringify(metricas, null, 2)}`
       desenharTabela('TOTAL CONSOLIDADO', total, true);
     } else {
       desenharTabela((blocos[0] && blocos[0].nome) || 'Resultado', total, true);
+    }
+
+    // Página do analista (resumo consolidado) — só quando há dados
+    if (opts && opts.analista && opts.analista.ok) {
+      const A = opts.analista, sc = A.score || {}, t = A.totais || {}, dd = A.destaques || {};
+      doc.addPage();
+      doc.setFillColor(255, 255, 255); doc.rect(0, 0, W, H, 'F');
+      doc.setFillColor(...VERDE); doc.rect(0, 0, W, 20, 'F');
+      doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+      doc.text('ANÁLISE DE ADS', MX, 13);
+      let ly = 34;
+      doc.setTextColor(...ESCURO); doc.setFont('helvetica', 'bold'); doc.setFontSize(32);
+      doc.text(String(sc.geral == null ? '—' : sc.geral), MX, ly);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(...CINZA);
+      doc.text('/ 100   ' + (sc.banda ? '(' + sc.banda + ')' : ''), MX + 30, ly);
+      doc.setFontSize(9.5); doc.setTextColor(...ESCURO);
+      doc.text([['Tráfego', sc.trafego], ['Conversão', sc.conversao], ['Produtos', sc.produtos], ['Estratégia', sc.estrategia]].map(function (c) { return c[0] + ': ' + (c[1] == null ? '—' : c[1]); }).join('    '), MX, ly + 9);
+      var _m = function (v) { return 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+      doc.setTextColor(...CINZA);
+      doc.text('Receita: ' + _m(t.receita) + '   Gasto Ads: ' + _m(t.gasto) + '   ACOS: ' + (t.acos == null ? '—' : t.acos + '%') + '   ROAS: ' + (t.roas == null ? '—' : t.roas), MX, ly + 16);
+      ly += 28;
+      var _blc = function (titulo, arr, cor) {
+        if (!arr || !arr.length || ly > H - 24) return;
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...cor);
+        doc.text(titulo, MX, ly); ly += 6;
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(...ESCURO);
+        arr.forEach(function (txt) {
+          doc.splitTextToSize('•  ' + String(txt), W - MX * 2).forEach(function (l) { if (ly > H - 16) return; doc.text(l, MX + 2, ly); ly += 5; });
+          ly += 1.2;
+        });
+        ly += 4;
+      };
+      _blc('O que melhorou', dd.crescimentos, VERDE);
+      _blc('Oportunidades', dd.oportunidades, ESCURO);
+      // Documento do cliente: só o que é positivo. Pontos de atenção ficam na análise interna.
+      doc.setTextColor(...CINZA); doc.setFont('helvetica', 'italic'); doc.setFontSize(8);
+      doc.text('Resumo consolidado: ' + (A.lojas || []).join(', '), MX, H - 10);
     }
 
     const nomeArq = 'relatorio-robusto-' + periodoLabel.replace(/[^\dA-Za-z]+/g, '-') + '.pdf';
@@ -74889,11 +75081,58 @@ ${JSON.stringify(metricas, null, 2)}`
         }
       }
       renderAutomacoes();
+      try { renderAnalistaCard(); } catch (e) {}
     } catch (e) {
       lista.innerHTML = '<div class="empty-state-v2"><div class="empty-icon-v2">⚠️</div><div class="empty-title-v2">Não foi possível carregar</div><div class="empty-sub-v2">' + escapeHtml(e.message) + '</div></div>';
     }
   }
   window.carregarAutomacoes = carregarAutomacoes;
+
+  // ── Analista de Ads no card de automação: liga/desliga por loja + atalho ──
+  async function renderAnalistaCard() {
+    const sel = document.getElementById('analistaCardLoja');
+    if (!sel) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') } }).then(x => x.json());
+      const lojas = (r && (r.lojas || r.minhasLojas)) || (Array.isArray(r) ? r : []);
+      if (!lojas.length) { sel.innerHTML = '<option>Sem lojas</option>'; return; }
+      sel.innerHTML = lojas.map(l => '<option value="' + l.id + '">' + escapeHtml(String(l.nome || l.id) + (l.marketplace ? ' · ' + l.marketplace : '')) + '</option>').join('');
+      analistaCardCarregarFlag();
+    } catch (e) { sel.innerHTML = '<option>Erro ao carregar</option>'; }
+  }
+  window.renderAnalistaCard = renderAnalistaCard;
+
+  function analistaCardLojaId() { const s = document.getElementById('analistaCardLoja'); return s ? parseInt(s.value, 10) : null; }
+  window.analistaCardLojaId = analistaCardLojaId;
+
+  async function analistaCardCarregarFlag() {
+    const id = analistaCardLojaId(); if (!id) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + id + '/motor-analista-flag', { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+      const f = document.getElementById('analistaCardFlag');
+      if (f && r && r.ok) f.value = r.ligado ? '1' : '0';
+    } catch (e) {}
+  }
+  window.analistaCardCarregarFlag = analistaCardCarregarFlag;
+
+  async function analistaCardSalvarFlag() {
+    const id = analistaCardLojaId(); if (!id) return;
+    const f = document.getElementById('analistaCardFlag');
+    const ligado = !!(f && f.value === '1');
+    try {
+      await fetch(BACKEND_URL + '/api/ads/loja/' + id + '/motor-analista-flag', { method: 'POST', headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ligado }) });
+      if (typeof showToast === 'function') showToast(ligado ? '✓ Analista ativado nesta loja' : 'Analista desativado nesta loja');
+    } catch (e) { if (typeof showToast === 'function') showToast('Não consegui salvar', false); }
+  }
+  window.analistaCardSalvarFlag = analistaCardSalvarFlag;
+
+  function abrirAnalista(lojaId) {
+    try {
+      if (typeof goTo === 'function') goTo('adsScreen');
+      if (typeof adsTrocarSubaba === 'function') adsTrocarSubaba('analista');
+    } catch (e) {}
+  }
+  window.abrirAnalista = abrirAnalista;
 
   // ── GESTÃO DE CRONS (SUPERADMIN) ────────────────────────────────────
   let _cronsAdminCache = [];
