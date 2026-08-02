@@ -54685,6 +54685,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   let _tkPromoAtiv = [];            // atividades da loja
   let _tkPromoProdCache = {};       // { lojaId: [produtos ativos crus] }
   let _tkPromoSel = {};             // seleção de produtos { productId: true } no add
+  let _tkPrecoRealMap = {};         // v33k.1217: { productId: precoVendaAtual } vindo do marketplace (botão Sincronizar)
+  let _tkPromoDetAtivId = null;     // id da atividade aberta no momento (pra re-render após sync)
+  let _tkPromoDetTipo = null;       // tipo conhecido da atividade aberta (pra re-render)
+  let _tkSincronizando = false;     // trava do botão Sincronizar preços
 
   const _TK_TIPOS = {
     DIRECT_DISCOUNT: { rot: 'Desconto direto', dica: '% de desconto sobre o preço', campo: 'pct' },
@@ -54910,8 +54914,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             // v33k.1212: preço "de" (referência) = menor preço das variações do
             // produto — mostra o preço atual ao lado do campo de promoção (padrão Shopee).
             const precos = (p.variacoes || []).map(x => Number(x.preco)).filter(n => n > 0);
-            const preco = precos.length ? Math.min.apply(null, precos) : null;
-            return { nome: p.nome || ('Produto ' + pid), foto, skuPai: p.skuPai || '', preco };
+            let preco = precos.length ? Math.min.apply(null, precos) : null;
+            // v33k.1217: se o usuário sincronizou (botão), o preço REAL do marketplace
+            // tem prioridade sobre o local (que pode estar defasado). É isto que faz o
+            // "Venda" mostrar o valor certo e a checagem "promo ≥ venda" não pular à toa.
+            if (_tkPrecoRealMap[pid] != null) preco = Number(_tkPrecoRealMap[pid]);
+            return { nome: p.nome || ('Produto ' + pid), foto, skuPai: p.skuPai || '', preco, precoLocalDefasado: (_tkPrecoRealMap[pid] != null && precos.length && Number(_tkPrecoRealMap[pid]) !== (precos.length ? Math.min.apply(null, precos) : null)) };
           }
         }
       }
@@ -54923,6 +54931,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function tkPromoDetalhe(activityId, tipoConhecido) {
     _tkPromoView = 'detalhe';
     _tkPromoSel = {};
+    _tkPromoDetAtivId = activityId;               // v33k.1217: pra re-render após sincronizar
+    _tkPromoDetTipo = tipoConhecido || null;
     _tkLoading('Carregando produtos da promoção…');
     const r = await _tkApi('GET', '/loja/' + _tkPromoLoja + '/promocao/' + activityId);
     if (!r.ok || !r.atividade) { _tkBody().innerHTML = _tkErroBox('Não consegui abrir a promoção: ' + (r.erro || 'erro.')); return; }
@@ -54936,12 +54946,23 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const estado = _tkEstado(a);
     const prods = raw.products || a.produtos || [];
     const info = _TK_TIPOS[tipo] || {};
+    // v33k.1217: quantos produtos já têm preço real sincronizado (feedback do botão)
+    const _pidsPromo = prods.map(p => String(p.id || p.product_id || '')).filter(Boolean);
+    const _qtdSync = _pidsPromo.filter(pid => _tkPrecoRealMap[pid] != null).length;
+    const btnSync = estado === 'encerrada' ? '' :
+      '<button id="tkPromoSyncBtn" class="lc-btn lc-btn--secondary lc-btn--sm" onclick="tkPromoSincronizarPrecos()" title="Puxa o preço de venda atual direto do TikTok pra garantir que o \'Venda\' está correto antes de editar a promoção" style="margin:0 0 12px 8px">' +
+        '<span class="lc-ic" id="tkPromoSyncIc" data-size="sm" data-lucide="refresh-cw"></span> Sincronizar preços' +
+      '</button>';
+    const seloSync = _qtdSync > 0
+      ? '<div style="font-size:11px;color:#15803d;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:7px;padding:4px 9px;margin-bottom:12px;display:inline-block">✓ Preços de venda sincronizados do TikTok (' + _qtdSync + '/' + _pidsPromo.length + ')</div>'
+      : '';
     let html =
       '<div style="padding:14px 18px">' +
-        '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="tkPromoCarregar()" style="margin-bottom:12px"><span class="lc-ic" data-size="sm" data-lucide="arrow-left"></span> Voltar à lista</button>' +
+        '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="tkPromoCarregar()" style="margin-bottom:12px"><span class="lc-ic" data-size="sm" data-lucide="arrow-left"></span> Voltar à lista</button>' + btnSync +
         '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:4px">' + _tkBadge(estado) +
           '<span style="font-size:15px;font-weight:800;color:#1e293b">' + escapeHtml(a.titulo || 'Promoção') + '</span></div>' +
-        '<div style="font-size:11.5px;color:#64748b;margin-bottom:14px">' + escapeHtml(info.rot || tipo) + ' · ' + _tkEpLabel(a.inicio) + ' → ' + _tkEpLabel(a.fim) + '</div>';
+        '<div style="font-size:11.5px;color:#64748b;margin-bottom:14px">' + escapeHtml(info.rot || tipo) + ' · ' + _tkEpLabel(a.inicio) + ' → ' + _tkEpLabel(a.fim) + '</div>' +
+        seloSync;
 
     // produtos atuais — v33k.1205: agora com EDIÇÃO DE PREÇO em massa (como na
     // Shopee). Cada linha tem checkbox + input de preço; a barra de cima aplica um
@@ -55063,6 +55084,44 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (estado !== 'encerrada') _tkCarregarProdutosLoja();
   }
   window.tkPromoDetalhe = tkPromoDetalhe;
+
+  // v33k.1217: SINCRONIZAR PREÇOS — puxa o preço de venda ATUAL do TikTok (em
+  // lote) pros produtos da promoção aberta, guarda em _tkPrecoRealMap e re-renderiza.
+  // Assim o "Venda" mostra o valor real (não o local defasado) e a checagem
+  // "promo ≥ venda" para de pular produtos por engano.
+  async function tkPromoSincronizarPrecos() {
+    if (_tkSincronizando || !_tkPromoDetAtivId || !_tkPromoLoja) return;
+    // coleta os productIds da promoção que está na tela
+    const pids = Array.from(document.querySelectorAll('[data-tkrow]'))
+      .map(row => { const inp = row.querySelector('[data-tkpid]'); return inp ? String(inp.getAttribute('data-tkpid')) : null; })
+      .filter(Boolean);
+    if (!pids.length) { alert('Nenhum produto pra sincronizar nesta promoção.'); return; }
+    _tkSincronizando = true;
+    const ic = document.getElementById('tkPromoSyncIc');
+    const btn = document.getElementById('tkPromoSyncBtn');
+    if (ic) ic.classList.add('motor-rel-spin');
+    if (btn) { btn.disabled = true; btn.style.opacity = '.7'; }
+    try {
+      const r = await _tkApi('POST', '/loja/' + _tkPromoLoja + '/precos-atuais', { productIds: pids });
+      if (!r || !r.ok) { alert('Não consegui sincronizar os preços: ' + ((r && r.erro) || 'erro.')); return; }
+      const precos = r.precos || {};
+      let n = 0;
+      Object.keys(precos).forEach(pid => { _tkPrecoRealMap[String(pid)] = Number(precos[pid]); n++; });
+      // re-renderiza a promoção com os preços reais aplicados
+      await tkPromoDetalhe(_tkPromoDetAtivId, _tkPromoDetTipo);
+      if (n < pids.length) {
+        // aviso leve: alguns não voltaram (produto sem preço/estoque ou erro pontual)
+        console.warn('[tkPromoSync] ' + n + '/' + pids.length + ' preços sincronizados');
+      }
+    } catch (e) {
+      alert('Falha ao sincronizar: ' + (e && e.message ? e.message : e));
+    } finally {
+      _tkSincronizando = false;
+      const ic2 = document.getElementById('tkPromoSyncIc');
+      if (ic2) ic2.classList.remove('motor-rel-spin');
+    }
+  }
+  window.tkPromoSincronizarPrecos = tkPromoSincronizarPrecos;
 
   // atualiza o contador "N marcada(s)" (padrão Shopee).
   function tkPromoAtualizarSel() {
