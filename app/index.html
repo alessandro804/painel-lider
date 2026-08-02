@@ -30768,6 +30768,25 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window._ajSalvarEstoque = _ajSalvarEstoque;
 
+  // Criar estoque sem sair dos Ajustes: quem está vinculando a loja é
+  // justamente quem descobre, naquele momento, que precisa de um estoque novo.
+  async function _ajNovoEstoque() {
+    const nome = await lcPrompt('Nome do estoque novo (ex: Loja Centro, Depósito 2):', '');
+    if (!nome) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/pdv/estoques', {
+        method: 'POST',
+        headers: hLucroAuth({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ nome }),
+      }).then(x => x.json());
+      if (!r.ok) { showToast(r.erro || 'Não consegui criar', true); return; }
+      showToast('Estoque "' + r.local.nome + '" criado com ' + (r.skusListados || 0) + ' produtos zerados');
+      await _lcCarregarVinculosEstoque();
+      _renderAjustesLoja();
+    } catch (e) { showToast('Falha ao criar: ' + e.message, true); }
+  }
+  window._ajNovoEstoque = _ajNovoEstoque;
+
   function fecharAjustesLoja() {
     document.getElementById('ajustesLojaOverlay').style.display = 'none';
     _ajLoja = null;
@@ -30812,6 +30831,7 @@ Retorne JSON: {"ID": "valor", ...}`;
             '</select>' +
             '<button onclick="_ajSalvarEstoque()" style="padding:10px 16px;border:none;background:#0f766e;color:#fff;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">Salvar</button>' +
           '</div>' +
+          '<div style="margin-top:9px"><a href="javascript:void(0)" onclick="_ajNovoEstoque()" style="font-size:12.5px;color:#0f766e;font-weight:600">Criar um estoque novo</a></div>' +
           (atual ? '' : '<div style="font-size:11.5px;color:#94a3b8;margin-top:7px">Hoje esta loja usa o estoque padrão da conta.</div>')
         );
       }
@@ -61111,7 +61131,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1400-ajustes-no-balcao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1425-rede-layout';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -88244,6 +88264,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       if (!_pdvCaixaSel && (r.caixas || []).length) _pdvCaixaSel = r.caixas[0].id;
       box.innerHTML = html + '<div id="pdvBalcaoBox"></div>';
       await pdvCarregarSessao();
+      await pdvCarregarSaldoDoBalcao();
       pdvRenderBalcao();
       return;
     }
@@ -88340,6 +88361,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + '</div>';
 
     // ── caixas ──
+    // Manutenção: regravar vendas antigas nos relatórios. Ficava só no cartão
+    // da "última venda", que some ao recarregar a página, então na prática
+    // ninguém achava o botão quando precisava dele.
+    html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
+      + '<h3 style="margin:0 0 4px;font-size:15px;color:#0f172a">Manutenção</h3>'
+      + '<div style="font-size:12.5px;color:#64748b;margin-bottom:10px">Regrava as últimas vendas nos relatórios (Home, Lucro e Pedidos), incluindo a foto do produto. Serve para vendas feitas antes de uma atualização. Rodar de novo não duplica nada.</div>'
+      + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvReespelhar()">Regravar vendas nos relatórios</button>'
+      + '</div>';
     html += '<div id="pdvPixBox"></div>';
     html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px">'
       + '<h3 style="margin:0 0 4px;font-size:15px;color:#0f172a">Caixas</h3>'
@@ -88606,6 +88635,25 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   let _pdvCaixaSel = null;
   let _pdvUltimaVenda = null;
   let _pdvFinalizando = false;
+  // Saldo do estoque DESTA loja, por SKU. Carregado uma vez ao abrir o balcão:
+  // é o que permite mostrar, na linha do carrinho, quanto tem e quanto sobra
+  // depois da venda, em vez de descobrir o problema só ao finalizar.
+  let _pdvSaldoBalcao = {};
+
+  async function pdvCarregarSaldoDoBalcao() {
+    _pdvSaldoBalcao = {};
+    if (!_pdvEstado || !_pdvEstado.local) return;
+    const r = await _pdvApi('/api/estoque/locais/' + _pdvEstado.local.id + '/saldos');
+    if (r.ok) (r.saldos || []).forEach(x => { _pdvSaldoBalcao[String(x.sku).toUpperCase()] = Number(x.quantidade) || 0; });
+  }
+
+  // Quanto sobra deste SKU se a venda for concluída como está.
+  function _pdvSobraDepois(sku) {
+    const tem = _pdvSaldoBalcao[sku];
+    if (tem == null) return null;
+    const noCarrinho = _pdvCarrinho.filter(i => i.sku === sku).reduce((s2, i) => s2 + i.quantidade, 0);
+    return { antes: tem, depois: tem - noCarrinho };
+  }
 
   function _pdvBRL(v) { return 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ','); }
 
@@ -88746,7 +88794,18 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         + '<div style="font-size:12px;color:#94a3b8;font-weight:700">' + (i + 1) + '</div>'
         + '<div style="min-width:0">'
         + '<div style="font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(it.nome || it.sku) + '</div>'
-        + '<div style="font-size:11.5px;color:#64748b">' + escapeHtml([it.variacao, it.sku].filter(Boolean).join(' · ')) + '</div></div>'
+        + '<div style="font-size:11.5px;color:#64748b">' + escapeHtml([it.variacao, it.sku].filter(Boolean).join(' · ')) + '</div>'
+        + (function () {
+          const e = _pdvSobraDepois(it.sku);
+          if (!e) return '';
+          const falta = e.depois < 0;
+          const cor = falta ? '#b91c1c' : (e.depois === 0 ? '#b45309' : '#64748b');
+          return '<div style="font-size:11.5px;color:' + cor + ';margin-top:2px;font-weight:' + (falta ? '700' : '500') + '">'
+            + (falta ? '<span class="lc-ic" data-size="sm" data-lucide="triangle-alert" style="vertical-align:-2px"></span> ' : '')
+            + 'estoque ' + e.antes + ' &#8594; ' + e.depois + (falta ? ' (faltam ' + Math.abs(e.depois) + ')' : '')
+            + '</div>';
+        })()
+        + '</div>'
         + '<div style="display:flex;align-items:center;justify-content:center;gap:6px">'
         + '<button class="pdv-step" onclick="pdvQtd(' + i + ',' + (it.quantidade - 1) + ')">&minus;</button>'
         + '<input type="number" min="1" value="' + it.quantidade + '" onchange="pdvQtd(' + i + ',this.value)" style="width:44px;padding:5px;border:1px solid #cbd5e1;border-radius:7px;font-size:13.5px;text-align:center;font-weight:700">'
@@ -88974,15 +89033,30 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const restante = Math.round((t.total - t.pago) * 100) / 100;
     // Nada a cobrar: clicar em outra forma criaria uma linha de R$ 0,00 que só
     // polui a tela e ainda precisa ser removida na mão.
-    if (restante <= 0) {
-      showToast(t.total > 0 ? 'A venda já está paga. Ajuste um valor ou remova uma forma.' : 'Adicione itens antes de escolher o pagamento.', true);
+    if (t.total <= 0) {
+      showToast('Adicione itens antes de escolher o pagamento.', true);
       return;
     }
     if (_pdvPagamentos.some(p => p.forma === forma)) {
       showToast('Essa forma já está na lista. Ajuste o valor dela.', true);
       return;
     }
+    if (restante <= 0) {
+      // Dividir pagamento é caso legítimo: o cliente decide na hora que vai
+      // pagar metade em PIX e metade no cartão. Recusar seco obrigava a
+      // remover a forma anterior e refazer tudo. Entra zerado pra pessoa
+      // repartir os valores, e só depois de ela confirmar a intenção.
+      _pdvAddPagamentoDividido(forma);
+      return;
+    }
     _pdvPagamentos.push({ forma, valor: restante });
+    pdvRenderBalcao();
+  }
+
+  async function _pdvAddPagamentoDividido(forma) {
+    const rot = { dinheiro: 'Dinheiro', pix: 'PIX', credito: 'Crédito', debito: 'Débito', outros: 'Outros' }[forma] || forma;
+    if (!(await lcConfirm('A venda já está coberta pelas formas atuais.\n\nQuer dividir o pagamento e incluir ' + rot + '?\nEle entra com R$ 0,00 para você repartir os valores.'))) return;
+    _pdvPagamentos.push({ forma, valor: 0 });
     pdvRenderBalcao();
   }
 
@@ -89014,9 +89088,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     let r = await _pdvApi('/api/pdv-venda/finalizar', { method: 'POST', body: JSON.stringify(corpo) });
 
     if (!r.ok && r.podeVenderSemEstoque) {
-      // Não travamos a venda, mas o operador precisa saber o que está fazendo:
-      // o estoque vai ficar negativo até alguém conferir.
-      const seguir = await lcConfirm(r.erro + '\n\nO sistema pode estar com a contagem errada.\n'
+      // Não travamos a venda, mas o operador precisa saber O QUE está faltando.
+      // Antes a mensagem dizia só "saldo insuficiente", e num carrinho de dez
+      // itens ninguém descobria qual era.
+      const item = _pdvCarrinho.find(i => i.sku === r.skuProblema);
+      const qual = item
+        ? (item.nome || item.sku) + (item.variacao ? ' (' + item.variacao + ')' : '') + ' · ' + item.sku
+        : (r.skuProblema || 'item do carrinho');
+      const seguir = await lcConfirm('Sem estoque suficiente de:\n' + qual + '\n\n' + r.erro + '\n\nO sistema pode estar com a contagem errada.\n'
         + 'Vender assim mesmo deixa o estoque NEGATIVO até o balanço corrigir, e isso aparece '
         + 'na lista de conferência de quem cuida dos estoques.\n\nProsseguir com a venda?');
       if (!seguir) { pdvRenderBalcao(); return; }
@@ -89529,13 +89608,16 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     html += '<div id="pdvRedeCaixas"></div>';
 
     // mais vendidos e mix
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">';
+    // Duas colunas fixas esmagavam a da direita quando o nome do produto era
+    // longo, e os rótulos do pagamento colavam nos valores. Com minmax, elas
+    // quebram para uma coluna antes de espremer.
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px">';
     html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px">'
       + '<h3 style="margin:0 0 12px;font-size:15px;color:#0f172a">Mais vendidos da rede</h3>'
       + ((r.maisVendidos || []).length
-        ? r.maisVendidos.map((m, i) => '<div style="display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px solid #f8fafc">'
-          + '<span style="color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (i + 1) + '. ' + escapeHtml(m.nome) + '</span>'
-          + '<span style="color:#0f172a;font-weight:700;flex:none;margin-left:8px">' + m.unidades + ' un</span></div>').join('')
+        ? r.maisVendidos.map((m, i) => '<div style="display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:5px 0;border-bottom:1px solid #f8fafc">'
+          + '<span style="color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1" title="' + escapeHtml(m.nome) + '">' + (i + 1) + '. ' + escapeHtml(m.nome) + '</span>'
+          + '<span style="color:#0f172a;font-weight:700;flex:none;white-space:nowrap">' + m.unidades + ' un</span></div>').join('')
         : '<div style="color:#94a3b8;font-size:13px">Sem vendas no período.</div>')
       + '</div>';
 
@@ -89545,7 +89627,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + '<h3 style="margin:0 0 12px;font-size:15px;color:#0f172a">Como o cliente paga</h3>'
       + (mix.formas.length
         ? mix.formas.map(fm => '<div style="margin-bottom:9px">'
-          + '<div style="display:flex;justify-content:space-between;font-size:13px;color:#334155;margin-bottom:3px"><span>' + (rotForma[fm.forma] || fm.forma) + '</span><span><b>' + _pdvBRL(fm.valor) + '</b> · ' + fm.participacao + '%</span></div>'
+          + '<div style="display:flex;justify-content:space-between;gap:10px;font-size:13px;color:#334155;margin-bottom:3px">'
+          + '<span style="flex:none">' + (rotForma[fm.forma] || fm.forma) + '</span>'
+          + '<span style="white-space:nowrap"><b>' + _pdvBRL(fm.valor) + '</b> · ' + fm.participacao + '%</span></div>'
           + '<div style="height:6px;background:#f1f5f9;border-radius:99px;overflow:hidden"><div style="height:100%;width:' + Math.max(2, fm.participacao) + '%;background:#0f766e"></div></div></div>').join('')
         : '<div style="color:#94a3b8;font-size:13px">Sem pagamentos no período.</div>')
       + '</div>';
@@ -89673,6 +89757,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // Estoques). Em vez de duplicar o código, elas dizem onde desenhar. Usar o
   // mesmo id nas duas faria o getElementById pegar sempre a primeira.
   let _pdvEstAlvo = 'pdvEstoqueBox';
+  // Na tela de Estoques a lista fica EMBUTIDA abaixo dos cartões. Sem esta
+  // marca, clicar em "voltar" mandava desenhar o nível 1 (a lista de estoques)
+  // dentro da própria tela que já mostra os estoques: a página aparecia duas
+  // vezes, com números diferentes por causa da segunda carga.
+  let _pdvEstEmbutido = false;
 
   function _pdvVariosEstoques() {
     return !!(_pdvEstResumo && (_pdvEstResumo.locais || []).length > 1);
@@ -89680,6 +89769,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
   async function pdvCarregarEstoque() {
     _pdvEstAlvo = 'pdvEstoqueBox';
+    _pdvEstEmbutido = false;
     await pdvCarregarNegativos();
     const r = await _pdvApi('/api/estoque/resumo');
     _pdvEstResumo = r.ok ? r : null;
@@ -89735,7 +89825,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // SIMPLES POR PADRÃO (v33k.1320): a tela de "escolher estoque" só existe
     // pra quem tem mais de um. Com um estoque só ela apareceria sempre com um
     // card único, cobrando um clique pra chegar onde a pessoa sempre vai.
-    if (_pdvForcarListaEstoques && _pdvVariosEstoques()) { pdvRenderListaEstoques(box); return; }
+    if (_pdvForcarListaEstoques && _pdvVariosEstoques() && !_pdvEstEmbutido) { pdvRenderListaEstoques(box); return; }
 
     if (!_pdvEstLocalAberto) {
       const doBalcao = _pdvEstado && _pdvEstado.local ? _pdvEstado.local.id : null;
@@ -89775,7 +89865,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           + '<div style="font-size:22px;font-weight:800;color:#0f172a;margin-top:8px">' + l.unidades + '<span style="font-size:12px;color:#64748b;font-weight:600"> un</span></div>'
           + '<div style="font-size:13px;color:#15803d;font-weight:700">' + _pdvBRL(l.valorVenda) + '</div>'
           + '<div style="font-size:11.5px;color:#64748b;margin-top:6px">' + l.itens + ' itens'
-          + (l.abastece_marketplaces ? ' · abastece marketplaces' : ' · só presencial')
+          + (l.padrao ? ' · espelho dos anúncios' : (l.abastece_marketplaces ? ' · abastece marketplaces' : ' · só presencial'))
           + (l.itensSemPreco ? ' · ' + l.itensSemPreco + ' sem preço' : '') + '</div>'
           + (_pdvVariosEstoques()
             ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" style="margin-top:9px;width:100%" onclick="event.stopPropagation();pdvAbrirAbastecimento(' + l.id + ')">Quais lojas abastece</button>'
@@ -89868,7 +89958,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     let html = _pdvFaixaNegativos();
     html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
       + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px">'
-      + (_pdvVariosEstoques() ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvVoltarEstoques()">&#8592; Estoques</button>' : '')
+      + ((_pdvVariosEstoques() && !_pdvEstEmbutido) ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvVoltarEstoques()">&#8592; Estoques</button>' : '')
       // Trocar de estoque sem voltar pra lista. Quem confere mercadoria pula
       // entre dois endereços o tempo todo, e obrigar a voltar a cada troca
       // transforma uma conferência em vinte cliques.
@@ -89946,12 +90036,13 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       }
     }
 
-    html += _pdvVariosEstoques()
+    html += (_pdvVariosEstoques() && !_pdvEstEmbutido)
       ? '<div style="font-size:12px;color:#94a3b8;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:10px">'
         + '<a href="javascript:void(0)" onclick="pdvVoltarEstoques()" style="color:#0f766e">Ver todos os estoques</a></div>'
-      : '<div style="font-size:12px;color:#94a3b8;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:10px">'
+      : (_pdvVariosEstoques() ? '' :
+        '<div style="font-size:12px;color:#94a3b8;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:10px">'
         + 'Trabalha com estoques separados? '
-        + '<a href="javascript:void(0)" onclick="pdvCriarEstoque()" style="color:#0f766e">Criar outro estoque</a></div>';
+        + '<a href="javascript:void(0)" onclick="pdvCriarEstoque()" style="color:#0f766e">Criar outro estoque</a></div>');
     html += '</div>';
 
     box.innerHTML = html;
@@ -90509,10 +90600,12 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         + '<div style="font-size:13px;color:#15803d;font-weight:700">' + _estBRL(l.valorVenda) + '</div>'
         + '<div style="font-size:11.5px;color:#64748b;margin-top:6px">' + l.itens + ' itens'
         + (l.abastece_marketplaces ? ' · abastece marketplaces' : ' · só presencial') + '</div>'
-        + '<button class="lc-btn lc-btn--secondary lc-btn--sm" style="width:100%;margin-top:9px" onclick="estBalancear(' + l.id + ')">Fazer balanço</button>'
-        // Estoque vazio num sistema que já tem catálogo com saldo quase sempre
-        // é semeadura que não rodou. O botão fica onde o problema aparece.
-        + (l.itens === 0 ? '<button class="lc-btn lc-btn--sm" style="width:100%;margin-top:6px" onclick="estTrazerDosAnuncios(' + l.id + ')">Trazer o estoque dos anúncios</button>' : '')
+        + (l.padrao
+          // Espelho dos anúncios: balanço aqui seria desfeito na próxima
+          // leitura, então o botão nem aparece. O ajuste real é na tela de
+          // Anúncios, que é a origem do número.
+          ? '<div style="font-size:11.5px;color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:7px 9px;margin-top:9px">Espelho dos anúncios. Atualiza sozinho; ajuste pela tela de Anúncios.</div>'
+          : '<button class="lc-btn lc-btn--secondary lc-btn--sm" style="width:100%;margin-top:9px" onclick="estBalancear(' + l.id + ')">Fazer balanço</button>')
         + '</div>').join('')
       + '</div>'
       + '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'
@@ -90533,6 +90626,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
   async function estCarregarListaProdutos() {
     _pdvEstAlvo = 'estEstoqueBox';
+    _pdvEstEmbutido = true;
     _pdvEstResumo = _estResumo;
     _pdvNegativos = _estNegativos;
     _pdvForcarListaEstoques = false;
@@ -90747,39 +90841,6 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (o) o.remove();
   }
 
-
-  // ── trazer o estoque que já está nos anúncios ──────────────────────
-  // O catálogo já tem o saldo certo (a sincronização mantém ele em dia). Esta
-  // ação copia esse número para o estoque, uma vez. Idempotente: SKU que já
-  // tem linha aqui é pulado, então rodar duas vezes não soma nada.
-  async function estTrazerDosAnuncios(localId) {
-    const seco = await _estApi('/api/estoque/semear?dryRun=true', { method: 'POST', body: JSON.stringify({}) });
-    if (!seco.ok) { showToast(seco.erro || 'Não consegui conferir', true); return; }
-
-    // AVISO DE DUPLICAÇÃO: dois estoques abastecendo os mesmos anúncios fazem
-    // o push mandar a SOMA. Trazer o saldo pra cá sem perceber isso dobraria a
-    // quantidade anunciada, e o estrago só apareceria numa venda a descoberto.
-    const abastecedores = (_estResumo.locais || []).filter(l => l.abastece_marketplaces);
-    let aviso = '';
-    if (abastecedores.length > 1) {
-      aviso = '\n\nATENÇÃO: você tem ' + abastecedores.length + ' estoques marcados como "abastece marketplaces" ('
-        + abastecedores.map(l => l.nome).join(', ') + ').\n'
-        + 'Os anúncios recebem a SOMA deles. Se o mesmo produto existir em dois, a quantidade anunciada vai dobrar.\n'
-        + 'Confira o vínculo de cada loja em Lojas e Conexões antes de continuar.';
-    }
-
-    const ok2 = await lcConfirm('Trazer o estoque dos anúncios para este estoque?\n\n'
-      + (seco.criaria || 0) + ' produto(s) vão receber o saldo que está hoje no catálogo.'
-      + (seco.jaExistiam ? '\n' + seco.jaExistiam + ' já tinham saldo aqui e serão mantidos.' : '')
-      + aviso);
-    if (!ok2) return;
-
-    showToast('Trazendo o estoque...');
-    const r = await _estApi('/api/estoque/semear', { method: 'POST', body: JSON.stringify({}) });
-    if (!r.ok) { showToast(r.erro || 'Não consegui trazer', true); return; }
-    showToast((r.gravados || 0) + ' produto(s) com saldo trazido dos anúncios');
-    renderEstoques();
-  }
 
   function goToSyncSettings() {
     goTo('settingsScreen');
