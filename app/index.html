@@ -15698,7 +15698,10 @@ window.LC_SVG = {
 
   /* SUBMENU */
   .sidebar-sub { overflow: hidden; max-height: 0; transition: max-height .25s ease; }
-  .sidebar-group.open > .sidebar-sub { max-height: 320px; }
+  /* v33k.1385: 320px cabia 8 filhos. Operações passou a ter 9 (Estoques) e o
+     último ficava cortado pelo overflow:hidden da animação. Valor folgado pra
+     não voltar a acontecer a cada item novo. */
+  .sidebar-group.open > .sidebar-sub { max-height: 760px; }
   .sidebar-group.open > .sidebar-item .sidebar-caret { transform: rotate(180deg); }
   .sidebar-subitem {
     display: flex; align-items: center; gap: 11px;
@@ -30288,38 +30291,6 @@ Retorne JSON: {"ID": "valor", ...}`;
     } catch (e) { _lcVinculosEstoque = null; }
   }
 
-  function _lcSeletorEstoque(loja) {
-    // Sem a informação carregada ou com um estoque só, não há escolha a fazer:
-    // mostrar um seletor de uma opção é pedir uma decisão que não existe.
-    if (!_lcVinculosEstoque || !loja.idBanco) return '';
-    const locais = _lcVinculosEstoque.locais || [];
-    if (locais.length < 2) return '';
-    const info = (_lcVinculosEstoque.lojas || []).find(l => l.id === loja.idBanco);
-    const atual = info && info.localIds && info.localIds.length ? info.localIds[0] : null;
-    const opts = locais.map(l => '<option value="' + l.id + '"' + (l.id === atual ? ' selected' : '') + '>'
-      + escapeHtml(l.nome) + '</option>').join('');
-    return '<div style="margin-top:8px;font-size:11.5px;color:#64748b">Vende do estoque'
-      + '<select onchange="lcTrocarEstoqueDaLoja(' + loja.idBanco + ', this.value)" '
-      + 'style="width:100%;margin-top:3px;padding:5px 7px;border:1px solid #cbd5e1;border-radius:7px;font-size:12px">'
-      + (atual ? '' : '<option value="">Escolher...</option>') + opts + '</select></div>';
-  }
-
-  async function lcTrocarEstoqueDaLoja(lojaId, localId) {
-    if (!localId) return;
-    try {
-      const r = await fetch(BACKEND_URL + '/api/estoque/vinculos/' + lojaId, {
-        method: 'PUT',
-        headers: hLucroAuth({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ localId: Number(localId) }),
-      });
-      const d = await r.json();
-      if (!d.ok) { showToast(d.erro || 'Não consegui vincular o estoque', true); return; }
-      showToast('Esta loja passa a vender do estoque "' + d.local.nome + '"');
-      await _lcCarregarVinculosEstoque();
-      renderLojasConexoes();
-    } catch (e) { showToast('Falha ao vincular: ' + e.message, true); }
-  }
-  window.lcTrocarEstoqueDaLoja = lcTrocarEstoqueDaLoja;
 
   async function renderLojasConexoes(opts) {
     if (!_lcVinculosEstoque) await _lcCarregarVinculosEstoque();
@@ -30519,7 +30490,6 @@ Retorne JSON: {"ID": "valor", ...}`;
           </div>
           <div style="font-weight:800;color:#1e2a47;font-size:15px">${escapeHtml(loja.nome)}</div>
           <div style="font-size:12px;color:#64748b;flex:1">Venda no balcão. Não usa conexão com marketplace: o preparo (CNPJ e caixa) é feito na tela do Frente de Caixa.</div>
-          ${_lcSeletorEstoque(loja)}
           <button class="lc-btn lc-btn--sm" onclick="goTo('pdvScreen')" style="width:100%">
             <span class="lc-ic" data-size="sm" data-lucide="settings"></span> Preparar no Frente de Caixa
           </button>
@@ -30553,7 +30523,6 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
     }
 
-    const _seletorEstoque = _lcSeletorEstoque(loja);
     const userId = status && status.userIdMarketplace ? status.userIdMarketplace : null;
     const borderCard = conectada && !tokenExpirado ? '#bbf7d0' : (tokenExpirado ? '#fde68a' : '#e5e7eb');
     const topBar = conectada && !tokenExpirado ? '#22c55e' : (tokenExpirado ? '#f59e0b' : (loja.idBanco ? '#ef4444' : '#cbd5e1'));
@@ -30648,7 +30617,6 @@ Retorne JSON: {"ID": "valor", ...}`;
           <button onclick="abrirAjustesLoja('${loja.id}')" title="Ajustes da loja (imposto, ACOS, NF, CNPJ)" style="flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;background:#eef2ff;border:1px solid #c7d2fe;color:#4f46e5;font-size:11px;font-weight:700;padding:6px 10px;border-radius:9px;cursor:pointer" onmouseover="this.style.background='#e0e7ff'" onmouseout="this.style.background='#eef2ff'">⚙️ Ajustes</button>
         </div>
         ${expiraTxt ? `<div style="font-size:11px;color:#94a3b8;line-height:1.5;margin-bottom:12px">${expiraTxt}</div>` : ''}
-        ${_seletorEstoque}
 
         ${(function () {
           // v33k.900: o vínculo cliente↔loja é recurso EXCLUSIVO de agência -
@@ -30762,6 +30730,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       }).then(x => x.json());
       if (!r.ok) throw new Error(r.erro || 'falha');
       _ajLoja = Object.assign(_ajLoja, r.loja, { empresas: r.empresas || [] });
+      // Os ajustes podem ser abertos sem a tela de Lojas ter carregado os
+      // vínculos ainda (link direto, F5 na tela). Sem isto o bloco de estoque
+      // simplesmente não apareceria, e pareceria bug.
+      if (!_lcVinculosEstoque) await _lcCarregarVinculosEstoque();
       _renderAjustesLoja();
     } catch (e) {
       document.getElementById('ajustesLojaBody').innerHTML =
@@ -30769,6 +30741,24 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
   }
   window.abrirAjustesLoja = abrirAjustesLoja;
+
+  async function _ajSalvarEstoque() {
+    if (!_ajLoja || !_ajLoja.idBanco) return;
+    const localId = Number((document.getElementById('ajEstoqueLocal') || {}).value);
+    if (!localId) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/estoque/vinculos/' + _ajLoja.idBanco, {
+        method: 'PUT',
+        headers: hLucroAuth({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ localId }),
+      }).then(x => x.json());
+      if (!r.ok) { showToast(r.erro || 'Não consegui vincular o estoque', true); return; }
+      showToast('Esta loja passa a vender do estoque "' + r.local.nome + '"');
+      await _lcCarregarVinculosEstoque();
+      _renderAjustesLoja();
+    } catch (e) { showToast('Falha ao vincular: ' + e.message, true); }
+  }
+  window._ajSalvarEstoque = _ajSalvarEstoque;
 
   function fecharAjustesLoja() {
     document.getElementById('ajustesLojaOverlay').style.display = 'none';
@@ -30789,6 +30779,35 @@ Retorne JSON: {"ID": "valor", ...}`;
   function _renderAjustesLoja() {
     const d = _ajLoja;
     const ehShopee = d.marketplace === 'shopee';
+
+    // ── 0. Estoque de onde a loja vende ──
+    // Fica AQUI dentro e não no card: é ajuste, mexe raramente, e um seletor
+    // no card convida a mudança acidental num clique errado.
+    let blocoEstoque = '';
+    {
+      const locais = (_lcVinculosEstoque && _lcVinculosEstoque.locais) || [];
+      const info = ((_lcVinculosEstoque && _lcVinculosEstoque.lojas) || []).find(l => l.id === d.idBanco);
+      const atual = info && info.localIds && info.localIds.length ? info.localIds[0] : null;
+      // Sem vínculo explícito, a loja vende do estoque padrão da conta. É o que
+      // já acontece de fato, então o seletor mostra isso em vez de "Escolher...",
+      // que dava a impressão de configuração pendente.
+      const padrao = locais.find(l => l.padrao) || locais[0];
+      const escolhido = atual || (padrao ? padrao.id : null);
+      if (locais.length) {
+        blocoEstoque = _ajCard(
+          _ajTitulo({ emoji: '📦', bg: '#f0fdfa', cor: '#0f766e' }, 'Estoque desta loja', 'De qual estoque as vendas saem') +
+          '<div style="font-size:12px;color:#64748b;margin-bottom:9px;line-height:1.5">A quantidade anunciada vem deste estoque. Mudar aqui faz a loja passar a anunciar o saldo do estoque escolhido.</div>' +
+          '<div style="display:flex;gap:8px">' +
+            '<select id="ajEstoqueLocal" style="flex:1;padding:10px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:14px;box-sizing:border-box">' +
+              locais.map(l => '<option value="' + l.id + '"' + (l.id === escolhido ? ' selected' : '') + '>' +
+                escapeHtml(l.nome) + (l.padrao ? ' (padrão)' : '') + '</option>').join('') +
+            '</select>' +
+            '<button onclick="_ajSalvarEstoque()" style="padding:10px 16px;border:none;background:#0f766e;color:#fff;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">Salvar</button>' +
+          '</div>' +
+          (atual ? '' : '<div style="font-size:11.5px;color:#94a3b8;margin-top:7px">Hoje esta loja usa o estoque padrão da conta.</div>')
+        );
+      }
+    }
 
     // ── 1. ACOS objetivo (Motor de Ads) ──
     // Só faz sentido pra marketplaces onde o motor de Ads atua (Shopee/ML).
@@ -30853,7 +30872,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
     const blocoNfCard = _ajCard(blocoNf);
 
-    document.getElementById('ajustesLojaBody').innerHTML = blocoAcos + blocoImposto + blocoNfCard;
+    document.getElementById('ajustesLojaBody').innerHTML = blocoEstoque + blocoAcos + blocoImposto + blocoNfCard;
   }
 
   function _ajFmtCnpj(c) {
@@ -61084,7 +61103,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1370-busca-viva';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1390-trocar-estoque';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -89498,6 +89517,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         + '</div>';
     }
 
+    // fechamento por caixa: onde o dinheiro entrou e onde ele deveria estar
+    html += '<div id="pdvRedeCaixas"></div>';
+
     // mais vendidos e mix
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">';
     html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px">'
@@ -89523,9 +89545,86 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
     box.innerHTML = html;
     if (window.lucide && lucide.createIcons) try { lucide.createIcons(); } catch (e) {}
+    pdvCarregarCaixas(d.de, d.ate);
   }
 
   function pdvRedeTrocarPeriodo(id) { _pdvRedePeriodo = id; pdvRenderRede(); }
+
+  // ── fechamento por caixa ───────────────────────────────────────────
+  // Responde "quanto cada caixa fechou" e, quando o número não bate, mostra
+  // as vendas que o compõem. Conferência sem a trilha vira suposição.
+  let _pdvCaixasAbertos = {};
+
+  async function pdvCarregarCaixas(de, ate) {
+    const box = document.getElementById('pdvRedeCaixas');
+    if (!box) return;
+    const r = await _pdvApi('/api/pdv-rede/caixas?de=' + de + '&ate=' + ate);
+    if (!r.ok || !(r.sessoes || []).length) {
+      box.innerHTML = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
+        + '<h3 style="margin:0 0 4px;font-size:15px;color:#0f172a">Fechamento por caixa</h3>'
+        + '<div style="font-size:13px;color:#94a3b8">Nenhum turno neste período.</div></div>';
+      return;
+    }
+
+    box.innerHTML = '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
+      + '<h3 style="margin:0 0 4px;font-size:15px;color:#0f172a">Fechamento por caixa</h3>'
+      + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">Faturamento é o que o cliente pagou. Na gaveta é só o dinheiro em espécie: cartão e PIX não passam por ela.</div>'
+      + r.sessoes.map(se => {
+        const aberto = se.status === 'aberta';
+        const dif = se.diferenca;
+        const corDif = dif == null ? '#64748b' : (Math.abs(dif) < 0.01 ? '#15803d' : (dif > 0 ? '#92400e' : '#b91c1c'));
+        const formas = Object.keys(se.porForma || {}).map(f =>
+          '<span style="font-size:11.5px;color:#475569;margin-right:10px">' + f + ' <b>' + _pdvBRL(se.porForma[f]) + '</b></span>').join('');
+        return '<div style="border:1px solid ' + (se.confere ? '#eef2f7' : '#fecaca') + ';border-radius:11px;padding:12px 14px;margin-bottom:9px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">'
+          + '<div><b style="font-size:14px;color:#0f172a">' + escapeHtml(se.caixa) + '</b>'
+          + ' <span style="font-size:12px;color:#64748b">' + escapeHtml(se.loja) + ' · ' + escapeHtml(se.data)
+          + (se.operador ? ' · ' + escapeHtml(se.operador) : '') + '</span>'
+          + (aberto ? ' <span style="background:#dcfce7;color:#15803d;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:999px">aberto</span>' : '')
+          + '</div>'
+          + '<div style="font-size:15px;font-weight:800;color:#0f172a">' + _pdvBRL(se.faturamento) + '</div></div>'
+          + '<div style="margin-top:7px">' + formas + '</div>'
+          + '<div style="font-size:12px;color:#64748b;margin-top:6px">'
+          + se.vendas + ' venda(s)' + (se.canceladas ? ' · ' + se.canceladas + ' cancelada(s)' : '')
+          + ' · abertura ' + _pdvBRL(se.abertura)
+          + (se.trocoTotal ? ' · troco ' + _pdvBRL(se.trocoTotal) : '')
+          + (se.sangrias ? ' · sangria ' + _pdvBRL(se.sangrias) : '')
+          + (se.suprimentos ? ' · suprimento ' + _pdvBRL(se.suprimentos) : '')
+          + '</div>'
+          + '<div style="font-size:12.5px;margin-top:6px">Na gaveta deveria ter <b>' + _pdvBRL(se.esperadoEmEspecie) + '</b>'
+          + (se.contado != null
+            ? ' · contado <b>' + _pdvBRL(se.contado) + '</b> · <b style="color:' + corDif + '">'
+              + (dif > 0 ? 'sobrou ' : (dif < 0 ? 'faltou ' : 'exato')) + (dif ? _pdvBRL(Math.abs(dif)) : '') + '</b>'
+            : ' · ainda não contado')
+          + '</div>'
+          + (se.observacao ? '<div style="font-size:12px;color:#92400e;margin-top:4px">' + escapeHtml(se.observacao) + '</div>' : '')
+          + (se.confere ? '' : '<div style="font-size:12.5px;color:#b91c1c;margin-top:6px">A soma das vendas (' + _pdvBRL(se.somaVendas) + ') não bate com a soma dos pagamentos. Abra o detalhe para ver onde.</div>')
+          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" style="margin-top:9px" onclick="pdvVerVendasDoCaixa(' + se.id + ')">Ver as vendas</button>'
+          + '<div id="pdvCaixaDet' + se.id + '"></div>'
+          + '</div>';
+      }).join('')
+      + '</div>';
+    window._pdvSessoesCache = r.sessoes;
+  }
+
+  function pdvVerVendasDoCaixa(id) {
+    const alvo = document.getElementById('pdvCaixaDet' + id);
+    if (!alvo) return;
+    if (_pdvCaixasAbertos[id]) { alvo.innerHTML = ''; _pdvCaixasAbertos[id] = false; return; }
+    _pdvCaixasAbertos[id] = true;
+    const se = (window._pdvSessoesCache || []).find(x => x.id === id);
+    if (!se) return;
+    alvo.innerHTML = '<div style="margin-top:10px;border-top:1px solid #f1f5f9;padding-top:8px">'
+      + (se.detalhe.length
+        ? se.detalhe.map(v => '<div style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:5px 0;border-bottom:1px solid #f8fafc">'
+          + '<span style="color:#334155"><b>' + escapeHtml(v.numero) + '</b>'
+          + (v.desconto ? ' <span style="color:#92400e">desc ' + _pdvBRL(v.desconto) + '</span>' : '')
+          + (v.troco ? ' <span style="color:#64748b">troco ' + _pdvBRL(v.troco) + '</span>' : '') + '</span>'
+          + '<span style="color:#64748b">' + v.pagamentos.map(p => p.forma + ' ' + _pdvBRL(p.valor)).join(' + ') + '</span>'
+          + '<b style="color:#0f172a">' + _pdvBRL(v.total) + '</b></div>').join('')
+        : '<div style="font-size:12.5px;color:#94a3b8">Nenhuma venda válida neste turno.</div>')
+      + '</div>';
+  }
 
 
   // ═══════════════════════════════════════════════════════════════════
@@ -89541,7 +89640,6 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // ═══════════════════════════════════════════════════════════════════
   let _pdvEstBusca = '';
   let _pdvEstSaldos = {};
-  let _pdvEstSoComSaldo = false;
 
   function _pdvVariacoesDoCatalogo() {
     const out = [];
@@ -89594,7 +89692,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     _pdvForcarListaEstoques = false;
     _pdvEstLocalAberto = id;
     _pdvPainelModo = null;
-    _pdvEstBusca = '';
+    _pdvPainelItem = null;
+    // Seleção é do estoque em que foi feita. Carregá-la pro próximo levaria a
+    // pessoa a definir quantidade no lugar errado sem perceber.
+    _pdvEstSel = {};
     await pdvCarregarSaldosDoLocal();
     pdvRenderEstoque();
   }
@@ -89683,87 +89784,260 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (window.lucide && lucide.createIcons) try { lucide.createIcons(); } catch (e) {}
   }
 
-  // ── nível 2: itens de um estoque ──────────────────────────────────
+  // ── nível 2: itens de um estoque, no formato da tela de Anúncios ───
+  // Agrupado por PRODUTO, com as variações dentro. É o mesmo mapa mental de
+  // Anúncios: a pessoa procura pelo produto, não pelo SKU solto. E os filtros
+  // existem porque um catálogo de 600 produtos sem filtro é uma lista onde
+  // não se acha nada.
+  let _pdvEstFiltro = 'todos';      // todos | com | sem | baixo | nunca
+  let _pdvEstAbertos = {};
+  let _pdvEstSel = {};
+  const PDV_EST_BAIXO = 3;
+
+  function _pdvProdutosComSaldo() {
+    const porProduto = {};
+    (Array.isArray(produtosErp) ? produtosErp : []).forEach(p => {
+      if (p.status === 'excluido') return;
+      const vars = (Array.isArray(p.variacoes) ? p.variacoes : [])
+        .map(v => {
+          const sku = String(v.sku || '').trim().toUpperCase();
+          if (!sku) return null;
+          return {
+            sku, nome: v.nome || v.variacao || '', variacaoId: v.id != null ? String(v.id) : null,
+            saldo: _pdvEstSaldos[sku] != null ? _pdvEstSaldos[sku] : 0,
+            temLinha: _pdvEstSaldos[sku] != null,
+            preco: v.preco != null ? v.preco : p.preco,
+          };
+        }).filter(Boolean);
+      if (!vars.length) return;
+      const foto = (Array.isArray(p.fotos) && p.fotos.length) ? p.fotos[0] : null;
+      porProduto[String(p.id)] = {
+        id: String(p.id), nome: p.nome, sku_pai: p.sku_pai || '',
+        foto: typeof foto === 'string' ? foto : (foto && (foto.url || foto.src)) || null,
+        variacoes: vars,
+        unidades: vars.reduce((s2, v) => s2 + Math.max(0, v.saldo), 0),
+        comSaldo: vars.filter(v => v.saldo > 0).length,
+      };
+    });
+    return Object.values(porProduto);
+  }
+
+  function _pdvVariacaoPassaFiltro(v) {
+    if (_pdvEstFiltro === 'com') return v.saldo > 0;
+    if (_pdvEstFiltro === 'sem') return v.saldo <= 0;
+    if (_pdvEstFiltro === 'baixo') return v.saldo > 0 && v.saldo <= PDV_EST_BAIXO;
+    if (_pdvEstFiltro === 'nunca') return !v.temLinha || v.saldo === 0;
+    return true;
+  }
+
   function pdvRenderItensDoLocal(box) {
     const local = _pdvLocalAberto();
     if (!local) { _pdvEstLocalAberto = null; pdvRenderEstoque(); return; }
 
     const termo = _pdvEstBusca.trim().toLowerCase();
-    let lista = _pdvVariacoesDoCatalogo();
+    let produtos = _pdvProdutosComSaldo();
     if (termo) {
-      lista = lista.filter(v => (v.nome || '').toLowerCase().includes(termo)
-        || v.sku.toLowerCase().includes(termo) || (v.variacao || '').toLowerCase().includes(termo));
+      produtos = produtos.filter(p =>
+        (p.nome || '').toLowerCase().includes(termo)
+        || (p.sku_pai || '').toLowerCase().includes(termo)
+        || p.variacoes.some(v => v.sku.toLowerCase().includes(termo) || (v.nome || '').toLowerCase().includes(termo)));
     }
-    if (_pdvEstSoComSaldo) lista = lista.filter(v => (_pdvEstSaldos[v.sku] || 0) > 0);
-    const total = lista.length;
-    lista = lista.slice(0, 200);
+    produtos = produtos.map(p => ({ ...p, variacoes: p.variacoes.filter(_pdvVariacaoPassaFiltro) }))
+      .filter(p => p.variacoes.length);
+
+    const totalProdutos = produtos.length;
+    const totalVariacoes = produtos.reduce((s2, p) => s2 + p.variacoes.length, 0);
+    produtos = produtos.slice(0, 60);
+    const selecionados = Object.keys(_pdvEstSel).filter(k => _pdvEstSel[k]);
+
+    const chip = (id, rot) => '<button class="lc-btn ' + (_pdvEstFiltro === id ? '' : 'lc-btn--secondary') + ' lc-btn--sm" onclick="pdvEstFiltrar(\'' + id + '\')">' + rot + '</button>';
 
     let html = _pdvFaixaNegativos();
     html += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:18px;margin-bottom:14px">'
       + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px">'
       + (_pdvVariosEstoques() ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvVoltarEstoques()">&#8592; Estoques</button>' : '')
-      + '<h3 style="margin:0;font-size:15px;color:#0f172a">' + escapeHtml(local.nome) + '</h3>'
+      // Trocar de estoque sem voltar pra lista. Quem confere mercadoria pula
+      // entre dois endereços o tempo todo, e obrigar a voltar a cada troca
+      // transforma uma conferência em vinte cliques.
+      + (_pdvVariosEstoques()
+        ? '<select class="form-input" style="max-width:230px;font-size:13.5px;font-weight:700;padding:7px 10px" onchange="pdvAbrirLocal(Number(this.value))">'
+          + (_pdvEstResumo.locais || []).map(l => '<option value="' + l.id + '"' + (l.id === local.id ? ' selected' : '') + '>'
+            + escapeHtml(l.nome) + ' · ' + l.unidades + ' un</option>').join('')
+          + '</select>'
+        : '<h3 style="margin:0;font-size:15px;color:#0f172a">' + escapeHtml(local.nome) + '</h3>')
       + '<div style="margin-left:auto;font-size:12.5px;color:#64748b">' + local.itens + ' itens · ' + local.unidades + ' un · <b style="color:#15803d">' + _pdvBRL(local.valorVenda) + '</b></div>'
       + '</div>'
-      + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">O catálogo é o mesmo do sistema. Aqui você só diz quanto tem <b>neste estoque</b>.</div>'
-      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-      + '<input class="form-input" id="pdvEstBusca" value="' + escapeHtml(_pdvEstBusca) + '" placeholder="Nome, SKU ou variação" style="max-width:300px" onkeydown="if(event.key===\'Enter\')pdvBuscarEstoque()">'
-      + '<button class="lc-btn" onclick="pdvBuscarEstoque()"><span class="lc-ic" data-size="sm" data-lucide="search"></span> Buscar</button>'
-      + '<label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:#334155;cursor:pointer">'
-      + '<input type="checkbox" ' + (_pdvEstSoComSaldo ? 'checked' : '') + ' onchange="pdvFiltrarComSaldo(this.checked)"> Só com saldo</label>'
+      + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">Mesmo catálogo da tela de Anúncios. O que muda aqui é só o saldo <b>neste estoque</b>.</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
+      + '<input class="form-input" id="pdvEstBusca" value="' + escapeHtml(_pdvEstBusca) + '" placeholder="Produto, SKU ou variação" style="max-width:280px" oninput="pdvEstBuscaDigitando()">'
       + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAbrirPainelEstoque(\'entrada\')"><span class="lc-ic" data-size="sm" data-lucide="plus"></span> Dar entrada</button>'
-      + (_pdvVariosEstoques() ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvOndeTem()"><span class="lc-ic" data-size="sm" data-lucide="search"></span> Tem em outro estoque?</button>' : '')
-      // Transferência só faz sentido havendo para onde transferir.
       + (_pdvVariosEstoques()
-        ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAbrirPainelEstoque(\'receber\')"><span class="lc-ic" data-size="sm" data-lucide="arrow-down-left"></span> Receber de outro</button>'
-          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAbrirPainelEstoque(\'enviar\')"><span class="lc-ic" data-size="sm" data-lucide="arrow-up-right"></span> Enviar para outro</button>'
+        ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAbrirPainelEstoque(\'receber\')">Receber de outro</button>'
+          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvAbrirPainelEstoque(\'enviar\')">Enviar para outro</button>'
+          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvOndeTem()">Tem em outro estoque?</button>'
         : '')
+      + '</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'
+      + chip('todos', 'Todos') + chip('com', 'Com saldo') + chip('sem', 'Sem saldo')
+      + chip('baixo', 'Estoque baixo') + chip('nunca', 'Nunca teve')
+      + '<span style="font-size:12px;color:#94a3b8;align-self:center;margin-left:4px">'
+      + totalProdutos + ' produto(s) · ' + totalVariacoes + ' variação(ões)</span>'
       + '</div>'
       + '<div id="pdvPainelEstoque"></div>';
 
-    if (!lista.length) {
-      html += '<div style="padding:26px;text-align:center;color:#94a3b8;font-size:13px">'
-        + (termo ? 'Nada encontrado para essa busca.' : 'Nenhum produto no catálogo ainda.') + '</div>';
+    if (selecionados.length) {
+      html += '<div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;padding:10px 13px;margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + '<span style="font-size:12.5px;color:#0f766e;font-weight:700">' + selecionados.length + ' variação(ões) selecionada(s)</span>'
+        + '<button class="lc-btn lc-btn--sm" onclick="pdvEstDefinirEmLote()">Definir quantidade</button>'
+        + (_pdvVariosEstoques() ? '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvEstMigrarLote()">Migrar para outro estoque</button>' : '')
+        + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvEstLimparSel()">Limpar seleção</button>'
+        + '</div>';
+    }
+
+    if (!produtos.length) {
+      html += '<div style="padding:30px;text-align:center;color:#94a3b8;font-size:13px">Nada encontrado com esses filtros.</div>';
     } else {
-      html += '<div style="margin-top:12px;max-height:520px;overflow:auto">' + lista.map(v => {
-        const q = _pdvEstSaldos[v.sku] || 0;
-        const cor = q > 0 ? '#15803d' : '#94a3b8';
-        return '<div style="display:flex;gap:10px;align-items:center;border-bottom:1px solid #f1f5f9;padding:9px 2px">'
-          + '<div style="flex:1;min-width:0">'
-          + '<div style="font-size:13.5px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(v.nome || v.sku) + '</div>'
-          + '<div style="font-size:11.5px;color:#64748b">' + escapeHtml([v.variacao, v.sku].filter(Boolean).join(' · ')) + '</div>'
+      html += produtos.map(p => {
+        const aberto = _pdvEstAbertos[p.id];
+        return '<div style="border:1px solid #eef2f7;border-radius:12px;margin-bottom:9px;overflow:hidden">'
+          + '<div onclick="pdvEstAlternar(\'' + p.id + '\')" style="display:flex;gap:11px;align-items:center;padding:11px 13px;cursor:pointer;background:#fafbfc">'
+          + '<div style="width:44px;height:44px;border-radius:9px;background:#fff;border:1px solid #eef2f7;display:flex;align-items:center;justify-content:center;overflow:hidden;flex:none">'
+          + (p.foto ? '<img src="' + escapeHtml(p.foto) + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain">' : '<span class="lc-ic" data-size="sm" data-lucide="package" style="color:#cbd5e1"></span>')
           + '</div>'
-          + '<div style="width:74px;text-align:right;font-size:15px;font-weight:800;color:' + cor + '">' + q + '</div>'
-              // Balanço saiu daqui: ele pode DERRUBAR saldo e vive na tela de
-          // Estoques, atrás da permissão. No balcão sobra o que a operadora
-          // precisa: registrar o que chegou.
-          + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvEntradaRapida(\'' + escapeHtml(v.sku) + '\')">Entrada</button>'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-size:13.5px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(p.nome || '') + '</div>'
+          + '<div style="font-size:11.5px;color:#64748b">' + escapeHtml(p.sku_pai) + (p.sku_pai ? ' · ' : '') + p.variacoes.length + ' variação(ões) · ' + p.comSaldo + ' com saldo</div>'
+          + '</div>'
+          + '<div style="font-size:16px;font-weight:800;color:' + (p.unidades > 0 ? '#0f766e' : '#94a3b8') + ';flex:none">' + p.unidades + '<span style="font-size:11px;color:#94a3b8;font-weight:600"> un</span></div>'
+          + '<span class="lc-ic" data-size="sm" data-lucide="' + (aberto ? 'chevron-up' : 'chevron-down') + '" style="color:#94a3b8;flex:none"></span>'
+          + '</div>'
+          + (aberto
+            ? '<div>' + p.variacoes.map(v => {
+              const marcado = _pdvEstSel[v.sku] ? 'checked' : '';
+              const cor = v.saldo > 0 ? (v.saldo <= PDV_EST_BAIXO ? '#b45309' : '#15803d') : '#94a3b8';
+              return '<div style="display:flex;gap:10px;align-items:center;padding:8px 13px 8px 20px;border-top:1px solid #f8fafc">'
+                + '<input type="checkbox" ' + marcado + ' onchange="pdvEstSelecionar(\'' + escapeHtml(v.sku) + '\',this.checked)">'
+                + '<div style="flex:1;min-width:0">'
+                + '<div style="font-size:13px;color:#334155">' + escapeHtml(v.nome || v.sku) + '</div>'
+                + '<div style="font-size:11px;color:#94a3b8">' + escapeHtml(v.sku) + '</div></div>'
+                + '<input type="number" value="' + v.saldo + '" onchange="pdvEstDefinir(\'' + escapeHtml(v.sku) + '\',this.value)" '
+                + 'style="width:82px;padding:6px 8px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;text-align:center;font-weight:700;color:' + cor + '">'
+                + '<button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pdvEntradaRapida(\'' + escapeHtml(v.sku) + '\')">Entrada</button>'
+                + '</div>';
+            }).join('') + '</div>'
+            : '')
           + '</div>';
-      }).join('') + '</div>';
-      if (total > lista.length) {
-        html += '<div style="font-size:12px;color:#94a3b8;margin-top:8px">Mostrando 200 de ' + total + '. Use a busca para chegar mais perto.</div>';
+      }).join('');
+      if (totalProdutos > produtos.length) {
+        html += '<div style="font-size:12px;color:#94a3b8;margin-top:8px">Mostrando 60 de ' + totalProdutos + ' produtos. Use a busca ou os filtros.</div>';
       }
     }
-    // Porta de entrada discreta pro caso raro. Quem nunca precisar de mais de
-    // um estoque não vê nada além desta linha.
+
     html += _pdvVariosEstoques()
       ? '<div style="font-size:12px;color:#94a3b8;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:10px">'
         + '<a href="javascript:void(0)" onclick="pdvVoltarEstoques()" style="color:#0f766e">Ver todos os estoques</a></div>'
       : '<div style="font-size:12px;color:#94a3b8;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:10px">'
-        + 'Trabalha com estoques separados (loja e depósito, por exemplo)? '
+        + 'Trabalha com estoques separados? '
         + '<a href="javascript:void(0)" onclick="pdvCriarEstoque()" style="color:#0f766e">Criar outro estoque</a></div>';
     html += '</div>';
+
     box.innerHTML = html;
     if (window.lucide && lucide.createIcons) try { lucide.createIcons(); } catch (e) {}
     pdvDesenharPainelEstoque();
   }
 
-  function pdvBuscarEstoque() {
+  function pdvEstFiltrar(f) { _pdvEstFiltro = f; pdvRenderEstoque(); }
+  function pdvEstAlternar(id) { _pdvEstAbertos[id] = !_pdvEstAbertos[id]; pdvRenderEstoque(); }
+  function pdvEstSelecionar(sku, v) { _pdvEstSel[sku] = !!v; pdvRenderEstoque(); }
+  function pdvEstLimparSel() { _pdvEstSel = {}; pdvRenderEstoque(); }
+
+  let _pdvEstBuscaTimer = null;
+  function pdvEstBuscaDigitando() {
+    clearTimeout(_pdvEstBuscaTimer);
     const el = document.getElementById('pdvEstBusca');
-    _pdvEstBusca = (el && el.value) || '';
+    const v = (el && el.value) || '';
+    // Filtra em memória, sem ir ao servidor. Meio segundo evita redesenhar a
+    // lista inteira a cada tecla num catálogo de centenas de produtos.
+    _pdvEstBuscaTimer = setTimeout(() => { _pdvEstBusca = v; pdvRenderEstoque(); }, 300);
+  }
+
+  // Definir quantidade É BALANÇO: pode derrubar saldo, então usa a rota
+  // protegida. Quem só tem o Frente de Caixa recebe 403 e a mensagem explica.
+  async function pdvEstDefinir(sku, valor) {
+    const alvo = Math.max(0, parseInt(valor, 10) || 0);
+    const atual = _pdvEstSaldos[sku] || 0;
+    if (alvo === atual) return;
+    const r = await _pdvApi('/api/estoque/balanco', {
+      method: 'POST',
+      body: JSON.stringify({ localId: _pdvEstLocalAberto, sku, contado: alvo, motivo: 'Ajuste pela tela de estoques' }),
+    });
+    if (!r.ok) {
+      showToast(r.semPermissao ? r.erro : (r.erro || 'Não consegui ajustar'), true);
+      pdvRenderEstoque();
+      return;
+    }
+    _pdvEstSaldos[sku] = r.quantidade;
+    let extra = '';
+    const loc = _pdvLocalAberto();
+    if (loc && loc.abastece_marketplaces) {
+      const push = await pdvRefletirNosAnuncios(sku, r.quantidade);
+      if (push && push.erro) extra = ' · anúncios NÃO atualizados';
+      else if (push && push.anuncios) extra = ' · ' + push.anuncios + ' anúncio(s)';
+    }
+    showToast(sku + ': ' + atual + ' para ' + r.quantidade + extra);
+    await pdvCarregarEstoqueResumo();
     pdvRenderEstoque();
   }
-  function pdvFiltrarComSaldo(v) { _pdvEstSoComSaldo = !!v; pdvRenderEstoque(); }
+
+  async function pdvEstDefinirEmLote() {
+    const skus = Object.keys(_pdvEstSel).filter(k => _pdvEstSel[k]);
+    if (!skus.length) return;
+    const v = await lcPrompt('Definir a quantidade de ' + skus.length + ' variação(ões) neste estoque para:', '0');
+    if (v === null) return;
+    const alvo = Math.max(0, parseInt(v, 10) || 0);
+    let ok = 0, falhou = 0;
+    for (const sku of skus) {
+      const r = await _pdvApi('/api/estoque/balanco', {
+        method: 'POST',
+        body: JSON.stringify({ localId: _pdvEstLocalAberto, sku, contado: alvo, motivo: 'Ajuste em lote' }),
+      });
+      if (r.ok) { _pdvEstSaldos[sku] = alvo; ok++; } else falhou++;
+    }
+    showToast(ok + ' ajustada(s)' + (falhou ? ', ' + falhou + ' falharam' : ''), falhou > 0);
+    _pdvEstSel = {};
+    await pdvCarregarEstoqueResumo();
+    pdvRenderEstoque();
+  }
+
+  async function pdvEstMigrarLote() {
+    const skus = Object.keys(_pdvEstSel).filter(k => _pdvEstSel[k]);
+    if (!skus.length) return;
+    const outros = (_pdvEstResumo.locais || []).filter(l => l.id !== _pdvEstLocalAberto);
+    if (!outros.length) { showToast('Não há outro estoque para migrar', true); return; }
+    const opcoes = outros.map((l, i) => (i + 1) + ') ' + l.nome).join('\n');
+    const esc = await lcPrompt('Migrar o saldo de ' + skus.length + ' variação(ões) para qual estoque?\n\n' + opcoes, '1');
+    if (esc === null) return;
+    const destino = outros[(parseInt(esc, 10) || 1) - 1];
+    if (!destino) { showToast('Opção inválida', true); return; }
+    if (!(await lcConfirm('Migrar TODO o saldo dessas variações para "' + destino.nome + '"?\n\nO saldo sai deste estoque e entra no outro. Isso vira pedido de transferência quando você não tem acesso a Estoques.'))) return;
+
+    let ok = 0, pulados = 0;
+    for (const sku of skus) {
+      const qtd = _pdvEstSaldos[sku] || 0;
+      if (qtd <= 0) { pulados++; continue; }
+      const r = await _pdvApi('/api/estoque/transferir', {
+        method: 'POST',
+        body: JSON.stringify({ origemId: _pdvEstLocalAberto, destinoId: destino.id, sku, quantidade: qtd, confirmarSemNota: true }),
+      });
+      if (r.ok) ok++;
+    }
+    showToast(ok + ' migrada(s)' + (pulados ? ', ' + pulados + ' sem saldo' : ''));
+    _pdvEstSel = {};
+    await pdvCarregarSaldosDoLocal();
+    await pdvCarregarEstoqueResumo();
+    pdvRenderEstoque();
+  }
+
 
   async function pdvEntradaRapida(sku) {
     const atual = _pdvEstSaldos[sku] || 0;
