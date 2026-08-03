@@ -1344,6 +1344,21 @@
       empresas.map((e) => '<option value="' + e.id + '"' + (Number(sel) === e.id ? ' selected' : '') + '>' +
         _esc(e.razao_social) + ' (' + _fmtCnpj(e.cnpj) + ')</option>').join('');
 
+    // v33k.1481: lista vazia PRECISA dizer isso. Antes o modal mostrava só o
+    // bloco de "vincular varias de uma vez" e mais nada, entao parecia que a
+    // tela tinha carregado errado, quando o caso real era nao haver loja no
+    // escopo daquele usuario. Silencio aqui vira chamado.
+    if (!lojas.length) {
+      alvo.innerHTML = '<div style="' + card + ';text-align:center;color:#64748b;padding:24px">' +
+        '<div style="font-size:28px"><span class="lc-ic" data-lucide="store"></span></div>' +
+        '<div style="font-weight:600;margin-top:6px">Nenhuma loja neste usuario</div>' +
+        '<div style="font-size:13px;margin-top:4px;line-height:1.5">O CNPJ ja esta aqui, mas as lojas ainda nao. ' +
+        'Se o cliente saiu de uma agencia, migre as lojas dele tambem em Administracao, ' +
+        'ou conecte as contas em Lojas e Conexoes.</div></div>';
+      if (window.lcHydrateIcons) { try { window.lcHydrateIcons(alvo); } catch (e) {} }
+      return;
+    }
+
     // agrupa lojas por marketplace
     const porMkt = {};
     lojas.forEach((l) => { const m = l.marketplace || 'outros'; (porMkt[m] = porMkt[m] || []).push(l); });
@@ -27531,6 +27546,19 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!loja) return null;
     // Já tem id do banco salvo? Retorna direto
     if (loja.idBanco) return loja.idBanco;
+
+    // v33k.1480: NUNCA criar no banco a partir de um espelho de conta. Eles
+    // nascem com `id: 'conta_<mk>'` e são resquício de uma função antiga; se um
+    // sobrar em algum navegador, ele para aqui em vez de virar loja fantasma.
+    if (String(loja.id || '').indexOf('conta_') === 0) {
+      console.warn('[garantirLojaNoBanco] espelho de conta ignorado:', loja.nome);
+      return null;
+    }
+    // Loja sem nome também não vira registro: era o outro caminho de lixo.
+    if (!String(loja.nome || '').trim()) {
+      console.warn('[garantirLojaNoBanco] loja sem nome ignorada');
+      return null;
+    }
     
     // Não tem? Faz POST /api/lojas e salva o id retornado
     try {
@@ -30529,6 +30557,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     // Primeira pintura com o que sabemos local
     desenharLojasConexoes();
 
+    // v33k.1480: tira os espelhos fantasma ANTES de qualquer coisa, senão o
+    // loop logo abaixo os transformaria em lojas de verdade no banco.
+    _limparEspelhosFantasma();
+
     // Sincroniza ids primeiro pra garantir que cada lojaErp tem idBanco
     await sincronizarIdsLojasDoBanco();
 
@@ -31475,7 +31507,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     const host = document.getElementById('adsLojasSel');
     if (host && !host.dataset.montado) {
       _adsSelComp = LcAcctSel.montar(host, _adsCacheLojas || [], {
-        selecionados: getLojasSelGlobal(),
+        selecionados: lojasSelOuTodas(_adsCacheLojas || []),
         placeholder: 'Selecione as contas',
         salvarLabel: 'Aplicar',
         aoMudar: () => { setLojasSelGlobal(_adsSelComp.getSelecionados()); adsSyncHiddenSelect(); renderAdsSubaba(); },
@@ -31486,7 +31518,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         .then(data => {
           _adsCacheLojas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
           _adsSelComp = LcAcctSel.montar(host, _adsCacheLojas, {
-            selecionados: getLojasSelGlobal(),
+            selecionados: lojasSelOuTodas(_adsCacheLojas),
             placeholder: 'Selecione as contas',
             salvarLabel: 'Aplicar',
             aoMudar: () => { setLojasSelGlobal(_adsSelComp.getSelecionados()); adsSyncHiddenSelect(); renderAdsSubaba(); },
@@ -50905,23 +50937,46 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     }
   }
   
-  // Conta cadastrada como "loja" para uso interno do sistema.
-  // Espelha as contas conectadas no formato que o resto do painel espera.
-  function sincronizarLojasComContas() {
-    _contasConectadas.forEach(c => {
-      const jaExiste = lojasErp.find(l => l.marketplace === c.marketplace && l.contaConectada);
-      if (!jaExiste) {
-        const nomeMkt = {shopee:'Shopee',mercadolivre:'Mercado Livre',tiktok:'TikTok Shop',shein:'Shein'};
-        lojasErp.push({
-          id: 'conta_' + c.marketplace,
-          nome: (nomeMkt[c.marketplace] || c.marketplace) + (c.user_id_marketplace ? ' (' + c.user_id_marketplace + ')' : ''),
-          marketplace: c.marketplace,
-          contaConectada: true
-        });
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1480, A FÁBRICA DE CONTAS FANTASMA (removida)
+  // ─────────────────────────────────────────────────────────────────────
+  // Esta função existia pra "espelhar" as contas conectadas como se fossem
+  // lojas, num tempo em que o painel não lia lojas do banco. Ela inventava um
+  // registro local com `id: 'conta_<mk>'`, SEM `idBanco`, e nome igual ao do
+  // marketplace: "Shopee", "Mercado Livre", "TikTok Shop", "Shein".
+  //
+  // Só que o `renderLojasConexoes` percorre `lojasErp` e chama
+  // `garantirLojaNoBanco` para toda loja sem `idBanco`. Ou seja: cada abertura
+  // da tela transformava esses espelhos em LOJAS DE VERDADE no banco. E como o
+  // espelho ficava no localStorage, apagar a loja no banco não adiantava: na
+  // visita seguinte ela era recriada. Era isso o "excluo e elas voltam".
+  //
+  // Hoje a fonte da verdade é `sincronizarIdsLojasDoBanco`, que traz as lojas
+  // reais do backend. O espelho não tem mais função nenhuma, só o efeito
+  // colateral. Fica como no-op para não quebrar as duas chamadas existentes.
+  function sincronizarLojasComContas() { /* removido, ver comentário acima */ }
+
+  // Limpa os espelhos que já ficaram gravados no localStorage de quem usou as
+  // versões anteriores. Sem isso, o navegador de cada pessoa continuaria
+  // recriando as fantasmas mesmo depois do conserto.
+  //
+  // O alvo é preciso: só entra o que tem cara de espelho (`id` começando com
+  // `conta_`) E não tem `idBanco`. Loja de verdade sempre tem `idBanco` depois
+  // do primeiro sync, então nada real é tocado.
+  function _limparEspelhosFantasma() {
+    try {
+      if (!Array.isArray(lojasErp)) return 0;
+      const antes = lojasErp.length;
+      lojasErp = lojasErp.filter(l => !(l && l.idBanco == null && String(l.id || '').indexOf('conta_') === 0));
+      const removidas = antes - lojasErp.length;
+      if (removidas > 0) {
+        console.log('[lojas] ' + removidas + ' espelho(s) fantasma removido(s) do cache local');
+        saveLojas();
       }
-    });
-    saveLojas();
+      return removidas;
+    } catch (e) { return 0; }
   }
+  window._limparEspelhosFantasma = _limparEspelhosFantasma;
   
   function addLoja() { /* contas agora vêm do vínculo OAuth, não se cria do nada */ }
   function removerLoja(id) { /* contas são gerenciadas pelo vínculo de marketplace */ }
@@ -61411,7 +61466,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1478-migrar-cnpj';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1481-vinculos-escopo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -62870,6 +62925,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // localStorage acima). Sem isso, os seletores já montados (Home/Ads/Pedidos)
     // continuariam com as lojas do usuário anterior até um reload.
     try { if (typeof _lojasSelGlobal !== 'undefined') _lojasSelGlobal = []; } catch(e){}
+    // v33k.1479: e volta a valer "nunca escolheu", pra o PRÓXIMO usuário abrir
+    // com todas as lojas dele marcadas. Sem esta linha ele herdaria o estado
+    // "já decidiu" do usuário anterior e cairia numa tela sem seleção nenhuma,
+    // que é justamente o comportamento que estamos corrigindo.
+    try { if (typeof _lojasSelDefinido !== 'undefined') _lojasSelDefinido = false; } catch(e){}
     // v33k.283: zera a IDENTIDADE no settings em memória. ajustarSettingsAoUsuario
     // só preenche settings.nomeUsuario se estiver VAZIO, se sobrar o nome do usuário
     // ANTERIOR (ex.: "Gontijo"), o cabeçalho "Olá, X" mostra o nome velho ao trocar
@@ -63594,7 +63654,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const host = document.getElementById('homeLojasSel');
     if (host && !host.dataset.montado && typeof LcAcctSel !== 'undefined' && LcAcctSel.montar) {
       _homeLojasComp = LcAcctSel.montar(host, _pedCacheLojas || [], {
-        selecionados: getLojasSelGlobal(),
+        selecionados: lojasSelOuTodas(_pedCacheLojas || []),
         placeholder: 'Todas as lojas',
         salvarLabel: 'Aplicar',
         aoMudar: () => { setLojasSelGlobal(_homeLojasComp.getSelecionados()); homeCarregarDashboard(); homeCarregarEnvio(); },
@@ -63606,11 +63666,15 @@ Responda APENAS com JSON válido (sem markdown), formato:
         .then(data => {
           _pedCacheLojas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
           _homeLojasComp = LcAcctSel.montar(host, _pedCacheLojas, {
-            selecionados: getLojasSelGlobal(),
+            selecionados: lojasSelOuTodas(_pedCacheLojas),
             placeholder: 'Todas as lojas',
             salvarLabel: 'Aplicar',
             aoMudar: () => { setLojasSelGlobal(_homeLojasComp.getSelecionados()); homeCarregarDashboard(); homeCarregarEnvio(); },
           });
+          // v33k.1479: recarrega depois que as lojas chegaram, mesma correção
+          // da tela de Pedidos. Ver o comentário lá.
+          homeCarregarDashboard();
+          homeCarregarEnvio();
         }).catch(() => {});
     } else if (_homeLojasComp) {
       _homeLojasComp.setSelecionados(getLojasSelGlobal());
@@ -69188,9 +69252,33 @@ ${JSON.stringify(metricas, null, 2)}`
   let _lojasSelGlobal = (function () {
     try { const r = JSON.parse(localStorage.getItem(_LOJAS_SEL_KEY) || '[]'); return Array.isArray(r) ? r.map(String) : []; } catch (e) { return []; }
   })();
+  // v33k.1479: `[]` significava DUAS coisas diferentes, e era esse o problema.
+  // "Nunca escolhi nada" e "escolhi nenhuma loja" davam o mesmo array vazio,
+  // entao a tela abria sem seleção e sem dados, e a pessoa tinha que marcar as
+  // lojas toda vez. Agora a AUSENCIA da chave no localStorage e o sinal de
+  // "nunca escolhi", e nesse caso o padrao passa a ser TODAS.
+  //
+  // Quem desmarcar tudo de proposito grava `[]` e a chave passa a existir, ou
+  // seja, a escolha dele e respeitada e nao voltamos a marcar tudo por cima.
+  let _lojasSelDefinido = (function () {
+    try { return localStorage.getItem(_LOJAS_SEL_KEY) !== null; } catch (e) { return false; }
+  })();
   function getLojasSelGlobal() { return _lojasSelGlobal.slice(); }
+
+  // Seleção a usar ao montar um seletor: a salva, ou TODAS na primeira vez.
+  // Recebe a lista de lojas porque "todas" so existe depois que ela carrega.
+  function lojasSelOuTodas(lojas) {
+    const sel = getLojasSelGlobal();
+    if (_lojasSelDefinido) return sel;              // a pessoa já decidiu, respeita
+    const todas = (lojas || []).map(l => String(l.id)).filter(Boolean);
+    if (!todas.length) return sel;                  // lista ainda não chegou
+    setLojasSelGlobal(todas);                       // grava: vale pras outras telas
+    return todas;
+  }
+  window.lojasSelOuTodas = lojasSelOuTodas;
   function setLojasSelGlobal(ids) {
     _lojasSelGlobal = (ids || []).map(String);
+    _lojasSelDefinido = true;   // a partir daqui a escolha é da pessoa
     try { localStorage.setItem(_LOJAS_SEL_KEY, JSON.stringify(_lojasSelGlobal)); } catch (e) {}
     // propaga pros seletores já montados (setSelecionados NÃO dispara aoMudar)
     try { if (_lucroSelComp && _lucroSelComp.setSelecionados) _lucroSelComp.setSelecionados(_lojasSelGlobal); } catch (e) {}
@@ -69807,7 +69895,7 @@ ${JSON.stringify(metricas, null, 2)}`
         } catch (e) {}
       }
       _custosSelComp = LcAcctSel.montar(hostSel, _lucroCacheLojas, {
-        selecionados: getLojasSelGlobal(), placeholder: 'Selecione as lojas', salvarLabel: 'Filtrar',
+        selecionados: lojasSelOuTodas(_lucroCacheLojas), placeholder: 'Selecione as lojas', salvarLabel: 'Filtrar',
         aoMudar: () => { setLojasSelGlobal(_custosSelComp.getSelecionados()); lucroCarregarCustos(1); },
       });
       hostSel.dataset.montado = '1';
@@ -71049,7 +71137,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (host && !host.dataset.montado) {
       // monta JÁ com a lista que tiver em cache (aparece na hora, sem esperar fetch)
       _pedSelComp = LcAcctSel.montar(host, _pedCacheLojas || [], {
-        selecionados: getLojasSelGlobal(),
+        selecionados: lojasSelOuTodas(_pedCacheLojas || []),
         placeholder: 'Selecione as contas',
         salvarLabel: 'Aplicar',
         aoMudar: () => { setLojasSelGlobal(_pedSelComp.getSelecionados()); pedAplicar(); },
@@ -71061,11 +71149,17 @@ ${JSON.stringify(metricas, null, 2)}`
         .then(data => {
           _pedCacheLojas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
           _pedSelComp = LcAcctSel.montar(host, _pedCacheLojas, {
-            selecionados: getLojasSelGlobal(),
+            selecionados: lojasSelOuTodas(_pedCacheLojas),
             placeholder: 'Selecione as contas',
             salvarLabel: 'Aplicar',
             aoMudar: () => { setLojasSelGlobal(_pedSelComp.getSelecionados()); pedAplicar(); },
           });
+          // v33k.1479: recarrega depois que as lojas chegaram. Na 1a carga o
+          // seletor e montado com a lista VAZIA, entao a selecao padrao (todas)
+          // so pode ser semeada agora. Sem este recarregar, o seletor mostrava
+          // "Todas as contas" e a lista embaixo continuava vazia ate dar F5.
+          // A tela de Notas Fiscais ja fazia isso; Pedidos tinha ficado de fora.
+          pedAplicar();
         })
         .catch(() => {});
     } else if (_pedSelComp) {
@@ -71263,7 +71357,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (host) host.style.display = '';
     if (host && !host.dataset.montado) {
       _nfSelComp = LcAcctSel.montar(host, _pedCacheLojas || [], {
-        selecionados: getLojasSelGlobal(),
+        selecionados: lojasSelOuTodas(_pedCacheLojas || []),
         placeholder: 'Selecione as contas',
         salvarLabel: 'Aplicar',
         aoMudar: () => { setLojasSelGlobal(_nfSelComp.getSelecionados()); expCarregar(); },
@@ -71274,7 +71368,7 @@ ${JSON.stringify(metricas, null, 2)}`
         .then(data => {
           _pedCacheLojas = (data.ok && Array.isArray(data.lojas)) ? data.lojas : [];
           _nfSelComp = LcAcctSel.montar(host, _pedCacheLojas, {
-            selecionados: getLojasSelGlobal(),
+            selecionados: lojasSelOuTodas(_pedCacheLojas),
             placeholder: 'Selecione as contas',
             salvarLabel: 'Aplicar',
             aoMudar: () => { setLojasSelGlobal(_nfSelComp.getSelecionados()); expCarregar(); },
