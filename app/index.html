@@ -20971,6 +20971,7 @@ window.LC_SVG = {
         <div class="top-actions"><div class="user-avatar">A</div></div>
       </div>
       <div class="content" style="max-width:1180px;margin:0 auto;padding:20px">
+        <div id="sacCardAuto" style="margin-bottom:16px"></div>
         <div id="sacAvisoSonda" style="display:none;margin-bottom:14px"></div>
         <!-- As abas nascem do backend: uma conta que nao tem loja capaz de uma
              frente nao ve a aba dela. Botao que nao faz nada e pior que nada. -->
@@ -61375,7 +61376,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1466-sac-motor';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1469-sac-automacao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -63068,7 +63069,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         }, 40);
       }
     }
-    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmErros === 'function') renderAdmErros(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); if (typeof admCarregarCertConsulta === 'function') admCarregarCertConsulta(); }
+    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmErros === 'function') renderAdmErros(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); if (typeof admCarregarCertConsulta === 'function') admCarregarCertConsulta(); if (typeof renderAdmCustoSac === 'function') renderAdmCustoSac(); }
     else if (typeof window.admSaudePararAuto === 'function') { window.admSaudePararAuto(); }
     if (screenId === 'produtosScreen') {
       // v32i.1: carrega página 1 do backend (paginação). Se já tem itens carregados
@@ -90845,8 +90846,17 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const cap = await _sacApi('/api/sac/capacidades');
     if (!cap.ok) {
       document.getElementById('sacTabs').innerHTML = '';
-      box.innerHTML = '<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:12px;padding:16px">'
-        + escapeHtml(cap.erro || 'Não consegui carregar o SAC.') + '</div>';
+      // O backend recusa por plano com a mesma mensagem do Motor de Ads. Aqui
+      // ela vira convite, nao erro vermelho: nao e falha, e um recurso que o
+      // plano nao inclui.
+      const semPlano = /plano/i.test(String(cap.erro || ''));
+      box.innerHTML = semPlano
+        ? '<div style="background:var(--lc-warning-soft);border:1px solid #fde68a;color:#92400e;'
+          + 'border-radius:var(--lc-radius-lg);padding:22px;font-size:13.5px;line-height:1.6">'
+          + '<div style="font-weight:700;margin-bottom:6px">O SAC entra a partir do plano Pro</div>'
+          + escapeHtml(cap.erro) + '</div>'
+        : '<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:12px;padding:16px">'
+          + escapeHtml(cap.erro || 'Não consegui carregar o SAC.') + '</div>';
       return;
     }
     _sacCap = cap;
@@ -90861,6 +90871,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     }
     if (!_sacAba || !disponiveis.some(a => a.tipo === _sacAba)) _sacAba = disponiveis[0].tipo;
 
+    const cardBox = document.getElementById('sacCardAuto');
+    if (cardBox) {
+      cardBox.innerHTML = _sacHtmlCardAuto();
+      try { window.lucide && window.lucide.createIcons(); } catch (e) {}
+    }
     _sacDesenharAbas(disponiveis);
     _sacDesenharConteudo(disponiveis.find(a => a.tipo === _sacAba));
   }
@@ -91123,10 +91138,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (_sacAval.abrirConfig) h += _sacHtmlConfigAval();
 
     if (modo === 'automatico') {
+      const tudo = _sacAval.config && _sacAval.config.responderNotaBaixaSozinho;
       h += '<div style="background:var(--lc-info-soft);border:1px solid #bfdbfe;color:#1e40af;'
         + 'border-radius:var(--lc-radius-sm);padding:9px 12px;font-size:12.5px;margin-bottom:12px">'
-        + 'Automatico ligado. De 3 a 5 estrelas sao respondidas sozinhas. '
-        + '1 e 2 estrelas sempre passam por voce, porque a resposta e publica e a Shopee nao deixa editar.</div>';
+        + (tudo
+          ? 'Automatico ligado em todas as notas, de 1 a 5 estrelas. A resposta e publica e a Shopee nao deixa editar depois.'
+          : 'Automatico ligado. De 3 a 5 estrelas sao respondidas sozinhas. '
+            + '1 e 2 estrelas passam por voce, ate voce ligar a resposta automatica de nota baixa na configuracao.')
+        + '</div>';
     }
 
     if (!pend.length) {
@@ -91247,16 +91266,36 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + 'Um texto por linha. Na hora de responder o sistema sorteia um deles e nunca repete o usado da vez anterior, '
       + 'para dez compradores do mesmo anuncio nao verem a mesma frase.</div>';
 
-    h += '<label style="font-size:12px;font-weight:700;display:block;margin-bottom:5px">Automacao</label>';
-    h += '<select id="sacCfgModo" style="width:100%;padding:9px 11px;border:1px solid var(--lc-border-2);border-radius:var(--lc-radius-sm);font-size:13px;margin-bottom:6px">';
-    [['desligado', 'Desligado, so coleta'],
-     ['sugerir', 'Sugerir, a IA escreve e voce envia'],
-     ['automatico', 'Automatico, responde sozinho']].forEach(o => {
-      h += '<option value="' + o[0] + '"' + ((cfg.automacao.avaliacao || 'sugerir') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+    // As quatro frentes na mesma tela. Antes so a avaliacao tinha controle,
+    // e ligar o automatico das perguntas exigia mexer no banco.
+    h += '<div style="font-size:12px;color:var(--lc-muted);margin-bottom:12px;line-height:1.5">'
+      + 'Estes modos so valem com a automacao LIGADA no card do topo. Desligada, nada e gerado por IA.</div>';
+    h += '<label style="font-size:12px;font-weight:700;display:block;margin-bottom:7px">Automacao por frente</label>';
+    [['pergunta', 'Perguntas (Mercado Livre)'],
+     ['avaliacao', 'Avaliacoes (Shopee)'],
+     ['mensagem', 'Mensagens (ML e TikTok)'],
+     ['reclamacao', 'Reclamacoes']].forEach(fr => {
+      h += '<div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">'
+        + '<span style="flex:1;font-size:12.5px;color:var(--lc-ink-2)">' + fr[1] + '</span>'
+        + '<select id="sacCfgModo_' + fr[0] + '" style="width:230px;padding:7px 10px;border:1px solid var(--lc-border-2);border-radius:var(--lc-radius-sm);font-size:12.5px">';
+      [['desligado', 'Desligado, so coleta'],
+       ['sugerir', 'Sugerir, voce envia'],
+       ['automatico', 'Automatico, responde sozinho']].forEach(o => {
+        h += '<option value="' + o[0] + '"' + ((cfg.automacao[fr[0]] || 'sugerir') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+      });
+      h += '</select></div>';
     });
-    h += '</select>';
-    h += '<div style="font-size:11.5px;color:var(--lc-warning);margin-bottom:16px">'
-      + '1 e 2 estrelas nunca sao enviadas sozinhas, mesmo no automatico.</div>';
+    // A chave da nota baixa. Fica separada e com o aviso do lado porque e a
+    // unica coisa aqui que manda resposta publica e irreversivel sem ninguem ler.
+    h += '<label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;margin:10px 0 16px;'
+      + 'background:var(--lc-warning-soft);border:1px solid #fde68a;border-radius:var(--lc-radius-sm);padding:11px 13px">'
+      + '<input type="checkbox" id="sacCfgNotaBaixa" style="margin-top:2px" '
+      + (cfg.responderNotaBaixaSozinho ? 'checked' : '') + '>'
+      + '<span style="font-size:12.5px;color:#92400e;line-height:1.5">'
+      + '<strong>Responder tambem 1 e 2 estrelas sozinho.</strong><br>'
+      + 'Com isso desligado, nota baixa fica na fila esperando voce. Ligado, ela sai sozinha '
+      + 'no automatico. A resposta e publica e a Shopee aceita uma so, sem edicao depois, '
+      + 'entao confira os textos de 1 e 2 estrelas antes de ligar.</span></label>';
 
     [5, 4, 3, 2, 1].forEach(n => {
       const lista = (cfg.respostasAvaliacao && cfg.respostasAvaliacao[n]) || [];
@@ -91293,8 +91332,12 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (botao) { botao.disabled = true; botao.textContent = 'Salvando...'; }
     const cfg = JSON.parse(JSON.stringify(_sacAval.config || {}));
     cfg.automacao = cfg.automacao || {};
-    const sel = document.getElementById('sacCfgModo');
-    if (sel) cfg.automacao.avaliacao = sel.value;
+    ['pergunta', 'avaliacao', 'mensagem', 'reclamacao'].forEach(fr => {
+      const sel = document.getElementById('sacCfgModo_' + fr);
+      if (sel) cfg.automacao[fr] = sel.value;
+    });
+    const chkNb = document.getElementById('sacCfgNotaBaixa');
+    if (chkNb) cfg.responderNotaBaixaSozinho = !!chkNb.checked;
     cfg.respostasAvaliacao = cfg.respostasAvaliacao || {};
     [1, 2, 3, 4, 5].forEach(n => {
       const ta = document.getElementById('sacCfg' + n);
@@ -91574,6 +91617,94 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + '</div>';
     return h;
   }
+
+  // -- CARD DA AUTOMACAO (v33k.1469) -------------------------------------
+  // Mesmas classes do card do Motor de Ads, pra ser a mesma coisa aos olhos de
+  // quem usa. A diferenca esta embaixo: enquanto a chave estiver desligada,
+  // NENHUMA chamada de IA acontece nesta conta, nem pra sugerir. Nao existe
+  // modo de teste que gasta igual.
+  function _sacHtmlCardAuto() {
+    const a = (_sacCap && _sacCap.automacao) || {};
+    const on = a.ativa === true && a.planoPermite === true;
+    const logo = (typeof LOGO_LIDER !== 'undefined') ? LOGO_LIDER : '';
+    let barras = '';
+    for (let i2 = 0; i2 < 9; i2++) barras += '<span></span>';
+
+    // Sem plano, o card vira convite, nao erro: a tela toda continua aberta e
+    // a pessoa responde a mao normalmente.
+    const controle = a.planoPermite
+      ? '<label class="lc-auto-sw"><input type="checkbox" ' + (on ? 'checked' : '')
+        + ' onchange="sacToggleAutomacao(this.checked, this)"><span class="lc-auto-sl"></span></label>'
+        + '<span class="lc-auto-status' + (on ? ' on' : '') + '" id="sacAutoStatus">'
+        + (on ? 'Ativado' : 'Desativado') + '</span>'
+      : '<span class="lc-auto-status" title="Disponivel do plano Pro em diante">Plano Pro</span>';
+
+    const modos = a.modos || {};
+    const rot = { pergunta: 'Perguntas', avaliacao: 'Avaliacoes', mensagem: 'Mensagens', reclamacao: 'Reclamacoes' };
+    const resumo = Object.keys(rot)
+      .filter(k => modos[k] && modos[k] !== 'desligado')
+      .map(k => rot[k] + ' em ' + modos[k]);
+
+    let meta;
+    if (!a.planoPermite) {
+      meta = '<div class="lc-auto-meta">Responder a mao continua liberado no seu plano.</div>';
+    } else if (!on) {
+      // Diz o que MUDA ao ligar, nao so que esta desligado.
+      meta = '<div class="lc-auto-meta">Desligada. Nenhuma resposta e gerada por IA enquanto isso, nem como sugestao.</div>';
+    } else {
+      meta = '<div class="lc-auto-meta">Roda de hora em hora'
+        + (resumo.length ? ' \u00b7 ' + escapeHtml(resumo.join(', ')) : '') + '</div>';
+    }
+
+    return '<div class="lc-auto-card' + (on ? ' is-on' : '') + '">'
+      + '<div class="lc-auto-mon"><div class="lc-scr"><div class="lc-glow"></div>'
+      + (logo ? '<img src="' + logo + '" alt="Lider 10">' : '') + '</div>'
+      + '<div class="lc-stand"></div><div class="lc-base"></div></div>'
+      + '<div class="lc-auto-bars">' + barras + '</div>'
+      + '<div class="lc-auto-div"></div>'
+      + '<div class="lc-auto-ctl">'
+      + '<div class="lc-auto-title">Atendimento automatico (IA)</div>'
+      + '<div class="lc-auto-desc">Le a pergunta, a avaliacao ou a conversa, entende o anuncio e o '
+      + 'pedido, e escreve a resposta. Voce escolhe se ela sugere ou se responde sozinha.</div>'
+      + meta
+      + '<div class="lc-auto-row">' + controle
+      + (on ? '<button class="lc-auto-run" onclick="sacRodarAgora(this)"><span class="rodar-txt">Rodar</span></button>' : '')
+      + '</div></div>'
+      + '<div class="lc-auto-side">'
+      + '<button class="lc-auto-side-btn" onclick="sacAbrirConfigAval()"><span class="lc-ic" data-lucide="settings-2"></span><span class="lc-auto-side-txt">Editar automacao</span></button>'
+      + '<button class="lc-auto-side-btn" onclick="sacVerMotor()"><span class="lc-ic" data-lucide="history"></span><span class="lc-auto-side-txt">Historico</span></button>'
+      + '</div></div>';
+  }
+
+  async function sacToggleAutomacao(ligar, el) {
+    if (el) el.disabled = true;
+    const r = await _sacApi('/api/sac/automacao',
+      { method: 'POST', body: JSON.stringify({ ativa: !!ligar }) });
+    if (el) el.disabled = false;
+    if (!r.ok) {
+      if (el) el.checked = !ligar;
+      lcAlert(r.erro || 'Nao consegui mudar a automacao.');
+      return;
+    }
+    if (_sacCap && _sacCap.automacao) _sacCap.automacao.ativa = r.ativa;
+    const box = document.getElementById('sacCardAuto');
+    if (box) box.innerHTML = _sacHtmlCardAuto();
+    try { window.lucide && window.lucide.createIcons(); } catch (e) {}
+  }
+  window.sacToggleAutomacao = sacToggleAutomacao;
+
+  // "Rodar" varre a aba aberta agora, sem esperar a hora cheia.
+  async function sacRodarAgora(botao) {
+    const tipo = _sacAba || 'pergunta';
+    if (tipo === 'reclamacao') { lcAlert('As reclamacoes sao varridas pelo motor de disputas, na tela de Pedidos.'); return; }
+    const txt = botao && botao.querySelector('.rodar-txt');
+    if (botao) { botao.disabled = true; if (txt) txt.textContent = 'Rodando...'; }
+    const r = await _sacApi('/api/sac/coletar', { method: 'POST', body: JSON.stringify({ tipo: tipo }) });
+    if (botao) { botao.disabled = false; if (txt) txt.textContent = 'Rodar'; }
+    if (!r.ok) { lcAlert(r.erro || 'Nao consegui rodar.'); return; }
+    renderSac();
+  }
+  window.sacRodarAgora = sacRodarAgora;
 
   // ── AVISO DO DIA (Leva 5) ─────────────────────────────────────────────
   // Uma vez por dia, no primeiro acesso, e so. Sem badge piscando e sem
@@ -93263,6 +93394,25 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <div style="font-size:11px;color:#9ca3af;margin-top:12px;line-height:1.5">Guardado cifrado (AES-256). As consultas ficam registradas na SEFAZ sob este CNPJ. Estados AM, MA, PA e PI não oferecem o serviço; SP pode limitar consulta em massa.</div>
     </div>
 
+    <!-- CUSTO DA IA DO SAC (só super admin) -->
+    <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div>
+          <h3 class="adm2-sec-title">Custo da IA do SAC</h3>
+          <div style="font-size:12px;color:#6b7280;margin-top:2px">Quanto o Haiku consome respondendo perguntas, avaliações e mensagens. Informação de margem, não aparece para o lojista.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="admCustoDias" onchange="renderAdmCustoSac()" style="font-size:12px;padding:6px 9px;border:1px solid #d1d5db;border-radius:8px">
+            <option value="7">7 dias</option>
+            <option value="30" selected>30 dias</option>
+            <option value="90">90 dias</option>
+          </select>
+          <button class="toolbar-btn" style="font-size:12px" onclick="renderAdmCustoSac()">Atualizar</button>
+        </div>
+      </div>
+      <div id="admCustoSac"><em style="color:#9ca3af;font-size:13px">Carregando...</em></div>
+    </div>
+
     <!-- SAÚDE DA INFRAESTRUTURA (só super admin) -->
     <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
@@ -94097,6 +94247,100 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const [bg, fg, txt] = M[nivel] || M.neutro;
     return '<span style="background:' + bg + ';color:' + fg + ';font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;letter-spacing:.3px">' + txt + '</span>';
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CUSTO DA IA DO SAC (v33k.1468), só super adm.
+  // ─────────────────────────────────────────────────────────────────────
+  // Saiu da tela do SAC e veio pra ca. Quanto a nossa IA custa e informacao
+  // nossa, nao do lojista: ele quer saber se a resposta ficou boa, o custo
+  // por token e decisao de margem do produto.
+  // ═══════════════════════════════════════════════════════════════════════
+  async function renderAdmCustoSac() {
+    const box = document.getElementById('admCustoSac');
+    if (!box) return;
+    box.innerHTML = '<em style="color:#9ca3af;font-size:13px">Carregando...</em>';
+    const sel = document.getElementById('admCustoDias');
+    const dias = sel ? sel.value : 30;
+
+    let r;
+    try {
+      r = await fetch(BACKEND_URL + '/api/sac/custo-admin?dias=' + dias,
+        { headers: { 'x-api-token': getApiToken() } }).then(x => x.json());
+    } catch (e) { r = { ok: false, erro: e.message }; }
+
+    if (!r.ok) {
+      box.innerHTML = '<div style="color:#b91c1c;font-size:13px">' + escapeHtml(r.erro || 'Falha ao ler o custo.') + '</div>';
+      return;
+    }
+    if (!r.total || !r.total.chamadas) {
+      box.innerHTML = '<em style="color:#9ca3af;font-size:13px">A IA do SAC ainda nao foi usada neste periodo.</em>';
+      return;
+    }
+
+    const brl = v => 'R$ ' + Number(v || 0).toFixed(2);
+    const cartao = (rot, val, sub) =>
+      '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px">'
+      + '<div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.4px">' + rot + '</div>'
+      + '<div style="font-size:20px;font-weight:800;color:#111827;margin-top:3px">' + val + '</div>'
+      + (sub ? '<div style="font-size:11px;color:#9ca3af;margin-top:2px">' + sub + '</div>' : '')
+      + '</div>';
+
+    let h = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">'
+      + cartao('Hoje', brl(r.hoje.custo), r.hoje.chamadas + ' chamadas')
+      + cartao('Neste mes', brl(r.mes.custo), r.mes.chamadas + ' chamadas')
+      + cartao('No periodo', brl(r.total.custo), r.total.chamadas + ' chamadas')
+      + cartao('Tokens', (r.total.tokens / 1000).toFixed(0) + 'k', r.falhas + ' com erro')
+      + '</div>';
+
+    // Uma loja sozinha passando de um terco do gasto e candidata a laco, a
+    // conversa infinita ou a coleta repetindo.
+    if ((r.lojasFora || []).length) {
+      h += '<div style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;border-radius:10px;'
+        + 'padding:10px 13px;font-size:12.5px;margin-bottom:14px;line-height:1.5">'
+        + '<strong>Fora da curva:</strong> '
+        + r.lojasFora.map(l => escapeHtml(l.nome) + ' com ' + Math.round(l.fatia * 100) + '% do gasto').join(', ')
+        + '. Vale conferir se ha coleta repetindo.</div>';
+    }
+
+    const tabela = (titulo, linhas, colNome) => {
+      if (!linhas.length) return '';
+      let t = '<div style="font-weight:700;color:#1e2a47;font-size:13px;margin:0 0 7px">' + titulo + '</div>'
+        + '<div style="border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;margin-bottom:14px">'
+        + '<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+        + '<thead><tr style="background:#f9fafb">'
+        + '<th style="text-align:left;padding:8px 11px;color:#6b7280;font-weight:600">' + colNome + '</th>'
+        + '<th style="text-align:right;padding:8px 11px;color:#6b7280;font-weight:600">Chamadas</th>'
+        + '<th style="text-align:right;padding:8px 11px;color:#6b7280;font-weight:600">Custo</th>'
+        + '</tr></thead><tbody>';
+      linhas.forEach(l => {
+        t += '<tr style="border-top:1px solid #f3f4f6">'
+          + '<td style="padding:8px 11px">' + escapeHtml(l.rotulo) + '</td>'
+          + '<td style="padding:8px 11px;text-align:right;font-variant-numeric:tabular-nums">' + l.chamadas + '</td>'
+          + '<td style="padding:8px 11px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums">' + brl(l.custo) + '</td>'
+          + '</tr>';
+      });
+      return t + '</tbody></table></div>';
+    };
+
+    h += tabela('Por frente', Object.keys(r.porTipo || {}).map(t => ({
+      rotulo: t, chamadas: r.porTipo[t].chamadas, custo: r.porTipo[t].custo,
+    })).sort((a, b) => b.custo - a.custo), 'Frente');
+
+    h += tabela('Por conta', (r.contas || []).slice(0, 15).map(c => ({
+      rotulo: c.nome + (c.plano ? ' (' + c.plano + ')' : ''), chamadas: c.chamadas, custo: c.custo,
+    })), 'Conta');
+
+    h += tabela('Lojas que mais gastam', (r.porLoja || []).slice(0, 15).map(l => ({
+      rotulo: l.nome, chamadas: l.chamadas, custo: l.custo,
+    })), 'Loja');
+
+    h += '<div style="font-size:11px;color:#9ca3af;line-height:1.5">Estimado pela tabela do Haiku '
+      + '(entrada e saida por milhao de tokens) e cambio de referencia. Serve para ordem de grandeza '
+      + 'e para achar desvio, nao para bater centavo com a fatura.</div>';
+
+    box.innerHTML = h;
+  }
+  window.renderAdmCustoSac = renderAdmCustoSac;
 
   async function renderAdmSaude() {
     const grid = document.getElementById('admSaudeGrid');
