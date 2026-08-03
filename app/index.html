@@ -1368,6 +1368,15 @@
           '<div style="display:flex;align-items:center;gap:10px">' +
             '<div style="flex:1;font-size:13.5px;color:#334155">' + _esc(l.nome) + '</div>' +
             '<select style="' + inp + ';max-width:280px" onchange="_vlVincular(' + l.id + ', this.value)">' + optsEmpresa(l.nfe_empresa_id) + '</select>' +
+            // v33k.1475: interruptor de "esta loja emite NF-e". Antes isso era
+            // adivinhado do nome da transportadora da Shopee ("... CPF"), e
+            // quebrava em "Retirada pelo Comprador", que nao tem CPF no texto:
+            // o pedido de uma loja CPF caia na fila de Emitir NF e ficava preso.
+            '<select style="' + inp + ';max-width:170px" onchange="_vlEmiteNf(' + l.id + ', this.value)" title="Loja CPF nao emite nota: os pedidos dela nascem direto em Programar">' +
+              '<option value=""' + (l.emite_nf == null ? ' selected' : '') + '>NF: automatico</option>' +
+              '<option value="1"' + (l.emite_nf === true ? ' selected' : '') + '>Emite NF (CNPJ)</option>' +
+              '<option value="0"' + (l.emite_nf === false ? ' selected' : '') + '>Nao emite (CPF)</option>' +
+            '</select>' +
             (temEmpresa ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_vlToggleValor(' + l.id + ')" title="Configurar valor da NF"><span class="lc-ic" data-lucide="settings"></span> Valor</button>' : '') +
           '</div>' +
           (temEmpresa ? '<div style="font-size:11px;color:#64748b;margin-top:3px;padding-left:2px">' + cfgResumo + '</div>' : '') +
@@ -1396,6 +1405,20 @@
     alvo.innerHTML = html;
     _hidratarIcones(alvo);
   }
+
+  // Grava se a loja emite NF. '' = automatico (volta a inferir pelo frete).
+  async function _vlEmiteNf(lojaId, valor) {
+    const emite = valor === '' ? null : (valor === '1');
+    const r = await _api('/api/expedicao/loja-emite-nf', {
+      method: 'POST', body: JSON.stringify({ lojaId: Number(lojaId), emiteNf: emite }),
+    });
+    if (!r || !r.ok) return _toast((r && r.erro) || 'Não consegui salvar.', true);
+    _toast(emite === false
+      ? 'Loja marcada como CPF: os pedidos dela vão direto para Programar.'
+      : (emite === true ? 'Loja marcada como CNPJ: os pedidos passam por Emitir NF.'
+        : 'Voltou para automático.'));
+  }
+  window._vlEmiteNf = _vlEmiteNf;
 
   async function _vlVincular(lojaId, empresaId) {
     const data = await _api('/api/nfe/lojas-vinculo', {
@@ -6942,7 +6965,16 @@
             '<td style="padding:10px 12px;font-size:12px;color:#475569">' + _esc(n.loja_nome) + '</td>') +
           '<td style="padding:10px 12px;font-size:12.5px;text-align:center;font-weight:700">' + (n.numero || '—') + '</td>' +
           '<td style="padding:10px 12px;font-size:11px;font-family:monospace;color:#64748b" title="' + _esc(n.chave_acesso || '') + '">' + chave + '</td>' +
-          '<td style="padding:10px 12px;text-align:center">' + _cnStatusBadge(n.status) + '</td>' +
+          '<td style="padding:10px 12px;text-align:center">' + _cnStatusBadge(n.status) +
+            // v33k.1473: nota emitida por SVC recebe etiqueta ao lado do status.
+            // A contabilidade precisa saber disso SEM abrir a nota: o tpEmis
+            // muda a leitura fiscal e ela pode ser cobrada a explicar depois.
+            (n.contingencia
+              ? '<div style="margin-top:4px;display:inline-flex;align-items:center;gap:4px;font-size:10px;'
+                + 'font-weight:800;padding:2px 7px;border-radius:6px;background:#fef3c7;color:#92400e;'
+                + 'border:1px solid #fde68a" title="' + _esc(n.contingencia_just || 'Emitida em contingência') + '">'
+                + 'CONTINGÊNCIA ' + _esc(n.contingencia_tipo || '') + '</div>'
+              : '') + '</td>' +
           // v33k.873: a célula tinha `white-space:nowrap` e até 6 botões
           // (Imprimir, XML, Cancelar, Carta, CC-e PDF, XML da CC-e), eles
           // estouravam a largura do modal e ficavam cortados na direita.
@@ -61379,7 +61411,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1472-fix-acentos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1478-migrar-cnpj';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -71118,6 +71150,13 @@ ${JSON.stringify(metricas, null, 2)}`
 
   let _expEstadoSel = null;             // sub-status (estado_shopee) filtrado
   let _expDados = null;                 // { etapas, rotulos, contagens, porEtapa }
+  // v33k.1476: declarados AQUI, junto de `_expDados`, e não lá embaixo com as
+  // funções de contagem. `expCarregar` usa `_expSeqCnt` e é definida antes
+  // daquele bloco: com `let` mais abaixo, é zona morta temporal esperando um
+  // reordenamento pra virar ReferenceError em produção.
+  let _expSeq = 0;                      // série da requisição de LISTA mais nova
+  let _expSeqCnt = 0;                   // série da requisição de CONTADORES mais nova
+  const _expReal = new Map();           // 'etapa:estado' → { total, em }
   let _expSel = new Set();              // order_sn selecionados
   let _expOrdem = 'recentes';           // v33k.401: 'recentes' | 'antigos' | 'sku'
   let _expSoAtrasados = false;          // v33k.401: filtro só-atrasados (prazo vencido)
@@ -71282,11 +71321,16 @@ ${JSON.stringify(metricas, null, 2)}`
     }
     if (loading && !silencioso) loading.style.display = 'block';
     try {
+      const _seqC = ++_expSeqCnt;
       const params = new URLSearchParams({ lojaIds: lojas.join(',') });
       const resp = await fetch(BACKEND_URL + '/api/expedicao/contadores?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
       const data = await resp.json();
       if (!data.ok) throw new Error(data.erro || 'Falha ao carregar');
+      // Contadores atrasados não podem sobrescrever os frescos: a resposta mais
+      // velha chegando depois é metade da causa dos números dançando.
+      if (_seqC !== _expSeqCnt) return;
       _expDados = data;
+      _expPatchContagemReal();
       expRenderEtapas();
       // garante um sub-status selecionado válido na etapa atual
       // v33k.593: NÃO força mais um sub-status. Se o selecionado não pertence à
@@ -71322,13 +71366,18 @@ ${JSON.stringify(metricas, null, 2)}`
           try {
             const lojas2 = expLojasSelecionadas();
             if (lojas2.length) {
+              const _seqC = ++_expSeqCnt;
               const p2 = new URLSearchParams({ lojaIds: lojas2.join(',') });
               const r2 = await fetch(BACKEND_URL + '/api/expedicao/contadores?' + p2.toString(), { headers: { 'x-api-token': getApiToken() } });
               const d2 = await r2.json();
               if (d2 && d2.ok) {
+                // O poll da reconciliação é o mais atrasado de todos: ele NÃO
+                // pode pintar por cima de uma carga que a pessoa acabou de pedir.
+                if (_seqC !== _expSeqCnt) return;
                 const agora = JSON.stringify(d2.porEtapa || {});
                 const mudou = agora !== ultimo;
                 _expDados = d2;
+                _expPatchContagemReal();
                 if (mudou) {
                   // v33k.1194: atualiza SÓ os números dos cards/chips (dos OUTROS
                   // etapas). NÃO re-renderiza a lista — era isso que fazia a tela
@@ -71371,14 +71420,64 @@ ${JSON.stringify(metricas, null, 2)}`
   // defasados enquanto a reconciliação roda. Guardamos o total real da última
   // lista carregada e o CASAMOS no _expDados antes de desenhar os cards/chips —
   // assim o número de cima é SEMPRE igual ao de baixo, na hora, sem poll.
-  let _expContagemReal = null;   // { etapa, estado, total }
+  // ═══════════════════════════════════════════════════════════════════════
+  // CONTAGENS, v33k.1476, A CORRIDA
+  // ─────────────────────────────────────────────────────────────────────
+  // Sintoma: clicar num chip trocava os números de lugar. "Todos 281 /
+  // Pronto 171" virava "Todos 171 / Pronto 280", e minutos depois se
+  // arrumava sozinho.
+  //
+  // Causa: o total REAL da lista era carimbado com a seleção do momento da
+  // RESPOSTA, não a do PEDIDO:
+  //
+  //     _expContagemReal = { etapa: _expEtapaSel, estado: _expEstadoSel, ... }
+  //
+  // Clicar durante o carregamento troca `_expEstadoSel` antes de a resposta
+  // anterior chegar. Aí o total da requisição A entra no slot da seleção B, e
+  // vice-versa. Os números não eram inventados, estavam trocados de lugar.
+  //
+  // Duas correções:
+  //   1. cada requisição carrega a SUA seleção e o seu número de série. Só a
+  //      mais nova pode escrever. Resposta atrasada é descartada.
+  //   2. a contagem real deixa de ser UM registro e vira um MAPA por chip.
+  //      Antes só o chip visível recebia o número real, e os irmãos ficavam
+  //      com o valor do /contadores tirado noutro instante, contradizendo.
+  // ═══════════════════════════════════════════════════════════════════════
+  function _expChaveReal(etapa, estado) { return String(etapa) + ':' + (estado || ''); }
+
+  function _expGravarReal(etapa, estado, total) {
+    _expReal.set(_expChaveReal(etapa, estado), { total: Number(total) || 0, em: Date.now() });
+  }
+
+  // Aplica TODOS os números reais que conhecemos da etapa em tela, não só o do
+  // chip selecionado. É isso que impede um chip mostrar um instante e o vizinho
+  // mostrar outro.
   function _expPatchContagemReal() {
-    const r = _expContagemReal;
-    if (!_expDados || !r) return;
-    if (r.etapa !== _expEtapaSel) return;                       // só a etapa em tela
-    if ((r.estado || null) !== (_expEstadoSel || null)) return; // e o mesmo filtro
-    if (!r.estado) { _expDados.porEtapa = _expDados.porEtapa || {}; _expDados.porEtapa[_expEtapaSel] = r.total; }
-    else { _expDados.contagens = _expDados.contagens || {}; _expDados.contagens[r.estado] = r.total; }
+    if (!_expDados) return;
+    _expDados.porEtapa = _expDados.porEtapa || {};
+    _expDados.contagens = _expDados.contagens || {};
+
+    const et = _expEtapaSel;
+    const doTodos = _expReal.get(_expChaveReal(et, null));
+    if (doTodos) _expDados.porEtapa[et] = doTodos.total;
+
+    const estadosDaEtapa = ((_expDados.etapas && _expDados.etapas[et] && _expDados.etapas[et].estados) || []);
+    estadosDaEtapa.forEach(est => {
+      const r = _expReal.get(_expChaveReal(et, est));
+      if (r) _expDados.contagens[est] = r.total;
+    });
+
+    // INVARIANTE: nenhum sub-status pode ser maior que a etapa inteira. Quando
+    // isso acontece, o número do sub-status veio de uma foto mais velha do
+    // /contadores. Preferir o total real da etapa não inventa dado, só evita
+    // mostrar uma impossibilidade aritmética na tela.
+    const totalEtapa = _expDados.porEtapa[et];
+    if (doTodos && Number.isFinite(totalEtapa)) {
+      estadosDaEtapa.forEach(est => {
+        const n = Number(_expDados.contagens[est]);
+        if (Number.isFinite(n) && n > totalEtapa) _expDados.contagens[est] = totalEtapa;
+      });
+    }
   }
 
   function expRenderEtapas() {
@@ -71481,10 +71580,12 @@ ${JSON.stringify(metricas, null, 2)}`
     const lojas = expLojasSelecionadas();
     if (!lojas.length) return;
     try {
+      const _seqC = ++_expSeqCnt;
       const params = new URLSearchParams({ lojaIds: lojas.join(',') });
       const resp = await fetch(BACKEND_URL + '/api/expedicao/contadores?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
       const data = await resp.json();
       if (data && data.ok) {
+        if (_seqC !== _expSeqCnt) return;
         _expDados = data;
         // se o sub-status selecionado não existe mais na etapa, cai em "Todos"
         if (_expEstadoSel && _expDados.etapas[_expEtapaSel] &&
@@ -71678,9 +71779,14 @@ ${JSON.stringify(metricas, null, 2)}`
       const q = (buscaEl && buscaEl.value || '').trim();
       // v33k.593: sem sub-status selecionado ("Todos") → manda a ETAPA, e o
       // backend devolve a etapa inteira. Assim o número da lista bate com o card.
+      // Congela a seleção AGORA. O número que voltar pertence a esta, não à que
+      // estiver na tela quando a resposta chegar.
+      const _seq = ++_expSeq;
+      const _etapaReq = _expEtapaSel;
+      const _estadoReq = _expEstadoSel || null;
       const paramsObj = { lojaIds: lojas.join(','), limit: '300', pagina: String(_expPagina), ordem: _expOrdem };
-      if (_expEstadoSel) paramsObj.estado = _expEstadoSel;
-      else paramsObj.etapa = String(_expEtapaSel);
+      if (_estadoReq) paramsObj.estado = _estadoReq;
+      else paramsObj.etapa = String(_etapaReq);
       if (q) paramsObj.q = q;
       if (_expSoAtrasados) paramsObj.atrasados = '1';
       if (_expSkuFiltro) paramsObj.sku = _expSkuFiltro;
@@ -71720,7 +71826,13 @@ ${JSON.stringify(metricas, null, 2)}`
       const totalGeral = data.totalGeral || peds.length;
       // v33k.1194: casa o número do TOPO (card + chip "Todos") com o total REAL
       // da lista, no mesmo instante — sem esperar a reconciliação dos contadores.
-      _expContagemReal = { etapa: _expEtapaSel, estado: _expEstadoSel || null, total: totalGeral };
+      // O número vale sempre (é um fato sobre AQUELE chip), mesmo que a pessoa
+      // já tenha clicado noutro: guardar não faz mal e ainda deixa o vizinho
+      // certo quando ela voltar.
+      _expGravarReal(_etapaReq, _estadoReq, totalGeral);
+      // Já a TELA só é redesenhada pela requisição mais nova. Resposta atrasada
+      // pintando a tela é exatamente como os números trocavam de lugar.
+      if (_seq !== _expSeq) return;
       if (_expDados) { _expPatchContagemReal(); expRenderEtapas(); expRenderChips(); }
       // v33k.401: guarda a ORDEM EXIBIDA (order_sn na sequência da tela) pra que a
       // geração de etiquetas em lote saia no PDF exatamente nessa ordem.
@@ -72309,7 +72421,12 @@ ${JSON.stringify(metricas, null, 2)}`
       // rótulo do botão conforme a ETAPA e se o estado atual é de ERRO (retry)
       const estadoErro = ['falha_emissao','falha_subir','etiqueta_falhada'].includes(_expEstadoSel);
       let lbl;
-      if (_expEtapaSel === 1) lbl = 'Emitir NF';                        // ainda manual
+      // v33k.1474: a etapa 1 tambem tem estado de erro, e o rotulo ignorava
+      // isso. Quem esta olhando o chip "Nota Fiscal com erro" ja tentou uma
+      // vez; "Emitir NF" faz parecer que vai sair uma nota nova, quando o que
+      // vai acontecer e uma segunda tentativa da MESMA nota. A etapa 3 ja
+      // tratava assim, era a 1 que estava fora do padrao.
+      if (_expEtapaSel === 1) lbl = estadoErro ? 'Reenviar NF' : 'Emitir NF';
       else if (_expEtapaSel === 2) lbl = 'Programar envio';
       else if (_expEtapaSel === 3) lbl = estadoErro ? 'Tentar novamente' : 'Gerar etiqueta';
       else if (_expEtapaSel === 4) lbl = 'Reimprimir';                  // Impressos
@@ -91042,6 +91159,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       return h;
     }
 
+    // v33k.1473: quando o automatico estava ligado e mesmo assim a pergunta
+    // ficou na fila, o motivo aparece AQUI. Antes ele so ia pro log da
+    // varredura, e da tela era impossivel saber por que nao saiu.
+    if (i.motivo_pendente) {
+      h += '<div style="background:var(--lc-warning-soft);border:1px solid #fde68a;color:#92400e;'
+        + 'border-radius:var(--lc-radius-sm);padding:8px 11px;font-size:12px;margin-bottom:10px;line-height:1.45">'
+        + escapeHtml(i.motivo_pendente) + '</div>';
+    }
     if (i.ia_sugestao) {
       const cor = i.ia_confianca === 'alta' ? 'var(--lc-primary-text)'
         : (i.ia_confianca === 'baixa' ? 'var(--lc-warning)' : 'var(--lc-ink-2)');
@@ -91194,6 +91319,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       return h;
     }
 
+    if (i.motivo_pendente) {
+      h += '<div style="background:var(--lc-warning-soft);border:1px solid #fde68a;color:#92400e;'
+        + 'border-radius:var(--lc-radius-sm);padding:8px 11px;font-size:12px;margin-bottom:10px;line-height:1.45">'
+        + escapeHtml(i.motivo_pendente) + '</div>';
+    }
     if (baixa) {
       h += '<div style="background:var(--lc-danger-soft);border:1px solid #fecaca;color:#991b1b;'
         + 'border-radius:var(--lc-radius-sm);padding:8px 11px;font-size:12px;margin-bottom:10px">'
@@ -93900,7 +94030,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           <button class="toolbar-btn" style="font-size:11px;background:#b45309;color:white" onclick="impersonarUsuario(${u.id})">👁 Entrar como</button>
           ${papelAtual()==='superadmin' ? `<button class="toolbar-btn" style="font-size:11px;background:#4f46e5;color:white" onclick="verAtividadeUsuario(${u.id}, '${escapeHtml(u.nome).replace(/'/g,"\\'")}')">📊 Atividade</button>` : ''}
           ${papelAtual()==='superadmin' ? `<button class="toolbar-btn" style="font-size:11px;background:#0d9488;color:white" onclick="abrirEditarPlano(${u.id})">Plano</button>` : ''}
-          ${papelAtual()==='superadmin' && (u.papel==='admin'||u.papel==='marketplace'||u.papel==='cliente') ? `<button class="toolbar-btn" style="font-size:11px;background:#7c3aed;color:white" onclick="abrirMigrarLojaModal(${u.id})">↗ Migrar loja</button>` : ''}
+          ${papelAtual()==='superadmin' && (u.papel==='admin'||u.papel==='marketplace'||u.papel==='cliente') ? `<button class="toolbar-btn" style="font-size:11px;background:#7c3aed;color:white" onclick="abrirMigrarLojaModal(${u.id})">↗ Migrar loja</button><button class="toolbar-btn" style="font-size:11px;background:#0f766e;color:white" onclick="abrirMigrarCnpjModal(${u.id})" title="Move o CNPJ, o certificado, as séries e o histórico de notas para outro usuário">↗ Migrar CNPJ</button>` : ''}
           <button class="toolbar-btn" style="font-size:11px" onclick="abrirAdmUsuarioModal(${u.id})">✏️ Editar</button>
           <button class="toolbar-btn" style="font-size:11px;color:#dc2626" onclick="admRemoverUsuario(${u.id})">🗑</button>
         </div>
@@ -95418,6 +95548,140 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     }
   }
   window.confirmarMigrarLoja = confirmarMigrarLoja;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SUPER ADMIN: MIGRAR CNPJ entre usuários (v33k.1478)
+  // ──────────────────────────────────────────────────────────────────────
+  // Mesmo desenho do "Migrar loja", porque é a mesma operação do ponto de
+  // vista de quem usa: cliente saiu da agência e leva o que é dele. A
+  // diferença é o que vai junto, e a tela mostra isso ANTES de confirmar,
+  // porque migrar CNPJ mexe em numeração de nota e certificado.
+  // ══════════════════════════════════════════════════════════════════════
+  async function abrirMigrarCnpjModal(origemId) {
+    const origem = _admUsuarios.find(x => x.id === origemId);
+    if (!origem) return;
+    const old = document.getElementById('migrarCnpjOverlay'); if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'migrarCnpjOverlay';
+    ov.className = 'modal-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
+    const destinos = _admUsuarios.filter(u => u.id !== origemId
+      && (u.papel === 'admin' || u.papel === 'marketplace' || u.papel === 'cliente')
+      && u.ativo !== false);
+    ov.innerHTML = `
+      <div style="background:#fff;border-radius:14px;max-width:520px;width:100%;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,0.3);max-height:88vh;overflow:auto">
+        <div style="font-size:17px;font-weight:800;color:#1e2a47;margin-bottom:4px">Migrar CNPJ</div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:16px">De <b>${escapeHtml(origem.nome)}</b> para outro usuário. Vão junto o certificado digital, a numeração das séries, as classes de imposto e o histórico de notas.</div>
+
+        <label class="form-label">CNPJ a migrar</label>
+        <select class="form-input" id="migrarCnpjSel" style="margin-bottom:6px" onchange="_migrarCnpjAvisoLojas()"><option value="">Carregando CNPJs…</option></select>
+        <div id="migrarCnpjLojas" style="font-size:12px;color:#6b7280;margin-bottom:12px"></div>
+
+        <label class="form-label">Usuário destino</label>
+        <select class="form-input" id="migrarCnpjDestino" style="margin-bottom:14px">
+          <option value="">Selecione o destino</option>
+          ${destinos.map(d => `<option value="${d.id}">${escapeHtml(d.nome)} (${ADM_PAPEL_LABEL[d.papel] || d.papel})</option>`).join('')}
+        </select>
+
+        <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:11px 13px;margin-bottom:14px">
+          <input type="checkbox" id="migrarCnpjLevaLojas" style="margin-top:2px">
+          <span style="font-size:12.5px;color:#334155;line-height:1.5">
+            <b>Levar junto as lojas que usam este CNPJ.</b><br>
+            Sem isso, loja que ficar com o dono antigo aponta para um CNPJ que ele não possui e para de emitir, com um erro que não explica a causa. A migração recusa nesse caso.
+          </span>
+        </label>
+
+        <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:9px;padding:10px 12px;font-size:12px;color:#92400e;margin-bottom:16px;line-height:1.5">
+          <b>O que acontece:</b> o CNPJ, o certificado, as séries e as notas mudam de dono.
+          O cadastro fiscal de produtos e os destinatários são <b>copiados</b> quando o dono antigo ainda tem outro CNPJ, para os dois continuarem emitindo. Se este era o último CNPJ dele, eles são movidos.
+        </div>
+
+        <div style="display:flex;gap:8px">
+          <button class="toolbar-btn" style="flex:1" onclick="document.getElementById('migrarCnpjOverlay').remove()">Cancelar</button>
+          <button class="toolbar-btn" id="migrarCnpjBtn" style="flex:1;background:#7c3aed;color:#fff" onclick="confirmarMigrarCnpj(${origemId})">Migrar CNPJ</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/empresas-do-usuario/' + origemId,
+        { headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken() } })).json();
+      const sel = document.getElementById('migrarCnpjSel');
+      if (!sel) return;
+      _migrarCnpjCache = (r.ok && r.empresas) || [];
+      if (_migrarCnpjCache.length) {
+        sel.innerHTML = '<option value="">Selecione o CNPJ</option>' +
+          _migrarCnpjCache.map(e => `<option value="${e.id}">${escapeHtml(e.razao_social || '')} · ${escapeHtml(e.cnpj || '')}${e.ativo === false ? ' (inativa)' : ''}</option>`).join('');
+      } else {
+        sel.innerHTML = '<option value="">Este usuário não tem CNPJ cadastrado</option>';
+      }
+    } catch (e) {
+      const sel = document.getElementById('migrarCnpjSel');
+      if (sel) sel.innerHTML = '<option value="">Erro ao carregar os CNPJs</option>';
+    }
+  }
+  window.abrirMigrarCnpjModal = abrirMigrarCnpjModal;
+
+  let _migrarCnpjCache = [];
+
+  // Mostra quais lojas usam o CNPJ escolhido ANTES de confirmar. Sem isso a
+  // pessoa só descobre que precisava levar as lojas quando a migração recusa.
+  function _migrarCnpjAvisoLojas() {
+    const box = document.getElementById('migrarCnpjLojas');
+    const sel = document.getElementById('migrarCnpjSel');
+    if (!box || !sel) return;
+    const emp = _migrarCnpjCache.find(e => String(e.id) === String(sel.value));
+    const lojas = (emp && emp.lojas) || [];
+    if (!sel.value) { box.textContent = ''; return; }
+    box.innerHTML = lojas.length
+      ? '<span style="color:#92400e">' + lojas.length + ' loja(s) usam este CNPJ: '
+        + lojas.map(l => escapeHtml(l.nome)).join(', ') + '</span>'
+      : 'Nenhuma loja usa este CNPJ.';
+  }
+  window._migrarCnpjAvisoLojas = _migrarCnpjAvisoLojas;
+
+  async function confirmarMigrarCnpj(origemId) {
+    const empresaId = (document.getElementById('migrarCnpjSel') || {}).value;
+    const destinoId = (document.getElementById('migrarCnpjDestino') || {}).value;
+    const levaLojas = !!(document.getElementById('migrarCnpjLevaLojas') || {}).checked;
+    if (!empresaId) { showToast('Selecione o CNPJ a migrar', true); return; }
+    if (!destinoId) { showToast('Selecione o usuário destino', true); return; }
+    const origem = _admUsuarios.find(x => x.id === origemId);
+    const destino = _admUsuarios.find(x => String(x.id) === String(destinoId));
+    const nome = ((document.getElementById('migrarCnpjSel') || {}).selectedOptions || [{}])[0].textContent || 'este CNPJ';
+    if (!await lcConfirm(`Migrar "${nome}"\nde ${origem ? origem.nome : '?'} para ${destino ? destino.nome : '?'}?\n\nVão junto o certificado digital, a numeração das séries e o histórico de notas. Esta ação muda a posse fiscal no sistema.`)) return;
+
+    const btn = document.getElementById('migrarCnpjBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Migrando…'; }
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/migrar-empresa', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          empresa_id: parseInt(empresaId, 10),
+          destino_id: parseInt(destinoId, 10),
+          migrar_lojas: levaLojas,
+        }),
+      })).json();
+      if (!r.ok) {
+        showToast('Erro: ' + (r.erro || 'falha na migração'), true);
+        if (btn) { btn.disabled = false; btn.textContent = 'Migrar CNPJ'; }
+        return;
+      }
+      showToast('✅ ' + (r.msg || 'CNPJ migrado'));
+      // O aviso da cópia é informação que a pessoa precisa ler, não some num
+      // toast: quando o dono antigo fica com outro CNPJ, os dois passam a ter
+      // o mesmo cadastro fiscal de produtos, e isso muda a rotina dela.
+      if (r.relatorio && r.relatorio.aviso) await lcAlert(r.relatorio.aviso, { titulo: 'CNPJ migrado' });
+      const ov = document.getElementById('migrarCnpjOverlay'); if (ov) ov.remove();
+      renderAdmUsuarios();
+    } catch (e) {
+      showToast('Erro: ' + e.message, true);
+      if (btn) { btn.disabled = false; btn.textContent = 'Migrar CNPJ'; }
+    }
+  }
+  window.confirmarMigrarCnpj = confirmarMigrarCnpj;
+
 
   // ── SUPER ADMIN: editar plano/vencimento/valor/limite de um usuário ──
   async function abrirEditarPlano(id) {
