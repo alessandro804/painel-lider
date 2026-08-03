@@ -61376,7 +61376,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1469-sac-automacao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1470-sac-card-reclamacao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -91626,9 +91626,16 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   function _sacHtmlCardAuto() {
     const a = (_sacCap && _sacCap.automacao) || {};
     const on = a.ativa === true && a.planoPermite === true;
-    const logo = (typeof LOGO_LIDER !== 'undefined') ? LOGO_LIDER : '';
+    const logo = (typeof lcLogoAutomacao === 'function') ? lcLogoAutomacao() : '';
+    // A grade do card tem SEIS colunas: monitor, barras, carrinho, divisor,
+    // texto, botoes. Faltando o carrinho, o texto cai na coluna de 58px e
+    // quebra uma palavra por linha. E as barras precisam da classe .lc-bar.
+    const nBarras = (typeof LC_AUTO_BARRAS !== 'undefined') ? LC_AUTO_BARRAS : 9;
+    const delays = (typeof LC_AUTO_DELAYS !== 'undefined') ? LC_AUTO_DELAYS : [];
     let barras = '';
-    for (let i2 = 0; i2 < 9; i2++) barras += '<span></span>';
+    for (let i2 = 0; i2 < nBarras; i2++) {
+      barras += '<span class="lc-bar" style="animation-delay:' + (delays[i2] || '0s') + '"></span>';
+    }
 
     // Sem plano, o card vira convite, nao erro: a tela toda continua aberta e
     // a pessoa responde a mao normalmente.
@@ -91661,6 +91668,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + (logo ? '<img src="' + logo + '" alt="Lider 10">' : '') + '</div>'
       + '<div class="lc-stand"></div><div class="lc-base"></div></div>'
       + '<div class="lc-auto-bars">' + barras + '</div>'
+      + '<div class="lc-auto-cart">'
+      + '<svg viewBox="0 0 24 24" fill="none">'
+      + '<circle class="lc-cs" cx="9" cy="20" r="1.4" stroke-width="1.4"/>'
+      + '<circle class="lc-cs" cx="17" cy="20" r="1.4" stroke-width="1.4"/>'
+      + '<path class="lc-cs" d="M2 3h2.2l2.1 11.2a1.5 1.5 0 0 0 1.5 1.2h8.3a1.5 1.5 0 0 0 1.5-1.2L21 6H5.3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+      + '<g class="lc-ck"><circle cx="18" cy="6" r="5" fill="#10b981"/>'
+      + '<path d="M15.7 6l1.6 1.6 3-3.2" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></g>'
+      + '</svg></div>'
       + '<div class="lc-auto-div"></div>'
       + '<div class="lc-auto-ctl">'
       + '<div class="lc-auto-title">Atendimento automatico (IA)</div>'
@@ -91798,6 +91813,29 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   window.sacCopiarRecurso = sacCopiarRecurso;
 
+  async function sacResponderReclamacao(id, botao) {
+    const ta = document.getElementById('sacRespR' + id);
+    const texto = ta ? ta.value.trim() : '';
+    if (!texto) { lcAlert('Escreva a resposta antes de enviar.'); return; }
+    const c = _sacRec.casos.find(x => String(x.id) === String(id)) || {};
+    // Contestacao na Shopee ABRE disputa. Isso muda o caso de lado, entao
+    // pede confirmacao explicita em vez de sair mandando.
+    if (String(c.marketplace || '') === 'shopee' && !c.disputa_aberta) {
+      const segue = await lcConfirm('Isso ABRE uma disputa na Shopee com este texto como motivo. A analise passa a ser da plataforma. Continuar?');
+      if (!segue) return;
+    }
+    const rotulo = botao ? botao.textContent : '';
+    if (botao) { botao.disabled = true; botao.textContent = 'Enviando...'; }
+    const r = await _sacApi('/api/sac/reclamacoes/' + id + '/responder',
+      { method: 'POST', body: JSON.stringify({ texto: texto }) });
+    if (botao) { botao.disabled = false; botao.textContent = rotulo; }
+    if (!r.ok) { lcAlert(r.erro || 'Nao consegui enviar.'); return; }
+    lcAlert('Enviado: ' + (r.comoFoi || 'resposta registrada') + '.');
+    await _sacCarregarReclamacoes();
+    _sacDesenharReclamacoes();
+  }
+  window.sacResponderReclamacao = sacResponderReclamacao;
+
   function _sacDesenharReclamacoes() {
     const box = document.getElementById('sacConteudo');
     if (!box) return;
@@ -91868,12 +91906,11 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + (c.status_externo ? ' <span style="color:var(--lc-muted)">(' + escapeHtml(c.status_externo) + ')</span>' : '')
       + '</div>';
 
+    // A sugestao da IA ja nasce DENTRO da caixa de texto, editavel. Mostrar em
+    // um bloco separado obrigava a copiar e colar.
     if (c.mensagem_sugerida) {
-      h += '<div style="background:var(--lc-primary-softer);border:1px solid var(--lc-primary-soft);'
-        + 'border-radius:var(--lc-radius-sm);padding:9px 11px;margin-bottom:9px;font-size:12.5px;line-height:1.5;color:var(--lc-ink-2)">'
-        + '<div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;'
-        + 'color:var(--lc-primary-text);margin-bottom:4px">Sugestao da IA</div>'
-        + escapeHtml(c.mensagem_sugerida) + '</div>';
+      h += '<div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;'
+        + 'color:var(--lc-primary-text);margin-bottom:5px">Sugestao da IA, revise antes de enviar</div>';
     }
 
     if (c.taxa_suspeita) {
@@ -91887,11 +91924,47 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         + '</div>';
     }
 
-    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    // Ja respondemos: mostra o que foi dito, sem caixa nova.
+    if (c.ultima_resposta) {
+      h += '<div style="background:var(--lc-surface-2);border-left:3px solid var(--lc-primary);'
+        + 'padding:10px 12px;border-radius:0 var(--lc-radius-sm) var(--lc-radius-sm) 0;'
+        + 'font-size:12.5px;color:var(--lc-ink-2);margin-bottom:9px">'
+        + escapeHtml(c.ultima_resposta)
+        + '<div style="font-size:10.5px;color:var(--lc-muted);margin-top:5px">enviada'
+        + (c.ultima_resposta_por ? ' por ' + escapeHtml(c.ultima_resposta_por) : '')
+        + (c.ultima_resposta_em ? ' ' + _sacQuando(c.ultima_resposta_em) : '') + '</div></div>';
+    }
+
+    // CAIXA DE RESPOSTA. O que o texto vira depende do canal, e a tela diz
+    // qual e: na Shopee nao existe chat livre na devolucao, o texto entra como
+    // motivo da contestacao ou como prova. Prometer "mensagem" e a Shopee
+    // ignorar seria pior que nao ter o botao.
+    const ehShopee = String(c.marketplace || '') === 'shopee';
+    const rotulo = ehShopee
+      ? (c.disputa_aberta ? 'Anexar como prova na disputa' : 'Enviar contestacao a Shopee')
+      : 'Enviar mensagem ao comprador';
+    const ajuda = ehShopee
+      ? (c.disputa_aberta
+        ? 'A Shopee nao tem chat na devolucao. O texto entra como prova nova na disputa ja aberta.'
+        : 'A Shopee nao tem chat na devolucao. O texto vira o motivo da contestacao e ABRE a disputa.')
+      : 'Vai como mensagem na reclamacao, o comprador le e responde por la.';
+
+    h += '<textarea id="sacRespR' + c.id + '" rows="2" '
+      + 'placeholder="Escreva a resposta." '
+      + 'style="width:100%;padding:10px 12px;border:1px solid var(--lc-border-2);border-radius:var(--lc-radius-sm);'
+      + 'font-size:13.5px;font-family:inherit;resize:vertical;box-sizing:border-box">'
+      + escapeHtml(c.mensagem_sugerida || '') + '</textarea>';
+    h += '<div style="font-size:11.5px;color:var(--lc-muted);margin-top:6px;line-height:1.45">' + ajuda + '</div>';
+
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:9px">'
       + '<button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="sacAuditarTaxa(' + c.id + ',this)">Conferir a cobranca</button>'
       + '<div style="flex:1"></div>'
-      + '<span style="font-size:11.5px;color:var(--lc-muted)">As acoes de troca, devolucao e disputa continuam no painel de Pedidos.</span>'
-      + '</div></div>';
+      + '<button class="lc-btn lc-btn--primary lc-btn--sm" onclick="sacResponderReclamacao(' + c.id + ',this)">'
+      + rotulo + '</button>'
+      + '</div>'
+      + '<div style="font-size:11px;color:var(--lc-muted);margin-top:8px">'
+      + 'Aceitar, devolver, reembolsar e abrir disputa continuam no painel de Pedidos.</div>'
+      + '</div>';
     return h;
   }
 
