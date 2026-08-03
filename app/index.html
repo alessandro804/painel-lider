@@ -1348,13 +1348,31 @@
     // bloco de "vincular varias de uma vez" e mais nada, entao parecia que a
     // tela tinha carregado errado, quando o caso real era nao haver loja no
     // escopo daquele usuario. Silencio aqui vira chamado.
+    // v33k.1482: lista vazia agora diz POR QUE. Antes o modal mostrava so o
+    // bloco de "vincular varias de uma vez" e mais nada, com a mesma cara
+    // quando o usuario nao tinha loja e quando a consulta tinha FALHADO.
     if (!lojas.length) {
+      const dg = data.diag || {};
+      let motivo, comoResolver;
+      if (dg.migracaoPendente) {
+        motivo = 'A migracao da coluna <code>' + _esc(dg.migracaoPendente) + '</code> ainda nao rodou no banco.';
+        comoResolver = 'Rode a migracao pendente e recarregue esta tela.';
+      } else if (dg.erro) {
+        motivo = 'A consulta falhou: ' + _esc(dg.erro);
+        comoResolver = 'Me mande esta mensagem que eu conserto.';
+      } else if (Array.isArray(dg.lojaIds) && !dg.lojaIds.length) {
+        motivo = 'Este usuario e do tipo cliente e nao tem nenhuma loja vinculada a ele.';
+        comoResolver = 'Vincule as lojas ao usuario em Administracao, ou mude o papel dele para marketplace se ele deixou de ser cliente de uma agencia.';
+      } else {
+        motivo = 'Nao ha loja cadastrada neste usuario.';
+        comoResolver = 'Se o cliente saiu de uma agencia, migre as lojas dele tambem em Administracao. Senao, conecte as contas em Lojas e Conexoes.';
+      }
       alvo.innerHTML = '<div style="' + card + ';text-align:center;color:#64748b;padding:24px">' +
         '<div style="font-size:28px"><span class="lc-ic" data-lucide="store"></span></div>' +
-        '<div style="font-weight:600;margin-top:6px">Nenhuma loja neste usuario</div>' +
-        '<div style="font-size:13px;margin-top:4px;line-height:1.5">O CNPJ ja esta aqui, mas as lojas ainda nao. ' +
-        'Se o cliente saiu de uma agencia, migre as lojas dele tambem em Administracao, ' +
-        'ou conecte as contas em Lojas e Conexoes.</div></div>';
+        '<div style="font-weight:600;margin-top:6px;color:#0f172a">Nenhuma loja para vincular</div>' +
+        '<div style="font-size:13px;margin-top:6px;line-height:1.55">' + motivo + '</div>' +
+        '<div style="font-size:12.5px;margin-top:8px;line-height:1.55;color:#475569">' + comoResolver + '</div>' +
+        '</div>';
       if (window.lcHydrateIcons) { try { window.lcHydrateIcons(alvo); } catch (e) {} }
       return;
     }
@@ -16862,16 +16880,19 @@ window.LC_SVG = {
         </div>
 
         <div class="lc-block-row cols-3">
-          <!-- IA fez hoje -->
-          <div class="lc-block">
+          <!-- IA fez hoje. `data-cliente-oculto` e nao `data-agencia-only`:
+               o marketplace USA estes cards, quem nao usa e o cliente, que nao
+               configura automacao. Pra ele o card so mostraria "ative suas
+               automacoes" apontando pra uma tela que ele nao tem. -->
+          <div class="lc-block" data-cliente-oculto>
             <div class="lc-block-head">
               <div class="lc-block-title"><span class="lc-ic" data-lucide="bot"></span> IA fez hoje</div>
               <span class="lc-block-pill" id="lcIaHojeTotal">—</span>
             </div>
             <div id="lcIaHoje"><div class="lc-block-empty">carregando…</div></div>
           </div>
-          <!-- IA programada -->
-          <div class="lc-block">
+          <!-- IA programada. Mesmo motivo do card ao lado. -->
+          <div class="lc-block" data-cliente-oculto>
             <div class="lc-block-head">
               <div class="lc-block-title"><span class="lc-ic" data-lucide="calendar-clock"></span> IA programada</div>
             </div>
@@ -61466,7 +61487,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1481-vinculos-escopo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1483-cliente';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -63643,9 +63664,28 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // Papel marketplace: Home focada em marketplaces. Esconde seções de agência
     // (WhatsApp, Termômetro/Análise Financeira/Comercial, Áreas do negócio).
     try {
-      const ehMkt = (typeof papelAtual === 'function') && papelAtual() === 'marketplace';
+      // v33k.1483: o CLIENTE entra na mesma regra do marketplace. Ele acessa o
+      // sistema pra emitir a nota dele e imprimir etiqueta; Termometro Geral,
+      // Analise Financeira e Comercial, WhatsApp e Areas do negocio sao da
+      // agencia, nao dele. Mostrar isso so ocupa a tela com coisa que ele nao
+      // pode usar e ainda deixa a Home dele parecendo quebrada, com tres cards
+      // vazios pedindo pra ativar automacoes que nao sao dele.
+      const papel = (typeof papelAtual === 'function') ? papelAtual() : '';
+      const esconderAgencia = (papel === 'marketplace' || papel === 'cliente');
       document.querySelectorAll('#homeScreen [data-agencia-only]').forEach(el => {
-        el.style.display = ehMkt ? 'none' : '';
+        el.style.display = esconderAgencia ? 'none' : '';
+      });
+      // Cards que o marketplace USA e o cliente nao: automacoes de IA.
+      const ehCliente = (papel === 'cliente');
+      document.querySelectorAll('#homeScreen [data-cliente-oculto]').forEach(el => {
+        el.style.display = ehCliente ? 'none' : '';
+      });
+      // Se a fileira inteira ficou sem card visivel, ela sai junto: fileira
+      // vazia deixa um buraco no meio da Home.
+      document.querySelectorAll('#homeScreen .lc-block-row').forEach(row => {
+        const filhos = [...row.children];
+        const algumVisivel = filhos.some(c => c.style.display !== 'none');
+        row.style.display = (filhos.length && !algumVisivel) ? 'none' : '';
       });
     } catch (e) {}
     // widget de plano (Fatia 2), só marketplace
