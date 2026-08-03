@@ -171,11 +171,35 @@
   window._ncmInput = function (el) { if (el) el.value = String(el.value || '').replace(/\D/g, '').slice(0, 8); };
 
   async function _api(path, opts) {
-    const resp = await fetch(_base() + path, Object.assign({
-      headers: { 'Content-Type': 'application/json', 'x-api-token': _token() },
-    }, opts || {}));
-    const data = await resp.json().catch(() => ({ ok: false, erro: 'Resposta inválida' }));
-    return data;
+    // v33k.1486: quando o banco cai, o Cloudflare devolve uma PAGINA HTML no
+    // lugar do JSON. O `.catch(() => ...)` transformava isso num erro generico
+    // "Resposta invalida", e em outros pontos o corpo cru chegava a ser
+    // impresso na tela. Agora a resposta que nao e JSON e reconhecida como
+    // INDISPONIBILIDADE, com uma frase que a pessoa entende.
+    let resp;
+    try {
+      resp = await fetch(_base() + path, Object.assign({
+        headers: { 'Content-Type': 'application/json', 'x-api-token': _token() },
+      }, opts || {}));
+    } catch (e) {
+      return { ok: false, indisponivel: true,
+        erro: 'Servico temporariamente indisponivel. Tente de novo em alguns minutos.' };
+    }
+    const bruto = await resp.text().catch(() => '');
+    try {
+      const data = JSON.parse(bruto);
+      if (data && data.indisponivel) {
+        data.erro = data.erro || 'Servico temporariamente indisponivel.';
+      }
+      return data;
+    } catch (e) {
+      const ehFora = (typeof lcRespostaEhIndisponivel === 'function' && lcRespostaEhIndisponivel(bruto))
+        || resp.status === 502 || resp.status === 503 || resp.status === 504 || resp.status >= 520;
+      return ehFora
+        ? { ok: false, indisponivel: true,
+            erro: 'Servico temporariamente indisponivel. Nao e problema no seu cadastro. Tente de novo em alguns minutos.' }
+        : { ok: false, erro: 'Resposta invalida do servidor.' };
+    }
   }
 
   // Constantes fiscais (espelham as do index.html, com fallback próprio)
@@ -8463,7 +8487,12 @@
       const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp : [];
       idsBanco = lojaSel.map(fid => { const lo = lojas.find(l => String(l.id) === String(fid)); return lo && lo.idBanco != null ? String(lo.idBanco) : null; }).filter(Boolean);
     }
+    const permitidasCliente = _lojasPermitidasDoCliente();
     return _dfState.itens.filter(it => {
+      // v33k.1486: corte de escopo do cliente ANTES de qualquer outro filtro.
+      // Produto de outro cliente da mesma agencia nao pode aparecer nem com
+      // "Todas as lojas" marcado.
+      if (!_itemEhDoCliente(it, permitidasCliente)) return false;
       // ativos/inativos/todos
       if (_dfState.filtroAtivo === 'ativo' && !it.ativo) return false;
       if (_dfState.filtroAtivo === 'inativo' && it.ativo) return false;
@@ -8502,7 +8531,7 @@
   async function _dfEditarKit(sku) {
     try {
       if (!_kfState.variacoes || !_kfState.variacoes.length) _kfState.variacoes = _kfColetarVariacoes();
-      if (!_kfState.skus || !_kfState.skus.length) _kfState.skus = (typeof _dfColetarSkus === 'function') ? _dfColetarSkus() : [];
+      if (!_kfState.skus || !_kfState.skus.length) _kfState.skus = await _dfColetarSkusComPedidos();
       if (!_kfState.kits || !_kfState.kits.length) {
         const r = await _api('/api/nfe/kits');
         _kfState.kits = (r && r.ok && Array.isArray(r.kits)) ? r.kits : [];
@@ -8511,6 +8540,77 @@
     if (typeof _kfCompor === 'function') _kfCompor(sku);
   }
   window._dfEditarKit = _dfEditarKit;
+
+  // v33k.1486: a lista de SKUs com os de PEDIDO junto, num lugar so.
+  //
+  // O BUG: `_dfColetarSkus()` le so o catalogo local. O enriquecimento com os
+  // SKUs que existem APENAS num pedido acontecia dentro do carregador da tela
+  // de Configuracao de produto. O modal de Kits chamava `_dfColetarSkus()`
+  // direto, entao produto que nunca entrou no catalogo (veio so no pedido) nao
+  // aparecia la, e era impossivel montar o kit dele. Foi o que aconteceu com o
+  // chinelo do Renato: ele estava na tela de Tributacao (que le pedidos) e
+  // sumia na de Kits (que lia so catalogo).
+  async function _dfColetarSkusComPedidos() {
+    const base = (typeof _dfColetarSkus === 'function') ? _dfColetarSkus() : [];
+    try {
+      const rp = await _api('/api/nfe/produtos-fiscal/skus-em-pedidos', { method: 'GET' });
+      if (rp && rp.ok && Array.isArray(rp.skus)) {
+        const idx = new Map(base.map((b, i) => [String(b.sku), i]));
+        rp.skus.forEach(s2 => {
+          const chave = String(s2.sku);
+          if (idx.has(chave)) {
+            const reg = base[idx.get(chave)];
+            reg._dePedido = true;
+            reg.ativo = true;
+            if (Array.isArray(s2.lojaIdsBanco)) {
+              reg.vincLojaIds = Array.from(new Set([...(reg.vincLojaIds || []), ...s2.lojaIdsBanco.map(String)]));
+            }
+          } else {
+            base.push({
+              sku: s2.sku, nome: s2.nome || s2.sku, foto: s2.foto || null, ativo: true,
+              donoLojaIds: [],
+              vincLojaIds: Array.isArray(s2.lojaIdsBanco) ? s2.lojaIdsBanco.map(String) : [],
+              marketplaces: [], _dePedido: true,
+            });
+            idx.set(chave, base.length - 1);
+          }
+        });
+      }
+    } catch (_) { /* sem rede, segue so com o catalogo */ }
+    return base;
+  }
+  window._dfColetarSkusComPedidos = _dfColetarSkusComPedidos;
+
+  // ── ESCOPO DO CLIENTE ────────────────────────────────────────────────────
+  // v33k.1486: o cliente enxerga o catalogo do DONO no cache local (o appData
+  // vem do dono). Sem filtro, ele via produto de OUTRO cliente da mesma
+  // agencia, que e vazamento entre clientes.
+  //
+  // Aqui a lista e cortada pelas lojas vinculadas a ele. "Todas as lojas" para
+  // um cliente significa todas as DELE, nao todas da agencia.
+  function _lojasPermitidasDoCliente() {
+    if ((typeof papelAtual !== 'function') || papelAtual() !== 'cliente') return null;
+    const ids = (typeof _usuarioLogado !== 'undefined' && _usuarioLogado && Array.isArray(_usuarioLogado.lojas))
+      ? _usuarioLogado.lojas.map(String) : [];
+    const permitidas = new Set(ids);
+    // Junta tambem os ids de FRONT das mesmas lojas: as listas de vinculo
+    // misturam id local e idBanco, e comparar so um dos dois esconderia item.
+    const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp : [];
+    lojas.forEach(l => {
+      if (l && l.idBanco != null && ids.includes(String(l.idBanco))) permitidas.add(String(l.id));
+    });
+    return permitidas;
+  }
+  window._lojasPermitidasDoCliente = _lojasPermitidasDoCliente;
+
+  function _itemEhDoCliente(it, permitidas) {
+    if (!permitidas) return true;                 // nao e cliente: ve tudo
+    if (!permitidas.size) return false;           // cliente sem loja: ve nada
+    const dono = (it.donoLojaIds || []).map(String);
+    const vinc = (it.vincLojaIds || []).map(String);
+    return dono.some(x => permitidas.has(x)) || vinc.some(x => permitidas.has(x));
+  }
+  window._itemEhDoCliente = _itemEhDoCliente;
 
   function _dfRender() {
     const el = document.getElementById('dfConteudo');
@@ -8933,7 +9033,7 @@
       1020);
 
     _kfState.variacoes = _kfColetarVariacoes();
-    _kfState.skus = (typeof _dfColetarSkus === 'function') ? _dfColetarSkus() : [];
+    _kfState.skus = await _dfColetarSkusComPedidos();
     _kfState.sel = new Set();
     _kfState.pagina = 1;
 
@@ -8991,7 +9091,9 @@
 
   function _kfFiltrar() {
     const busca = _kfNorm(_kfState.busca);
+    const permitidasCliente = _lojasPermitidasDoCliente();
     return _kfState.skus.filter(it => {
+      if (!_itemEhDoCliente(it, permitidasCliente)) return false;
       const kit = _kfKitDoSku(it.sku);
       if (_kfState.filtro === 'kit' && !kit) return false;
       if (_kfState.filtro === 'semkit' && kit) return false;
@@ -61487,7 +61589,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1485-cnpj-no-usuario';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1490-tiktok-variacoes';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -61758,6 +61860,47 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // ===== CONTROLE DE PAPÉIS (admin / colaborador / demo) =====
   let _usuarioLogado = null;
   try { _usuarioLogado = JSON.parse(localStorage.getItem('lider_usuario')||'null'); } catch(e) {}
+  // ═══════════════════════════════════════════════════════════════════════
+  // BANCO FORA DO AR (v33k.1486)
+  // ─────────────────────────────────────────────────────────────────────
+  // Quando o Supabase cai, o Cloudflare devolve uma PAGINA HTML no lugar do
+  // JSON. Sem esta guarda o painel imprimia o erro 521 da Cloudflare dentro da
+  // lista de pedidos: um paredao de <div class="cf-wrapper"> onde deviam estar
+  // as vendas. Agora vira uma faixa curta, com o botao de tentar de novo.
+  //
+  // A regra: se a resposta nao e JSON, ela nao e dado. E erro de
+  // infraestrutura disfarcado, e nao pode chegar na tela como conteudo.
+  function lcRespostaEhIndisponivel(txtOuObj) {
+    if (!txtOuObj) return false;
+    if (typeof txtOuObj === 'object') return txtOuObj.indisponivel === true;
+    const t = String(txtOuObj).slice(0, 2000).toLowerCase();
+    return t.indexOf('<!doctype html') >= 0 || t.indexOf('<html') >= 0
+      || t.indexOf('cf-error-details') >= 0 || t.indexOf('web server is down') >= 0;
+  }
+  window.lcRespostaEhIndisponivel = lcRespostaEhIndisponivel;
+
+  function lcHtmlBancoFora(aoTentar) {
+    return '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;'
+      + 'padding:20px;text-align:center;color:#9a3412">'
+      + '<div style="font-size:26px;line-height:1"><span class="lc-ic" data-lucide="cloud-off"></span></div>'
+      + '<div style="font-weight:700;margin-top:8px;font-size:14px">Servico temporariamente indisponivel</div>'
+      + '<div style="font-size:13px;margin-top:6px;line-height:1.55;max-width:520px;margin-left:auto;margin-right:auto">'
+      + 'Nao e problema no seu cadastro nem nos seus dados. Costuma voltar em alguns minutos.</div>'
+      + (aoTentar ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="margin-top:12px" onclick="' + aoTentar + '">Tentar de novo</button>' : '')
+      + '</div>';
+  }
+  window.lcHtmlBancoFora = lcHtmlBancoFora;
+
+  // Mostra a faixa dentro de um container, no lugar do conteudo quebrado.
+  function lcMostrarBancoFora(idOuEl, aoTentar) {
+    const el = (typeof idOuEl === 'string') ? document.getElementById(idOuEl) : idOuEl;
+    if (!el) return false;
+    el.innerHTML = lcHtmlBancoFora(aoTentar);
+    try { window.lcHydrateIcons && window.lcHydrateIcons(el); } catch (e) {}
+    return true;
+  }
+  window.lcMostrarBancoFora = lcMostrarBancoFora;
+
   function papelAtual() { return (_usuarioLogado && _usuarioLogado.papel) || 'admin'; }
   window.papelAtual = papelAtual;
 
