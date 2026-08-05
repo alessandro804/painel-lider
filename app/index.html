@@ -65,6 +65,9 @@
     background: #f8fafc;
   }
   .lc-foto-zoom { cursor: zoom-in; }
+  /* v33k.1523: a previa vale por FORMA (miniatura quadrada de 24 a 96px), nao
+     so pela classe. O cursor acompanha pela mesma faixa de tamanho. */
+  img[src^="http"]:not([data-sem-zoom]):hover { cursor: zoom-in; }
   /* Em tela pequena a previa tapa a linha inteira e o dedo cobre a foto. */
   @media (max-width: 700px) { .lc-foto-preview { display: none; } }
 
@@ -10224,13 +10227,45 @@
     if (_fotoPrev) _fotoPrev.classList.remove('ativa');
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // QUAIS IMAGENS GANHAM A PREVIA (v33k.1523)
+  // ─────────────────────────────────────────────────────────────────────
+  // Marcar `lc-foto-zoom` uma a uma nao ia funcionar: sao dezenas de pontos
+  // espalhados (promocoes, anuncios, dropshipping, estoque, kits...) e toda
+  // listagem nova nasceria sem o recurso.
+  //
+  // Aqui a regra e por FORMA, e vale pra qualquer tela: miniatura quadrada de
+  // 24 a 96px, com src http. E o tamanho de foto de produto em linha de lista,
+  // e nada mais no painel tem esse formato.
+  //
+  // O que fica de fora e explicito: logo, avatar, icone e bandeira, alem de
+  // qualquer coisa no menu ou no cabecalho. E `data-sem-zoom="1"` desliga
+  // pontualmente quando aparecer um caso que a regra nao previu.
+  const RE_NAO_E_PRODUTO = /logo|avatar|icone|icon|bandeira|flag|placeholder|qrcode|barcode/i;
+
+  function _ehFotoDeProduto(img) {
+    if (!img || img.tagName !== 'IMG') return false;
+    if (img.classList.contains('lc-foto-zoom')) return true;      // marcada na mao
+    if (img.hasAttribute('data-sem-zoom')) return false;
+    const src = img.getAttribute('src') || '';
+    if (!/^https?:/i.test(src)) return false;                     // data: e svg inline nao
+    if (RE_NAO_E_PRODUTO.test(src) || RE_NAO_E_PRODUTO.test(img.className || '')
+        || RE_NAO_E_PRODUTO.test(img.id || '')) return false;
+    if (img.closest('header, nav, .sidebar, .top-bar, .user-avatar')) return false;
+    const r = img.getBoundingClientRect();
+    if (r.width < 24 || r.width > 96) return false;
+    // Quadrada: foto de produto em lista e sempre 1:1. Banner e faixa nao.
+    if (Math.abs(r.width - r.height) > 8) return false;
+    return true;
+  }
+
   document.addEventListener('mouseover', (e) => {
-    const img = e.target && e.target.closest ? e.target.closest('img.lc-foto-zoom') : null;
-    if (img) _fotoPrevMostrar(img);
+    const img = e.target && e.target.closest ? e.target.closest('img') : null;
+    if (img && _ehFotoDeProduto(img)) _fotoPrevMostrar(img);
   });
   document.addEventListener('mouseout', (e) => {
-    const img = e.target && e.target.closest ? e.target.closest('img.lc-foto-zoom') : null;
-    if (img) _fotoPrevEsconder();
+    const img = e.target && e.target.closest ? e.target.closest('img') : null;
+    if (img && _ehFotoDeProduto(img)) _fotoPrevEsconder();
   });
   // Rolar com a previa aberta deixaria ela flutuando no lugar errado.
   window.addEventListener('scroll', _fotoPrevEsconder, true);
@@ -34753,6 +34788,45 @@ Retorne JSON: {"ID": "valor", ...}`;
   })();
   
   let produtosErp = JSON.parse(localStorage.getItem('lider_produtos_v1') || '[]');
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1525: o catálogo precisa ser VISÍVEL pros outros blocos <script>.
+  // ─────────────────────────────────────────────────────────────────────
+  // `let` no topo de um <script> NÃO cria propriedade em `window`. Este painel
+  // tem 10 blocos <script> separados, e `produtosErp` só existe no escopo do
+  // bloco 7. Toda função dos outros blocos que faz
+  //
+  //     typeof produtosErp !== 'undefined' ? produtosErp : []
+  //
+  // cai no `[]` e trabalha com catálogo vazio, em SILÊNCIO: o `typeof` foi
+  // escrito justamente pra não quebrar, e acabou escondendo o problema.
+  //
+  // Foi o que deixou a Configuração de produto vazia pro West Boot: 1400
+  // produtos carregados, e a coleta devolvendo zero.
+  //
+  // O `get` é obrigatório, não dá pra copiar o array uma vez: a variável é
+  // REATRIBUÍDA em oito lugares (hidratação, carregar tudo, reconciliação), e
+  // uma cópia congelaria no valor do primeiro instante.
+  // A varredura encontrou SETE variáveis nesta situação. Todas expostas aqui,
+  // com `get` vivo: quem lê de outro bloco enxerga o valor atual, não uma cópia
+  // do instante do carregamento.
+  //
+  // `_estUltimo` fica de fora: ela é do bloco 9 e é lida pelo 7, ou seja, o
+  // caminho inverso, e precisa ser exposta lá, não aqui.
+  function _expor(nome, get, set) {
+    try {
+      if (Object.getOwnPropertyDescriptor(window, nome)) return;
+      Object.defineProperty(window, nome, { configurable: true, get, set });
+    } catch (e) { console.warn('[painel] nao consegui expor ' + nome + ':', e.message); }
+  }
+  _expor('produtosErp', () => produtosErp, (v) => { produtosErp = v; });
+  _expor('lojasErp', () => lojasErp, (v) => { lojasErp = v; });
+  _expor('FISCAL_ORIGENS', () => FISCAL_ORIGENS);
+  // `_usuarioLogado`, `BACKEND_URL` e `LcAcctSel` sao declaradas MAIS ABAIXO
+  // neste mesmo bloco. Expor aqui daria erro de inicializacao (o getter roda
+  // na primeira leitura, mas o `_expor` referencia a variavel antes dela
+  // existir na zona morta temporal). A exposicao delas fica no fim do bloco.
+  window._exporPainel = _expor;
   
   // v32i.3 Camada 3: helper pra telas que precisam do catálogo INTEIRO temporariamente
   // (ações em massa, reconciliação, exports). Busca tudo do backend numa requisição,
@@ -61926,7 +62000,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1522-nitidez-e-auto-cpf';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1526-menos-consultas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -73408,6 +73482,7 @@ ${JSON.stringify(metricas, null, 2)}`
         expCarregar({ silencioso: true });  // migra pra "Emitindo etiqueta" sem piscar
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
         soltarLinha();
+        _expProgressoMostrar(orderSns.length);
         _expAcompanharEtiqueta(data.jobId);
         return;
       }
@@ -73476,6 +73551,74 @@ ${JSON.stringify(metricas, null, 2)}`
   // tela de vez em quando (os pedidos vão virando "Impresso" conforme saem), e ao
   // concluir abre o PDF final. Silencioso no começo — a migração de status é o
   // feedback; só um toast discreto no fim, junto com o PDF.
+  // ═══════════════════════════════════════════════════════════════════════
+  // PAINEL DE PROGRESSO DA ETIQUETA (v33k.1524)
+  // ─────────────────────────────────────────────────────────────────────
+  // A geracao ja era acompanhada por polling, mas EM SILENCIO: o job rodava,
+  // os contadores mexiam de leve, e a pessoa nao via nada acontecendo. Depois
+  // de alguns segundos ela conclui que travou.
+  //
+  // O spinner no botao (v33k.1518) resolve o clique, nao a espera: gerar 20
+  // etiquetas leva mais de meio minuto, e nesse tempo a pessoa rola a tela e
+  // perde o botao de vista.
+  //
+  // Entao o progresso vira uma faixa fixa no rodape, com contagem e barra.
+  // Nao bloqueia a tela de proposito: a pessoa pode continuar conferindo os
+  // pedidos enquanto as etiquetas saem, e o PDF abre sozinho no fim.
+  function _expProgressoMostrar(total) {
+    let ov = document.getElementById('expProgresso');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'expProgresso';
+      ov.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:22px;'
+        + 'z-index:100060;background:#0f172a;color:#fff;border-radius:14px;'
+        + 'box-shadow:0 18px 44px rgba(0,0,0,.34);padding:14px 18px;min-width:320px;'
+        + 'max-width:min(520px,94vw);font-size:13.5px';
+      ov.innerHTML =
+        '<div style="display:flex;align-items:center;gap:11px">'
+        + '<span class="lc-spin-mini" style="width:16px;height:16px;border-width:2.5px"></span>'
+        + '<div style="flex:1">'
+        + '<div id="expProgTitulo" style="font-weight:700">Gerando etiquetas…</div>'
+        + '<div id="expProgSub" style="opacity:.78;font-size:12px;margin-top:2px"></div>'
+        + '</div></div>'
+        + '<div style="height:6px;background:rgba(255,255,255,.16);border-radius:999px;margin-top:11px;overflow:hidden">'
+        + '<div id="expProgBarra" style="height:100%;width:0%;background:#22c55e;'
+        + 'border-radius:999px;transition:width .3s ease"></div></div>';
+      document.body.appendChild(ov);
+    }
+    const sub = document.getElementById('expProgSub');
+    if (sub) sub.textContent = total ? ('0 de ' + total + ' prontas') : 'preparando…';
+    return ov;
+  }
+
+  function _expProgressoAtualizar(feitas, total, titulo) {
+    const t = document.getElementById('expProgTitulo');
+    const sub = document.getElementById('expProgSub');
+    const barra = document.getElementById('expProgBarra');
+    if (t && titulo) t.textContent = titulo;
+    if (sub) sub.textContent = total ? (feitas + ' de ' + total + ' prontas') : (feitas + ' pronta(s)');
+    if (barra) barra.style.width = (total ? Math.min(100, Math.round((feitas / total) * 100)) : 8) + '%';
+  }
+
+  function _expProgressoFechar(msg, erro) {
+    const ov = document.getElementById('expProgresso');
+    if (!ov) return;
+    if (msg) {
+      const t = document.getElementById('expProgTitulo');
+      const barra = document.getElementById('expProgBarra');
+      if (t) t.textContent = msg;
+      if (barra) { barra.style.width = '100%'; barra.style.background = erro ? '#f97316' : '#22c55e'; }
+      const sp = ov.querySelector('.lc-spin-mini');
+      if (sp) sp.style.display = 'none';
+      // Fica um instante mostrando o resultado antes de sumir: sumir na hora
+      // deixa a duvida de se terminou ou se a tela recarregou.
+      setTimeout(() => { try { ov.remove(); } catch (_) {} }, erro ? 4500 : 1800);
+      return;
+    }
+    try { ov.remove(); } catch (_) {}
+  }
+  window._expProgressoFechar = _expProgressoFechar;
+
   function _expAcompanharEtiqueta(jobId) {
     let tentativas = 0;
     let jaAbriuPdf = false;
@@ -73488,18 +73631,30 @@ ${JSON.stringify(metricas, null, 2)}`
         if (!j.ok) { if (tentativas < 5) setTimeout(poll, 2000); return; }
         // a cada ~3 ticks recarrega os contadores pra mostrar os pedidos migrando
         if (naAba() && tentativas % 3 === 0) { try { expRebuscarContadores(); } catch (_) {} }
+        // `processados` anda a cada pedido tratado; `geradas` so sobe quando a
+        // etiqueta sai. Usar o maior dos dois faz a barra andar de verdade em
+        // vez de ficar parada nos primeiros segundos.
+        _expProgressoAtualizar(Math.max(j.processados || 0, j.geradas || 0), j.total || 0);
         if (j.status === 'concluido' || j.status === 'erro') {
           if (!jaAbriuPdf && j.pdfBase64) { jaAbriuPdf = true; try { expAbrirPdf(j.pdfBase64, j.nomeArquivo || 'etiquetas.pdf'); } catch (_) {} }
           const falhas = j.falhas || 0;
           // v33k.1164: sucesso silencioso (o PDF abrindo + a migração pra "Impresso"
           // já são o feedback). Só avisa quando algo falhou.
           if (falhas) showToast('⚠ ' + (j.geradas || 0) + ' etiqueta(s) · ' + falhas + ' com erro' + (j.ultimoErro ? ': ' + j.ultimoErro : ''), true);
+          _expProgressoFechar(
+            falhas ? ((j.geradas || 0) + ' pronta(s), ' + falhas + ' com erro')
+                   : ((j.geradas || 0) + ' etiqueta(s) pronta(s)'),
+            !!falhas);
           if (naAba()) { try { expCarregar({ silencioso: true }); } catch (_) {} }
           return;
         }
-        if (tentativas > 600) return; // teto ~15min
+        if (tentativas > 600) { _expProgressoFechar('Demorou demais, confira a lista', true); return; }
         setTimeout(poll, 1500);
-      } catch (_) { if (tentativas < 8) setTimeout(poll, 2500); }
+      } catch (_) {
+        if (tentativas < 8) setTimeout(poll, 2500);
+        // Desistiu de perguntar: nao pode deixar a faixa girando pra sempre.
+        else _expProgressoFechar('Nao consegui acompanhar, confira a lista', true);
+      }
     };
     setTimeout(poll, 1200);
   }
@@ -94213,6 +94368,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   } else {
     _bootDispatch();
   }
+
+  // v33k.1525: expostas no fim do bloco, quando ja existem. Ver o comentario
+  // do `_expor` la em cima.
+  try {
+    window._exporPainel('_usuarioLogado', () => _usuarioLogado, (v) => { _usuarioLogado = v; });
+    window._exporPainel('BACKEND_URL', () => BACKEND_URL);
+    window._exporPainel('LcAcctSel', () => LcAcctSel);
+  } catch (e) { console.warn('[painel] exposicao final falhou:', e.message); }
 </script>
 
 <!-- ═══ TELA: colaborador sem nenhuma permissão liberada ═══ -->
