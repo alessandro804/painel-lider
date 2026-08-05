@@ -37,36 +37,36 @@
   @keyframes lcPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
   /* ===== Modal fiscal (v33k.478, dados fiscais Shopee) ===== */
-  /* v33k.1516: miniatura que amplia no hover.
-     `transform-origin: left center` faz a imagem crescer PRA DIREITA e ficar
-     ancorada na coluna, em vez de sair pra fora do card. O z-index sobe junto,
-     senao ela cresce por baixo do card seguinte. */
-  /* v33k.1518: spinner de 12px pro botao em espera. Usa a mesma rotacao que o
-     resto do painel ja usa, so muda o tamanho. */
-  .lc-spin-mini {
-    display: inline-block; width: 12px; height: 12px; vertical-align: -2px;
-    border: 2px solid currentColor; border-right-color: transparent;
-    border-radius: 50%; animation: lcSpinMini .7s linear infinite;
+  /* v33k.1521: a previa da foto e um elemento FLUTUANTE, nao a miniatura
+     esticada.
+     Escalar a miniatura 4x borrava a imagem (era um arquivo de 48px sendo
+     ampliado) e ela ficava por baixo de outros blocos: `z-index` so vale
+     dentro do contexto de empilhamento do pai, e os cards criam o proprio.
+     Com `position:fixed` no body, nada mais fica por cima. */
+  .lc-foto-preview {
+    position: fixed;
+    z-index: 99999;
+    pointer-events: none;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.34);
+    border: 1px solid rgba(0,0,0,.08);
+    padding: 6px;
+    opacity: 0;
+    transform: scale(.96);
+    transition: opacity .12s ease, transform .12s ease;
   }
-  @keyframes lcSpinMini { to { transform: rotate(360deg); } }
-
-  .lc-foto-zoom {
-    transition: transform .16s ease, box-shadow .16s ease;
-    transform-origin: left center;
-    cursor: zoom-in;
+  .lc-foto-preview.ativa { opacity: 1; transform: scale(1); }
+  .lc-foto-preview img {
+    display: block;
+    width: 320px; height: 320px;
+    object-fit: contain;
+    border-radius: 8px;
+    background: #f8fafc;
   }
-  .lc-foto-zoom:hover {
-    transform: scale(4.2);
-    z-index: 50;
-    position: relative;
-    box-shadow: 0 12px 34px rgba(0,0,0,.32);
-    border-radius: 6px;
-  }
-  /* Em tela pequena o zoom atrapalha mais do que ajuda: o dedo cobre a foto e
-     a ampliacao tampa a linha inteira. */
-  @media (max-width: 700px) {
-    .lc-foto-zoom:hover { transform: none; box-shadow: none; }
-  }
+  .lc-foto-zoom { cursor: zoom-in; }
+  /* Em tela pequena a previa tapa a linha inteira e o dedo cobre a foto. */
+  @media (max-width: 700px) { .lc-foto-preview { display: none; } }
 
   .lc-modal-overlay-fiscal {
     position: fixed; inset: 0; background: rgba(15,23,42,0.55);
@@ -10103,6 +10103,137 @@
     try { expCarregar(); } catch (_) {}
   }
   window._dfSalvarDecisoes = _dfSalvarDecisoes;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // PREVIA DA FOTO NO HOVER (v33k.1521)
+  // ─────────────────────────────────────────────────────────────────────
+  // Um elemento so, criado uma vez, reposicionado a cada hover. Delegacao no
+  // documento, entao vale pra qualquer listagem, inclusive as que ainda vao
+  // existir: basta a <img> ter a classe `lc-foto-zoom`.
+  //
+  // Duas coisas que a versao anterior errava:
+  //   · escalava a MINIATURA, um arquivo de 48px, e o resultado borrava;
+  //   · usava z-index dentro do card, entao a foto saia por baixo dos blocos
+  //     seguintes. Agora e `position:fixed` no body.
+  let _fotoPrev = null;
+
+  // Candidatas de URL em ALTA, da melhor pra pior. Cada marketplace marca o
+  // tamanho no proprio caminho do arquivo, e nem sempre a primeira troca
+  // funciona: a lista existe pra tentar a seguinte quando isso acontece.
+  function _fotoCandidatas(url) {
+    const u = String(url || '');
+    if (!u) return [];
+    const c = [];
+    const add = v => { if (v && v !== u && c.indexOf(v) < 0) c.push(v); };
+
+    // Shopee: _tn e thumbnail. Sem sufixo vem a original.
+    add(u.replace(/_tn(\.(jpg|jpeg|png|webp))?(\?|$)/i, '$1$3'));
+
+    // Mercado Livre: o sufixo antes da extensao e o tamanho.
+    // -I e -V sao pequenas; -O e a original, -F a grande.
+    add(u.replace(/-[IVSNMW]\.(jpg|jpeg|png|webp)/i, '-O.$1'));
+    add(u.replace(/-[IVSNMW]\.(jpg|jpeg|png|webp)/i, '-F.$1'));
+    add(u.replace(/D_NQ_NP_(?!2X_)/, 'D_NQ_NP_2X_'));
+
+    // Shein: _square_thumbnail_220x293, _thumbnail_405x552 etc.
+    add(u.replace(/_square_thumbnail_\d+x\d+/i, ''));
+    add(u.replace(/_thumbnail_\d+x\d+/i, ''));
+    add(u.replace(/_(square_)?thumbnail_\d+x\d+/i, '_thumbnail_900x'));
+
+    // CDNs com o tamanho em parametro.
+    add(u.replace(/([?&])(w|width)=\d+/i, '$1$2=900'));
+    add(u.replace(/~tplv-[^/]*\//i, '~tplv-origin/'));
+
+    add(u);   // a propria miniatura, ultimo recurso
+    return c;
+  }
+  window._fotoCandidatas = _fotoCandidatas;
+
+  // Mantido pra quem ja usava: devolve a primeira candidata.
+  function _fotoEmAlta(url) { return _fotoCandidatas(url)[0] || url; }
+  window._fotoEmAlta = _fotoEmAlta;
+
+  function _fotoPrevGarantir() {
+    if (_fotoPrev && document.body.contains(_fotoPrev)) return _fotoPrev;
+    _fotoPrev = document.createElement('div');
+    _fotoPrev.className = 'lc-foto-preview';
+    _fotoPrev.innerHTML = '<img alt="">';
+    document.body.appendChild(_fotoPrev);
+    return _fotoPrev;
+  }
+
+  const MIN_NITIDO = 300;   // px: abaixo disso a previa de 320 ja borra
+
+  function _fotoPrevMostrar(img) {
+    const cx = _fotoPrevGarantir();
+    const alvoImg = cx.querySelector('img');
+    const original = img.getAttribute('src');
+    const cands = _fotoCandidatas(original);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // v33k.1522: NITIDEZ VERIFICADA, nao presumida.
+    // ─────────────────────────────────────────────────────────────────────
+    // Trocar a URL nao garante nada: o servidor pode devolver 200 com a MESMA
+    // miniatura, e aí a previa de 320px fica borrada do mesmo jeito. Entao,
+    // depois de carregar, o `naturalWidth` diz o tamanho REAL do arquivo que
+    // chegou. Se veio pequeno, tenta a proxima candidata.
+    //
+    // O ciclo para na primeira que chegar nitida, ou na ultima, que e a
+    // propria miniatura: borrada e melhor que vazia.
+    let i = 0;
+    const tentar = () => {
+      if (i >= cands.length) return;
+      const url = cands[i++];
+      const teste = new Image();
+      teste.onload = () => {
+        if (teste.naturalWidth >= MIN_NITIDO || i >= cands.length) {
+          alvoImg.src = url;
+          // Renderiza no tamanho do arquivo quando ele e menor que a moldura,
+          // em vez de esticar: pequena e nitida e melhor que grande e borrada.
+          const lado = Math.min(320, Math.max(120, teste.naturalWidth));
+          alvoImg.style.width = lado + 'px';
+          alvoImg.style.height = lado + 'px';
+        } else {
+          tentar();
+        }
+      };
+      teste.onerror = tentar;
+      teste.src = url;
+    };
+    // Mostra a miniatura na hora pra nao piscar vazio, e troca quando a boa chega.
+    alvoImg.src = original;
+    alvoImg.style.width = '320px';
+    alvoImg.style.height = '320px';
+    tentar();
+
+    const r = img.getBoundingClientRect();
+    const L = 332, A = 332;                    // 320 da imagem + a borda
+    const folga = 12;
+    // Abre pra direita; se nao couber, abre pra esquerda.
+    let x = r.right + folga;
+    if (x + L > window.innerWidth - 8) x = Math.max(8, r.left - L - folga);
+    // Centraliza na linha, sem sair pra fora da tela.
+    let y = r.top + (r.height / 2) - (A / 2);
+    y = Math.max(8, Math.min(y, window.innerHeight - A - 8));
+    cx.style.left = Math.round(x) + 'px';
+    cx.style.top = Math.round(y) + 'px';
+    cx.classList.add('ativa');
+  }
+
+  function _fotoPrevEsconder() {
+    if (_fotoPrev) _fotoPrev.classList.remove('ativa');
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const img = e.target && e.target.closest ? e.target.closest('img.lc-foto-zoom') : null;
+    if (img) _fotoPrevMostrar(img);
+  });
+  document.addEventListener('mouseout', (e) => {
+    const img = e.target && e.target.closest ? e.target.closest('img.lc-foto-zoom') : null;
+    if (img) _fotoPrevEsconder();
+  });
+  // Rolar com a previa aberta deixaria ela flutuando no lugar errado.
+  window.addEventListener('scroll', _fotoPrevEsconder, true);
 
   window._nfChecklistCarregar = _nfChecklistCarregar;
   // carrega o checklist assim que o app estiver de pé (o div existe no HTML estático)
@@ -61795,7 +61926,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1520-decisao-fiscal';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1522-nitidez-e-auto-cpf';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -64372,7 +64503,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const max = lista[0].receita || 1;
     el.innerHTML = lista.map((p, i) => {
       const foto = p.foto
-        ? '<img src="' + escapeHtml(p.foto) + '" style="width:38px;height:38px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:38px;height:38px;border-radius:8px;background:var(--lc-surface-2);flex-shrink:0&quot;></div>\'">'
+        ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(p.foto) + '" style="width:38px;height:38px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:38px;height:38px;border-radius:8px;background:var(--lc-surface-2);flex-shrink:0&quot;></div>\'">'
         : '<div style="width:38px;height:38px;border-radius:8px;background:var(--lc-surface-2);flex-shrink:0"></div>';
       const badge = _lcBadgePosicao(p.posAnterior, i);
       return '<div class="lc-rank-item" style="align-items:center">' +
@@ -70367,7 +70498,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function lucroCustoCardHtml(it, idx) {
     const vars = it.variacoes || [];
     const fotoHtml = it.foto
-      ? '<img src="' + escapeHtml(it.foto) + '" style="width:46px;height:46px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
+      ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(it.foto) + '" style="width:46px;height:46px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
       : '<div style="width:46px;height:46px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0"></div>';
 
     let varsHtml = '';
@@ -73864,7 +73995,7 @@ ${JSON.stringify(metricas, null, 2)}`
       ? '<span style="font-size:10px;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-weight:700">Full</span>' : '';
     const foto = (p.foto || (item0 && item0.foto));
     const fotoHtml = foto
-      ? '<img src="' + escapeHtml(foto) + '" style="width:44px;height:44px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:44px;height:44px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0&quot;></div>\'">'
+      ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(foto) + '" style="width:44px;height:44px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:44px;height:44px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0&quot;></div>\'">'
       : '<div style="width:44px;height:44px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0"></div>';
     return '<div class="ped-card-row" onclick="pedAbrirModal(' + idx + ')" style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:12px;cursor:pointer;transition:box-shadow .15s" onmouseover="this.style.boxShadow=\'0 2px 8px rgba(0,0,0,0.08)\'" onmouseout="this.style.boxShadow=\'none\'">' +
       fotoHtml +
@@ -73917,7 +74048,7 @@ ${JSON.stringify(metricas, null, 2)}`
     // itens
     const itensHtml = (p.itens || []).map(it => {
       const fIt = it.foto
-        ? '<img src="' + escapeHtml(it.foto) + '" style="width:40px;height:40px;border-radius:7px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
+        ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(it.foto) + '" style="width:40px;height:40px;border-radius:7px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
         : '<div style="width:40px;height:40px;border-radius:7px;background:var(--lc-surface);border:1px solid var(--lc-border);flex-shrink:0"></div>';
       return '<div style="display:flex;gap:10px;align-items:center;padding:10px;background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:10px;margin-top:8px">' +
         '<div style="font-size:13px;color:var(--lc-ink-2);font-weight:600">' + (it.qtd || 1) + ' ×</div>' +
@@ -82249,7 +82380,7 @@ ${JSON.stringify(metricas, null, 2)}`
         if (m < 0.10) alerta = ' <span title="Abaixo do piso de margem" style="font-size:10px;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:1px 6px;border-radius:6px">⚠ abaixo do piso</span>';
       }
       const de = it.precoOriginal ? ('de ' + _fmtBRL(it.precoOriginal)) : '';
-      const foto = it.foto ? '<img src="' + escapeHtml(it.foto) + '" loading="lazy" style="width:52px;height:52px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto" onerror="this.style.visibility=\'hidden\'">' : '<div style="width:52px;height:52px;border-radius:8px;background:#f3f4f6;flex:0 0 auto"></div>';
+      const foto = it.foto ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(it.foto) + '" loading="lazy" style="width:52px;height:52px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto" onerror="this.style.visibility=\'hidden\'">' : '<div style="width:52px;height:52px;border-radius:8px;background:#f3f4f6;flex:0 0 auto"></div>';
       return '<div class="mlcamp-item-row" data-busca="' + escapeHtml(((it.titulo||'') + ' ' + it.itemId).toLowerCase()) + '" style="display:flex;align-items:center;gap:12px;padding:10px;border:1px solid #e5e7eb;border-radius:10px;background:#fff">' +
         foto +
         '<div style="flex:1 1 auto;min-width:0">' +
@@ -82662,7 +82793,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!wrap) return;
     if (!itens.length) { wrap.innerHTML = '<div style="padding:16px;text-align:center;color:#9ca3af;font-size:13px">Nenhum produto disponível pra adicionar nesta loja.</div>'; return; }
     wrap.innerHTML = itens.map(it => {
-      const foto = it.foto ? '<img src="' + escapeHtml(it.foto) + '" loading="lazy" style="width:46px;height:46px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto" onerror="this.style.visibility=\'hidden\'">' : '<div style="width:46px;height:46px;border-radius:8px;background:#f3f4f6;flex:0 0 auto"></div>';
+      const foto = it.foto ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(it.foto) + '" loading="lazy" style="width:46px;height:46px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto" onerror="this.style.visibility=\'hidden\'">' : '<div style="width:46px;height:46px;border-radius:8px;background:#f3f4f6;flex:0 0 auto"></div>';
       const chk = it._sel ? 'checked' : '';
       return '<div style="display:flex;align-items:center;gap:10px;padding:9px;border:1px solid #e5e7eb;border-radius:10px;background:#fff">' +
         '<input type="checkbox" class="mlcamp-ck" data-mlb="' + it.mlb + '" data-preco="' + it.preco + '" ' + chk + ' onchange="_mlOnToggleAdd(this)" style="width:16px;height:16px;flex:0 0 auto">' +
@@ -82758,7 +82889,7 @@ ${JSON.stringify(metricas, null, 2)}`
       if (!d.ok) { alvo.innerHTML = '<div style="padding:10px;color:#dc2626;font-size:13px">Não encontrei esse anúncio: ' + escapeHtml(d.erro||'?') + '</div>'; return; }
       const tipoNome = { SELLER_CAMPAIGN:'Campanha do vendedor (comum)', SMART:'Coparticipação (cofinanciada)', MARKETPLACE_CAMPAIGN:'Coparticipação (cofinanciada)', DEAL:'Oferta (Deal)', LIGHTNING:'Relâmpago', PRICE_MATCHING_MELI_ALL:'Desconto de comissão (ML banca)', PRICE_MATCHING:'Desconto de comissão (ML banca)' };
       const stNome = { started:'✅ participando', candidate:'⭕ elegível (não entrou)', pending:'🕒 agendada' };
-      const foto = d.foto ? '<img src="' + escapeHtml(d.foto) + '" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto">' : '';
+      const foto = d.foto ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(d.foto) + '" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto">' : '';
       let campHtml;
       if (!d.campanhas.length) {
         campHtml = '<div style="font-size:12px;color:#6b7280;margin-top:6px">Este anúncio <strong>não está em nenhuma promoção</strong> no momento. Você pode adicioná-lo à campanha atual marcando-o na lista abaixo (se ele estiver vinculado a esta loja).</div>';
@@ -83200,7 +83331,7 @@ ${JSON.stringify(metricas, null, 2)}`
       const foto = item.foto || '';
       const sku = item.sku || '';
       const fotoHtml = foto
-        ? `<img src="${escapeHtml(foto)}" alt="" style="width:42px;height:42px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid #e5e7eb" onerror="this.style.display='none'">`
+        ? `<img class=\"lc-foto-zoom\" src="${escapeHtml(foto)}" alt="" style="width:42px;height:42px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid #e5e7eb" onerror="this.style.display='none'">`
         : `<div style="width:42px;height:42px;border-radius:8px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#cbd5e1"><span class="lc-ic" data-size="sm" data-lucide="image"></span></div>`;
       html += `<div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:12px;overflow:hidden">
         <div style="background:#fafafa;padding:10px 12px;font-weight:600;font-size:13px;color:#1f2937;display:flex;align-items:center;gap:10px">
