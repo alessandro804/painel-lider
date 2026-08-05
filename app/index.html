@@ -643,8 +643,14 @@
     }
     const r = await _api('/api/nfe/empresas/' + ctx.empresaId + '/ambiente', { method: 'POST', body: JSON.stringify({ ambiente: Number(ambiente) }) });
     if (r && r.ok) {
-      _toast(Number(ambiente) === 1 ? 'Ambiente alterado para PRODUÇÃO' : 'Ambiente alterado para Homologação');
-      _gfCarregarSeries(ctx.empresaId, Number(ambiente));
+      // v33k.1510: exibe o ambiente que o BANCO devolveu, nao o que foi pedido.
+      // Antes recarregava com `Number(ambiente)`, o valor local, entao a tela
+      // mostrava "PRODUCAO" mesmo quando a gravacao nao tinha acontecido. O
+      // aviso dizia uma coisa e a empresa emitia em outra, que num modulo
+      // fiscal e o pior tipo de divergencia possivel.
+      const efetivo = Number(r.ambiente || ambiente);
+      _toast(efetivo === 1 ? 'Ambiente alterado para PRODUÇÃO' : 'Ambiente alterado para Homologação');
+      _gfCarregarSeries(ctx.empresaId, efetivo);
     } else {
       _toast((r && r.erro) || 'Falha ao trocar ambiente', true);
     }
@@ -61597,7 +61603,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1502-texto-nfe';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1514-voltar-emitir';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -72306,7 +72312,14 @@ ${JSON.stringify(metricas, null, 2)}`
         // refazer uma nota que está correta, gerando duplicidade.
         // Por isso a condição é o TEXTO DO ERRO, não o estado.
         const _errTxt = String(p.erro || '');   // campo real do card
-        const _notaInvalida = /homologa|sem valor fiscal|não tem valor|nao tem valor|cancelad/i.test(_errTxt);
+        // v33k.1514: o AMBIENTE da nota vem do backend e vale mais que o texto
+        // do erro. A Shopee cita "homologacao" na recusa; o TikTok nao, ele
+        // ACEITA a nota de teste e trava por outro motivo. Pelo texto, os
+        // pedidos do TikTok com nota sem valor fiscal ficavam sem o botao que
+        // resolve. O texto continua valendo pros casos que o ambiente nao
+        // cobre, como nota cancelada.
+        const _notaInvalida = p.nfHomologacao === true
+          || /homologa|sem valor fiscal|não tem valor|nao tem valor|cancelad/i.test(_errTxt);
         if (_notaInvalida) {
           btnAcao += ' <button onclick="expVoltarParaEmitir([\'' + p.orderSn + '\'])" style="' +
             'border:1px solid #fbbf24;background:#fffbeb;color:#92400e;padding:8px 14px;border-radius:99px;' +
