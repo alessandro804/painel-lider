@@ -37,6 +37,40 @@
   @keyframes lcPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
   /* ===== Modal fiscal (v33k.478, dados fiscais Shopee) ===== */
+  /* v33k.1521: a previa da foto e um elemento FLUTUANTE, nao a miniatura
+     esticada.
+     Escalar a miniatura 4x borrava a imagem (era um arquivo de 48px sendo
+     ampliado) e ela ficava por baixo de outros blocos: `z-index` so vale
+     dentro do contexto de empilhamento do pai, e os cards criam o proprio.
+     Com `position:fixed` no body, nada mais fica por cima. */
+  .lc-foto-preview {
+    position: fixed;
+    z-index: 99999;
+    pointer-events: none;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.34);
+    border: 1px solid rgba(0,0,0,.08);
+    padding: 6px;
+    opacity: 0;
+    transform: scale(.96);
+    transition: opacity .12s ease, transform .12s ease;
+  }
+  .lc-foto-preview.ativa { opacity: 1; transform: scale(1); }
+  .lc-foto-preview img {
+    display: block;
+    width: 320px; height: 320px;
+    object-fit: contain;
+    border-radius: 8px;
+    background: #f8fafc;
+  }
+  .lc-foto-zoom { cursor: zoom-in; }
+  /* v33k.1523: a previa vale por FORMA (miniatura quadrada de 24 a 96px), nao
+     so pela classe. O cursor acompanha pela mesma faixa de tamanho. */
+  img[src^="http"]:not([data-sem-zoom]):hover { cursor: zoom-in; }
+  /* Em tela pequena a previa tapa a linha inteira e o dedo cobre a foto. */
+  @media (max-width: 700px) { .lc-foto-preview { display: none; } }
+
   .lc-modal-overlay-fiscal {
     position: fixed; inset: 0; background: rgba(15,23,42,0.55);
     display: flex; align-items: center; justify-content: center; z-index: 10000;
@@ -171,11 +205,35 @@
   window._ncmInput = function (el) { if (el) el.value = String(el.value || '').replace(/\D/g, '').slice(0, 8); };
 
   async function _api(path, opts) {
-    const resp = await fetch(_base() + path, Object.assign({
-      headers: { 'Content-Type': 'application/json', 'x-api-token': _token() },
-    }, opts || {}));
-    const data = await resp.json().catch(() => ({ ok: false, erro: 'Resposta inválida' }));
-    return data;
+    // v33k.1486: quando o banco cai, o Cloudflare devolve uma PAGINA HTML no
+    // lugar do JSON. O `.catch(() => ...)` transformava isso num erro generico
+    // "Resposta invalida", e em outros pontos o corpo cru chegava a ser
+    // impresso na tela. Agora a resposta que nao e JSON e reconhecida como
+    // INDISPONIBILIDADE, com uma frase que a pessoa entende.
+    let resp;
+    try {
+      resp = await fetch(_base() + path, Object.assign({
+        headers: { 'Content-Type': 'application/json', 'x-api-token': _token() },
+      }, opts || {}));
+    } catch (e) {
+      return { ok: false, indisponivel: true,
+        erro: 'Servico temporariamente indisponivel. Tente de novo em alguns minutos.' };
+    }
+    const bruto = await resp.text().catch(() => '');
+    try {
+      const data = JSON.parse(bruto);
+      if (data && data.indisponivel) {
+        data.erro = data.erro || 'Servico temporariamente indisponivel.';
+      }
+      return data;
+    } catch (e) {
+      const ehFora = (typeof lcRespostaEhIndisponivel === 'function' && lcRespostaEhIndisponivel(bruto))
+        || resp.status === 502 || resp.status === 503 || resp.status === 504 || resp.status >= 520;
+      return ehFora
+        ? { ok: false, indisponivel: true,
+            erro: 'Servico temporariamente indisponivel. Nao e problema no seu cadastro. Tente de novo em alguns minutos.' }
+        : { ok: false, erro: 'Resposta invalida do servidor.' };
+    }
   }
 
   // Constantes fiscais (espelham as do index.html, com fallback próprio)
@@ -619,8 +677,14 @@
     }
     const r = await _api('/api/nfe/empresas/' + ctx.empresaId + '/ambiente', { method: 'POST', body: JSON.stringify({ ambiente: Number(ambiente) }) });
     if (r && r.ok) {
-      _toast(Number(ambiente) === 1 ? 'Ambiente alterado para PRODUÇÃO' : 'Ambiente alterado para Homologação');
-      _gfCarregarSeries(ctx.empresaId, Number(ambiente));
+      // v33k.1510: exibe o ambiente que o BANCO devolveu, nao o que foi pedido.
+      // Antes recarregava com `Number(ambiente)`, o valor local, entao a tela
+      // mostrava "PRODUCAO" mesmo quando a gravacao nao tinha acontecido. O
+      // aviso dizia uma coisa e a empresa emitia em outra, que num modulo
+      // fiscal e o pior tipo de divergencia possivel.
+      const efetivo = Number(r.ambiente || ambiente);
+      _toast(efetivo === 1 ? 'Ambiente alterado para PRODUÇÃO' : 'Ambiente alterado para Homologação');
+      _gfCarregarSeries(ctx.empresaId, efetivo);
     } else {
       _toast((r && r.erro) || 'Falha ao trocar ambiente', true);
     }
@@ -8463,7 +8527,12 @@
       const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp : [];
       idsBanco = lojaSel.map(fid => { const lo = lojas.find(l => String(l.id) === String(fid)); return lo && lo.idBanco != null ? String(lo.idBanco) : null; }).filter(Boolean);
     }
+    const permitidasCliente = _lojasPermitidasDoCliente();
     return _dfState.itens.filter(it => {
+      // v33k.1486: corte de escopo do cliente ANTES de qualquer outro filtro.
+      // Produto de outro cliente da mesma agencia nao pode aparecer nem com
+      // "Todas as lojas" marcado.
+      if (!_itemEhDoCliente(it, permitidasCliente)) return false;
       // ativos/inativos/todos
       if (_dfState.filtroAtivo === 'ativo' && !it.ativo) return false;
       if (_dfState.filtroAtivo === 'inativo' && it.ativo) return false;
@@ -8502,7 +8571,7 @@
   async function _dfEditarKit(sku) {
     try {
       if (!_kfState.variacoes || !_kfState.variacoes.length) _kfState.variacoes = _kfColetarVariacoes();
-      if (!_kfState.skus || !_kfState.skus.length) _kfState.skus = (typeof _dfColetarSkus === 'function') ? _dfColetarSkus() : [];
+      if (!_kfState.skus || !_kfState.skus.length) _kfState.skus = await _dfColetarSkusComPedidos();
       if (!_kfState.kits || !_kfState.kits.length) {
         const r = await _api('/api/nfe/kits');
         _kfState.kits = (r && r.ok && Array.isArray(r.kits)) ? r.kits : [];
@@ -8511,6 +8580,77 @@
     if (typeof _kfCompor === 'function') _kfCompor(sku);
   }
   window._dfEditarKit = _dfEditarKit;
+
+  // v33k.1486: a lista de SKUs com os de PEDIDO junto, num lugar so.
+  //
+  // O BUG: `_dfColetarSkus()` le so o catalogo local. O enriquecimento com os
+  // SKUs que existem APENAS num pedido acontecia dentro do carregador da tela
+  // de Configuracao de produto. O modal de Kits chamava `_dfColetarSkus()`
+  // direto, entao produto que nunca entrou no catalogo (veio so no pedido) nao
+  // aparecia la, e era impossivel montar o kit dele. Foi o que aconteceu com o
+  // chinelo do Renato: ele estava na tela de Tributacao (que le pedidos) e
+  // sumia na de Kits (que lia so catalogo).
+  async function _dfColetarSkusComPedidos() {
+    const base = (typeof _dfColetarSkus === 'function') ? _dfColetarSkus() : [];
+    try {
+      const rp = await _api('/api/nfe/produtos-fiscal/skus-em-pedidos', { method: 'GET' });
+      if (rp && rp.ok && Array.isArray(rp.skus)) {
+        const idx = new Map(base.map((b, i) => [String(b.sku), i]));
+        rp.skus.forEach(s2 => {
+          const chave = String(s2.sku);
+          if (idx.has(chave)) {
+            const reg = base[idx.get(chave)];
+            reg._dePedido = true;
+            reg.ativo = true;
+            if (Array.isArray(s2.lojaIdsBanco)) {
+              reg.vincLojaIds = Array.from(new Set([...(reg.vincLojaIds || []), ...s2.lojaIdsBanco.map(String)]));
+            }
+          } else {
+            base.push({
+              sku: s2.sku, nome: s2.nome || s2.sku, foto: s2.foto || null, ativo: true,
+              donoLojaIds: [],
+              vincLojaIds: Array.isArray(s2.lojaIdsBanco) ? s2.lojaIdsBanco.map(String) : [],
+              marketplaces: [], _dePedido: true,
+            });
+            idx.set(chave, base.length - 1);
+          }
+        });
+      }
+    } catch (_) { /* sem rede, segue so com o catalogo */ }
+    return base;
+  }
+  window._dfColetarSkusComPedidos = _dfColetarSkusComPedidos;
+
+  // ── ESCOPO DO CLIENTE ────────────────────────────────────────────────────
+  // v33k.1486: o cliente enxerga o catalogo do DONO no cache local (o appData
+  // vem do dono). Sem filtro, ele via produto de OUTRO cliente da mesma
+  // agencia, que e vazamento entre clientes.
+  //
+  // Aqui a lista e cortada pelas lojas vinculadas a ele. "Todas as lojas" para
+  // um cliente significa todas as DELE, nao todas da agencia.
+  function _lojasPermitidasDoCliente() {
+    if ((typeof papelAtual !== 'function') || papelAtual() !== 'cliente') return null;
+    const ids = (typeof _usuarioLogado !== 'undefined' && _usuarioLogado && Array.isArray(_usuarioLogado.lojas))
+      ? _usuarioLogado.lojas.map(String) : [];
+    const permitidas = new Set(ids);
+    // Junta tambem os ids de FRONT das mesmas lojas: as listas de vinculo
+    // misturam id local e idBanco, e comparar so um dos dois esconderia item.
+    const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp : [];
+    lojas.forEach(l => {
+      if (l && l.idBanco != null && ids.includes(String(l.idBanco))) permitidas.add(String(l.id));
+    });
+    return permitidas;
+  }
+  window._lojasPermitidasDoCliente = _lojasPermitidasDoCliente;
+
+  function _itemEhDoCliente(it, permitidas) {
+    if (!permitidas) return true;                 // nao e cliente: ve tudo
+    if (!permitidas.size) return false;           // cliente sem loja: ve nada
+    const dono = (it.donoLojaIds || []).map(String);
+    const vinc = (it.vincLojaIds || []).map(String);
+    return dono.some(x => permitidas.has(x)) || vinc.some(x => permitidas.has(x));
+  }
+  window._itemEhDoCliente = _itemEhDoCliente;
 
   function _dfRender() {
     const el = document.getElementById('dfConteudo');
@@ -8798,6 +8938,13 @@
           d.lojasSemEmpresa + ' loja' + (d.lojasSemEmpresa === 1 ? '' : 's') + ' sem empresa fiscal',
           'abrirGestaoFiscalNFe()'));
       }
+      // v33k.1520: loja sem decisao fiscal trava pedido na etapa 1 sem dar
+      // pista nenhuma. O chip mostra quantas sao e leva pro painel de marcacao.
+      if (d.lojasSemDecisao > 0) {
+        chips.push(chip('ambar', 'help-circle',
+          d.lojasSemDecisao + ' loja' + (d.lojasSemDecisao === 1 ? '' : 's') + ' sem definir CPF/CNPJ',
+          'abrirDecisaoFiscalLojas()'));
+      }
       (d.problemas || []).forEach(pr => {
         const cor = (pr.tipo === 'cert_vencendo') ? 'ambar' : 'vermelho';
         chips.push(chip(cor, 'shield-alert', _esc((pr.razao || '').slice(0, 18)) + ': ' + _esc(pr.texto), 'abrirGestaoFiscalNFe()'));
@@ -8933,7 +9080,7 @@
       1020);
 
     _kfState.variacoes = _kfColetarVariacoes();
-    _kfState.skus = (typeof _dfColetarSkus === 'function') ? _dfColetarSkus() : [];
+    _kfState.skus = await _dfColetarSkusComPedidos();
     _kfState.sel = new Set();
     _kfState.pagina = 1;
 
@@ -8991,7 +9138,9 @@
 
   function _kfFiltrar() {
     const busca = _kfNorm(_kfState.busca);
+    const permitidasCliente = _lojasPermitidasDoCliente();
     return _kfState.skus.filter(it => {
+      if (!_itemEhDoCliente(it, permitidasCliente)) return false;
       const kit = _kfKitDoSku(it.sku);
       if (_kfState.filtro === 'kit' && !kit) return false;
       if (_kfState.filtro === 'semkit' && kit) return false;
@@ -9837,6 +9986,289 @@
   window._dfSetCampo = _dfSetCampo;
   window._dfAplicarMassa = _dfAplicarMassa;
   window._dfSalvarEditadosLinha = _dfSalvarEditadosLinha;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DECISAO FISCAL POR LOJA (v33k.1520)
+  // ─────────────────────────────────────────────────────────────────────
+  // Enquanto `emite_nf` esta nulo, o pedido nasce em "Emitir NF" e fica la:
+  // loja CPF nunca vai emitir, entao ninguem consegue tirar ele dali. E a
+  // marcacao era loja a loja, num seletor pequeno dentro do vinculo fiscal.
+  // Com 30 e poucas contas e mais chegando, isso nao anda.
+  //
+  // Aqui a decisao e em lote, com os sinais na frente pra ninguem marcar no
+  // escuro: se a loja tem CNPJ vinculado, se ja emitiu nota alguma vez, e
+  // quantos pedidos estao parados esperando essa decisao.
+  let _dfLojas = [];
+  const _dfEscolha = {};
+
+  async function abrirDecisaoFiscalLojas() {
+    const old = document.getElementById('dfLojasOverlay'); if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'dfLojasOverlay';
+    ov.className = 'lc-modal-overlay-fiscal';
+    ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:760px;width:100%;'
+      + 'max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'
+      + '<div style="padding:20px 22px 14px;border-bottom:1px solid #e2e8f0">'
+      + '<div style="font-size:17px;font-weight:800;color:#1e2a47">Esta loja emite nota fiscal?</div>'
+      + '<div style="font-size:13px;color:#6b7280;margin-top:5px;line-height:1.5">'
+      + 'Loja CPF nao emite NF-e, entao os pedidos dela devem ir direto para Programar. '
+      + 'Enquanto a resposta estiver em branco, eles ficam parados em Emitir NF sem saida.</div></div>'
+      + '<div id="dfLojasCorpo" style="padding:16px 22px;overflow:auto;flex:1">'
+      + '<div style="text-align:center;color:#64748b;padding:24px">Carregando…</div></div>'
+      + '<div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:8px;align-items:center">'
+      + '<div id="dfLojasResumo" style="flex:1;font-size:12.5px;color:#64748b"></div>'
+      + '<button class="toolbar-btn" onclick="document.getElementById(\'dfLojasOverlay\').remove()">Fechar</button>'
+      + '<button class="toolbar-btn" id="dfLojasSalvar" style="background:#16a34a;color:#fff" '
+      + 'onclick="_dfSalvarDecisoes()">Salvar</button>'
+      + '</div></div>';
+    document.body.appendChild(ov);
+
+    const r = await _api('/api/expedicao/lojas-fiscal');
+    _dfLojas = (r && r.ok && r.lojas) || [];
+    Object.keys(_dfEscolha).forEach(k => delete _dfEscolha[k]);
+    _dfRender();
+  }
+  window.abrirDecisaoFiscalLojas = abrirDecisaoFiscalLojas;
+
+  function _dfRender() {
+    const el = document.getElementById('dfLojasCorpo');
+    if (!el) return;
+    // Quem ainda nao tem resposta vem primeiro, e dentro disso quem tem mais
+    // pedido parado: e a ordem do que custa mais caro deixar sem decidir.
+    const ordenadas = _dfLojas.slice().sort((a, b) => {
+      const av = a.emiteNf == null ? 0 : 1, bv = b.emiteNf == null ? 0 : 1;
+      if (av !== bv) return av - bv;
+      return (b.paradosNaEmissao || 0) - (a.paradosNaEmissao || 0);
+    });
+    const semDecisao = ordenadas.filter(l => l.emiteNf == null).length;
+
+    let h = '';
+    if (semDecisao > 1) {
+      h += '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;'
+        + 'padding:11px 13px;margin-bottom:14px;font-size:12.5px;color:#92400e;line-height:1.5">'
+        + 'Marque em lote so o que voce tem certeza. Uma loja CNPJ marcada como CPF passa a '
+        + 'despachar sem nota, e isso e problema fiscal, nao de tela.</div>';
+    }
+    h += '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+      + '<thead><tr style="text-align:left;color:#64748b;font-size:11.5px;text-transform:uppercase">'
+      + '<th style="padding:6px 4px">Loja</th><th style="padding:6px 4px">Sinais</th>'
+      + '<th style="padding:6px 4px;text-align:right">Emite NF?</th></tr></thead><tbody>';
+
+    ordenadas.forEach(l => {
+      const escolha = (_dfEscolha[l.id] !== undefined) ? _dfEscolha[l.id] : l.emiteNf;
+      const sinais = [];
+      if (l.temCnpj) sinais.push('<span style="color:#15803d">CNPJ vinculado</span>');
+      if (l.jaEmitiu) sinais.push('<span style="color:#15803d">ja emitiu nota</span>');
+      if (!l.temCnpj && !l.jaEmitiu) sinais.push('<span style="color:#92400e">nunca emitiu</span>');
+      if (l.paradosNaEmissao) sinais.push('<b style="color:#b91c1c">' + l.paradosNaEmissao + ' parado(s)</b>');
+
+      const bt = (val, txt, cor) => '<button onclick="_dfMarcar(' + l.id + ',' + val + ')" '
+        + 'style="padding:5px 11px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;'
+        + 'border:1px solid ' + (escolha === val ? cor : '#e2e8f0') + ';'
+        + 'background:' + (escolha === val ? cor : '#fff') + ';'
+        + 'color:' + (escolha === val ? '#fff' : '#64748b') + '">' + txt + '</button>';
+
+      h += '<tr style="border-top:1px solid #f1f5f9">'
+        + '<td style="padding:9px 4px"><b>' + escapeHtml(l.nome || '') + '</b>'
+        + '<div style="font-size:11px;color:#94a3b8">' + escapeHtml(l.marketplace || '') + ' · id ' + l.id + '</div></td>'
+        + '<td style="padding:9px 4px;font-size:11.5px">' + sinais.join(' · ') + '</td>'
+        + '<td style="padding:9px 4px;text-align:right;white-space:nowrap">'
+        + bt(true, 'Sim (CNPJ)', '#16a34a') + ' ' + bt(false, 'Nao (CPF)', '#d97706') + '</td></tr>';
+    });
+    h += '</tbody></table>';
+    el.innerHTML = h;
+
+    const res = document.getElementById('dfLojasResumo');
+    if (res) {
+      const n = Object.keys(_dfEscolha).length;
+      res.textContent = semDecisao + ' sem resposta' + (n ? '  ·  ' + n + ' alteracao(oes) pendente(s)' : '');
+    }
+  }
+
+  function _dfMarcar(lojaId, valor) { _dfEscolha[lojaId] = valor; _dfRender(); }
+  window._dfMarcar = _dfMarcar;
+
+  async function _dfSalvarDecisoes() {
+    const itens = Object.keys(_dfEscolha).map(id => ({ lojaId: Number(id), emiteNf: _dfEscolha[id] }));
+    if (!itens.length) { showToast('Nada alterado.', true); return; }
+    const btn = document.getElementById('dfLojasSalvar');
+    if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
+    const r = await _api('/api/expedicao/lojas-emite-nf-lote', {
+      method: 'POST', body: JSON.stringify({ itens }),
+    });
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+    if (!r || !r.ok) { showToast((r && r.erro) || 'Nao consegui salvar.', true); return; }
+    showToast(r.marcadas + ' loja(s) marcada(s)'
+      + (r.movidos ? ' · ' + r.movidos + ' pedido(s) foram para Programar' : ''));
+    if ((r.erros || []).length) await lcAlert(r.erros.join('\n'), { titulo: 'Avisos' });
+    const ov = document.getElementById('dfLojasOverlay'); if (ov) ov.remove();
+    try { _nfChecklistCarregar(); } catch (_) {}
+    try { expCarregar(); } catch (_) {}
+  }
+  window._dfSalvarDecisoes = _dfSalvarDecisoes;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // PREVIA DA FOTO NO HOVER (v33k.1521)
+  // ─────────────────────────────────────────────────────────────────────
+  // Um elemento so, criado uma vez, reposicionado a cada hover. Delegacao no
+  // documento, entao vale pra qualquer listagem, inclusive as que ainda vao
+  // existir: basta a <img> ter a classe `lc-foto-zoom`.
+  //
+  // Duas coisas que a versao anterior errava:
+  //   · escalava a MINIATURA, um arquivo de 48px, e o resultado borrava;
+  //   · usava z-index dentro do card, entao a foto saia por baixo dos blocos
+  //     seguintes. Agora e `position:fixed` no body.
+  let _fotoPrev = null;
+
+  // Candidatas de URL em ALTA, da melhor pra pior. Cada marketplace marca o
+  // tamanho no proprio caminho do arquivo, e nem sempre a primeira troca
+  // funciona: a lista existe pra tentar a seguinte quando isso acontece.
+  function _fotoCandidatas(url) {
+    const u = String(url || '');
+    if (!u) return [];
+    const c = [];
+    const add = v => { if (v && v !== u && c.indexOf(v) < 0) c.push(v); };
+
+    // Shopee: _tn e thumbnail. Sem sufixo vem a original.
+    add(u.replace(/_tn(\.(jpg|jpeg|png|webp))?(\?|$)/i, '$1$3'));
+
+    // Mercado Livre: o sufixo antes da extensao e o tamanho.
+    // -I e -V sao pequenas; -O e a original, -F a grande.
+    add(u.replace(/-[IVSNMW]\.(jpg|jpeg|png|webp)/i, '-O.$1'));
+    add(u.replace(/-[IVSNMW]\.(jpg|jpeg|png|webp)/i, '-F.$1'));
+    add(u.replace(/D_NQ_NP_(?!2X_)/, 'D_NQ_NP_2X_'));
+
+    // Shein: _square_thumbnail_220x293, _thumbnail_405x552 etc.
+    add(u.replace(/_square_thumbnail_\d+x\d+/i, ''));
+    add(u.replace(/_thumbnail_\d+x\d+/i, ''));
+    add(u.replace(/_(square_)?thumbnail_\d+x\d+/i, '_thumbnail_900x'));
+
+    // CDNs com o tamanho em parametro.
+    add(u.replace(/([?&])(w|width)=\d+/i, '$1$2=900'));
+    add(u.replace(/~tplv-[^/]*\//i, '~tplv-origin/'));
+
+    add(u);   // a propria miniatura, ultimo recurso
+    return c;
+  }
+  window._fotoCandidatas = _fotoCandidatas;
+
+  // Mantido pra quem ja usava: devolve a primeira candidata.
+  function _fotoEmAlta(url) { return _fotoCandidatas(url)[0] || url; }
+  window._fotoEmAlta = _fotoEmAlta;
+
+  function _fotoPrevGarantir() {
+    if (_fotoPrev && document.body.contains(_fotoPrev)) return _fotoPrev;
+    _fotoPrev = document.createElement('div');
+    _fotoPrev.className = 'lc-foto-preview';
+    _fotoPrev.innerHTML = '<img alt="">';
+    document.body.appendChild(_fotoPrev);
+    return _fotoPrev;
+  }
+
+  const MIN_NITIDO = 300;   // px: abaixo disso a previa de 320 ja borra
+
+  function _fotoPrevMostrar(img) {
+    const cx = _fotoPrevGarantir();
+    const alvoImg = cx.querySelector('img');
+    const original = img.getAttribute('src');
+    const cands = _fotoCandidatas(original);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // v33k.1522: NITIDEZ VERIFICADA, nao presumida.
+    // ─────────────────────────────────────────────────────────────────────
+    // Trocar a URL nao garante nada: o servidor pode devolver 200 com a MESMA
+    // miniatura, e aí a previa de 320px fica borrada do mesmo jeito. Entao,
+    // depois de carregar, o `naturalWidth` diz o tamanho REAL do arquivo que
+    // chegou. Se veio pequeno, tenta a proxima candidata.
+    //
+    // O ciclo para na primeira que chegar nitida, ou na ultima, que e a
+    // propria miniatura: borrada e melhor que vazia.
+    let i = 0;
+    const tentar = () => {
+      if (i >= cands.length) return;
+      const url = cands[i++];
+      const teste = new Image();
+      teste.onload = () => {
+        if (teste.naturalWidth >= MIN_NITIDO || i >= cands.length) {
+          alvoImg.src = url;
+          // Renderiza no tamanho do arquivo quando ele e menor que a moldura,
+          // em vez de esticar: pequena e nitida e melhor que grande e borrada.
+          const lado = Math.min(320, Math.max(120, teste.naturalWidth));
+          alvoImg.style.width = lado + 'px';
+          alvoImg.style.height = lado + 'px';
+        } else {
+          tentar();
+        }
+      };
+      teste.onerror = tentar;
+      teste.src = url;
+    };
+    // Mostra a miniatura na hora pra nao piscar vazio, e troca quando a boa chega.
+    alvoImg.src = original;
+    alvoImg.style.width = '320px';
+    alvoImg.style.height = '320px';
+    tentar();
+
+    const r = img.getBoundingClientRect();
+    const L = 332, A = 332;                    // 320 da imagem + a borda
+    const folga = 12;
+    // Abre pra direita; se nao couber, abre pra esquerda.
+    let x = r.right + folga;
+    if (x + L > window.innerWidth - 8) x = Math.max(8, r.left - L - folga);
+    // Centraliza na linha, sem sair pra fora da tela.
+    let y = r.top + (r.height / 2) - (A / 2);
+    y = Math.max(8, Math.min(y, window.innerHeight - A - 8));
+    cx.style.left = Math.round(x) + 'px';
+    cx.style.top = Math.round(y) + 'px';
+    cx.classList.add('ativa');
+  }
+
+  function _fotoPrevEsconder() {
+    if (_fotoPrev) _fotoPrev.classList.remove('ativa');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // QUAIS IMAGENS GANHAM A PREVIA (v33k.1523)
+  // ─────────────────────────────────────────────────────────────────────
+  // Marcar `lc-foto-zoom` uma a uma nao ia funcionar: sao dezenas de pontos
+  // espalhados (promocoes, anuncios, dropshipping, estoque, kits...) e toda
+  // listagem nova nasceria sem o recurso.
+  //
+  // Aqui a regra e por FORMA, e vale pra qualquer tela: miniatura quadrada de
+  // 24 a 96px, com src http. E o tamanho de foto de produto em linha de lista,
+  // e nada mais no painel tem esse formato.
+  //
+  // O que fica de fora e explicito: logo, avatar, icone e bandeira, alem de
+  // qualquer coisa no menu ou no cabecalho. E `data-sem-zoom="1"` desliga
+  // pontualmente quando aparecer um caso que a regra nao previu.
+  const RE_NAO_E_PRODUTO = /logo|avatar|icone|icon|bandeira|flag|placeholder|qrcode|barcode/i;
+
+  function _ehFotoDeProduto(img) {
+    if (!img || img.tagName !== 'IMG') return false;
+    if (img.classList.contains('lc-foto-zoom')) return true;      // marcada na mao
+    if (img.hasAttribute('data-sem-zoom')) return false;
+    const src = img.getAttribute('src') || '';
+    if (!/^https?:/i.test(src)) return false;                     // data: e svg inline nao
+    if (RE_NAO_E_PRODUTO.test(src) || RE_NAO_E_PRODUTO.test(img.className || '')
+        || RE_NAO_E_PRODUTO.test(img.id || '')) return false;
+    if (img.closest('header, nav, .sidebar, .top-bar, .user-avatar')) return false;
+    const r = img.getBoundingClientRect();
+    if (r.width < 24 || r.width > 96) return false;
+    // Quadrada: foto de produto em lista e sempre 1:1. Banner e faixa nao.
+    if (Math.abs(r.width - r.height) > 8) return false;
+    return true;
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const img = e.target && e.target.closest ? e.target.closest('img') : null;
+    if (img && _ehFotoDeProduto(img)) _fotoPrevMostrar(img);
+  });
+  document.addEventListener('mouseout', (e) => {
+    const img = e.target && e.target.closest ? e.target.closest('img') : null;
+    if (img && _ehFotoDeProduto(img)) _fotoPrevEsconder();
+  });
+  // Rolar com a previa aberta deixaria ela flutuando no lugar errado.
+  window.addEventListener('scroll', _fotoPrevEsconder, true);
 
   window._nfChecklistCarregar = _nfChecklistCarregar;
   // carrega o checklist assim que o app estiver de pé (o div existe no HTML estático)
@@ -32665,15 +33097,49 @@ Retorne JSON: {"ID": "valor", ...}`;
               'border-radius:9px;font-size:13px;font-weight:700;cursor:pointer">' + _esc(confirmar || 'Confirmar') + '</button>' +
           '</div>' +
         '</div>';
-      const fim = (v) => { try { ov.remove(); } catch (_) {} resolve(v); };
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1515: TRES defeitos que se somavam pra travar o botao.
+      // ─────────────────────────────────────────────────────────────────
+      // Sintoma: no PRIMEIRO pedido funcionava; no segundo o modal abria e o
+      // botao nao fazia nada; fechando e clicando de novo, voltava a
+      // funcionar.
+      //
+      // 1. OVERLAY ORFAO. Se uma chamada anterior nao removeu o overlay (o
+      //    `keydown` de Escape ficava preso e podia resolver a promise sem
+      //    tirar o elemento), ele continuava no DOM por cima, invisivel mas
+      //    capturando os cliques. O clique ia pro modal ANTIGO, cuja promise
+      //    ja estava resolvida, e nada acontecia. Agora todo overlay anterior
+      //    e removido antes de criar o novo.
+      //
+      // 2. LISTENER DE TECLADO VAZANDO. Ele so era removido quando a pessoa
+      //    apertava Escape. Confirmando ou cancelando com o mouse, ficava
+      //    pendurado no `document` pra sempre, um por clique.
+      //
+      // 3. CLIQUE NO FILHO DO BOTAO. `e.target.getAttribute` so funciona se o
+      //    clique cair exatamente no <button>. Qualquer elemento dentro dele
+      //    (um <span>, um icone) devolvia null e o clique era ignorado.
+      //    `closest` resolve isso independente de onde o clique caiu.
+      document.querySelectorAll('.lc-modal-overlay-fiscal').forEach(v => {
+        try { v.remove(); } catch (_) {}
+      });
+
+      let encerrado = false;
+      const aoTeclar = (e) => { if (e.key === 'Escape') fim(false); };
+      const fim = (v) => {
+        if (encerrado) return;          // uma resolucao so, por chamada
+        encerrado = true;
+        try { document.removeEventListener('keydown', aoTeclar); } catch (_) {}
+        try { ov.remove(); } catch (_) {}
+        resolve(v);
+      };
+
       ov.addEventListener('click', (e) => {
-        const b = e.target && e.target.getAttribute && e.target.getAttribute('data-x');
+        const alvo = e.target && e.target.closest ? e.target.closest('[data-x]') : null;
+        const b = alvo && alvo.getAttribute('data-x');
         if (b === 's') fim(true);
         else if (b === 'n' || e.target === ov) fim(false);   // clique fora cancela
       });
-      document.addEventListener('keydown', function esc(e) {
-        if (e.key === 'Escape') { document.removeEventListener('keydown', esc); fim(false); }
-      });
+      document.addEventListener('keydown', aoTeclar);
       document.body.appendChild(ov);
     });
   }
@@ -34322,6 +34788,45 @@ Retorne JSON: {"ID": "valor", ...}`;
   })();
   
   let produtosErp = JSON.parse(localStorage.getItem('lider_produtos_v1') || '[]');
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1525: o catálogo precisa ser VISÍVEL pros outros blocos <script>.
+  // ─────────────────────────────────────────────────────────────────────
+  // `let` no topo de um <script> NÃO cria propriedade em `window`. Este painel
+  // tem 10 blocos <script> separados, e `produtosErp` só existe no escopo do
+  // bloco 7. Toda função dos outros blocos que faz
+  //
+  //     typeof produtosErp !== 'undefined' ? produtosErp : []
+  //
+  // cai no `[]` e trabalha com catálogo vazio, em SILÊNCIO: o `typeof` foi
+  // escrito justamente pra não quebrar, e acabou escondendo o problema.
+  //
+  // Foi o que deixou a Configuração de produto vazia pro West Boot: 1400
+  // produtos carregados, e a coleta devolvendo zero.
+  //
+  // O `get` é obrigatório, não dá pra copiar o array uma vez: a variável é
+  // REATRIBUÍDA em oito lugares (hidratação, carregar tudo, reconciliação), e
+  // uma cópia congelaria no valor do primeiro instante.
+  // A varredura encontrou SETE variáveis nesta situação. Todas expostas aqui,
+  // com `get` vivo: quem lê de outro bloco enxerga o valor atual, não uma cópia
+  // do instante do carregamento.
+  //
+  // `_estUltimo` fica de fora: ela é do bloco 9 e é lida pelo 7, ou seja, o
+  // caminho inverso, e precisa ser exposta lá, não aqui.
+  function _expor(nome, get, set) {
+    try {
+      if (Object.getOwnPropertyDescriptor(window, nome)) return;
+      Object.defineProperty(window, nome, { configurable: true, get, set });
+    } catch (e) { console.warn('[painel] nao consegui expor ' + nome + ':', e.message); }
+  }
+  _expor('produtosErp', () => produtosErp, (v) => { produtosErp = v; });
+  _expor('lojasErp', () => lojasErp, (v) => { lojasErp = v; });
+  _expor('FISCAL_ORIGENS', () => FISCAL_ORIGENS);
+  // `_usuarioLogado`, `BACKEND_URL` e `LcAcctSel` sao declaradas MAIS ABAIXO
+  // neste mesmo bloco. Expor aqui daria erro de inicializacao (o getter roda
+  // na primeira leitura, mas o `_expor` referencia a variavel antes dela
+  // existir na zona morta temporal). A exposicao delas fica no fim do bloco.
+  window._exporPainel = _expor;
   
   // v32i.3 Camada 3: helper pra telas que precisam do catálogo INTEIRO temporariamente
   // (ações em massa, reconciliação, exports). Busca tudo do backend numa requisição,
@@ -48947,8 +49452,16 @@ São o mesmo produto?`;
           // sendo a que manda, exatamente como sempre foi. O sombra só junta
           // evidência pra decidir, com dado real, se um dia o nosso estoque
           // pode virar a fonte da verdade.
-          if (varExt.estoque != null && varInterna.sku && lojaIdBanco) {
-            _sombraFila.push({ lojaId: lojaIdBanco, sku: varInterna.sku, estoqueMarketplace: varExt.estoque });
+          // v33k.1492: era `lojaIdBanco`, que NAO EXISTE neste escopo. O bloco
+          // do modo sombra foi escrito espelhando outro trecho, onde a variavel
+          // e declarada com esse nome, e aqui dentro so existe `loja`. Como
+          // ReferenceError nao aparece em `node --check` nem no ESLint com
+          // `no-undef` desligado, o erro so surgia ao CLICAR em sincronizar:
+          // a importacao inteira morria com "lojaIdBanco is not defined" e o
+          // anuncio novo nunca chegava na tela.
+          const _sombraLojaId = loja.idBanco || null;
+          if (varExt.estoque != null && varInterna.sku && _sombraLojaId) {
+            _sombraFila.push({ lojaId: _sombraLojaId, sku: varInterna.sku, estoqueMarketplace: varExt.estoque });
           }
           if (varExt.estoque != null) varInterna.estoque = varExt.estoque;
           // _promo: o cron sincronizar_precos_promo é o dono autoritativo (lê das
@@ -61487,7 +62000,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1484-vincular-cnpj';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1525-catalogo-visivel';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -61758,6 +62271,47 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // ===== CONTROLE DE PAPÉIS (admin / colaborador / demo) =====
   let _usuarioLogado = null;
   try { _usuarioLogado = JSON.parse(localStorage.getItem('lider_usuario')||'null'); } catch(e) {}
+  // ═══════════════════════════════════════════════════════════════════════
+  // BANCO FORA DO AR (v33k.1486)
+  // ─────────────────────────────────────────────────────────────────────
+  // Quando o Supabase cai, o Cloudflare devolve uma PAGINA HTML no lugar do
+  // JSON. Sem esta guarda o painel imprimia o erro 521 da Cloudflare dentro da
+  // lista de pedidos: um paredao de <div class="cf-wrapper"> onde deviam estar
+  // as vendas. Agora vira uma faixa curta, com o botao de tentar de novo.
+  //
+  // A regra: se a resposta nao e JSON, ela nao e dado. E erro de
+  // infraestrutura disfarcado, e nao pode chegar na tela como conteudo.
+  function lcRespostaEhIndisponivel(txtOuObj) {
+    if (!txtOuObj) return false;
+    if (typeof txtOuObj === 'object') return txtOuObj.indisponivel === true;
+    const t = String(txtOuObj).slice(0, 2000).toLowerCase();
+    return t.indexOf('<!doctype html') >= 0 || t.indexOf('<html') >= 0
+      || t.indexOf('cf-error-details') >= 0 || t.indexOf('web server is down') >= 0;
+  }
+  window.lcRespostaEhIndisponivel = lcRespostaEhIndisponivel;
+
+  function lcHtmlBancoFora(aoTentar) {
+    return '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;'
+      + 'padding:20px;text-align:center;color:#9a3412">'
+      + '<div style="font-size:26px;line-height:1"><span class="lc-ic" data-lucide="cloud-off"></span></div>'
+      + '<div style="font-weight:700;margin-top:8px;font-size:14px">Servico temporariamente indisponivel</div>'
+      + '<div style="font-size:13px;margin-top:6px;line-height:1.55;max-width:520px;margin-left:auto;margin-right:auto">'
+      + 'Nao e problema no seu cadastro nem nos seus dados. Costuma voltar em alguns minutos.</div>'
+      + (aoTentar ? '<button class="lc-btn lc-btn--sm lc-btn--ghost" style="margin-top:12px" onclick="' + aoTentar + '">Tentar de novo</button>' : '')
+      + '</div>';
+  }
+  window.lcHtmlBancoFora = lcHtmlBancoFora;
+
+  // Mostra a faixa dentro de um container, no lugar do conteudo quebrado.
+  function lcMostrarBancoFora(idOuEl, aoTentar) {
+    const el = (typeof idOuEl === 'string') ? document.getElementById(idOuEl) : idOuEl;
+    if (!el) return false;
+    el.innerHTML = lcHtmlBancoFora(aoTentar);
+    try { window.lcHydrateIcons && window.lcHydrateIcons(el); } catch (e) {}
+    return true;
+  }
+  window.lcMostrarBancoFora = lcMostrarBancoFora;
+
   function papelAtual() { return (_usuarioLogado && _usuarioLogado.papel) || 'admin'; }
   window.papelAtual = papelAtual;
 
@@ -64023,7 +64577,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const max = lista[0].receita || 1;
     el.innerHTML = lista.map((p, i) => {
       const foto = p.foto
-        ? '<img src="' + escapeHtml(p.foto) + '" style="width:38px;height:38px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:38px;height:38px;border-radius:8px;background:var(--lc-surface-2);flex-shrink:0&quot;></div>\'">'
+        ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(p.foto) + '" style="width:38px;height:38px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:38px;height:38px;border-radius:8px;background:var(--lc-surface-2);flex-shrink:0&quot;></div>\'">'
         : '<div style="width:38px;height:38px;border-radius:8px;background:var(--lc-surface-2);flex-shrink:0"></div>';
       const badge = _lcBadgePosicao(p.posAnterior, i);
       return '<div class="lc-rank-item" style="align-items:center">' +
@@ -70018,7 +70572,7 @@ ${JSON.stringify(metricas, null, 2)}`
   function lucroCustoCardHtml(it, idx) {
     const vars = it.variacoes || [];
     const fotoHtml = it.foto
-      ? '<img src="' + escapeHtml(it.foto) + '" style="width:46px;height:46px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
+      ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(it.foto) + '" style="width:46px;height:46px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
       : '<div style="width:46px;height:46px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0"></div>';
 
     let varsHtml = '';
@@ -71453,7 +72007,25 @@ ${JSON.stringify(metricas, null, 2)}`
       const ac = document.getElementById('expAcoes'); if (ac) ac.style.display = 'none';
       return;
     }
-    if (loading && !silencioso) loading.style.display = 'block';
+    // ═══════════════════════════════════════════════════════════════════════
+    // v33k.1516: esqueleto na TELA TODA, nao so na lista.
+    // ─────────────────────────────────────────────────────────────────────
+    // Com muitos pedidos o /contadores leva de 6 a 12 segundos. Nesse tempo os
+    // cards de etapa e os chips ficavam VAZIOS e so aparecia um "Carregando..."
+    // pequeno no meio. A tela parecia travada, e a pessoa clicava de novo.
+    //
+    // O esqueleto ja existia (`lc-skeleton`), mas so era usado na lista. Aqui
+    // ele passa a cobrir os cards e os chips tambem, entao a tela mostra a
+    // FORMA do que esta vindo desde o primeiro instante.
+    if (!silencioso) {
+      const et = document.getElementById('expEtapas');
+      const ch = document.getElementById('expChips');
+      if (et && !_expDados) et.innerHTML = _expSkeletonEtapas();
+      if (ch && !_expDados) ch.innerHTML = _expSkeletonChips();
+      if (lista && !lista.innerHTML.trim()) lista.innerHTML = _expSkeletons();
+    }
+    // O "Carregando..." solto some: com esqueleto ele vira ruido.
+    if (loading) loading.style.display = 'none';
     try {
       const _seqC = ++_expSeqCnt;
       const params = new URLSearchParams({ lojaIds: lojas.join(',') });
@@ -72028,6 +72600,29 @@ ${JSON.stringify(metricas, null, 2)}`
     }
   }
 
+  // Esqueleto dos CARDS de etapa: mesma grade, mesma altura, pra a tela nao
+  // "pular" quando o conteudo real chega.
+  function _expSkeletonEtapas() {
+    let s = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">';
+    for (let i = 0; i < 5; i++) {
+      s += '<div style="border:1px solid var(--lc-border,#eef0f3);border-radius:12px;padding:14px">'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:45%"></div>'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:70%;height:18px;margin-top:6px"></div>'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:55%;margin-top:6px"></div>'
+        + '</div>';
+    }
+    return s + '</div>';
+  }
+
+  // Esqueleto dos CHIPS de status.
+  function _expSkeletonChips() {
+    let s = '';
+    for (let i = 0; i < 5; i++) {
+      s += '<div class="lc-skeleton" style="width:' + (86 + i * 16) + 'px;height:30px;border-radius:999px"></div>';
+    }
+    return s;
+  }
+
   // esqueletos de carregamento pra lista de pedidos (dá sensação de fluidez)
   function _expSkeletons() {
     let s = '';
@@ -72147,7 +72742,7 @@ ${JSON.stringify(metricas, null, 2)}`
       //                      falha_programacao → [↻ Tentar de novo] + motivo
       if (p.estado === 'para_programar') btnAcao = '<button onclick="expAvancarUm(\'' + p.orderSn + '\',\'programar\')" style="' + btnStyle + '">Programar envio</button>';
       else if (p.estado === 'falha_programacao' || p.estado === 'erro_rastreio' || programandoComErro) {
-        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'programar\')" style="' + btnRetry + '">↻ Tentar de novo</button>';
+        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'programar\',this)" style="' + btnRetry + '">↻ Tentar de novo</button>';
         // v33k.1106: botão de voltar SÓ quando o erro é a própria NOTA.
         // "Tentar de novo" reenvia o mesmo arquivo recusado, então em nota
         // inválida ele nunca resolve. Mas em falha do marketplace reenviar é o
@@ -72155,7 +72750,14 @@ ${JSON.stringify(metricas, null, 2)}`
         // refazer uma nota que está correta, gerando duplicidade.
         // Por isso a condição é o TEXTO DO ERRO, não o estado.
         const _errTxt = String(p.erro || '');   // campo real do card
-        const _notaInvalida = /homologa|sem valor fiscal|não tem valor|nao tem valor|cancelad/i.test(_errTxt);
+        // v33k.1514: o AMBIENTE da nota vem do backend e vale mais que o texto
+        // do erro. A Shopee cita "homologacao" na recusa; o TikTok nao, ele
+        // ACEITA a nota de teste e trava por outro motivo. Pelo texto, os
+        // pedidos do TikTok com nota sem valor fiscal ficavam sem o botao que
+        // resolve. O texto continua valendo pros casos que o ambiente nao
+        // cobre, como nota cancelada.
+        const _notaInvalida = p.nfHomologacao === true
+          || /homologa|sem valor fiscal|não tem valor|nao tem valor|cancelad/i.test(_errTxt);
         if (_notaInvalida) {
           btnAcao += ' <button onclick="expVoltarParaEmitir([\'' + p.orderSn + '\'])" style="' +
             'border:1px solid #fbbf24;background:#fffbeb;color:#92400e;padding:8px 14px;border-radius:99px;' +
@@ -72170,13 +72772,13 @@ ${JSON.stringify(metricas, null, 2)}`
       if (p.estado === 'gerando_etiqueta') {
         btnAcao = ''; // a plataforma está gerando, nada pra fazer, é só aguardar
       } else if (ehErro) {
-        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\')" style="' + btnRetry + '">↻ Tentar de novo</button>';
+        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\',this)" style="' + btnRetry + '">↻ Tentar de novo</button>';
       } else {
         // v33k.579: além de gerar a etiqueta aqui, dá pra marcar como IMPRESSO à
         // mão. Nem toda impressão passa pelo Lider 10, a etiqueta pode ter sido
         // impressa no painel do marketplace ou em outro sistema (foi o que
         // aconteceu com os pedidos do TikTok, que ficaram presos aqui).
-        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\')" style="' + btnStyle + '">Gerar etiqueta</button>';
+        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\',this)" style="' + btnStyle + '">Gerar etiqueta</button>';
       }
     } else if (_expEtapaSel === 4) {
       // Impressos: só reimprimir. NÃO existe "marcar despachado", quando o pedido
@@ -72188,7 +72790,7 @@ ${JSON.stringify(metricas, null, 2)}`
       // v33k.580: o "Retornar para não impressos" saiu do card e virou ação EM MASSA
       // (barra de cima, sobre os selecionados). Um botão amarelo por linha poluía
       // a lista e obrigava a clicar pedido por pedido.
-      btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\')" style="' + btnStyle + '">🖨 Reimprimir</button>';
+      btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\',this)" style="' + btnStyle + '">🖨 Reimprimir</button>';
     } else if (_expEtapaSel === 8) {
       // v33k.405 Devolvidos: NÃO gera etiqueta de envio. O que faz sentido aqui é
       // emitir a NF de DEVOLUÇÃO (nota de entrada da mercadoria que voltou).
@@ -72306,8 +72908,11 @@ ${JSON.stringify(metricas, null, 2)}`
     const acoesHtml = (ehCancelado || ehAguardandoLiberacao) ? '' : (btnAcao + btnImpresso);
 
     // v33k.402: thumbnail da FOTO do produto (vem no próprio pedido, sem chamada extra)
+    // v33k.1516: a miniatura AMPLIA no hover. Na separacao a pessoa precisa
+    // conferir cor e estampa, e 48px nao dava. A ampliacao e so CSS (transform
+    // + z-index), sem modal e sem carregar outra imagem: a mesma tag cresce.
     const fotoHtml = p.foto
-      ? '<img src="' + p.foto + '" loading="lazy" style="width:48px;height:48px;border-radius:10px;object-fit:cover;flex-shrink:0;border:1px solid var(--lc-border)" onerror="this.style.display=\'none\'">'
+      ? '<img src="' + p.foto + '" loading="lazy" class="lc-foto-zoom" style="width:48px;height:48px;border-radius:10px;object-fit:cover;flex-shrink:0;border:1px solid var(--lc-border)" onerror="this.style.display=\'none\'">'
       : '<div style="width:48px;height:48px;border-radius:10px;flex-shrink:0;background:var(--lc-surface-2);display:flex;align-items:center;justify-content:center;color:var(--lc-muted);font-size:18px">📦</div>';
     // v33k.402: linha do produto, título + variação vendida (+ "e mais N" se multi-item)
     const maisItens = (p.qtdItens && p.qtdItens > 1) ? ' <span style="color:var(--lc-muted-2)">+' + (p.qtdItens - 1) + ' item(ns)</span>' : '';
@@ -72823,12 +73428,41 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.expMarcarImpresso = expMarcarImpresso;
 
-  async function expAvancar(orderSns, acao) {
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1518: o botao CLICADO tambem responde.
+  // ─────────────────────────────────────────────────────────────────────
+  // A funcao mexia sempre no `expBtnMassa`, o botao de acao em massa la em
+  // cima. Quem clicava no "Gerar etiqueta" da LINHA nao via retorno nenhum: o
+  // botao continuava igual, a linha nao mudava na hora, e a etiqueta so
+  // aparecia segundos depois. A pessoa concluia que travou e clicava de novo.
+  //
+  // Agora o botao de origem entra em estado de espera junto: desabilita, troca
+  // o texto e volta ao normal no fim. E o `disabled` faz o trabalho duplo de
+  // impedir o segundo clique, que era o que gerava etiqueta repetida.
+  async function expAvancar(orderSns, acao, origem) {
     if (!orderSns || !orderSns.length) return;
     const lojas = expLojasSelecionadas();
     const btn = document.getElementById('expBtnMassa');
     const labelOrig = btn ? btn.textContent : '';
+    const espera = acao === 'programar' ? 'Programando…' : 'Gerando etiqueta…';
     if (btn) { btn.disabled = true; btn.textContent = acao === 'programar' ? 'Programando…' : 'Gerando etiqueta(s)… (aguarde)'; }
+
+    // botao da linha, quando o clique veio de um
+    const btnLinha = (origem && origem.tagName === 'BUTTON') ? origem : null;
+    const labelLinha = btnLinha ? btnLinha.innerHTML : '';
+    if (btnLinha) {
+      btnLinha.disabled = true;
+      btnLinha.style.opacity = '.65';
+      btnLinha.style.cursor = 'wait';
+      btnLinha.innerHTML = '<span class="lc-spin-mini"></span> ' + espera;
+    }
+    const soltarLinha = () => {
+      if (!btnLinha) return;
+      btnLinha.disabled = false;
+      btnLinha.style.opacity = '';
+      btnLinha.style.cursor = '';
+      btnLinha.innerHTML = labelLinha;
+    };
     // modo do rodapé da etiqueta (guardado no seletor da própria tela)
     const modo = getModoEtiqueta();
     try {
@@ -72847,6 +73481,8 @@ ${JSON.stringify(metricas, null, 2)}`
         _expSel.clear();
         expCarregar({ silencioso: true });  // migra pra "Emitindo etiqueta" sem piscar
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+        soltarLinha();
+        _expProgressoMostrar(orderSns.length);
         _expAcompanharEtiqueta(data.jobId);
         return;
       }
@@ -72858,6 +73494,7 @@ ${JSON.stringify(metricas, null, 2)}`
         _expSel.clear();
         expCarregar({ silencioso: true });
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+        soltarLinha();
         if (data.jobId) _expAcompanharProgramar(data.jobId);
         return;
       }
@@ -72875,9 +73512,14 @@ ${JSON.stringify(metricas, null, 2)}`
       }
       _expSel.clear();
       expCarregar({ silencioso: true });  // migra de status sem piscar a tela
+      soltarLinha();
     } catch (e) {
       showToast('Erro: ' + e.message, true);
       if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+      // v33k.1518: solta o botao no erro TAMBEM. Sem isto ele ficaria
+      // desabilitado pra sempre e a pessoa teria que recarregar a pagina pra
+      // poder tentar de novo, o que e pior que o erro original.
+      soltarLinha();
     }
   }
 
@@ -72909,6 +73551,74 @@ ${JSON.stringify(metricas, null, 2)}`
   // tela de vez em quando (os pedidos vão virando "Impresso" conforme saem), e ao
   // concluir abre o PDF final. Silencioso no começo — a migração de status é o
   // feedback; só um toast discreto no fim, junto com o PDF.
+  // ═══════════════════════════════════════════════════════════════════════
+  // PAINEL DE PROGRESSO DA ETIQUETA (v33k.1524)
+  // ─────────────────────────────────────────────────────────────────────
+  // A geracao ja era acompanhada por polling, mas EM SILENCIO: o job rodava,
+  // os contadores mexiam de leve, e a pessoa nao via nada acontecendo. Depois
+  // de alguns segundos ela conclui que travou.
+  //
+  // O spinner no botao (v33k.1518) resolve o clique, nao a espera: gerar 20
+  // etiquetas leva mais de meio minuto, e nesse tempo a pessoa rola a tela e
+  // perde o botao de vista.
+  //
+  // Entao o progresso vira uma faixa fixa no rodape, com contagem e barra.
+  // Nao bloqueia a tela de proposito: a pessoa pode continuar conferindo os
+  // pedidos enquanto as etiquetas saem, e o PDF abre sozinho no fim.
+  function _expProgressoMostrar(total) {
+    let ov = document.getElementById('expProgresso');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'expProgresso';
+      ov.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:22px;'
+        + 'z-index:100060;background:#0f172a;color:#fff;border-radius:14px;'
+        + 'box-shadow:0 18px 44px rgba(0,0,0,.34);padding:14px 18px;min-width:320px;'
+        + 'max-width:min(520px,94vw);font-size:13.5px';
+      ov.innerHTML =
+        '<div style="display:flex;align-items:center;gap:11px">'
+        + '<span class="lc-spin-mini" style="width:16px;height:16px;border-width:2.5px"></span>'
+        + '<div style="flex:1">'
+        + '<div id="expProgTitulo" style="font-weight:700">Gerando etiquetas…</div>'
+        + '<div id="expProgSub" style="opacity:.78;font-size:12px;margin-top:2px"></div>'
+        + '</div></div>'
+        + '<div style="height:6px;background:rgba(255,255,255,.16);border-radius:999px;margin-top:11px;overflow:hidden">'
+        + '<div id="expProgBarra" style="height:100%;width:0%;background:#22c55e;'
+        + 'border-radius:999px;transition:width .3s ease"></div></div>';
+      document.body.appendChild(ov);
+    }
+    const sub = document.getElementById('expProgSub');
+    if (sub) sub.textContent = total ? ('0 de ' + total + ' prontas') : 'preparando…';
+    return ov;
+  }
+
+  function _expProgressoAtualizar(feitas, total, titulo) {
+    const t = document.getElementById('expProgTitulo');
+    const sub = document.getElementById('expProgSub');
+    const barra = document.getElementById('expProgBarra');
+    if (t && titulo) t.textContent = titulo;
+    if (sub) sub.textContent = total ? (feitas + ' de ' + total + ' prontas') : (feitas + ' pronta(s)');
+    if (barra) barra.style.width = (total ? Math.min(100, Math.round((feitas / total) * 100)) : 8) + '%';
+  }
+
+  function _expProgressoFechar(msg, erro) {
+    const ov = document.getElementById('expProgresso');
+    if (!ov) return;
+    if (msg) {
+      const t = document.getElementById('expProgTitulo');
+      const barra = document.getElementById('expProgBarra');
+      if (t) t.textContent = msg;
+      if (barra) { barra.style.width = '100%'; barra.style.background = erro ? '#f97316' : '#22c55e'; }
+      const sp = ov.querySelector('.lc-spin-mini');
+      if (sp) sp.style.display = 'none';
+      // Fica um instante mostrando o resultado antes de sumir: sumir na hora
+      // deixa a duvida de se terminou ou se a tela recarregou.
+      setTimeout(() => { try { ov.remove(); } catch (_) {} }, erro ? 4500 : 1800);
+      return;
+    }
+    try { ov.remove(); } catch (_) {}
+  }
+  window._expProgressoFechar = _expProgressoFechar;
+
   function _expAcompanharEtiqueta(jobId) {
     let tentativas = 0;
     let jaAbriuPdf = false;
@@ -72921,18 +73631,30 @@ ${JSON.stringify(metricas, null, 2)}`
         if (!j.ok) { if (tentativas < 5) setTimeout(poll, 2000); return; }
         // a cada ~3 ticks recarrega os contadores pra mostrar os pedidos migrando
         if (naAba() && tentativas % 3 === 0) { try { expRebuscarContadores(); } catch (_) {} }
+        // `processados` anda a cada pedido tratado; `geradas` so sobe quando a
+        // etiqueta sai. Usar o maior dos dois faz a barra andar de verdade em
+        // vez de ficar parada nos primeiros segundos.
+        _expProgressoAtualizar(Math.max(j.processados || 0, j.geradas || 0), j.total || 0);
         if (j.status === 'concluido' || j.status === 'erro') {
           if (!jaAbriuPdf && j.pdfBase64) { jaAbriuPdf = true; try { expAbrirPdf(j.pdfBase64, j.nomeArquivo || 'etiquetas.pdf'); } catch (_) {} }
           const falhas = j.falhas || 0;
           // v33k.1164: sucesso silencioso (o PDF abrindo + a migração pra "Impresso"
           // já são o feedback). Só avisa quando algo falhou.
           if (falhas) showToast('⚠ ' + (j.geradas || 0) + ' etiqueta(s) · ' + falhas + ' com erro' + (j.ultimoErro ? ': ' + j.ultimoErro : ''), true);
+          _expProgressoFechar(
+            falhas ? ((j.geradas || 0) + ' pronta(s), ' + falhas + ' com erro')
+                   : ((j.geradas || 0) + ' etiqueta(s) pronta(s)'),
+            !!falhas);
           if (naAba()) { try { expCarregar({ silencioso: true }); } catch (_) {} }
           return;
         }
-        if (tentativas > 600) return; // teto ~15min
+        if (tentativas > 600) { _expProgressoFechar('Demorou demais, confira a lista', true); return; }
         setTimeout(poll, 1500);
-      } catch (_) { if (tentativas < 8) setTimeout(poll, 2500); }
+      } catch (_) {
+        if (tentativas < 8) setTimeout(poll, 2500);
+        // Desistiu de perguntar: nao pode deixar a faixa girando pra sempre.
+        else _expProgressoFechar('Nao consegui acompanhar, confira a lista', true);
+      }
     };
     setTimeout(poll, 1200);
   }
@@ -73428,7 +74150,7 @@ ${JSON.stringify(metricas, null, 2)}`
       ? '<span style="font-size:10px;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-weight:700">Full</span>' : '';
     const foto = (p.foto || (item0 && item0.foto));
     const fotoHtml = foto
-      ? '<img src="' + escapeHtml(foto) + '" style="width:44px;height:44px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:44px;height:44px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0&quot;></div>\'">'
+      ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(foto) + '" style="width:44px;height:44px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:44px;height:44px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0&quot;></div>\'">'
       : '<div style="width:44px;height:44px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0"></div>';
     return '<div class="ped-card-row" onclick="pedAbrirModal(' + idx + ')" style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:12px;cursor:pointer;transition:box-shadow .15s" onmouseover="this.style.boxShadow=\'0 2px 8px rgba(0,0,0,0.08)\'" onmouseout="this.style.boxShadow=\'none\'">' +
       fotoHtml +
@@ -73481,7 +74203,7 @@ ${JSON.stringify(metricas, null, 2)}`
     // itens
     const itensHtml = (p.itens || []).map(it => {
       const fIt = it.foto
-        ? '<img src="' + escapeHtml(it.foto) + '" style="width:40px;height:40px;border-radius:7px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
+        ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(it.foto) + '" style="width:40px;height:40px;border-radius:7px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
         : '<div style="width:40px;height:40px;border-radius:7px;background:var(--lc-surface);border:1px solid var(--lc-border);flex-shrink:0"></div>';
       return '<div style="display:flex;gap:10px;align-items:center;padding:10px;background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:10px;margin-top:8px">' +
         '<div style="font-size:13px;color:var(--lc-ink-2);font-weight:600">' + (it.qtd || 1) + ' ×</div>' +
@@ -81813,7 +82535,7 @@ ${JSON.stringify(metricas, null, 2)}`
         if (m < 0.10) alerta = ' <span title="Abaixo do piso de margem" style="font-size:10px;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:1px 6px;border-radius:6px">⚠ abaixo do piso</span>';
       }
       const de = it.precoOriginal ? ('de ' + _fmtBRL(it.precoOriginal)) : '';
-      const foto = it.foto ? '<img src="' + escapeHtml(it.foto) + '" loading="lazy" style="width:52px;height:52px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto" onerror="this.style.visibility=\'hidden\'">' : '<div style="width:52px;height:52px;border-radius:8px;background:#f3f4f6;flex:0 0 auto"></div>';
+      const foto = it.foto ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(it.foto) + '" loading="lazy" style="width:52px;height:52px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto" onerror="this.style.visibility=\'hidden\'">' : '<div style="width:52px;height:52px;border-radius:8px;background:#f3f4f6;flex:0 0 auto"></div>';
       return '<div class="mlcamp-item-row" data-busca="' + escapeHtml(((it.titulo||'') + ' ' + it.itemId).toLowerCase()) + '" style="display:flex;align-items:center;gap:12px;padding:10px;border:1px solid #e5e7eb;border-radius:10px;background:#fff">' +
         foto +
         '<div style="flex:1 1 auto;min-width:0">' +
@@ -82226,7 +82948,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!wrap) return;
     if (!itens.length) { wrap.innerHTML = '<div style="padding:16px;text-align:center;color:#9ca3af;font-size:13px">Nenhum produto disponível pra adicionar nesta loja.</div>'; return; }
     wrap.innerHTML = itens.map(it => {
-      const foto = it.foto ? '<img src="' + escapeHtml(it.foto) + '" loading="lazy" style="width:46px;height:46px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto" onerror="this.style.visibility=\'hidden\'">' : '<div style="width:46px;height:46px;border-radius:8px;background:#f3f4f6;flex:0 0 auto"></div>';
+      const foto = it.foto ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(it.foto) + '" loading="lazy" style="width:46px;height:46px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto" onerror="this.style.visibility=\'hidden\'">' : '<div style="width:46px;height:46px;border-radius:8px;background:#f3f4f6;flex:0 0 auto"></div>';
       const chk = it._sel ? 'checked' : '';
       return '<div style="display:flex;align-items:center;gap:10px;padding:9px;border:1px solid #e5e7eb;border-radius:10px;background:#fff">' +
         '<input type="checkbox" class="mlcamp-ck" data-mlb="' + it.mlb + '" data-preco="' + it.preco + '" ' + chk + ' onchange="_mlOnToggleAdd(this)" style="width:16px;height:16px;flex:0 0 auto">' +
@@ -82322,7 +83044,7 @@ ${JSON.stringify(metricas, null, 2)}`
       if (!d.ok) { alvo.innerHTML = '<div style="padding:10px;color:#dc2626;font-size:13px">Não encontrei esse anúncio: ' + escapeHtml(d.erro||'?') + '</div>'; return; }
       const tipoNome = { SELLER_CAMPAIGN:'Campanha do vendedor (comum)', SMART:'Coparticipação (cofinanciada)', MARKETPLACE_CAMPAIGN:'Coparticipação (cofinanciada)', DEAL:'Oferta (Deal)', LIGHTNING:'Relâmpago', PRICE_MATCHING_MELI_ALL:'Desconto de comissão (ML banca)', PRICE_MATCHING:'Desconto de comissão (ML banca)' };
       const stNome = { started:'✅ participando', candidate:'⭕ elegível (não entrou)', pending:'🕒 agendada' };
-      const foto = d.foto ? '<img src="' + escapeHtml(d.foto) + '" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto">' : '';
+      const foto = d.foto ? '<img class=\"lc-foto-zoom\" src="' + escapeHtml(d.foto) + '" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;flex:0 0 auto">' : '';
       let campHtml;
       if (!d.campanhas.length) {
         campHtml = '<div style="font-size:12px;color:#6b7280;margin-top:6px">Este anúncio <strong>não está em nenhuma promoção</strong> no momento. Você pode adicioná-lo à campanha atual marcando-o na lista abaixo (se ele estiver vinculado a esta loja).</div>';
@@ -82764,7 +83486,7 @@ ${JSON.stringify(metricas, null, 2)}`
       const foto = item.foto || '';
       const sku = item.sku || '';
       const fotoHtml = foto
-        ? `<img src="${escapeHtml(foto)}" alt="" style="width:42px;height:42px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid #e5e7eb" onerror="this.style.display='none'">`
+        ? `<img class=\"lc-foto-zoom\" src="${escapeHtml(foto)}" alt="" style="width:42px;height:42px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid #e5e7eb" onerror="this.style.display='none'">`
         : `<div style="width:42px;height:42px;border-radius:8px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#cbd5e1"><span class="lc-ic" data-size="sm" data-lucide="image"></span></div>`;
       html += `<div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:12px;overflow:hidden">
         <div style="background:#fafafa;padding:10px 12px;font-weight:600;font-size:13px;color:#1f2937;display:flex;align-items:center;gap:10px">
@@ -93646,6 +94368,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   } else {
     _bootDispatch();
   }
+
+  // v33k.1525: expostas no fim do bloco, quando ja existem. Ver o comentario
+  // do `_expor` la em cima.
+  try {
+    window._exporPainel('_usuarioLogado', () => _usuarioLogado, (v) => { _usuarioLogado = v; });
+    window._exporPainel('BACKEND_URL', () => BACKEND_URL);
+    window._exporPainel('LcAcctSel', () => LcAcctSel);
+  } catch (e) { console.warn('[painel] exposicao final falhou:', e.message); }
 </script>
 
 <!-- ═══ TELA: colaborador sem nenhuma permissão liberada ═══ -->
@@ -95256,6 +95986,17 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         <div style="font-size:11px;color:#6b7280;margin-top:4px">O colaborador verá apenas as lojas desta empresa.</div>
       </div>
       <div id="admClienteBox" style="display:${(u&&u.papel==='cliente')?'block':'none'};margin-bottom:10px">
+        <!-- v33k.1485: o CNPJ fica AQUI, junto das lojas, porque e aqui que
+             voce configura o cliente. Sem ele o cliente abre a tela fiscal
+             vazia, mesmo com as lojas marcadas: o acesso ao CNPJ era inferido
+             das lojas e a inferencia falha quando a loja ainda nao aponta pro
+             CNPJ, ou quando o CNPJ mudou de dono numa migracao. -->
+        <label class="form-label" style="font-size:12px">CNPJ que este cliente vai usar para emitir</label>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:8px">Sem isso ele ve os pedidos mas nao consegue emitir nota: a tela fiscal abre vazia, como se ele fosse um usuario novo.</div>
+        <select class="form-input" id="admClienteCnpj" style="margin-bottom:14px">
+          <option value="">Carregando CNPJs...</option>
+        </select>
+
         <label class="form-label" style="font-size:12px">Lojas que este cliente pode acompanhar</label>
         <div style="font-size:11px;color:#6b7280;margin-bottom:8px">Escolha um cliente já existente pra marcar as lojas dele de uma vez, ou marque à mão. O cliente vê os dados apenas das lojas marcadas. As lojas continuam sendo da sua empresa.</div>
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
@@ -95291,6 +96032,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // v33k.626: carrega o dropdown de clientes já vinculados (pra marcar as lojas
     // de um cliente de uma vez, em vez de loja por loja)
     try { admCarregarClientesVinc(); } catch(e) {}
+    try { admCarregarCnpjsCliente(u); } catch(e) {}
     // se está editando um CLIENTE existente, pré-marca as lojas vinculadas pelo nome
     // (além das já salvas em lojas_vinculadas que o template já marcou)
     if (u && u.papel === 'cliente' && u.nome) {
@@ -95524,6 +96266,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       // O admin liga/desliga cada tela, não é mais fixo.
       body.permissoes = Array.from(document.querySelectorAll('.adm-perm-check'))
         .filter(c => c.checked).map(c => c.value);
+      // v33k.1485: o CNPJ vai junto no mesmo Salvar. Vazio = sem vinculo
+      // explicito, e aí vale o caminho antigo (a empresa das lojas dele).
+      const cnpjSel = (document.getElementById('admClienteCnpj') || {}).value;
+      body.nfe_empresas_vinculadas = cnpjSel ? [parseInt(cnpjSel, 10)] : [];
     }
     if (!id) { body.email = email; body.senha = senha; }
     else { if (senha) body.senha = senha; const at=document.getElementById('admAtivo'); if(at) body.ativo = at.checked; }
@@ -95534,6 +96280,38 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       else showToast('Erro: '+(r.erro||''), true);
     } catch(e) { showToast('Erro: '+e.message, true); }
   }
+  // Popula o seletor de CNPJ do cliente. A lista vem de /empresas-disponiveis
+  // (super adm) ou, para o admin dono, das empresas dele.
+  async function admCarregarCnpjsCliente(u) {
+    const sel = document.getElementById('admClienteCnpj');
+    if (!sel) return;
+    let empresas = [];
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/auth/empresas-disponiveis',
+        { headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken() } })).json();
+      if (r.ok && Array.isArray(r.empresas)) empresas = r.empresas;
+    } catch (e) { /* cai no fallback abaixo */ }
+    // Fallback pro admin que nao e super: usa as empresas dele.
+    if (!empresas.length) {
+      try {
+        const r2 = await (await fetch(BACKEND_URL + '/api/nfe/empresas',
+          { headers: { 'Authorization': 'Bearer ' + getTokenLogin(), 'x-api-token': getApiToken() } })).json();
+        if (r2.ok && Array.isArray(r2.empresas)) empresas = r2.empresas;
+      } catch (e) { /* segue vazio */ }
+    }
+    const jaVinc = (u && Array.isArray(u.nfe_empresas_vinculadas))
+      ? u.nfe_empresas_vinculadas.map(String) : [];
+    if (!empresas.length) {
+      sel.innerHTML = '<option value="">Nenhum CNPJ cadastrado ainda</option>';
+      return;
+    }
+    sel.innerHTML = '<option value="">Sem CNPJ (usa a empresa das lojas marcadas)</option>' +
+      empresas.map(e => '<option value="' + e.id + '"' + (jaVinc.includes(String(e.id)) ? ' selected' : '') + '>' +
+        escapeHtml(e.razao_social || '') + ' - ' + escapeHtml(e.cnpj || '') +
+        (e.ativo === false ? ' (inativa)' : '') + '</option>').join('');
+  }
+  window.admCarregarCnpjsCliente = admCarregarCnpjsCliente;
+
   window.admSalvarUsuario = admSalvarUsuario;
 
   async function admRemoverUsuario(id) {
