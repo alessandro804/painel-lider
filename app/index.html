@@ -8935,6 +8935,13 @@
           d.lojasSemEmpresa + ' loja' + (d.lojasSemEmpresa === 1 ? '' : 's') + ' sem empresa fiscal',
           'abrirGestaoFiscalNFe()'));
       }
+      // v33k.1520: loja sem decisao fiscal trava pedido na etapa 1 sem dar
+      // pista nenhuma. O chip mostra quantas sao e leva pro painel de marcacao.
+      if (d.lojasSemDecisao > 0) {
+        chips.push(chip('ambar', 'help-circle',
+          d.lojasSemDecisao + ' loja' + (d.lojasSemDecisao === 1 ? '' : 's') + ' sem definir CPF/CNPJ',
+          'abrirDecisaoFiscalLojas()'));
+      }
       (d.problemas || []).forEach(pr => {
         const cor = (pr.tipo === 'cert_vencendo') ? 'ambar' : 'vermelho';
         chips.push(chip(cor, 'shield-alert', _esc((pr.razao || '').slice(0, 18)) + ': ' + _esc(pr.texto), 'abrirGestaoFiscalNFe()'));
@@ -9976,6 +9983,126 @@
   window._dfSetCampo = _dfSetCampo;
   window._dfAplicarMassa = _dfAplicarMassa;
   window._dfSalvarEditadosLinha = _dfSalvarEditadosLinha;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DECISAO FISCAL POR LOJA (v33k.1520)
+  // ─────────────────────────────────────────────────────────────────────
+  // Enquanto `emite_nf` esta nulo, o pedido nasce em "Emitir NF" e fica la:
+  // loja CPF nunca vai emitir, entao ninguem consegue tirar ele dali. E a
+  // marcacao era loja a loja, num seletor pequeno dentro do vinculo fiscal.
+  // Com 30 e poucas contas e mais chegando, isso nao anda.
+  //
+  // Aqui a decisao e em lote, com os sinais na frente pra ninguem marcar no
+  // escuro: se a loja tem CNPJ vinculado, se ja emitiu nota alguma vez, e
+  // quantos pedidos estao parados esperando essa decisao.
+  let _dfLojas = [];
+  const _dfEscolha = {};
+
+  async function abrirDecisaoFiscalLojas() {
+    const old = document.getElementById('dfLojasOverlay'); if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'dfLojasOverlay';
+    ov.className = 'lc-modal-overlay-fiscal';
+    ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:760px;width:100%;'
+      + 'max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'
+      + '<div style="padding:20px 22px 14px;border-bottom:1px solid #e2e8f0">'
+      + '<div style="font-size:17px;font-weight:800;color:#1e2a47">Esta loja emite nota fiscal?</div>'
+      + '<div style="font-size:13px;color:#6b7280;margin-top:5px;line-height:1.5">'
+      + 'Loja CPF nao emite NF-e, entao os pedidos dela devem ir direto para Programar. '
+      + 'Enquanto a resposta estiver em branco, eles ficam parados em Emitir NF sem saida.</div></div>'
+      + '<div id="dfLojasCorpo" style="padding:16px 22px;overflow:auto;flex:1">'
+      + '<div style="text-align:center;color:#64748b;padding:24px">Carregando…</div></div>'
+      + '<div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:8px;align-items:center">'
+      + '<div id="dfLojasResumo" style="flex:1;font-size:12.5px;color:#64748b"></div>'
+      + '<button class="toolbar-btn" onclick="document.getElementById(\'dfLojasOverlay\').remove()">Fechar</button>'
+      + '<button class="toolbar-btn" id="dfLojasSalvar" style="background:#16a34a;color:#fff" '
+      + 'onclick="_dfSalvarDecisoes()">Salvar</button>'
+      + '</div></div>';
+    document.body.appendChild(ov);
+
+    const r = await _api('/api/expedicao/lojas-fiscal');
+    _dfLojas = (r && r.ok && r.lojas) || [];
+    Object.keys(_dfEscolha).forEach(k => delete _dfEscolha[k]);
+    _dfRender();
+  }
+  window.abrirDecisaoFiscalLojas = abrirDecisaoFiscalLojas;
+
+  function _dfRender() {
+    const el = document.getElementById('dfLojasCorpo');
+    if (!el) return;
+    // Quem ainda nao tem resposta vem primeiro, e dentro disso quem tem mais
+    // pedido parado: e a ordem do que custa mais caro deixar sem decidir.
+    const ordenadas = _dfLojas.slice().sort((a, b) => {
+      const av = a.emiteNf == null ? 0 : 1, bv = b.emiteNf == null ? 0 : 1;
+      if (av !== bv) return av - bv;
+      return (b.paradosNaEmissao || 0) - (a.paradosNaEmissao || 0);
+    });
+    const semDecisao = ordenadas.filter(l => l.emiteNf == null).length;
+
+    let h = '';
+    if (semDecisao > 1) {
+      h += '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;'
+        + 'padding:11px 13px;margin-bottom:14px;font-size:12.5px;color:#92400e;line-height:1.5">'
+        + 'Marque em lote so o que voce tem certeza. Uma loja CNPJ marcada como CPF passa a '
+        + 'despachar sem nota, e isso e problema fiscal, nao de tela.</div>';
+    }
+    h += '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+      + '<thead><tr style="text-align:left;color:#64748b;font-size:11.5px;text-transform:uppercase">'
+      + '<th style="padding:6px 4px">Loja</th><th style="padding:6px 4px">Sinais</th>'
+      + '<th style="padding:6px 4px;text-align:right">Emite NF?</th></tr></thead><tbody>';
+
+    ordenadas.forEach(l => {
+      const escolha = (_dfEscolha[l.id] !== undefined) ? _dfEscolha[l.id] : l.emiteNf;
+      const sinais = [];
+      if (l.temCnpj) sinais.push('<span style="color:#15803d">CNPJ vinculado</span>');
+      if (l.jaEmitiu) sinais.push('<span style="color:#15803d">ja emitiu nota</span>');
+      if (!l.temCnpj && !l.jaEmitiu) sinais.push('<span style="color:#92400e">nunca emitiu</span>');
+      if (l.paradosNaEmissao) sinais.push('<b style="color:#b91c1c">' + l.paradosNaEmissao + ' parado(s)</b>');
+
+      const bt = (val, txt, cor) => '<button onclick="_dfMarcar(' + l.id + ',' + val + ')" '
+        + 'style="padding:5px 11px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;'
+        + 'border:1px solid ' + (escolha === val ? cor : '#e2e8f0') + ';'
+        + 'background:' + (escolha === val ? cor : '#fff') + ';'
+        + 'color:' + (escolha === val ? '#fff' : '#64748b') + '">' + txt + '</button>';
+
+      h += '<tr style="border-top:1px solid #f1f5f9">'
+        + '<td style="padding:9px 4px"><b>' + escapeHtml(l.nome || '') + '</b>'
+        + '<div style="font-size:11px;color:#94a3b8">' + escapeHtml(l.marketplace || '') + ' · id ' + l.id + '</div></td>'
+        + '<td style="padding:9px 4px;font-size:11.5px">' + sinais.join(' · ') + '</td>'
+        + '<td style="padding:9px 4px;text-align:right;white-space:nowrap">'
+        + bt(true, 'Sim (CNPJ)', '#16a34a') + ' ' + bt(false, 'Nao (CPF)', '#d97706') + '</td></tr>';
+    });
+    h += '</tbody></table>';
+    el.innerHTML = h;
+
+    const res = document.getElementById('dfLojasResumo');
+    if (res) {
+      const n = Object.keys(_dfEscolha).length;
+      res.textContent = semDecisao + ' sem resposta' + (n ? '  ·  ' + n + ' alteracao(oes) pendente(s)' : '');
+    }
+  }
+
+  function _dfMarcar(lojaId, valor) { _dfEscolha[lojaId] = valor; _dfRender(); }
+  window._dfMarcar = _dfMarcar;
+
+  async function _dfSalvarDecisoes() {
+    const itens = Object.keys(_dfEscolha).map(id => ({ lojaId: Number(id), emiteNf: _dfEscolha[id] }));
+    if (!itens.length) { showToast('Nada alterado.', true); return; }
+    const btn = document.getElementById('dfLojasSalvar');
+    if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
+    const r = await _api('/api/expedicao/lojas-emite-nf-lote', {
+      method: 'POST', body: JSON.stringify({ itens }),
+    });
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+    if (!r || !r.ok) { showToast((r && r.erro) || 'Nao consegui salvar.', true); return; }
+    showToast(r.marcadas + ' loja(s) marcada(s)'
+      + (r.movidos ? ' · ' + r.movidos + ' pedido(s) foram para Programar' : ''));
+    if ((r.erros || []).length) await lcAlert(r.erros.join('\n'), { titulo: 'Avisos' });
+    const ov = document.getElementById('dfLojasOverlay'); if (ov) ov.remove();
+    try { _nfChecklistCarregar(); } catch (_) {}
+    try { expCarregar(); } catch (_) {}
+  }
+  window._dfSalvarDecisoes = _dfSalvarDecisoes;
 
   window._nfChecklistCarregar = _nfChecklistCarregar;
   // carrega o checklist assim que o app estiver de pé (o div existe no HTML estático)
@@ -61668,7 +61795,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1518-botao-espera';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1520-decisao-fiscal';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
