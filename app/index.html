@@ -37,6 +37,37 @@
   @keyframes lcPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
   /* ===== Modal fiscal (v33k.478, dados fiscais Shopee) ===== */
+  /* v33k.1516: miniatura que amplia no hover.
+     `transform-origin: left center` faz a imagem crescer PRA DIREITA e ficar
+     ancorada na coluna, em vez de sair pra fora do card. O z-index sobe junto,
+     senao ela cresce por baixo do card seguinte. */
+  /* v33k.1518: spinner de 12px pro botao em espera. Usa a mesma rotacao que o
+     resto do painel ja usa, so muda o tamanho. */
+  .lc-spin-mini {
+    display: inline-block; width: 12px; height: 12px; vertical-align: -2px;
+    border: 2px solid currentColor; border-right-color: transparent;
+    border-radius: 50%; animation: lcSpinMini .7s linear infinite;
+  }
+  @keyframes lcSpinMini { to { transform: rotate(360deg); } }
+
+  .lc-foto-zoom {
+    transition: transform .16s ease, box-shadow .16s ease;
+    transform-origin: left center;
+    cursor: zoom-in;
+  }
+  .lc-foto-zoom:hover {
+    transform: scale(4.2);
+    z-index: 50;
+    position: relative;
+    box-shadow: 0 12px 34px rgba(0,0,0,.32);
+    border-radius: 6px;
+  }
+  /* Em tela pequena o zoom atrapalha mais do que ajuda: o dedo cobre a foto e
+     a ampliacao tampa a linha inteira. */
+  @media (max-width: 700px) {
+    .lc-foto-zoom:hover { transform: none; box-shadow: none; }
+  }
+
   .lc-modal-overlay-fiscal {
     position: fixed; inset: 0; background: rgba(15,23,42,0.55);
     display: flex; align-items: center; justify-content: center; z-index: 10000;
@@ -61637,7 +61668,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1515-modal-e-chip';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1518-botao-espera';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -71644,7 +71675,25 @@ ${JSON.stringify(metricas, null, 2)}`
       const ac = document.getElementById('expAcoes'); if (ac) ac.style.display = 'none';
       return;
     }
-    if (loading && !silencioso) loading.style.display = 'block';
+    // ═══════════════════════════════════════════════════════════════════════
+    // v33k.1516: esqueleto na TELA TODA, nao so na lista.
+    // ─────────────────────────────────────────────────────────────────────
+    // Com muitos pedidos o /contadores leva de 6 a 12 segundos. Nesse tempo os
+    // cards de etapa e os chips ficavam VAZIOS e so aparecia um "Carregando..."
+    // pequeno no meio. A tela parecia travada, e a pessoa clicava de novo.
+    //
+    // O esqueleto ja existia (`lc-skeleton`), mas so era usado na lista. Aqui
+    // ele passa a cobrir os cards e os chips tambem, entao a tela mostra a
+    // FORMA do que esta vindo desde o primeiro instante.
+    if (!silencioso) {
+      const et = document.getElementById('expEtapas');
+      const ch = document.getElementById('expChips');
+      if (et && !_expDados) et.innerHTML = _expSkeletonEtapas();
+      if (ch && !_expDados) ch.innerHTML = _expSkeletonChips();
+      if (lista && !lista.innerHTML.trim()) lista.innerHTML = _expSkeletons();
+    }
+    // O "Carregando..." solto some: com esqueleto ele vira ruido.
+    if (loading) loading.style.display = 'none';
     try {
       const _seqC = ++_expSeqCnt;
       const params = new URLSearchParams({ lojaIds: lojas.join(',') });
@@ -72219,6 +72268,29 @@ ${JSON.stringify(metricas, null, 2)}`
     }
   }
 
+  // Esqueleto dos CARDS de etapa: mesma grade, mesma altura, pra a tela nao
+  // "pular" quando o conteudo real chega.
+  function _expSkeletonEtapas() {
+    let s = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">';
+    for (let i = 0; i < 5; i++) {
+      s += '<div style="border:1px solid var(--lc-border,#eef0f3);border-radius:12px;padding:14px">'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:45%"></div>'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:70%;height:18px;margin-top:6px"></div>'
+        + '<div class="lc-skeleton lc-skeleton-text" style="width:55%;margin-top:6px"></div>'
+        + '</div>';
+    }
+    return s + '</div>';
+  }
+
+  // Esqueleto dos CHIPS de status.
+  function _expSkeletonChips() {
+    let s = '';
+    for (let i = 0; i < 5; i++) {
+      s += '<div class="lc-skeleton" style="width:' + (86 + i * 16) + 'px;height:30px;border-radius:999px"></div>';
+    }
+    return s;
+  }
+
   // esqueletos de carregamento pra lista de pedidos (dá sensação de fluidez)
   function _expSkeletons() {
     let s = '';
@@ -72338,7 +72410,7 @@ ${JSON.stringify(metricas, null, 2)}`
       //                      falha_programacao → [↻ Tentar de novo] + motivo
       if (p.estado === 'para_programar') btnAcao = '<button onclick="expAvancarUm(\'' + p.orderSn + '\',\'programar\')" style="' + btnStyle + '">Programar envio</button>';
       else if (p.estado === 'falha_programacao' || p.estado === 'erro_rastreio' || programandoComErro) {
-        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'programar\')" style="' + btnRetry + '">↻ Tentar de novo</button>';
+        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'programar\',this)" style="' + btnRetry + '">↻ Tentar de novo</button>';
         // v33k.1106: botão de voltar SÓ quando o erro é a própria NOTA.
         // "Tentar de novo" reenvia o mesmo arquivo recusado, então em nota
         // inválida ele nunca resolve. Mas em falha do marketplace reenviar é o
@@ -72368,13 +72440,13 @@ ${JSON.stringify(metricas, null, 2)}`
       if (p.estado === 'gerando_etiqueta') {
         btnAcao = ''; // a plataforma está gerando, nada pra fazer, é só aguardar
       } else if (ehErro) {
-        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\')" style="' + btnRetry + '">↻ Tentar de novo</button>';
+        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\',this)" style="' + btnRetry + '">↻ Tentar de novo</button>';
       } else {
         // v33k.579: além de gerar a etiqueta aqui, dá pra marcar como IMPRESSO à
         // mão. Nem toda impressão passa pelo Lider 10, a etiqueta pode ter sido
         // impressa no painel do marketplace ou em outro sistema (foi o que
         // aconteceu com os pedidos do TikTok, que ficaram presos aqui).
-        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\')" style="' + btnStyle + '">Gerar etiqueta</button>';
+        btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\',this)" style="' + btnStyle + '">Gerar etiqueta</button>';
       }
     } else if (_expEtapaSel === 4) {
       // Impressos: só reimprimir. NÃO existe "marcar despachado", quando o pedido
@@ -72386,7 +72458,7 @@ ${JSON.stringify(metricas, null, 2)}`
       // v33k.580: o "Retornar para não impressos" saiu do card e virou ação EM MASSA
       // (barra de cima, sobre os selecionados). Um botão amarelo por linha poluía
       // a lista e obrigava a clicar pedido por pedido.
-      btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\')" style="' + btnStyle + '">🖨 Reimprimir</button>';
+      btnAcao = '<button onclick="expAvancar([\'' + p.orderSn + '\'],\'gerar_etiqueta\',this)" style="' + btnStyle + '">🖨 Reimprimir</button>';
     } else if (_expEtapaSel === 8) {
       // v33k.405 Devolvidos: NÃO gera etiqueta de envio. O que faz sentido aqui é
       // emitir a NF de DEVOLUÇÃO (nota de entrada da mercadoria que voltou).
@@ -72504,8 +72576,11 @@ ${JSON.stringify(metricas, null, 2)}`
     const acoesHtml = (ehCancelado || ehAguardandoLiberacao) ? '' : (btnAcao + btnImpresso);
 
     // v33k.402: thumbnail da FOTO do produto (vem no próprio pedido, sem chamada extra)
+    // v33k.1516: a miniatura AMPLIA no hover. Na separacao a pessoa precisa
+    // conferir cor e estampa, e 48px nao dava. A ampliacao e so CSS (transform
+    // + z-index), sem modal e sem carregar outra imagem: a mesma tag cresce.
     const fotoHtml = p.foto
-      ? '<img src="' + p.foto + '" loading="lazy" style="width:48px;height:48px;border-radius:10px;object-fit:cover;flex-shrink:0;border:1px solid var(--lc-border)" onerror="this.style.display=\'none\'">'
+      ? '<img src="' + p.foto + '" loading="lazy" class="lc-foto-zoom" style="width:48px;height:48px;border-radius:10px;object-fit:cover;flex-shrink:0;border:1px solid var(--lc-border)" onerror="this.style.display=\'none\'">'
       : '<div style="width:48px;height:48px;border-radius:10px;flex-shrink:0;background:var(--lc-surface-2);display:flex;align-items:center;justify-content:center;color:var(--lc-muted);font-size:18px">📦</div>';
     // v33k.402: linha do produto, título + variação vendida (+ "e mais N" se multi-item)
     const maisItens = (p.qtdItens && p.qtdItens > 1) ? ' <span style="color:var(--lc-muted-2)">+' + (p.qtdItens - 1) + ' item(ns)</span>' : '';
@@ -73021,12 +73096,41 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.expMarcarImpresso = expMarcarImpresso;
 
-  async function expAvancar(orderSns, acao) {
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1518: o botao CLICADO tambem responde.
+  // ─────────────────────────────────────────────────────────────────────
+  // A funcao mexia sempre no `expBtnMassa`, o botao de acao em massa la em
+  // cima. Quem clicava no "Gerar etiqueta" da LINHA nao via retorno nenhum: o
+  // botao continuava igual, a linha nao mudava na hora, e a etiqueta so
+  // aparecia segundos depois. A pessoa concluia que travou e clicava de novo.
+  //
+  // Agora o botao de origem entra em estado de espera junto: desabilita, troca
+  // o texto e volta ao normal no fim. E o `disabled` faz o trabalho duplo de
+  // impedir o segundo clique, que era o que gerava etiqueta repetida.
+  async function expAvancar(orderSns, acao, origem) {
     if (!orderSns || !orderSns.length) return;
     const lojas = expLojasSelecionadas();
     const btn = document.getElementById('expBtnMassa');
     const labelOrig = btn ? btn.textContent : '';
+    const espera = acao === 'programar' ? 'Programando…' : 'Gerando etiqueta…';
     if (btn) { btn.disabled = true; btn.textContent = acao === 'programar' ? 'Programando…' : 'Gerando etiqueta(s)… (aguarde)'; }
+
+    // botao da linha, quando o clique veio de um
+    const btnLinha = (origem && origem.tagName === 'BUTTON') ? origem : null;
+    const labelLinha = btnLinha ? btnLinha.innerHTML : '';
+    if (btnLinha) {
+      btnLinha.disabled = true;
+      btnLinha.style.opacity = '.65';
+      btnLinha.style.cursor = 'wait';
+      btnLinha.innerHTML = '<span class="lc-spin-mini"></span> ' + espera;
+    }
+    const soltarLinha = () => {
+      if (!btnLinha) return;
+      btnLinha.disabled = false;
+      btnLinha.style.opacity = '';
+      btnLinha.style.cursor = '';
+      btnLinha.innerHTML = labelLinha;
+    };
     // modo do rodapé da etiqueta (guardado no seletor da própria tela)
     const modo = getModoEtiqueta();
     try {
@@ -73045,6 +73149,7 @@ ${JSON.stringify(metricas, null, 2)}`
         _expSel.clear();
         expCarregar({ silencioso: true });  // migra pra "Emitindo etiqueta" sem piscar
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+        soltarLinha();
         _expAcompanharEtiqueta(data.jobId);
         return;
       }
@@ -73056,6 +73161,7 @@ ${JSON.stringify(metricas, null, 2)}`
         _expSel.clear();
         expCarregar({ silencioso: true });
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+        soltarLinha();
         if (data.jobId) _expAcompanharProgramar(data.jobId);
         return;
       }
@@ -73073,9 +73179,14 @@ ${JSON.stringify(metricas, null, 2)}`
       }
       _expSel.clear();
       expCarregar({ silencioso: true });  // migra de status sem piscar a tela
+      soltarLinha();
     } catch (e) {
       showToast('Erro: ' + e.message, true);
       if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+      // v33k.1518: solta o botao no erro TAMBEM. Sem isto ele ficaria
+      // desabilitado pra sempre e a pessoa teria que recarregar a pagina pra
+      // poder tentar de novo, o que e pior que o erro original.
+      soltarLinha();
     }
   }
 
