@@ -62173,7 +62173,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1547-fechamento-modal';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1550-emitindo-destravado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -63912,7 +63912,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
         }, 40);
       }
     }
-    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmErros === 'function') renderAdmErros(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); if (typeof admCarregarCertConsulta === 'function') admCarregarCertConsulta(); if (typeof renderAdmCustoSac === 'function') renderAdmCustoSac(); }
+    if (screenId === 'admScreen') { renderAdmUsuarios(); renderAdmMetricas(); renderAdmSaude(); if (typeof renderAdmErros === 'function') renderAdmErros(); if (typeof renderAdmContabilidades === 'function') renderAdmContabilidades(); if (typeof admCarregarCertConsulta === 'function') admCarregarCertConsulta(); if (typeof renderAdmCustoSac === 'function') renderAdmCustoSac(); if (typeof renderAdmBlog === 'function') renderAdmBlog(); }
     else if (typeof window.admSaudePararAuto === 'function') { window.admSaudePararAuto(); }
     if (screenId === 'produtosScreen') {
       // v32i.1: carrega página 1 do backend (paginação). Se já tem itens carregados
@@ -95002,6 +95002,24 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       <div id="admContabLista"><em style="color:#9ca3af;font-size:13px">Carregando...</em></div>
     </div>
 
+    <!-- BLOG DO SITE (v33k.1549): editor e agendamento dos posts do lider10.com.br -->
+    <div class="transactions-card" style="margin-bottom:14px" data-superadmin-only>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div>
+          <h3 class="adm2-sec-title">📝 Blog do site</h3>
+          <div style="font-size:12px;color:#6b7280;margin-top:2px">Escreva, agende e publique no <b>lider10.com.br/blog</b>. Na hora marcada o post vai ao ar sozinho e o índice e o sitemap são refeitos.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span id="admBlogConexao" style="font-size:11.5px;color:#9ca3af">verificando…</span>
+          <button class="toolbar-btn" style="font-size:12px" onclick="admBlogRegerar()" title="Refaz o índice e o sitemap a partir dos posts publicados. Use se algum deles ficar desatualizado.">⟳ Refazer índice</button>
+          <button class="toolbar-btn" style="font-size:12px" onclick="renderAdmBlog()">↻ Atualizar</button>
+          <button class="primary-btn" onclick="admBlogEditor(null)">+ Novo post</button>
+        </div>
+      </div>
+      <div id="admBlogFiltros" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+      <div id="admBlogLista"><em style="color:#9ca3af;font-size:13px">Carregando posts...</em></div>
+    </div>
+
     </div>
   </div>
 </div>
@@ -98753,6 +98771,537 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     } catch(e) { out.innerHTML = '<span style="color:#dc2626">⚠ ' + e.message + '</span>'; }
   }
   window.facCarregarPerguntas = facCarregarPerguntas;
+</script>
+
+
+<script>
+  // ═══════════════════════════════════════════════════════════════════
+  // BLOG DO SITE (v33k.1549) — editor, agendamento e publicação
+  // ═══════════════════════════════════════════════════════════════════
+  // Fala com /api/blog, que é só do superadmin. O post fica no banco e o
+  // backend grava o HTML no repositório do site pela API do GitHub, na
+  // hora marcada. O cron `publicar_blog` varre a cada 5 min, então
+  // agendar 14:00 significa ir ao ar entre 14:00 e 14:05.
+  //
+  // O botão "Publicar agora" não espera o cron: chama a rota direto.
+  // ═══════════════════════════════════════════════════════════════════
+
+  let _admBlogPosts = [];
+  let _admBlogFiltro = 'todos';
+  let _admBlogGrupos = [];
+
+  const ADM_BLOG_STATUS = {
+    rascunho:  { rot: 'Rascunho',  cor: '#64748b', bg: '#f1f5f9' },
+    agendado:  { rot: 'Agendado',  cor: '#b45309', bg: '#fef3c7' },
+    publicado: { rot: 'No ar',     cor: '#15803d', bg: '#dcfce7' },
+    erro:      { rot: 'Falhou',    cor: '#b91c1c', bg: '#fee2e2' },
+  };
+
+  function _admBlogHeaders() {
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + getTokenLogin(),
+      'x-api-token': getApiToken(),
+    };
+  }
+
+  async function _admBlogApi(caminho, opcoes) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/blog' + caminho,
+        Object.assign({ headers: _admBlogHeaders() }, opcoes || {}));
+      const txt = await r.text();
+      try { return JSON.parse(txt); }
+      catch (e) { return { ok: false, erro: 'Resposta inválida do servidor (' + r.status + ').' }; }
+    } catch (e) {
+      return { ok: false, erro: 'Não consegui falar com o servidor. Tente de novo em alguns minutos.' };
+    }
+  }
+
+  function _admBlogEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+
+  // "2026-08-10T14:00:00Z" -> "10/08 às 14:00" no fuso do navegador
+  function _admBlogData(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    const p = (n) => String(n).padStart(2, '0');
+    return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear() +
+           ' às ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  // ISO -> valor aceito por <input type="datetime-local">, já no fuso local
+  function _admBlogParaInput(iso) {
+    const d = iso ? new Date(iso) : new Date(Date.now() + 24 * 3600 * 1000);
+    if (isNaN(d.getTime())) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+           'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  // ─── lista ────────────────────────────────────────────────────────
+  async function renderAdmBlog() {
+    const lista = document.getElementById('admBlogLista');
+    if (!lista) return;
+    if (papelAtual() !== 'superadmin') return;
+
+    lista.innerHTML = '<em style="color:#9ca3af;font-size:13px">Carregando posts...</em>';
+
+    const st = await _admBlogApi('/status');
+    const chip = document.getElementById('admBlogConexao');
+    if (chip) {
+      if (st.ok && st.github && st.github.ok) {
+        chip.innerHTML = '<span style="color:#15803d;font-weight:600">● GitHub conectado</span> ' +
+          '<span style="color:#9ca3af">(' + _admBlogEsc(st.github.repo) + ')</span>';
+      } else {
+        const motivo = (st.github && st.github.erro) || st.erro || 'sem conexão';
+        chip.innerHTML = '<span style="color:#b91c1c;font-weight:600">● GitHub desconectado</span> ' +
+          '<span style="color:#9ca3af" title="' + _admBlogEsc(motivo) + '">' + _admBlogEsc(String(motivo).slice(0, 60)) + '</span>';
+      }
+    }
+
+    if (!_admBlogGrupos.length) {
+      const g = await _admBlogApi('/grupos');
+      if (g.ok) _admBlogGrupos = g.grupos || [];
+    }
+
+    const r = await _admBlogApi('/posts');
+    if (!r.ok) {
+      lista.innerHTML = '<span style="color:#dc2626;font-size:13px">' + _admBlogEsc(r.erro || 'Erro ao carregar os posts.') + '</span>';
+      return;
+    }
+    _admBlogPosts = r.posts || [];
+    _admBlogDesenhaFiltros();
+    _admBlogDesenhaLista();
+  }
+
+  function _admBlogDesenhaFiltros() {
+    const box = document.getElementById('admBlogFiltros');
+    if (!box) return;
+    const conta = {};
+    _admBlogPosts.forEach(function (p) { conta[p.status] = (conta[p.status] || 0) + 1; });
+    const opcoes = ['todos', 'rascunho', 'agendado', 'publicado', 'erro'];
+    box.innerHTML = opcoes.map(function (o) {
+      const n = o === 'todos' ? _admBlogPosts.length : (conta[o] || 0);
+      if (o !== 'todos' && !n) return '';
+      const ativo = _admBlogFiltro === o;
+      const rot = o === 'todos' ? 'Todos' : ADM_BLOG_STATUS[o].rot;
+      return '<button onclick="_admBlogFiltrar(\'' + o + '\')" style="border:1px solid ' +
+        (ativo ? '#0f172a' : '#e2e8f0') + ';background:' + (ativo ? '#0f172a' : '#fff') +
+        ';color:' + (ativo ? '#fff' : '#475569') +
+        ';font-size:12px;font-weight:600;padding:6px 13px;border-radius:99px;cursor:pointer">' +
+        rot + ' (' + n + ')</button>';
+    }).join('');
+  }
+
+  function _admBlogFiltrar(f) {
+    _admBlogFiltro = f;
+    _admBlogDesenhaFiltros();
+    _admBlogDesenhaLista();
+  }
+
+  function _admBlogDesenhaLista() {
+    const box = document.getElementById('admBlogLista');
+    if (!box) return;
+    const posts = _admBlogPosts.filter(function (p) {
+      return _admBlogFiltro === 'todos' || p.status === _admBlogFiltro;
+    });
+
+    if (!posts.length) {
+      box.innerHTML = '<div style="padding:26px;text-align:center;color:#9ca3af;font-size:13.5px;border:1px dashed #e2e8f0;border-radius:12px">' +
+        (_admBlogPosts.length ? 'Nenhum post com esse status.' : 'Nenhum post ainda. Clique em <b>Novo post</b> para escrever o primeiro.') +
+        '</div>';
+      return;
+    }
+
+    box.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13.2px;min-width:720px">' +
+      '<thead><tr style="background:#f8fafc">' +
+        '<th style="text-align:left;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Post</th>' +
+        '<th style="text-align:left;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Assunto</th>' +
+        '<th style="text-align:left;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Situação</th>' +
+        '<th style="text-align:left;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Quando</th>' +
+        '<th style="text-align:right;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b">Ações</th>' +
+      '</tr></thead><tbody>' +
+      posts.map(function (p) {
+        const s = ADM_BLOG_STATUS[p.status] || ADM_BLOG_STATUS.rascunho;
+        const quando = p.status === 'publicado' ? _admBlogData(p.publicado_em)
+                     : p.status === 'agendado'  ? _admBlogData(p.publicar_em)
+                     : _admBlogData(p.atualizado_em || p.criado_em);
+        const erro = p.erro_publicacao
+          ? '<div style="font-size:11px;color:#b91c1c;margin-top:3px">⚠ ' + _admBlogEsc(String(p.erro_publicacao).slice(0, 90)) +
+            (p.tentativas ? ' (tentativa ' + p.tentativas + ')' : '') + '</div>'
+          : '';
+        const acoes = [
+          '<button class="toolbar-btn" style="font-size:11.5px" onclick="admBlogEditor(' + p.id + ')">Editar</button>',
+          '<button class="toolbar-btn" style="font-size:11.5px" onclick="admBlogPreview(' + p.id + ')">Ver</button>',
+          p.status !== 'publicado'
+            ? '<button class="toolbar-btn" style="font-size:11.5px;background:#0f766e;color:#fff" onclick="admBlogPublicarAgora(' + p.id + ')">Publicar</button>'
+            : '<button class="toolbar-btn" style="font-size:11.5px" onclick="admBlogDespublicar(' + p.id + ')">Tirar do ar</button>',
+          '<button class="toolbar-btn" style="font-size:11.5px;color:#b91c1c" onclick="admBlogApagar(' + p.id + ')">Apagar</button>',
+        ].join(' ');
+        const link = p.status === 'publicado'
+          ? '<a href="https://lider10.com.br/blog/' + _admBlogEsc(p.slug) + '.html" target="_blank" rel="noopener" style="font-size:11px;color:#2563eb">ver no site ↗</a>'
+          : '<span style="font-size:11px;color:#9ca3af">/blog/' + _admBlogEsc(p.slug) + '.html</span>';
+        return '<tr style="border-top:1px solid #eef1f5">' +
+          '<td style="padding:11px"><div style="font-weight:600;color:#0f172a;max-width:340px">' + _admBlogEsc(p.titulo) + '</div>' +
+            '<div style="margin-top:3px">' + link + '</div>' + erro + '</td>' +
+          '<td style="padding:11px;color:#475569">' + _admBlogEsc(p.grupo || '—') + '</td>' +
+          '<td style="padding:11px"><span style="background:' + s.bg + ';color:' + s.cor +
+            ';font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:99px">' + s.rot + '</span></td>' +
+          '<td style="padding:11px;color:#475569;white-space:nowrap">' + quando + '</td>' +
+          '<td style="padding:11px;text-align:right;white-space:nowrap">' + acoes + '</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table></div>';
+  }
+
+  // ─── editor ───────────────────────────────────────────────────────
+  async function admBlogEditor(id) {
+    let post = {
+      id: null, titulo: '', slug: '', grupo: _admBlogGrupos[0] || '', resumo: '',
+      meta_description: '', corpo_html: '', leitura_min: '', autor: 'Lider 10',
+      faq: [], cta_titulo: '', cta_texto: '', status: 'rascunho', publicar_em: null,
+    };
+
+    if (id) {
+      const r = await _admBlogApi('/posts/' + id);
+      if (!r.ok) { showToast(r.erro || 'Não consegui abrir o post.', true); return; }
+      post = r.post;
+      if (typeof post.faq === 'string') {
+        try { post.faq = JSON.parse(post.faq); } catch (e) { post.faq = []; }
+      }
+      if (!Array.isArray(post.faq)) post.faq = [];
+    }
+
+    window._admBlogEdit = post;
+
+    let ov = document.getElementById('admBlogOverlay');
+    if (ov) ov.remove();
+    ov = document.createElement('div');
+    ov.id = 'admBlogOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:100060;display:flex;align-items:center;justify-content:center;padding:18px';
+    ov.onclick = function (ev) { if (ev.target === ov) admBlogFechar(); };
+
+    const inp = 'width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #cbd5e1;border-radius:9px;font-size:14px;color:#0f172a;background:#fff';
+    const lbl = 'display:block;font-size:12.5px;font-weight:600;color:#334155;margin-bottom:5px';
+    const dica = 'font-size:11.5px;color:#94a3b8;margin-top:4px';
+
+    ov.innerHTML =
+      '<div style="background:#f8fafc;border-radius:16px;width:min(980px,97vw);max-height:94vh;overflow:hidden;display:flex;flex-direction:column">' +
+        '<div style="padding:15px 20px;background:linear-gradient(135deg,#0f172a,#c40d0d);color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">' +
+          '<div><div style="font-size:16px;font-weight:800">' + (id ? '✏️ Editar post' : '📝 Novo post') + '</div>' +
+          '<div id="admBlogSub" style="font-size:12.5px;opacity:.9">' + (id ? _admBlogEsc(post.slug) : 'O endereço é gerado a partir do título') + '</div></div>' +
+          '<button onclick="admBlogFechar()" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:16px">✕</button>' +
+        '</div>' +
+
+        '<div style="overflow-y:auto;flex:1;padding:18px 20px">' +
+
+          '<div style="display:grid;grid-template-columns:2fr 1fr;gap:13px;margin-bottom:13px">' +
+            '<div><label style="' + lbl + '">Título</label>' +
+              '<input id="abTitulo" style="' + inp + '" maxlength="120" value="' + _admBlogEsc(post.titulo) + '" placeholder="Taxas do Mercado Livre em 2026: a tabela completa">' +
+              '<div style="' + dica + '" id="abTituloConta">Ideal entre 50 e 65 caracteres, para não cortar no Google.</div></div>' +
+            '<div><label style="' + lbl + '">Assunto</label>' +
+              '<select id="abGrupo" style="' + inp + '">' +
+                _admBlogGrupos.map(function (g) {
+                  return '<option value="' + _admBlogEsc(g) + '"' + (g === post.grupo ? ' selected' : '') + '>' + _admBlogEsc(g) + '</option>';
+                }).join('') +
+              '</select>' +
+              '<div style="' + dica + '">Vira o filtro na listagem do blog.</div></div>' +
+          '</div>' +
+
+          '<div style="margin-bottom:13px"><label style="' + lbl + '">Endereço da página</label>' +
+            '<div style="display:flex;align-items:center;gap:0">' +
+              '<span style="font-size:13px;color:#94a3b8;background:#eef2f7;border:1px solid #cbd5e1;border-right:0;border-radius:9px 0 0 9px;padding:10px 10px;white-space:nowrap">lider10.com.br/blog/</span>' +
+              '<input id="abSlug" style="' + inp + ';border-radius:0 9px 9px 0" value="' + _admBlogEsc(post.slug) + '" placeholder="deixe vazio para gerar do título">' +
+            '</div>' +
+            '<div style="' + dica + '">' + (post.status === 'publicado'
+              ? '<span style="color:#b45309">Este post já está no ar. Mudar o endereço quebra o link que o Google já indexou.</span>'
+              : 'Só letras, números e hífen. Curto e com a palavra principal.') + '</div></div>' +
+
+          '<div style="margin-bottom:13px"><label style="' + lbl + '">Resumo</label>' +
+            '<textarea id="abResumo" style="' + inp + ';min-height:70px;resize:vertical" placeholder="A frase que aparece embaixo do título e no card da listagem.">' + _admBlogEsc(post.resumo) + '</textarea></div>' +
+
+          '<div style="margin-bottom:13px"><label style="' + lbl + '">Descrição para o Google</label>' +
+            '<textarea id="abMeta" style="' + inp + ';min-height:56px;resize:vertical" maxlength="170" placeholder="Vazio usa o resumo. Máximo 158 caracteres.">' + _admBlogEsc(post.meta_description) + '</textarea>' +
+            '<div style="' + dica + '" id="abMetaConta"></div></div>' +
+
+          '<div style="margin-bottom:13px"><label style="' + lbl + '">Corpo do post (HTML)</label>' +
+            '<textarea id="abCorpo" spellcheck="false" style="' + inp + ';min-height:300px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.6;resize:vertical" placeholder="&lt;h2&gt;Primeira seção&lt;/h2&gt;&#10;&lt;p&gt;Texto do parágrafo.&lt;/p&gt;">' + _admBlogEsc(post.corpo_html) + '</textarea>' +
+            '<div style="' + dica + '">Use &lt;h2&gt; para as seções, &lt;p&gt; para os parágrafos e &lt;table class="dados"&gt; para as tabelas. ' +
+            'Blocos prontos: <button type="button" onclick="admBlogInserir(\'tabela\')" style="border:0;background:none;color:#2563eb;cursor:pointer;font-size:11.5px;padding:0;text-decoration:underline">tabela</button> · ' +
+            '<button type="button" onclick="admBlogInserir(\'destaque\')" style="border:0;background:none;color:#2563eb;cursor:pointer;font-size:11.5px;padding:0;text-decoration:underline">caixa de destaque</button> · ' +
+            '<button type="button" onclick="admBlogInserir(\'lista\')" style="border:0;background:none;color:#2563eb;cursor:pointer;font-size:11.5px;padding:0;text-decoration:underline">lista numerada</button></div></div>' +
+
+          '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px;margin-bottom:13px">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px">' +
+              '<div><b style="font-size:13.5px;color:#0f172a">Perguntas rápidas</b>' +
+              '<div style="font-size:11.5px;color:#94a3b8">Vão para o fim do post e para os dados estruturados. É o trecho que o Google e as IAs costumam citar.</div></div>' +
+              '<button class="toolbar-btn" style="font-size:11.5px" onclick="admBlogAddFaq()">+ Pergunta</button>' +
+            '</div>' +
+            '<div id="abFaq"></div>' +
+          '</div>' +
+
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:13px">' +
+            '<div><label style="' + lbl + '">Tempo de leitura</label>' +
+              '<input id="abLeitura" type="number" min="1" max="60" style="' + inp + '" value="' + (post.leitura_min || '') + '" placeholder="calcula sozinho"></div>' +
+            '<div><label style="' + lbl + '">Assinatura</label>' +
+              '<input id="abAutor" style="' + inp + '" value="' + _admBlogEsc(post.autor || 'Lider 10') + '"></div>' +
+            '<div><label style="' + lbl + '">Publicar em</label>' +
+              '<input id="abQuando" type="datetime-local" style="' + inp + '" value="' + _admBlogParaInput(post.publicar_em) + '">' +
+              '<div style="' + dica + '">Vai ao ar em até 5 min depois.</div></div>' +
+          '</div>' +
+
+        '</div>' +
+
+        '<div style="padding:13px 20px;background:#fff;border-top:1px solid #e2e8f0;display:flex;gap:9px;justify-content:space-between;align-items:center;flex-wrap:wrap;flex-shrink:0">' +
+          '<span id="abAviso" style="font-size:12px;color:#94a3b8"></span>' +
+          '<div style="display:flex;gap:9px;flex-wrap:wrap">' +
+            '<button class="toolbar-btn" onclick="admBlogSalvar(false)">Salvar rascunho</button>' +
+            '<button class="toolbar-btn" onclick="admBlogSalvarEPreVer()">Salvar e ver</button>' +
+            '<button class="toolbar-btn" style="background:#b45309;color:#fff" onclick="admBlogSalvar(true)">Agendar</button>' +
+            '<button class="primary-btn" onclick="admBlogSalvarEPublicar()">Publicar agora</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(ov);
+    _admBlogDesenhaFaq();
+
+    const t = document.getElementById('abTitulo');
+    const conta = document.getElementById('abTituloConta');
+    const meta = document.getElementById('abMeta');
+    const metaConta = document.getElementById('abMetaConta');
+    function contarTitulo() {
+      const n = (t.value || '').length;
+      conta.innerHTML = n + ' caracteres. ' + (n === 0 ? 'Ideal entre 50 e 65.'
+        : n < 40 ? '<span style="color:#b45309">Curto: aproveite mais espaço.</span>'
+        : n > 70 ? '<span style="color:#b45309">O Google vai cortar o fim.</span>'
+        : '<span style="color:#15803d">Bom tamanho.</span>');
+    }
+    function contarMeta() {
+      const n = (meta.value || '').length;
+      metaConta.innerHTML = n ? (n + ' de 158 caracteres.' + (n > 158 ? ' <span style="color:#b45309">Passou.</span>' : ''))
+                              : 'Vazio: usamos o começo do resumo.';
+    }
+    t.addEventListener('input', contarTitulo);
+    meta.addEventListener('input', contarMeta);
+    contarTitulo(); contarMeta();
+  }
+
+  function admBlogFechar() {
+    const ov = document.getElementById('admBlogOverlay');
+    if (ov) ov.remove();
+    window._admBlogEdit = null;
+  }
+
+  // ─── FAQ ──────────────────────────────────────────────────────────
+  function _admBlogDesenhaFaq() {
+    const box = document.getElementById('abFaq');
+    if (!box) return;
+    const faq = (window._admBlogEdit && window._admBlogEdit.faq) || [];
+    if (!faq.length) {
+      box.innerHTML = '<div style="font-size:12.5px;color:#94a3b8;padding:8px 0">Nenhuma pergunta ainda.</div>';
+      return;
+    }
+    const inp = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff';
+    box.innerHTML = faq.map(function (f, i) {
+      return '<div style="border-top:1px dashed #e2e8f0;padding:10px 0">' +
+        '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">' +
+          '<input style="' + inp + '" placeholder="A pergunta, do jeito que a pessoa digita" value="' + _admBlogEsc(f.p) + '" oninput="_admBlogSetFaq(' + i + ',\'p\',this.value)">' +
+          '<button onclick="_admBlogDelFaq(' + i + ')" style="border:1px solid #fecaca;background:#fff;color:#b91c1c;border-radius:8px;width:32px;height:32px;cursor:pointer;flex:none">✕</button>' +
+        '</div>' +
+        '<textarea style="' + inp + ';min-height:52px;resize:vertical" placeholder="A resposta em uma ou duas frases. Aceita HTML." oninput="_admBlogSetFaq(' + i + ',\'r\',this.value)">' + _admBlogEsc(f.r) + '</textarea>' +
+      '</div>';
+    }).join('');
+  }
+
+  function admBlogAddFaq() {
+    if (!window._admBlogEdit) return;
+    if (!Array.isArray(window._admBlogEdit.faq)) window._admBlogEdit.faq = [];
+    window._admBlogEdit.faq.push({ p: '', r: '' });
+    _admBlogDesenhaFaq();
+  }
+
+  function _admBlogSetFaq(i, campo, valor) {
+    if (!window._admBlogEdit || !window._admBlogEdit.faq[i]) return;
+    window._admBlogEdit.faq[i][campo] = valor;
+  }
+
+  function _admBlogDelFaq(i) {
+    if (!window._admBlogEdit) return;
+    window._admBlogEdit.faq.splice(i, 1);
+    _admBlogDesenhaFaq();
+  }
+
+  // ─── blocos prontos ───────────────────────────────────────────────
+  function admBlogInserir(tipo) {
+    const ta = document.getElementById('abCorpo');
+    if (!ta) return;
+    const blocos = {
+      tabela:
+'\n<div class="tabela-box">\n  <table class="dados">\n    <caption>De onde veio o dado e desde quando vale.</caption>\n    <thead>\n      <tr><th>Faixa</th><th>Comissão</th><th>Taxa fixa</th></tr>\n    </thead>\n    <tbody>\n      <tr><td>Até R$ 79,99</td><td>20%</td><td>R$ 4,00</td></tr>\n      <tr class="destaque"><td>R$ 80 a R$ 99,99</td><td>14%</td><td>R$ 16,00</td></tr>\n    </tbody>\n  </table>\n</div>\n',
+      destaque:
+'\n<div class="dado">\n  <span class="rot">Regra prática</span>\n  <p>A frase que resume a decisão, com o número dentro.</p>\n</div>\n',
+      lista:
+'\n<ol>\n  <li><strong>Primeiro passo.</strong> O que fazer e por quê.</li>\n  <li><strong>Segundo passo.</strong> O que fazer e por quê.</li>\n</ol>\n',
+    };
+    const txt = blocos[tipo] || '';
+    const ini = ta.selectionStart || ta.value.length;
+    ta.value = ta.value.slice(0, ini) + txt + ta.value.slice(ini);
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = ini + txt.length;
+  }
+
+  // ─── gravação ─────────────────────────────────────────────────────
+  function _admBlogColeta() {
+    const v = function (id) { const el = document.getElementById(id); return el ? el.value : ''; };
+    const faq = ((window._admBlogEdit && window._admBlogEdit.faq) || [])
+      .filter(function (f) { return (f.p || '').trim() && (f.r || '').trim(); });
+    return {
+      titulo: v('abTitulo').trim(),
+      slug: v('abSlug').trim(),
+      grupo: v('abGrupo'),
+      resumo: v('abResumo').trim(),
+      meta_description: v('abMeta').trim(),
+      corpo_html: v('abCorpo'),
+      leitura_min: v('abLeitura') ? Number(v('abLeitura')) : null,
+      autor: v('abAutor').trim() || 'Lider 10',
+      faq: faq,
+    };
+  }
+
+  function _admBlogAvisar(msg, cor) {
+    const el = document.getElementById('abAviso');
+    if (el) el.innerHTML = '<span style="color:' + (cor || '#94a3b8') + '">' + _admBlogEsc(msg) + '</span>';
+  }
+
+  // grava e devolve o id, ou null se falhou
+  async function _admBlogGravar() {
+    const corpo = _admBlogColeta();
+    if (corpo.titulo.length < 10) { _admBlogAvisar('O título precisa de pelo menos 10 caracteres.', '#b91c1c'); return null; }
+    if ((corpo.corpo_html || '').trim().length < 200) { _admBlogAvisar('O corpo do post está curto demais para publicar.', '#b91c1c'); return null; }
+
+    const atual = window._admBlogEdit || {};
+    _admBlogAvisar('Salvando...');
+    const r = atual.id
+      ? await _admBlogApi('/posts/' + atual.id, { method: 'PUT', body: JSON.stringify(corpo) })
+      : await _admBlogApi('/posts', { method: 'POST', body: JSON.stringify(corpo) });
+
+    if (!r.ok) { _admBlogAvisar(r.erro || 'Não consegui salvar.', '#b91c1c'); return null; }
+
+    window._admBlogEdit = Object.assign({}, r.post, { faq: corpo.faq });
+    const sub = document.getElementById('admBlogSub');
+    if (sub) sub.textContent = r.post.slug;
+    const slugEl = document.getElementById('abSlug');
+    if (slugEl && !slugEl.value) slugEl.value = r.post.slug;
+    if (r.aviso) _admBlogAvisar(r.aviso, '#b45309');
+    return r.post.id;
+  }
+
+  async function admBlogSalvar(agendar) {
+    const id = await _admBlogGravar();
+    if (!id) return;
+
+    if (!agendar) {
+      _admBlogAvisar('Salvo como rascunho.', '#15803d');
+      renderAdmBlog();
+      return;
+    }
+
+    const quando = document.getElementById('abQuando').value;
+    if (!quando) { _admBlogAvisar('Escolha a data e a hora da publicação.', '#b91c1c'); return; }
+
+    const r = await _admBlogApi('/posts/' + id + '/agendar', {
+      method: 'POST',
+      body: JSON.stringify({ publicar_em: new Date(quando).toISOString() }),
+    });
+    if (!r.ok) { _admBlogAvisar(r.erro || 'Não consegui agendar.', '#b91c1c'); return; }
+
+    showToast('Post agendado para ' + _admBlogData(r.post.publicar_em) + '.');
+    admBlogFechar();
+    renderAdmBlog();
+  }
+
+  async function admBlogSalvarEPreVer() {
+    const id = await _admBlogGravar();
+    if (!id) return;
+    _admBlogAvisar('Salvo. Abrindo a pré-visualização...', '#15803d');
+    admBlogPreview(id);
+  }
+
+  async function admBlogSalvarEPublicar() {
+    const id = await _admBlogGravar();
+    if (!id) return;
+    if (!confirm('Publicar agora no lider10.com.br? O post fica visível para qualquer pessoa em cerca de um minuto.')) return;
+
+    _admBlogAvisar('Publicando...');
+    const r = await _admBlogApi('/posts/' + id + '/publicar', { method: 'POST' });
+    if (!r.ok) { _admBlogAvisar(r.erro || 'Não consegui publicar.', '#b91c1c'); return; }
+
+    showToast('Post no ar. O GitHub Pages leva cerca de um minuto para atualizar.');
+    admBlogFechar();
+    renderAdmBlog();
+  }
+
+  // ─── ações da lista ───────────────────────────────────────────────
+  async function admBlogPublicarAgora(id) {
+    if (!confirm('Publicar este post agora no lider10.com.br?')) return;
+    showToast('Publicando...');
+    const r = await _admBlogApi('/posts/' + id + '/publicar', { method: 'POST' });
+    if (!r.ok) { showToast(r.erro || 'Não consegui publicar.', true); return; }
+    showToast('Post no ar. O site atualiza em cerca de um minuto.');
+    renderAdmBlog();
+  }
+
+  async function admBlogDespublicar(id) {
+    if (!confirm('Tirar este post do ar? O endereço vai passar a dar erro 404 para quem chegar pelo Google.')) return;
+    const r = await _admBlogApi('/posts/' + id + '/despublicar', { method: 'POST' });
+    if (!r.ok) { showToast(r.erro || 'Não consegui tirar do ar.', true); return; }
+    showToast('Post tirado do ar e devolvido para rascunho.');
+    renderAdmBlog();
+  }
+
+  async function admBlogApagar(id) {
+    const p = _admBlogPosts.find(function (x) { return x.id === id; });
+    const extra = (p && p.status === 'publicado') ? ' Ele está no ar e será removido do site também.' : '';
+    if (!confirm('Apagar este post de vez?' + extra + ' Não dá para desfazer.')) return;
+    const r = await _admBlogApi('/posts/' + id, { method: 'DELETE' });
+    if (!r.ok) { showToast(r.erro || 'Não consegui apagar.', true); return; }
+    showToast('Post apagado.');
+    renderAdmBlog();
+  }
+
+  // Abre o HTML gerado numa aba nova. O <base> aponta pro site real, então
+  // o CSS e as imagens carregam mesmo com o post ainda não publicado.
+  async function admBlogPreview(id) {
+    const aba = window.open('', '_blank');
+    if (!aba) { showToast('O navegador bloqueou a janela. Libere o pop-up para ver a prévia.', true); return; }
+    aba.document.write('<p style="font-family:sans-serif;padding:20px;color:#64748b">Gerando a prévia...</p>');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/blog/posts/' + id + '/preview', { headers: _admBlogHeaders() });
+      let html = await r.text();
+      if (!r.ok) {
+        aba.document.body.innerHTML = '<p style="font-family:sans-serif;padding:20px;color:#b91c1c">Não consegui gerar a prévia.</p>';
+        return;
+      }
+      html = html.replace('<head>', '<head>\n<base href="https://lider10.com.br/blog/">');
+      aba.document.open();
+      aba.document.write(html);
+      aba.document.close();
+    } catch (e) {
+      aba.document.body.innerHTML = '<p style="font-family:sans-serif;padding:20px;color:#b91c1c">Falha ao falar com o servidor.</p>';
+    }
+  }
+
+  async function admBlogRegerar() {
+    showToast('Refazendo índice e sitemap...');
+    const r = await _admBlogApi('/regerar', { method: 'POST' });
+    if (!r.ok) { showToast(r.erro || 'Não consegui refazer.', true); return; }
+    showToast('Índice e sitemap atualizados com ' + r.publicados + ' post(s).');
+  }
 </script>
 
 </body>
