@@ -62173,7 +62173,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1550-emitindo-destravado';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1558-programar-nao-imprime';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -72228,6 +72228,11 @@ ${JSON.stringify(metricas, null, 2)}`
   let _expSeq = 0;                      // série da requisição de LISTA mais nova
   let _expSeqCnt = 0;                   // série da requisição de CONTADORES mais nova
   const _expReal = new Map();           // 'etapa:estado' → { total, em }
+  // v33k.1555: QUANDO a foto dos contadores foi tirada, e DE QUAIS LOJAS o cache
+  // `_expReal` fala. Sem esses dois, uma leitura velha da lista sobrescrevia uma
+  // contagem nova pra sempre, e números de uma seleção de lojas apareciam noutra.
+  let _expDadosEm = 0;                  // Date.now() da resposta de /contadores em uso
+  let _expRealLojas = '';               // assinatura da seleção de lojas do cache
   let _expSel = new Set();              // order_sn selecionados
   let _expOrdem = 'recentes';           // v33k.401: 'recentes' | 'antigos' | 'sku'
   let _expSoAtrasados = false;          // v33k.401: filtro só-atrasados (prazo vencido)
@@ -72419,6 +72424,7 @@ ${JSON.stringify(metricas, null, 2)}`
       // velha chegando depois é metade da causa dos números dançando.
       if (_seqC !== _expSeqCnt) return;
       _expDados = data;
+      _expDadosEm = Date.now();   // v33k.1555: a foto tem hora
       _expPatchContagemReal();
       expRenderEtapas();
       // garante um sub-status selecionado válido na etapa atual
@@ -72466,6 +72472,7 @@ ${JSON.stringify(metricas, null, 2)}`
                 const agora = JSON.stringify(d2.porEtapa || {});
                 const mudou = agora !== ultimo;
                 _expDados = d2;
+                _expDadosEm = Date.now();   // v33k.1555
                 _expPatchContagemReal();
                 if (mudou) {
                   // v33k.1194: atualiza SÓ os números dos cards/chips (dos OUTROS
@@ -72534,52 +72541,114 @@ ${JSON.stringify(metricas, null, 2)}`
   // ═══════════════════════════════════════════════════════════════════════
   function _expChaveReal(etapa, estado) { return String(etapa) + ':' + (estado || ''); }
 
-  function _expGravarReal(etapa, estado, total) {
+  // ═══════════════════════════════════════════════════════════════════════
+  // TRÊS NÚMEROS, TRÊS MOMENTOS (v33k.1555)
+  // ─────────────────────────────────────────────────────────────────────
+  // Sintoma: no MESMO print, o card da Etapa 1 dizia 29, o chip "Todos" dizia
+  // 36, e os chips somavam 30. E na Etapa 2, card 2 com chips somando 1 — o que
+  // parecia estado órfão fora dos chips, mas não era: os 7 estados sempre
+  // estiveram cobertos por 4 grupos de rótulo (medido, não lido).
+  //
+  // Causa, três defeitos empilhados nesta função e em quem a alimenta:
+  //
+  //   1. FILTRO VIRAVA CONTAGEM. `_expGravarReal` guardava o `totalGeral` da
+  //      lista, que respeita busca, SKU e só-atrasados (`count: exact` sobre a
+  //      query filtrada). Digitou no campo de busca uma vez, o número filtrado
+  //      virou "a contagem real" daquele chip.
+  //
+  //   2. VELHO SOBRESCREVIA NOVO, PARA SEMPRE. O cache não tinha validade. Uma
+  //      leitura das 9h continuava vencendo a recontagem completa das 14h. É
+  //      exatamente o "abre de tarde e começa errado, e vai se acertando
+  //      conforme clica": clicar recarrega a lista e reescreve a entrada podre.
+  //
+  //   3. TOTAL DA ETAPA VINHA DE OUTRA FONTE QUE A DOS ESTADOS. `porEtapa[et]`
+  //      recebia o total da lista e as `contagens` ficavam com a foto anterior
+  //      de /contadores. Dois números para o mesmo conjunto, e nada obrigando
+  //      um a ser a soma do outro.
+  //
+  // Correção: a contagem da lista só entra se (a) não havia filtro, (b) é mais
+  // NOVA que a foto de /contadores em uso, e (c) é da MESMA seleção de lojas. E
+  // o total da etapa deixa de ser um dado próprio: passa a ser SEMPRE a soma dos
+  // grupos, calculada num lugar só, que card e chips consultam. Card, chip
+  // "Todos" e soma dos chips não podem mais divergir — não é que combinam, é que
+  // são o mesmo número.
+  // ═══════════════════════════════════════════════════════════════════════
+  function _expAssinaturaLojas() {
+    try { return expLojasSelecionadas().slice().sort().join(','); } catch (_) { return ''; }
+  }
+
+  function _expGravarReal(etapa, estado, total, opts) {
+    // (a) lista filtrada não conta chip nenhum: ela conta o filtro.
+    if (opts && opts.filtrada) return;
+    const lojas = _expAssinaturaLojas();
+    // (c) trocou a seleção de lojas → o que estava guardado não vale mais.
+    if (lojas !== _expRealLojas) { _expReal.clear(); _expRealLojas = lojas; }
     _expReal.set(_expChaveReal(etapa, estado), { total: Number(total) || 0, em: Date.now() });
   }
 
-  // Aplica TODOS os números reais que conhecemos da etapa em tela, não só o do
-  // chip selecionado. É isso que impede um chip mostrar um instante e o vizinho
-  // mostrar outro.
+  // Os grupos de chip da etapa, COM o número de cada um. Fonte única: o card, o
+  // chip "Todos" e os chips saem todos daqui.
+  //   { rotulo, estados:[], n, principal }
+  function _expGruposDaEtapa(et) {
+    if (!_expDados) return [];
+    const estados = ((_expDados.etapas && _expDados.etapas[et] && _expDados.etapas[et].estados) || []);
+    const rotulos = _expDados.rotulos || {};
+    const contagens = _expDados.contagens || {};
+    const mesmaSelecao = (_expAssinaturaLojas() === _expRealLojas);
+    const grupos = [];
+    const porRotulo = {};
+    estados.forEach(e => {
+      const rot = rotulos[e] || e;
+      if (!porRotulo[rot]) { const g = { rotulo: rot, estados: [], n: 0, principal: e }; porRotulo[rot] = g; grupos.push(g); }
+      porRotulo[rot].estados.push(e);
+    });
+    grupos.forEach(g => {
+      // A lista filtra por RÓTULO (irmãos de rótulo, backend v33k.1544), então o
+      // total dela é do GRUPO INTEIRO. Aplicar no estado principal e somar os
+      // irmãos por cima contava o mesmo pedido duas vezes.
+      let real = null;
+      if (mesmaSelecao) {
+        g.estados.forEach(est => {
+          const r = _expReal.get(_expChaveReal(et, est));
+          // (b) só vence a foto de /contadores se for mais nova que ela
+          if (r && r.em >= _expDadosEm && (!real || r.em > real.em)) real = r;
+        });
+      }
+      g.n = real ? real.total : g.estados.reduce((s, est) => s + (Number(contagens[est]) || 0), 0);
+    });
+    return grupos;
+  }
+
+  // Total da etapa = soma dos grupos. Sempre. Sem exceção e sem segunda fonte.
+  function _expTotalEtapa(et) {
+    return _expGruposDaEtapa(et).reduce((s, g) => s + (Number(g.n) || 0), 0);
+  }
+
   function _expPatchContagemReal() {
     if (!_expDados) return;
     _expDados.porEtapa = _expDados.porEtapa || {};
     _expDados.contagens = _expDados.contagens || {};
-
-    const et = _expEtapaSel;
-    const doTodos = _expReal.get(_expChaveReal(et, null));
-    if (doTodos) _expDados.porEtapa[et] = doTodos.total;
-
-    const estadosDaEtapa = ((_expDados.etapas && _expDados.etapas[et] && _expDados.etapas[et].estados) || []);
-    estadosDaEtapa.forEach(est => {
-      const r = _expReal.get(_expChaveReal(et, est));
-      if (r) _expDados.contagens[est] = r.total;
-    });
-
-    // INVARIANTE: nenhum sub-status pode ser maior que a etapa inteira. Quando
-    // isso acontece, o número do sub-status veio de uma foto mais velha do
-    // /contadores. Preferir o total real da etapa não inventa dado, só evita
-    // mostrar uma impossibilidade aritmética na tela.
-    const totalEtapa = _expDados.porEtapa[et];
-    if (doTodos && Number.isFinite(totalEtapa)) {
-      estadosDaEtapa.forEach(est => {
-        const n = Number(_expDados.contagens[est]);
-        if (Number.isFinite(n) && n > totalEtapa) _expDados.contagens[est] = totalEtapa;
-      });
-    }
+    // O total da etapa em tela passa a ser o derivado. As outras etapas seguem
+    // com o número do backend (é a única fonte que temos delas neste instante).
+    _expDados.porEtapa[_expEtapaSel] = _expTotalEtapa(_expEtapaSel);
   }
 
   function expRenderEtapas() {
     const cont = document.getElementById('expEtapas');
     if (!cont) return;
-    const porEtapa = (_expDados && _expDados.porEtapa) || { 1: 0, 2: 0, 3: 0, 4: 0, 8: 0, 9: 0 };
+    // v33k.1555: o número de CADA card é a soma dos grupos daquela etapa, o mesmo
+    // cálculo que desenha os chips. `porEtapa` do backend deixa de ser lido aqui:
+    // ele é idêntico à soma (routes/expedicao.js), mas depender dele significava
+    // depender de `_expPatchContagemReal` ter rodado antes — e `expSelEtapa`
+    // redesenha o card sem passar por lá. Era mais um caminho pra divergir.
+    const _nEtapa = (et) => _expTotalEtapa(et);
     const nomes = { 1: 'Emitir NF', 2: 'Programar', 3: 'Imprimir', 4: 'Impresso', 5: 'Full', 8: 'Devolvidos', 9: 'Cancelados' };
     // fluxo principal (1→2→3→4) em cards conectados; fora-do-fluxo (8,9) numa barra própria.
     const fluxo = [1, 2, 3, 4];
     let html = '<div class="exp-fluxo">';
     html += fluxo.map((et, idx) => {
       const ativa = et === _expEtapaSel;
-      const n = porEtapa[et] || 0;
+      const n = _nEtapa(et);
       const ehAtendidos = et === 4;
       const cor = ehAtendidos ? 'var(--lc-success,#15803d)' : 'var(--lc-primary)';
       const corBg = ehAtendidos ? 'var(--lc-success-soft,#dcfce7)' : 'var(--lc-primary-softer)';
@@ -72592,11 +72661,18 @@ ${JSON.stringify(metricas, null, 2)}`
       // e o total, em vez de um total único que confunde.
       let blocoN;
       if (et === 1) {
-        const cg = (_expDados && _expDados.contagens) || {};
+        // v33k.1555: os três números do card saem dos MESMOS grupos que viram
+        // chip. Antes o card somava `contagens` cru e o chip "Todos" mostrava
+        // `porEtapa`: duas fontes, dois instantes, e o print com 29 num lugar e
+        // 36 no outro. Agora o total é a soma dos grupos, e "aguardando" é o
+        // grupo dele — o que sobra é, por definição, o que está liberado.
+        const gruposE1 = _expGruposDaEtapa(1);
+        const total1 = gruposE1.reduce((s, g) => s + (Number(g.n) || 0), 0);
+        const gAg = gruposE1.find(g => g.estados.indexOf('aguardando_liberacao') >= 0);
+        const nAg = gAg ? (Number(gAg.n) || 0) : 0;
         // v33k.788: 'subindo'/'falha_subir' saíram da etapa 1 (viraram etapa 2).
         // "Liberados pra emitir" = para_emitir + emitindo + com erro de emissão.
-        const nLib = (cg.para_emitir || 0) + (cg.emitindo || 0) + (cg.falha_emissao || 0);
-        const nAg = (cg.aguardando_liberacao || 0);
+        const nLib = Math.max(0, total1 - nAg);
         // compacto: número grande = LIBERADOS (o que importa); embaixo, pequeno,
         // "aguardando" e "total". Não cresce a altura (mesma estrutura de 1 linha
         // + 1 sublinha discreta), foco nos liberados.
@@ -72618,8 +72694,8 @@ ${JSON.stringify(metricas, null, 2)}`
     // ── card "Canceladas/Devolvidas" no PRÓPRIO trilho, depois de Impresso ──
     // (v33k.520) Etapas 8 (devolvidos) e 9 (cancelados) agora têm um card com
     // o mesmo destaque das etapas do fluxo, foco no acompanhamento das NFs.
-    const nDev = porEtapa[8] || 0;
-    const nCanc = porEtapa[9] || 0;
+    const nDev = _nEtapa(8);
+    const nCanc = _nEtapa(9);
     const ativaCD = _expEtapaSel === 8 || _expEtapaSel === 9;
     const icoCD = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>';
     html += '<div class="exp-fluxo-sep" aria-hidden="true"></div>';
@@ -72635,7 +72711,7 @@ ${JSON.stringify(metricas, null, 2)}`
 
     // barra "fora do fluxo": agora só o Full (despachado pelo marketplace).
     html += '<div class="exp-fora-fluxo">';
-    const nFull = porEtapa[5] || 0;
+    const nFull = _nEtapa(5);
     const ativaFull = _expEtapaSel === 5;
     const icoFull = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>';
     html += '<button onclick="expSelEtapa(5)" class="exp-chip-ff' + (ativaFull ? ' ativa' : '') + '" style="--ff-cor:#166534;--ff-bg:#dcfce7" title="Pedidos Full \u2014 o marketplace despacha do armazem; fora do seu fluxo de expedicao">' +
@@ -72676,6 +72752,7 @@ ${JSON.stringify(metricas, null, 2)}`
       if (data && data.ok) {
         if (_seqC !== _expSeqCnt) return;
         _expDados = data;
+        _expDadosEm = Date.now();   // v33k.1555
         // se o sub-status selecionado não existe mais na etapa, cai em "Todos"
         if (_expEstadoSel && _expDados.etapas[_expEtapaSel] &&
             !(_expDados.etapas[_expEtapaSel].estados || []).includes(_expEstadoSel)) {
@@ -72711,25 +72788,17 @@ ${JSON.stringify(metricas, null, 2)}`
     const cont = document.getElementById('expChips');
     if (!cont) return;
     if (!_expDados) { cont.innerHTML = ''; return; }
-    const etapa = _expDados.etapas[_expEtapaSel] || { estados: [] };
-    const rotulos = _expDados.rotulos || {};
-    const cont3 = _expDados.contagens || {};
-    // v33k.395: FUNDE estados que compartilham o mesmo rótulo (ex.: 'programando'
-    // + legados 'obtendo_rastreio'/'erro_rastreio'/'falha_programacao' → todos
-    // "Programando"). Um chip só, contagem somada, clique seleciona o 1º estado.
-    const grupos = [];       // { rotulo, estados:[], n, principal }
-    const porRotulo = {};
-    (etapa.estados || []).forEach(e => {
-      const rot = rotulos[e] || e;
-      if (!porRotulo[rot]) { const g = { rotulo: rot, estados: [], n: 0, principal: e }; porRotulo[rot] = g; grupos.push(g); }
-      porRotulo[rot].estados.push(e);
-      porRotulo[rot].n += (cont3[e] || 0);
-    });
+    // v33k.395: FUNDE estados que compartilham o mesmo rótulo (ex.: 'subindo' +
+    // 'programando' + legado 'obtendo_rastreio' → todos "Programando"). Um chip
+    // só, contagem somada, clique seleciona o 1º estado.
+    // v33k.1555: o agrupamento e a contagem saíram daqui pra `_expGruposDaEtapa`,
+    // que o CARD também usa. Enquanto eram dois cálculos, eram dois números.
+    const grupos = _expGruposDaEtapa(_expEtapaSel);   // { rotulo, estados, n, principal }
     let html = '';
     // dentro de "Canceladas/Devolvidas": chips pra alternar entre as duas visões
     if (_expEtapaSel === 8 || _expEtapaSel === 9) {
-      const porEtapaCD = (_expDados && _expDados.porEtapa) || {};
-      const nC = porEtapaCD[9] || 0, nD = porEtapaCD[8] || 0;
+      // v33k.1555: mesma soma que o card de Pós-venda usa.
+      const nC = _expTotalEtapa(9), nD = _expTotalEtapa(8);
       html += '<span style="font-size:12px;color:var(--lc-muted);font-weight:600;margin-right:2px">Ver:</span>';
       html += '<button onclick="expSelEtapa(9)" class="lc-btn lc-btn--sm" style="' + (_expEtapaSel === 9 ? 'background:var(--lc-danger,#b91c1c);color:#fff' : 'background:var(--lc-surface-2);color:var(--lc-ink-2)') + ';border-radius:999px;padding:5px 14px">Canceladas <b style="margin-left:4px">' + nC + '</b></button>';
       html += '<button onclick="expSelEtapa(8)" class="lc-btn lc-btn--sm" style="' + (_expEtapaSel === 8 ? 'background:var(--lc-warning,#b45309);color:#fff' : 'background:var(--lc-surface-2);color:var(--lc-ink-2)') + ';border-radius:999px;padding:5px 14px">Devolvidas <b style="margin-left:4px">' + nD + '</b></button>';
@@ -72746,7 +72815,8 @@ ${JSON.stringify(metricas, null, 2)}`
     // com o card. É o padrão agora, filtrar por sub-status vira escolha, não
     // imposição.
     {
-      const totalEtapa = ((_expDados.porEtapa || {})[_expEtapaSel]) || 0;
+      // v33k.1555: literalmente a soma dos chips ao lado, não um número paralelo.
+      const totalEtapa = grupos.reduce((s, g) => s + (Number(g.n) || 0), 0);
       const ativoTodos = !_expEstadoSel;   // nenhum sub-status = "Todos"
       html += '<button onclick="expSelEstado(null)" style="font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer;font-weight:700;border:1.5px solid ' +
         (ativoTodos ? 'var(--lc-primary)' : 'var(--lc-border-2)') + ';background:' + (ativoTodos ? 'var(--lc-primary)' : 'var(--lc-surface)') + ';color:' + (ativoTodos ? '#fff' : 'var(--lc-ink-2)') + '">' +
@@ -72918,7 +72988,12 @@ ${JSON.stringify(metricas, null, 2)}`
       // O número vale sempre (é um fato sobre AQUELE chip), mesmo que a pessoa
       // já tenha clicado noutro: guardar não faz mal e ainda deixa o vizinho
       // certo quando ela voltar.
-      _expGravarReal(_etapaReq, _estadoReq, totalGeral);
+      // v33k.1555: com busca, SKU ou só-atrasados ligados, `totalGeral` é o total
+      // DO FILTRO (o backend conta com `count: exact` sobre a query já filtrada).
+      // Guardar isso como se fosse a contagem do chip é o que deixava o card com
+      // um número menor que o real e preso lá até alguém clicar de novo.
+      const _filtrada = !!(q || _expSoAtrasados || _expSkuFiltro);
+      _expGravarReal(_etapaReq, _estadoReq, totalGeral, { filtrada: _filtrada });
       // Já a TELA só é redesenhada pela requisição mais nova. Resposta atrasada
       // pintando a tela é exatamente como os números trocavam de lugar.
       if (_seq !== _expSeq) return;
@@ -73848,6 +73923,22 @@ ${JSON.stringify(metricas, null, 2)}`
     };
     // modo do rodapé da etiqueta (guardado no seletor da própria tela)
     const modo = getModoEtiqueta();
+
+    // ═══════════════════════════════════════════════════════════════════
+    // v33k.1554: O AVISO ABRE AGORA, NÃO SÓ QUANDO VEM jobId.
+    // ─────────────────────────────────────────────────────────────────
+    // Antes ele dependia de `data.gerando && data.jobId`, e o backend só
+    // devolve jobId no caminho assíncrono. Seleção que inclui SHEIN cai no
+    // caminho SÍNCRONO (o PDF vem pronto na resposta) e nunca trazia jobId:
+    // resultado, dez pedidos Shopee mais um SHEIN e nenhum aviso na tela,
+    // com a requisição rodando em silêncio por vários segundos.
+    //
+    // A condição certa é "a ação começou", não "existe um job". Abrimos
+    // aqui e fechamos no fim, ou entregamos o acompanhamento pro job
+    // quando ele existir.
+    _expProgressoMostrar(orderSns.length,
+      acao === 'programar' ? 'Programando envios…' : 'Gerando etiquetas…');
+
     try {
       const params = new URLSearchParams({ lojaIds: lojas.join(',') });
       const resp = await fetch(BACKEND_URL + '/api/expedicao/avancar?' + params.toString(), {
@@ -73865,7 +73956,7 @@ ${JSON.stringify(metricas, null, 2)}`
         expCarregar({ silencioso: true });  // migra pra "Emitindo etiqueta" sem piscar
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
         soltarLinha();
-        _expProgressoMostrar(orderSns.length);
+        // já está aberto desde antes da requisição: o job assume daqui.
         _expAcompanharEtiqueta(data.jobId);
         return;
       }
@@ -73878,7 +73969,13 @@ ${JSON.stringify(metricas, null, 2)}`
         expCarregar({ silencioso: true });
         if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
         soltarLinha();
-        if (data.jobId) _expAcompanharProgramar(data.jobId);
+        if (data.jobId) {
+          _expProgressoAtualizar(0, data.total || orderSns.length, 'Programando envios…');
+          _expAcompanharProgramar(data.jobId);
+        } else {
+          // Sem job (SHEIN puro responde assim): nao ha o que acompanhar.
+          _expProgressoFechar((data.total || orderSns.length) + ' pedido(s) em programação');
+        }
         return;
       }
 
@@ -73893,11 +73990,21 @@ ${JSON.stringify(metricas, null, 2)}`
         const primeira = (data.resultados || []).find(r => !r.ok);
         showToast('⚠ ' + (primeira ? (primeira.mensagem || primeira.erro) : (data.erro || 'Nada avançou')), true);
       }
+      // v33k.1554: caminho SÍNCRONO (seleção com SHEIN devolve o PDF pronto).
+      // Aqui não existe job pra acompanhar, então o aviso fecha com o
+      // resultado em vez de ficar aberto pra sempre.
+      const okSinc = !!(data.ok || data.sucesso);
+      const qtd = data.geradas || data.sucesso || data.processados || orderSns.length;
+      _expProgressoFechar(
+        okSinc ? (acao === 'programar' ? qtd + ' pedido(s) programado(s)' : qtd + ' etiqueta(s) pronta(s)')
+               : 'Nada avançou, confira a lista',
+        !okSinc);
       _expSel.clear();
       expCarregar({ silencioso: true });  // migra de status sem piscar a tela
       soltarLinha();
     } catch (e) {
       showToast('Erro: ' + e.message, true);
+      _expProgressoFechar('Falhou: ' + e.message, true);
       if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
       // v33k.1518: solta o botao no erro TAMBEM. Sem isto ele ficaria
       // desabilitado pra sempre e a pessoa teria que recarregar a pagina pra
@@ -73920,10 +74027,15 @@ ${JSON.stringify(metricas, null, 2)}`
           // v33k.1164: SILENCIOSO no sucesso (a migração de status é o feedback).
           // Só avisa quando teve ERRO, que é acionável.
           if (j.falhas) showToast('⚠ ' + j.sucesso + ' programado(s), ' + j.falhas + ' com erro' + (j.ultimoErro ? ': ' + j.ultimoErro : '') + '.', true);
+          _expProgressoFechar(
+            j.falhas ? (j.sucesso + ' programado(s), ' + j.falhas + ' com erro')
+                     : ((j.sucesso || j.processados || 0) + ' pedido(s) programado(s)'),
+            !!j.falhas);
           if (document.getElementById('pedAbaExpedicao') && document.getElementById('pedAbaExpedicao').style.display !== 'none') expCarregar({ silencioso: true });
           return;
         }
-        if (tentativas > 300) return; // ~5min de teto
+        _expProgressoAtualizar(j.processados || 0, j.total || 0, 'Programando envios…');
+        if (tentativas > 300) { _expProgressoFechar('Demorou demais, confira a lista', true); return; }
         setTimeout(poll, 1500);
       } catch (_) { /* silencioso */ }
     };
@@ -73948,29 +74060,46 @@ ${JSON.stringify(metricas, null, 2)}`
   // Entao o progresso vira uma faixa fixa no rodape, com contagem e barra.
   // Nao bloqueia a tela de proposito: a pessoa pode continuar conferindo os
   // pedidos enquanto as etiquetas saem, e o PDF abre sozinho no fim.
-  function _expProgressoMostrar(total) {
+  function _expProgressoMostrar(total, titulo) {
+    // ═══════════════════════════════════════════════════════════════════
+    // v33k.1554: tela cheia com blur, no mesmo padrão do #lcModalOverlay.
+    // Reaproveita os tokens que já existem (--lc-primary, --lc-radius, a
+    // animação lcModalFadeIn e o .lc-spin-mini). Nada de cor ou sombra
+    // inventada só pra esta caixa.
+    //
+    // Antes era um cartão pequeno no canto de baixo. Numa ação em lote que
+    // demora, o operador não tinha certeza de que algo estava rodando e
+    // clicava de novo.
+    // ═══════════════════════════════════════════════════════════════════
     let ov = document.getElementById('expProgresso');
     if (!ov) {
       ov = document.createElement('div');
       ov.id = 'expProgresso';
-      ov.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:22px;'
-        + 'z-index:100060;background:#0f172a;color:#fff;border-radius:14px;'
-        + 'box-shadow:0 18px 44px rgba(0,0,0,.34);padding:14px 18px;min-width:320px;'
-        + 'max-width:min(520px,94vw);font-size:13.5px';
+      ov.style.cssText = 'position:fixed;inset:0;z-index:2147483000;'
+        + 'display:flex;align-items:center;justify-content:center;padding:20px;'
+        + 'background:rgba(17,24,39,.48);backdrop-filter:blur(3px);'
+        + '-webkit-backdrop-filter:blur(3px);animation:lcModalFadeIn .16s ease';
       ov.innerHTML =
-        '<div style="display:flex;align-items:center;gap:11px">'
-        + '<span class="lc-spin-mini" style="width:16px;height:16px;border-width:2.5px"></span>'
-        + '<div style="flex:1">'
-        + '<div id="expProgTitulo" style="font-weight:700">Gerando etiquetas…</div>'
-        + '<div id="expProgSub" style="opacity:.78;font-size:12px;margin-top:2px"></div>'
-        + '</div></div>'
-        + '<div style="height:6px;background:rgba(255,255,255,.16);border-radius:999px;margin-top:11px;overflow:hidden">'
-        + '<div id="expProgBarra" style="height:100%;width:0%;background:#22c55e;'
-        + 'border-radius:999px;transition:width .3s ease"></div></div>';
+        '<div style="background:#0f172a;color:#fff;border-radius:16px;padding:26px 28px;'
+        + 'min-width:min(400px,92vw);max-width:min(520px,94vw);text-align:center;'
+        + 'box-shadow:0 24px 60px rgba(0,0,0,.4);animation:lcModalPop .2s ease">'
+        + '<span class="lc-spin-mini" style="width:30px;height:30px;border-width:3px;display:inline-block"></span>'
+        + '<div id="expProgTitulo" style="font-weight:800;font-size:17px;margin-top:14px">Gerando etiquetas…</div>'
+        + '<div id="expProgSub" style="opacity:.72;font-size:13px;margin-top:5px"></div>'
+        + '<div style="height:8px;background:rgba(255,255,255,.14);border-radius:999px;margin-top:18px;overflow:hidden">'
+        + '<div id="expProgBarra" style="height:100%;width:0%;background:var(--lc-primary);'
+        + 'border-radius:999px;transition:width .3s ease"></div></div>'
+        + '<div style="opacity:.5;font-size:11.5px;margin-top:13px">Pode deixar aberto, avisamos quando terminar.</div>'
+        + '</div>';
       document.body.appendChild(ov);
     }
+    const t = document.getElementById('expProgTitulo');
+    if (t && titulo) t.textContent = titulo;
     const sub = document.getElementById('expProgSub');
     if (sub) sub.textContent = total ? ('0 de ' + total + ' prontas') : 'preparando…';
+    const barra = document.getElementById('expProgBarra');
+    // Sem total conhecido, a barra fica num avanço curto só pra mostrar vida.
+    if (barra) barra.style.width = total ? '0%' : '12%';
     return ov;
   }
 
