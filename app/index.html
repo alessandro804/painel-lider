@@ -8999,7 +8999,89 @@
   // Várias/"Todas"      → RESUMO DE SAÚDE: quantas prontas, o que exige ação, e
   //                       quantas LOJAS estão sem empresa fiscal (o que TRAVA).
   // Nunca lista 60 empresas na faixa, só o que precisa de atenção.
+  // ═══════════════════════════════════════════════════════════════════════
+  // AVISO DE DENEGAÇÃO (v33k.1569)
+  // ─────────────────────────────────────────────────────────────────────
+  // Denegação queima o número da nota e não tem cancelamento. Enquanto o
+  // cadastro não for regularizado, TODA emissão vira mais um número perdido —
+  // por isso o sistema desliga a emissão automática sozinho e avisa aqui, com
+  // um modal que exige um clique. Um toast que some em 3 segundos não serve:
+  // a pessoa precisa saber que a automação parou e que só a contabilidade
+  // destrava.
+  async function _nfDenegacaoVerificar() {
+    let a = null;
+    try {
+      const r = await _api('/api/nfe/denegacao/alerta');
+      a = r && r.ok ? r.alerta : null;
+    } catch (_) { return; }
+    if (!a) return;
+    if (document.getElementById('nfDenegacaoModal')) return;
+
+    // v33k.1570: dois públicos, duas ações. O contador REGULARIZA; o lojista
+    // liga para o contador e religa a automação depois. Mesmo fato, textos
+    // diferentes — dizer "fale com a contabilidade" para a contabilidade
+    // seria mandá-la ligar para si mesma.
+    const ehContab = a.publico === 'contabilidade';
+    const emp = a.empresa || {};
+    const nomeEmp = emp.razao_social || emp.nome_fantasia || '';
+    const doLado = a.lado === 'destinatario'
+      ? 'Vários pedidos seguidos foram denegados por irregularidade do <b>destinatário</b>. Em sequência assim, costuma ser problema no cadastro dos clientes ou nos dados que enviamos, não azar.'
+      : (ehContab
+        ? ('A SEFAZ denegou o uso de NF-e ' + (nomeEmp ? 'da empresa <b>' + _esc(nomeEmp) + '</b>' : 'de uma empresa que você atende') + (emp.cnpj ? ' (' + _esc(String(emp.cnpj)) + ')' : '') + ' por <b>irregularidade fiscal do emitente</b>. Toda nota nova será denegada até a situação cadastral ser regularizada.')
+        : 'A SEFAZ denegou o uso da NF-e por <b>irregularidade fiscal do emitente</b>. Enquanto isso não for regularizado, toda nota nova será denegada igual.');
+    const desde = a.desde ? new Date(a.desde).toLocaleString('pt-BR') : '';
+    const qtd = Number(a.total || 1);
+
+    const html =
+      '<div id="nfDenegacaoModal" style="position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.72);display:flex;align-items:center;justify-content:center;padding:20px">' +
+        '<div style="background:#fff;border-radius:16px;max-width:640px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.35);overflow:hidden">' +
+          '<div style="background:#b91c1c;color:#fff;padding:20px 24px;display:flex;gap:14px;align-items:center">' +
+            '<span class="lc-ic" data-lucide="shield-alert" style="width:32px;height:32px;flex:none"></span>' +
+            '<div><div style="font-size:19px;font-weight:800;line-height:1.2">NF-e denegada pela SEFAZ</div>' +
+            '<div style="font-size:13px;opacity:.92;margin-top:2px">A emissão automática foi pausada por segurança</div></div>' +
+          '</div>' +
+          '<div style="padding:22px 24px;font-size:14.5px;color:#1f2937;line-height:1.6">' +
+            '<p style="margin:0 0 14px">' + doLado + '</p>' +
+            '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:14px;margin-bottom:16px">' +
+              '<div style="font-weight:700;color:#b91c1c;margin-bottom:6px">Por que paramos sozinhos</div>' +
+              'Denegação não é rejeição: a nota <b>passa a existir</b> com aquele número, no estado denegada, e o número fica queimado, sem cancelamento possível. ' +
+              'Se a automação continuasse tentando de 5 em 5 minutos, cada tentativa consumiria mais um número da sua sequência, e a contabilidade teria que inutilizar cada buraco depois.' +
+            '</div>' +
+            '<div style="font-weight:700;margin-bottom:6px">O que fazer agora</div>' +
+            (ehContab
+              ? '<div style="margin-bottom:16px">Regularize a situação cadastral da empresa na SEFAZ <b>o quanto antes</b>. Enquanto isso não acontecer, o cliente não consegue faturar: a emissão dele está parada.</div>'
+              : '<div style="margin-bottom:16px">Fale com a sua contabilidade <b>o quanto antes</b> para regularizar a situação cadastral e liberar a emissão. É o único caminho: não há ajuste no sistema que destrave isso.</div>') +
+            '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:14px;margin-bottom:6px">' +
+              (ehContab
+                ? '<b>A emissão automática do cliente foi pausada.</b> Depois de regularizar, avise o lojista: só ele pode religar a automação, na tela de Notas Fiscais. Ela não volta sozinha, de propósito.'
+                : '<b>A emissão automática de NF está desligada.</b> Depois que a contabilidade liberar, você precisa <b>ligar de novo</b> em Automação, na tela de Notas Fiscais. Ela não volta sozinha, de propósito.') +
+            '</div>' +
+            (desde ? '<div style="font-size:12.5px;color:#6b7280;margin-top:12px">Primeira denegação em ' + _esc(desde) + ' · ' + qtd + ' ocorrência' + (qtd === 1 ? '' : 's') + (a.cStat ? ' · cStat ' + _esc(String(a.cStat)) : '') + '</div>' : '') +
+            (a.motivo ? '<div style="font-size:12.5px;color:#6b7280;margin-top:4px">SEFAZ: ' + _esc(String(a.motivo)) + '</div>' : '') +
+          '</div>' +
+          '<div style="padding:16px 24px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;gap:10px;justify-content:flex-end">' +
+            '<button onclick="_nfDenegacaoFechar()" style="padding:11px 20px;border-radius:9px;border:1px solid #d1d5db;background:#fff;font-weight:600;cursor:pointer">' +
+              (ehContab ? 'Entendi, vou regularizar' : 'Entendi, vou falar com a contabilidade') + '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+    if (window.lcHydrateIcons) window.lcHydrateIcons(document.getElementById('nfDenegacaoModal'));
+  }
+
+  async function _nfDenegacaoFechar() {
+    const el = document.getElementById('nfDenegacaoModal');
+    if (el) el.remove();
+    try { await _api('/api/nfe/denegacao/ciente', { method: 'POST' }); } catch (_) {}
+  }
+  window._nfDenegacaoFechar = _nfDenegacaoFechar;
+  // O painel tem blocos <script> separados: sem isto, a chamada lá da home da
+  // contabilidade cairia num `typeof ... === 'function'` falso e o aviso nunca
+  // apareceria para o contador — falha silenciosa, a pior espécie.
+  window._nfDenegacaoVerificar = _nfDenegacaoVerificar;
+
   async function _nfChecklistCarregar() {
+    _nfDenegacaoVerificar();
     const el = document.getElementById('nfChecklist');
     if (!el) return;
     let lojaIds = [];
@@ -35030,16 +35112,33 @@ Retorne JSON: {"ID": "valor", ...}`;
       const total = (dCount.ok && dCount.total) || 0;
       if (total <= 0) return [];
 
-      // SEMPRE pagina em chunks de 200 (o backend tem teto de 200 por request,
-      // pra não estourar memória/timeout em contas com muitos produtos).
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1571: VARRE POR CURSOR, NÃO POR OFFSET.
+      // ─────────────────────────────────────────────────────────────────
+      // Era `?page=N`, que no backend vira OFFSET com ordenação por
+      // `atualizado_em` — coluna sem índice. Cada página mandava o Postgres
+      // ordenar a tabela inteira de novo, carregando o JSONB de variações e
+      // fotos junto. Medido em produção (10/08): 2,1 segundos POR PÁGINA,
+      // 43 páginas, 91 segundos só nesta varredura. Era a tela branca que
+      // aparecia ao entrar com outro usuário.
+      //
+      // `ordem=id` + `desdeId` faz a varredura andar pela chave primária,
+      // que já está ordenada: cada página custa o mesmo, e a página 40 não
+      // paga o preço das 39 anteriores.
       const todos = [];
-      const totalPaginas = Math.ceil(total / 200);
-      for (let p = 1; p <= totalPaginas; p++) {
-        const r = await fetch(BACKEND_URL + '/api/produtos?page=' + p + '&limit=200', {
-          headers: { 'x-api-token': getApiToken() }
-        });
+      const TETO_PAGINAS = 500;   // 100 mil produtos; além disso algo está errado
+      let cursor = '';
+      for (let p = 0; p < TETO_PAGINAS; p++) {
+        const url = BACKEND_URL + '/api/produtos?ordem=id&limit=200'
+          + (cursor ? '&desdeId=' + encodeURIComponent(cursor) : '');
+        const r = await fetch(url, { headers: { 'x-api-token': getApiToken() } });
         const d = await r.json();
-        if (d.ok) todos.push(...(d.produtos || []));
+        const lote = (d && d.ok && d.produtos) ? d.produtos : [];
+        if (!lote.length) break;
+        todos.push(...lote);
+        cursor = lote[lote.length - 1].id;
+        if (lote.length < 200) break;   // última página
+        if (!cursor) break;             // sem cursor não dá pra continuar
       }
       return _normalizarListaBackend(todos);
     } catch(err) {
@@ -37696,6 +37795,128 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   // Pausa um anúncio (chama backend, atualiza vínculo local, re-renderiza)
+  // ═══════════════════════════════════════════════════════════════════════
+  // EXCLUIR ANÚNCIO NO MARKETPLACE (v33k.1575)
+  // ─────────────────────────────────────────────────────────────────────
+  // Irreversível de verdade, então o aviso é diferente de tudo mais no painel:
+  //   · não usa a confirmação diária (aquela que some depois do primeiro sim);
+  //   · diz o NOME DA LOJA e o anúncio, porque quem tem 30 lojas conectadas
+  //     precisa saber em qual está mexendo antes de apagar;
+  //   · exige digitar EXCLUIR — clique errado não apaga anúncio.
+  function _v32d_nomeDaLoja(vinc) {
+    try {
+      const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp : [];
+      const l = lojas.find(x => String(x.id) === String(vinc.lojaIdBanco));
+      if (l && l.nome) return l.nome;
+    } catch (_) {}
+    return vinc.lojaNome || ('loja ' + (vinc.lojaIdBanco || '?'));
+  }
+
+  function _v32d_modalExcluir(vinc, titulo) {
+    return new Promise(resolve => {
+      const antigo = document.getElementById('v32dExcluirModal');
+      if (antigo) antigo.remove();
+      const loja = _v32d_nomeDaLoja(vinc);
+      const mk = (vinc.marketplace || '').toUpperCase();
+      const html =
+        '<div id="v32dExcluirModal" style="position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.72);display:flex;align-items:center;justify-content:center;padding:20px">' +
+          '<div style="background:#fff;border-radius:16px;max-width:560px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.35);overflow:hidden">' +
+            '<div style="background:#b91c1c;color:#fff;padding:18px 22px;display:flex;gap:12px;align-items:center">' +
+              '<span class="lc-ic" data-lucide="trash-2" style="width:28px;height:28px;flex:none"></span>' +
+              '<div style="font-size:18px;font-weight:800">Excluir anúncio definitivamente</div>' +
+            '</div>' +
+            '<div style="padding:20px 22px;font-size:14.5px;color:#1f2937;line-height:1.6">' +
+              '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:14px;margin-bottom:16px">' +
+                'Esta ação é <b>IRREVERSÍVEL</b>. O anúncio será excluído de forma definitiva ' +
+                'da loja <b>' + _esc(loja) + '</b>' + (mk ? ' (' + _esc(mk) + ')' : '') + '. ' +
+                'Não há como desfazer nem recuperar pelo painel.' +
+              '</div>' +
+              '<div style="margin-bottom:6px"><b>Anúncio:</b> ' + _esc(String(vinc.anuncioId || '')) + '</div>' +
+              (titulo ? '<div style="margin-bottom:14px;color:#4b5563">' + _esc(String(titulo).slice(0, 90)) + '</div>' : '') +
+              '<div style="margin-bottom:8px">Para confirmar, digite <b>EXCLUIR</b> abaixo:</div>' +
+              '<input id="v32dExcluirTexto" autocomplete="off" placeholder="EXCLUIR" ' +
+                'style="width:100%;padding:11px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:15px;letter-spacing:1px">' +
+            '</div>' +
+            '<div style="padding:14px 22px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;gap:10px;justify-content:flex-end">' +
+              '<button id="v32dExcluirCancelar" style="padding:11px 20px;border-radius:9px;border:1px solid #d1d5db;background:#fff;font-weight:600;cursor:pointer">Cancelar</button>' +
+              '<button id="v32dExcluirOk" disabled style="padding:11px 20px;border-radius:9px;border:none;background:#e5e7eb;color:#9ca3af;font-weight:700;cursor:not-allowed">Excluir definitivamente</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      document.body.insertAdjacentHTML('beforeend', html);
+      if (window.lcHydrateIcons) window.lcHydrateIcons(document.getElementById('v32dExcluirModal'));
+
+      const inp = document.getElementById('v32dExcluirTexto');
+      const btnOk = document.getElementById('v32dExcluirOk');
+      const fechar = (r) => {
+        const el = document.getElementById('v32dExcluirModal');
+        if (el) el.remove();
+        resolve(r);
+      };
+      inp.addEventListener('input', () => {
+        const pronto = inp.value.trim().toUpperCase() === 'EXCLUIR';
+        btnOk.disabled = !pronto;
+        btnOk.style.background = pronto ? '#b91c1c' : '#e5e7eb';
+        btnOk.style.color = pronto ? '#fff' : '#9ca3af';
+        btnOk.style.cursor = pronto ? 'pointer' : 'not-allowed';
+      });
+      document.getElementById('v32dExcluirCancelar').onclick = () => fechar(false);
+      btnOk.onclick = () => { if (!btnOk.disabled) fechar(true); };
+      setTimeout(() => inp.focus(), 50);
+    });
+  }
+
+  async function v32d_excluirAnuncio(produtoId, varIdx, vincIdx) {
+    const p = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (!p) return;
+    const v = (p.variacoes || [])[varIdx];
+    const vinc = v && (v.vinculos || [])[vincIdx];
+    if (!vinc) { showToast('Vínculo não encontrado', true); return; }
+
+    // trava de segurança: só pausado. A tela já esconde o botão, mas o estado
+    // pode ter mudado desde o último render.
+    const st = v32d_statusVinculo(vinc);
+    if (st !== 'pausado' && st !== 'inativo') {
+      showToast('Pause o anúncio antes de excluir.', true);
+      return;
+    }
+    const lojaIdBanco = vinc.lojaIdBanco;
+    if (!lojaIdBanco) { showToast('Vínculo sem lojaIdBanco, não dá pra agir', true); return; }
+
+    if (!await _v32d_modalExcluir(vinc, vinc.titulo || p.nome)) return;
+
+    showToast('🗑 Excluindo ' + vinc.anuncioId + '…');
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco
+        + '/anuncio/' + encodeURIComponent(vinc.anuncioId), {
+        method: 'DELETE',
+        headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+      });
+      const data = await resp.json();
+      if (!data.ok) { showToast('❌ ' + (data.erro || 'erro ao excluir'), true); return; }
+
+      // v33k.1575: nem todo canal exclui de verdade em toda situação. Quando o
+      // backend avisa que só despublicou, a tela DIZ isso — não celebra uma
+      // exclusão que não houve.
+      if (data.excluido === false) {
+        showToast('⚠ ' + (data.aviso || 'O canal não excluiu: o anúncio ficou apenas despublicado.'), true);
+      } else {
+        showToast('✓ Anúncio excluído do marketplace');
+        // some com os vínculos daquele anúncio em todas as variações
+        (p.variacoes || []).forEach(vv => {
+          vv.vinculos = (vv.vinculos || []).filter(viv => String(viv.anuncioId) !== String(vinc.anuncioId));
+        });
+        try { await salvarProdutoNoBackend(p); } catch (_) {}
+      }
+      // mesmo par de re-render que o pausar/ativar usam
+      if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
+      if (typeof renderProdutos === 'function') renderProdutos();
+    } catch (e) {
+      showToast('❌ ' + e.message, true);
+    }
+  }
+  window.v32d_excluirAnuncio = v32d_excluirAnuncio;
+
   async function v32d_pausarAnuncio(produtoId, varIdx, vincIdx) {
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) return;
@@ -44558,9 +44779,15 @@ REGRAS DURAS:
                 title="Pausar este anúncio no marketplace">⏸ Pausar</button>`;
             }
             if (st === 'pausado' || st === 'inativo') {
+              // v33k.1575: EXCLUIR só aparece com o anúncio PAUSADO. Pausar
+              // primeiro obriga uma parada consciente antes do irreversível, e
+              // dá tempo de perceber o engano com o anúncio já fora da vitrine.
               return `<button onclick="v32d_ativarAnuncio('${p.id}', ${varIdx}, ${vincIdx})" 
                 style="padding:5px 10px;background:#10b981;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600"
-                title="Reativar este anúncio no marketplace">▶ Ativar</button>`;
+                title="Reativar este anúncio no marketplace">▶ Ativar</button>
+              <button onclick="v32d_excluirAnuncio('${p.id}', ${varIdx}, ${vincIdx})" 
+                style="padding:5px 10px;background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600"
+                title="Excluir DEFINITIVAMENTE este anúncio do marketplace">🗑 Excluir</button>`;
             }
             // Fechado/banido/em_revisao: sem botão
             return '';
@@ -62173,7 +62400,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1566-ordem-indexada';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1576-excluir-todos-canais';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -63942,6 +64169,9 @@ Responda APENAS com JSON válido (sem markdown), formato:
     if (typeof lcCarregarCardPagina === 'function') lcCarregarCardPagina(screenId);
     // v33k.999: telas da CONTABILIDADE renderizam ao entrar
     try {
+      // v33k.1570: o contador também precisa ver o aviso de denegação, e ele
+      // nunca abre a tela de Notas Fiscais do lojista — a home dele é aqui.
+      if (screenId === 'contabHomeScreen' && typeof window._nfDenegacaoVerificar === 'function') window._nfDenegacaoVerificar();
       if (screenId === 'contabHomeScreen' && typeof renderContabHome === 'function') renderContabHome();
       else if (screenId === 'contabEmpresasScreen' && typeof renderContabEmpresas === 'function') renderContabEmpresas({});
       else if (screenId === 'contabFechamentoScreen' && typeof renderContabFechamento === 'function') renderContabFechamento();
