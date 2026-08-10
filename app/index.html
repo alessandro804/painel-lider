@@ -35142,6 +35142,81 @@ Retorne JSON: {"ID": "valor", ...}`;
     return arr || [];
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // CARGA EM DOIS TEMPOS (v33k.1600)
+  // ─────────────────────────────────────────────────────────────────────
+  // Pintar a lista exige quatro números por produto: variações, estoque,
+  // anúncios vinculados e a foto. Para calcular isso o painel baixava o array
+  // `variacoes` inteiro — 20 KB por produto, centenas de MB no catálogo todo.
+  // Enquanto isso não terminava, a tela mostrava "9 produtos" e o filtro por
+  // loja não achava nada.
+  //
+  // Agora o banco resume e manda poucos KB: a lista aparece pronta em
+  // segundos. O catálogo completo continua sendo carregado em SEGUNDO PLANO,
+  // porque as ações (expandir, replicar estoque, exportar) precisam do
+  // produto inteiro — mas ninguém mais espera por ele para VER.
+  async function carregarResumoProdutos() {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/produtos/resumo', {
+        headers: { 'x-api-token': getApiToken() },
+      });
+      const d = await r.json();
+      if (!d || !d.ok) {
+        // migração ainda não rodou: segue pelo caminho antigo, sem quebrar
+        if (d && d.migracaoPendente) console.warn('[resumo] ' + d.erro);
+        return null;
+      }
+      // molda no formato que a lista já sabe desenhar: `variacoes` sintéticas,
+      // uma por anúncio, só com o vínculo — o suficiente para contagem, selo
+      // de status, filtro por loja e logos. O array real chega depois.
+      return (d.produtos || []).map(p => ({
+        id: p.id,
+        idBanco: p.id,
+        nome: p.nome,
+        skuPai: p.sku_pai,
+        status: p.status,
+        itemIdMarketplace: p.item_id_marketplace,
+        atualizadoEm: p.atualizado_em,
+        fotos: p.foto ? [p.foto] : [],
+        _resumo: true,
+        _nVariacoes: p.n_variacoes || 0,
+        _estoqueTotal: Number(p.estoque_total || 0),
+        variacoes: (p.anuncios || []).map((a, i) => ({
+          id: '_r' + i,
+          sku: '', cor: '', tamanho: '', estoque: 0,
+          vinculos: [{
+            anuncioId: a.anuncioId,
+            lojaIdBanco: a.lojaIdBanco != null ? Number(a.lojaIdBanco) : null,
+            marketplace: a.marketplace || '',
+            statusMl: a.statusMl || '',
+          }],
+        })),
+      }));
+    } catch (e) {
+      console.warn('[resumo] falhou, seguindo pelo caminho completo:', e.message);
+      return null;
+    }
+  }
+  window.carregarResumoProdutos = carregarResumoProdutos;
+
+  // v33k.1600: no modo resumo as variações são sintéticas (uma por anúncio,
+  // sem estoque), então somar por elas daria ZERO. O total verdadeiro veio
+  // pronto do banco em `_estoqueTotal`. Este helper escolhe a fonte certa —
+  // sem ele a tela mostraria "0 unidades em estoque" nos primeiros segundos,
+  // que é pior que demorar: é número errado com cara de certo.
+  function _estoqueDoProduto(p) {
+    if (p && p._resumo) return Number(p._estoqueTotal || 0);
+    return ((p && p.variacoes) || []).reduce((ss, v) => ss + (parseInt(v.estoque) || 0), 0);
+  }
+  window._estoqueDoProduto = _estoqueDoProduto;
+
+  // idem para a contagem de variações
+  function _nVariacoesDoProduto(p) {
+    if (p && p._resumo) return Number(p._nVariacoes || 0);
+    return ((p && p.variacoes) || []).length;
+  }
+  window._nVariacoesDoProduto = _nVariacoesDoProduto;
+
   async function carregarTodosProdutos() {
     try {
       // Primeiro descobre o total (rápido, count=true não retorna produtos)
@@ -35169,7 +35244,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       const TETO_PAGINAS = 500;   // 100 mil produtos; além disso algo está errado
       let cursor = '';
       for (let p = 0; p < TETO_PAGINAS; p++) {
-        const url = BACKEND_URL + '/api/produtos?ordem=id&limit=200'
+        // v33k.1599: `leve=1` corta descrição, atributos do ML e guia de
+        // tamanhos — três JSONB grandes que esta lista não lê. É a varredura
+        // do catálogo inteiro; cada byte a menos vale por página.
+        const url = BACKEND_URL + '/api/produtos?ordem=id&limit=200&leve=1'
           + (cursor ? '&desdeId=' + encodeURIComponent(cursor) : '');
         const r = await fetch(url, { headers: { 'x-api-token': getApiToken() } });
         const d = await r.json();
@@ -35180,6 +35258,11 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (lote.length < 200) break;   // última página
         if (!cursor) break;             // sem cursor não dá pra continuar
       }
+      // v33k.1599: marca que a varredura terminou. A tela precisa distinguir
+      // "a loja não tem anúncios" de "o catálogo ainda está chegando" — são
+      // diagnósticos opostos e o aviso antigo dava o errado.
+      window._anCatalogoCompleto = true;
+      window._anCatalogoTotal = todos.length;
       return _normalizarListaBackend(todos);
     } catch(err) {
       console.error('[carregarTodosProdutos]', err);
@@ -41208,7 +41291,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     // Estoque total
     const estoqueTotal = produtosErp
       .filter(p => p.status !== 'excluido')
-      .reduce((s, p) => s + (p.variacoes||[]).reduce((ss,v) => ss + (parseInt(v.estoque)||0), 0), 0);
+      .reduce((s, p) => s + _estoqueDoProduto(p), 0);
     
     const breakdownMk = ['mercadolivre','shopee','tiktok','shein']
       .filter(mk => comVincReal[mk] > 0)
@@ -54894,7 +54977,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     renderEstoque(); // render imediato com o que tem (não trava, é paginado)
     try {
       const lista = document.getElementById('estoqueLista');
-      if (lista) lista.insertAdjacentHTML('afterbegin', '<div id="estoqueLoadingFull" style="padding:8px;color:#16a34a;font-size:13px">📥 Carregando catálogo completo...</div>');
+      if (lista) lista.insertAdjacentHTML('afterbegin', '<div id="estoqueLoadingFull" style="padding:8px;color:#16a34a;font-size:13px">📥 Carregando catálogo…</div>');
+
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1600: PRIMEIRO O RESUMO, DEPOIS O COMPLETO.
+      // ─────────────────────────────────────────────────────────────────
+      // O resumo vem do banco já somado (poucos KB) e serve para VER: a lista
+      // pinta em segundos, com contagem, estoque, anúncios e filtro por loja
+      // funcionando. O catálogo completo continua carregando atrás, porque as
+      // AÇÕES precisam do produto inteiro.
+      //
+      // Se a função SQL ainda não existir, `carregarResumoProdutos` devolve
+      // null e o fluxo segue igual ao de antes — nada quebra.
+      const resumo = await carregarResumoProdutos();
+      if (resumo && resumo.length) {
+        produtosErp = resumo;
+        window._anCatalogoCompleto = true;   // o resumo cobre o catálogo TODO
+        window._anCatalogoTotal = resumo.length;
+        renderEstoque();
+        const ld0 = document.getElementById('estoqueLoadingFull');
+        if (ld0) ld0.innerHTML = '✓ ' + resumo.length + ' produtos na lista · carregando os detalhes em segundo plano…';
+      }
+
       const todos = await carregarTodosProdutos();
       if (todos && todos.length) {
         produtosErp = todos;
@@ -55126,7 +55230,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
     if (resumo) {
       const totalUnidades = produtos.reduce((s,p) =>
-        s + (p.variacoes||[]).reduce((ss,v) => ss + (parseInt(v.estoque)||0), 0), 0);
+        s + _estoqueDoProduto(p), 0);
       resumo.textContent = `${produtos.length} produto(s) · ${totalUnidades} unidades em estoque`;
     }
     // aviso da rede de segurança (loja selecionada não bateu com nenhum produto)
@@ -55134,7 +55238,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (avisoBox) {
       if (_avisoLojaVazia) {
         avisoBox.style.display = 'block';
-        avisoBox.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:9px 13px;border-radius:9px;font-size:12px;line-height:1.5;margin-bottom:10px">⚠ Nenhum anúncio está vinculado à loja selecionada — mostrando <b>todos os produtos</b>. Se esperava filtrar por loja, o vínculo produto↔loja pode estar diferente no banco.</div>';
+        // v33k.1599: o aviso antigo dizia sempre "o vínculo pode estar
+        // diferente no banco" — culpando o dado. Mas a causa MAIS COMUM é
+        // outra: o catálogo ainda não terminou de carregar, então o filtro
+        // procura entre poucos produtos e não acha. Mandar conferir o banco
+        // nessa hora é mandar procurar problema onde não tem.
+        const _completo = !!window._anCatalogoCompleto;
+        avisoBox.innerHTML = _completo
+          ? '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:9px 13px;border-radius:9px;font-size:12px;line-height:1.5;margin-bottom:10px">'
+            + '⚠ Nenhum anúncio está vinculado à loja selecionada — mostrando <b>todos os produtos</b>. '
+            + 'O catálogo está carregado por inteiro, então é vínculo mesmo: use <b>Sincronizar anúncios</b> para casar os anúncios dessa loja.</div>'
+          : '<div style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;padding:9px 13px;border-radius:9px;font-size:12px;line-height:1.5;margin-bottom:10px">'
+            + '⏳ O catálogo ainda está carregando — por enquanto o filtro por loja procura só entre os '
+            + ((window._anCatalogoTotal || (typeof produtosErp !== 'undefined' ? produtosErp.length : 0)) || 0)
+            + ' produto(s) já carregados, e por isso pode não achar nada. Aguarde alguns segundos e filtre de novo.</div>';
       } else {
         avisoBox.style.display = 'none';
         avisoBox.innerHTML = '';
@@ -55158,7 +55275,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     
     lista.innerHTML = produtosPagina.map(p => {
       const variacoes = p.variacoes || [];
-      const total = variacoes.reduce((s,v) => s + (parseInt(v.estoque)||0), 0);
+      // v33k.1600: no resumo o estoque veio somado do banco; somar as
+      // variações sintéticas daria ZERO — número errado com cara de certo.
+      const total = _estoqueDoProduto(p);
 
       // Conta anúncios distintos vinculados ao produto inteiro
       const anunciosProd = new Set();
@@ -55185,7 +55304,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         ? '<img src="' + escapeHtml(foto) + '" style="width:46px;height:46px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.outerHTML=\'<div style=&quot;width:46px;height:46px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0&quot;></div>\'">'
         : '<div style="width:46px;height:46px;border-radius:8px;background:var(--lc-surface-2);border:1px solid var(--lc-border);flex-shrink:0"></div>';
 
-      const nVars = variacoes.length;
+      // v33k.1600: no resumo, `variacoes` é sintética (uma por anúncio) — a
+      // contagem verdadeira veio do banco.
+      const nVars = _nVariacoesDoProduto(p);
       const totalTag = '<span style="font-size:11px;background:var(--lc-info-soft);color:var(--lc-info);padding:2px 8px;border-radius:10px;font-weight:600;flex-shrink:0;white-space:nowrap">' + total + ' un. no estoque</span>';
 
       // Variações NÃO são renderizadas de início (lazy), só ao expandir.
@@ -55253,7 +55374,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!cont) return;
     
     const ativos = produtosErp.filter(p => p.status !== 'excluido');
-    const totalUn = ativos.reduce((s,p) => s + (p.variacoes||[]).reduce((ss,v) => ss + (parseInt(v.estoque)||0), 0), 0);
+    const totalUn = ativos.reduce((s,p) => s + _estoqueDoProduto(p), 0);
     const semEstoque = ativos.filter(p => (p.variacoes||[]).every(v => (parseInt(v.estoque)||0) === 0)).length;
     const baixo = ativos.filter(p => {
       const tot = (p.variacoes||[]).reduce((s,v) => s + (parseInt(v.estoque)||0), 0);
