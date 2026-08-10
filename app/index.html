@@ -35155,11 +35155,18 @@ Retorne JSON: {"ID": "valor", ...}`;
   // segundos. O catálogo completo continua sendo carregado em SEGUNDO PLANO,
   // porque as ações (expandir, replicar estoque, exportar) precisam do
   // produto inteiro — mas ninguém mais espera por ele para VER.
-  async function carregarResumoProdutos() {
+  async function carregarResumoProdutos(tetoMs) {
     try {
+      // v33k.1601: teto de tempo. O resumo existe pra ENCURTAR a espera; se
+      // ele mesmo demorar, vira só mais uma consulta pesada no caminho.
+      // Passou do teto, abandona e deixa o carregamento normal seguir.
+      const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const tmr = (ctrl && tetoMs) ? setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, tetoMs) : null;
       const r = await fetch(BACKEND_URL + '/api/produtos/resumo', {
         headers: { 'x-api-token': getApiToken() },
+        signal: ctrl ? ctrl.signal : undefined,
       });
+      if (tmr) clearTimeout(tmr);
       const d = await r.json();
       if (!d || !d.ok) {
         // migração ainda não rodou: segue pelo caminho antigo, sem quebrar
@@ -54989,21 +54996,44 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       //
       // Se a função SQL ainda não existir, `carregarResumoProdutos` devolve
       // null e o fluxo segue igual ao de antes — nada quebra.
-      const resumo = await carregarResumoProdutos();
-      if (resumo && resumo.length) {
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1601: OS DOIS EM PARALELO, E O RESUMO DESISTE SE DEMORAR.
+      // ─────────────────────────────────────────────────────────────────
+      // A v1600 colocou o resumo ANTES do carregamento completo, em
+      // sequência — e o tempo virou a SOMA dos dois. Medido pelo Alessandro:
+      // a tela foi de ~15s para 25s. Erro meu, e do tipo que só aparece com
+      // dado real: a consulta do resumo expande o JSONB de 16 mil produtos, o
+      // que no Postgres também custa. Agregar no banco não é de graça só por
+      // ser no banco.
+      //
+      // Agora os dois disparam JUNTOS e a tela usa o que chegar primeiro. O
+      // resumo tem 6 segundos para valer a pena; passou disso, é abandonado e
+      // o fluxo antigo segue sozinho — nunca pior que antes.
+      let _jaPintou = false;
+      const pCompleto = carregarTodosProdutos().then(todos => {
+        if (todos && todos.length) {
+          produtosErp = todos;
+          _jaPintou = true;
+          renderEstoque();
+          const ldF = document.getElementById('estoqueLoadingFull');
+          if (ldF) ldF.remove();
+        }
+        return todos;
+      }).catch(e => { console.warn('[catálogo completo]', e); return null; });
+
+      carregarResumoProdutos(6000).then(resumo => {
+        // se o completo já pintou, o resumo não tem mais o que fazer:
+        // sobrescrever com dado parcial seria andar pra trás
+        if (_jaPintou || !resumo || !resumo.length) return;
         produtosErp = resumo;
         window._anCatalogoCompleto = true;   // o resumo cobre o catálogo TODO
         window._anCatalogoTotal = resumo.length;
         renderEstoque();
         const ld0 = document.getElementById('estoqueLoadingFull');
         if (ld0) ld0.innerHTML = '✓ ' + resumo.length + ' produtos na lista · carregando os detalhes em segundo plano…';
-      }
+      }).catch(() => {});
 
-      const todos = await carregarTodosProdutos();
-      if (todos && todos.length) {
-        produtosErp = todos;
-        renderEstoque();
-      }
+      await pCompleto;
       const ld = document.getElementById('estoqueLoadingFull');
       if (ld) ld.remove();
     } catch(e) {
