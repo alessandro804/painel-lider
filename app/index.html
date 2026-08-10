@@ -38893,6 +38893,91 @@ Retorne JSON: {"ID": "valor", ...}`;
   
   // ---- MODAL A ----
   
+  // ═══════════════════════════════════════════════════════════════════════
+  // O QUE CADA MARKETPLACE DEIXA EDITAR NUM ANÚNCIO PUBLICADO (v33k.1578)
+  // ─────────────────────────────────────────────────────────────────────
+  // Antes isso vivia como dois booleanos soltos (`ehML`, `ehShopee`) travando
+  // só o título. Virou tabela por CAMPO, porque a realidade é por campo, não
+  // por canal: o Mercado Livre não deixa mexer no título nem na estrutura de
+  // variações de um anúncio publicado, mas preço e estoque ele aceita — é o
+  // que o cron de estoque em tempo real já faz todo dia.
+  //
+  // Tratar "ML não permite" como bloqueio geral quebraria função que funciona.
+  // Tratar tudo como liberado é pior: a pessoa edita, salva, o canal recusa, e
+  // ela descobre que perdeu o trabalho — falso positivo que corrói confiança.
+  //
+  // Cada campo diz `pode` e, quando não pode, o MOTIVO — que vai pra tela como
+  // tooltip. Campo travado sem explicação vira suporte.
+  let _v31CapAtual = null;
+
+  function _capMkt(marketplace) {
+    const mk = String(marketplace || '').toLowerCase();
+    const ehML = mk.includes('mercado') || mk === 'ml';
+    const ehShopee = mk.includes('shopee');
+    const ehShein = mk.includes('shein');
+    const ehTikTok = mk.includes('tiktok');
+
+    const liberado = { pode: true, motivo: '' };
+    const bloqueado = (motivo) => ({ pode: false, motivo });
+
+    if (ehML) {
+      return {
+        nome: 'Mercado Livre', lido: true,
+        titulo: bloqueado('O Mercado Livre não permite alterar o título de um anúncio publicado.'),
+        descricao: liberado,
+        preco: liberado,
+        estoque: liberado,
+        // o SKU no ML é o seller_custom_field, e ele aceita edição
+        sku: liberado,
+        ean: bloqueado('O GTIN do Mercado Livre é atributo de catálogo e não pode ser trocado por aqui.'),
+        grade: bloqueado('O Mercado Livre não permite adicionar ou remover variações de um anúncio publicado. Crie um anúncio novo.'),
+      };
+    }
+    if (ehShopee) {
+      return {
+        nome: 'Shopee', lido: true,
+        titulo: liberado, descricao: liberado, preco: liberado,
+        estoque: liberado, sku: liberado, ean: liberado, grade: liberado,
+      };
+    }
+    if (ehShein) {
+      return {
+        nome: 'SHEIN', lido: true,
+        titulo: liberado, descricao: liberado, preco: liberado, estoque: liberado,
+        sku: bloqueado('A edição de SKU na SHEIN depende do partialEdit, que ainda não está implementado aqui.'),
+        ean: bloqueado('A SHEIN não expõe edição de GTIN por esta integração.'),
+        grade: bloqueado('A SHEIN não permite alterar a grade de um anúncio publicado por esta integração.'),
+      };
+    }
+    if (ehTikTok) {
+      return {
+        nome: 'TikTok Shop', lido: true,
+        titulo: liberado, descricao: liberado, preco: liberado, estoque: liberado,
+        sku: liberado, ean: liberado,
+        grade: bloqueado('Alterar a grade do TikTok exige reenviar o produto inteiro; use a publicação.'),
+      };
+    }
+    // canal desconhecido: nada de prometer edição que ninguém testou
+    const semSuporte = bloqueado('Este marketplace ainda não tem edição de anúncio por aqui. O valor fica salvo só no painel.');
+    return {
+      nome: marketplace || 'marketplace', lido: false,
+      titulo: semSuporte, descricao: semSuporte, preco: semSuporte,
+      estoque: semSuporte, sku: semSuporte, ean: semSuporte, grade: semSuporte,
+    };
+  }
+  window._capMkt = _capMkt;
+
+  // aplica a capacidade num input: trava, explica e marca visualmente
+  function _capAplicar(el, cap) {
+    if (!el || !cap) return;
+    if (cap.pode) { el.disabled = false; el.title = ''; el.style.background = ''; el.style.cursor = ''; return; }
+    el.disabled = true;
+    el.title = cap.motivo;
+    el.style.background = '#f3f4f6';
+    el.style.cursor = 'not-allowed';
+  }
+  window._capAplicar = _capAplicar;
+
   function v31AbrirModalEditar(produtoId, varIdx, vincIdx, vincDireto) {
     // v33k.860: os anúncios de produtos DUPLICADOS podem não estar em
     // `produtosErp` (a lista do painel é filtrada/paginada). Antes o modal
@@ -38967,18 +39052,20 @@ Retorne JSON: {"ID": "valor", ...}`;
     // campos abertos no ML gera falso positivo: o usuário edita, salva, e o ML
     // recusa. Então bloqueamos com aviso claro em vez de deixar tentar.
     try {
+      // v33k.1578: uma tabela de capacidades por campo, em vez de booleanos
+      // espalhados. Quem decide o que trava é `_capMkt`, e o motivo vai junto.
+      const cap = _capMkt(vinc.marketplace);
       const mk = String(vinc.marketplace || '').toLowerCase();
       const ehML = mk.includes('mercado') || mk === 'ml';
       const ehShopee = mk.includes('shopee');
       const nomeMkt = MKT_NOMES[vinc.marketplace] || vinc.marketplace || 'marketplace';
       const inpTit = document.getElementById('v31EditTitulo');
       const avisoBox = document.getElementById('v31EditAvisoMkt');
-      if (inpTit) {
-        inpTit.disabled = !!ehML;
-        inpTit.style.background = ehML ? '#f3f4f6' : '';
-        inpTit.style.cursor = ehML ? 'not-allowed' : '';
-        if (ehML) inpTit.placeholder = 'O Mercado Livre não permite alterar o título de anúncio publicado';
-      }
+      _capAplicar(inpTit, cap.titulo);
+      if (inpTit && !cap.titulo.pode) inpTit.placeholder = cap.titulo.motivo;
+      _capAplicar(document.getElementById('v31EditDescricao'), cap.descricao);
+      _capAplicar(document.getElementById('v31EditPreco'), cap.preco);
+      _v31CapAtual = cap;
       if (avisoBox) {
         avisoBox.style.display = 'block';
         // v33k.861: o aviso dizia "Shopee" para QUALQUER marketplace que não
@@ -39111,7 +39198,29 @@ Retorne JSON: {"ID": "valor", ...}`;
         const th = 'padding:6px 8px;font-size:10.5px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.3px;text-align:left;background:#f9fafb';
         const td = 'padding:5px 8px;font-size:12px;color:#111827;border-top:1px solid #f3f4f6';
         const inp = 'width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;text-align:right';
-        boxVar.innerHTML = '<div style="max-height:230px;overflow-y:auto">'
+        // v33k.1578: os campos da grade do filho respeitam a capacidade do
+        // canal. Travado mostra o motivo ao passar o mouse — campo cinza sem
+        // explicação vira chamado de suporte.
+        const _cap = (typeof _v31CapAtual === 'object' && _v31CapAtual)
+          ? _v31CapAtual : (typeof _capMkt === 'function' ? _capMkt(vinc.marketplace) : null);
+        const _trava = (campo) => {
+          const c = _cap && _cap[campo];
+          if (!c || c.pode) return '';
+          return ' disabled title="' + escapeHtml(c.motivo) + '" data-travado="1"';
+        };
+        const _cinza = (campo) => {
+          const c = _cap && _cap[campo];
+          return (!c || c.pode) ? '' : ';background:#f3f4f6;cursor:not-allowed';
+        };
+        // um aviso acima da grade quando algo está travado, pra a pessoa não
+        // procurar o motivo campo a campo
+        const travados = ['sku', 'preco', 'estoque'].filter(k => _cap && _cap[k] && !_cap[k].pode);
+        const avisoGrade = travados.length
+          ? '<div style="padding:7px 9px;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;font-size:11.5px;color:#92400e;margin-bottom:6px">'
+            + '<strong>' + escapeHtml((_cap && _cap.nome) || 'Este canal') + ':</strong> '
+            + escapeHtml(_cap[travados[0]].motivo) + '</div>'
+          : '';
+        boxVar.innerHTML = avisoGrade + '<div style="max-height:230px;overflow-y:auto">'
           + '<table style="width:100%;border-collapse:collapse">'
           + '<thead><tr>'
           +   '<th style="' + th + '">Variação</th><th style="' + th + '">SKU</th>'
@@ -39127,16 +39236,16 @@ Retorne JSON: {"ID": "valor", ...}`;
               + '</td>'
               + '<td style="' + td + '">'
               +   '<input type="text" class="v31-var-sku" data-orig="' + escapeHtml(String(v.sku || '')) + '" '
-              +   'value="' + escapeHtml(String(v.sku || '')) + '" placeholder="SKU" '
-              +   'style="width:140px;padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:11px;font-family:monospace">'
+              +   'value="' + escapeHtml(String(v.sku || '')) + '" placeholder="SKU"' + _trava('sku') + ' '
+              +   'style="width:140px;padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:11px;font-family:monospace' + _cinza('sku') + '">'
               + '</td>'
               + '<td style="' + td + ';text-align:right">'
-              +   '<input type="number" step="0.01" min="0" class="v31-var-preco" data-orig="' + (v.preco != null ? v.preco : '') + '" '
-              +   'value="' + (v.preco != null ? Number(v.preco).toFixed(2) : '') + '" style="' + inp + '">'
+              +   '<input type="number" step="0.01" min="0" class="v31-var-preco" data-orig="' + (v.preco != null ? v.preco : '') + '"' + _trava('preco') + ' '
+              +   'value="' + (v.preco != null ? Number(v.preco).toFixed(2) : '') + '" style="' + inp + _cinza('preco') + '">'
               + '</td>'
               + '<td style="' + td + ';text-align:right">'
-              +   '<input type="number" step="1" min="0" class="v31-var-estoque" data-orig="' + (v.estoque != null ? v.estoque : '') + '" '
-              +   'value="' + (v.estoque != null ? v.estoque : '') + '" style="' + inp + (Number(v.estoque) === 0 ? ';border-color:#fca5a5;color:#b91c1c' : '') + '">'
+              +   '<input type="number" step="1" min="0" class="v31-var-estoque" data-orig="' + (v.estoque != null ? v.estoque : '') + '"' + _trava('estoque') + ' '
+              +   'value="' + (v.estoque != null ? v.estoque : '') + '" style="' + inp + _cinza('estoque') + (Number(v.estoque) === 0 ? ';border-color:#fca5a5;color:#b91c1c' : '') + '">'
               + '</td>'
               + '</tr>').join('')
           + '</tbody></table></div>'
@@ -52595,11 +52704,18 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       { ic: '🧾', rot: 'Configurar fiscal (NCM)', ac: 'fiscal' },
       { ic: '📦', rot: 'Montar/vincular kit', ac: 'kit' },
       { sep: true },
-      { ic: '🟢', rot: 'Ativar', ac: 'ativar' },
-      { ic: '⚪', rot: 'Desativar', ac: 'desativar' },
+      { ic: '🟢', rot: 'Ativar no sistema', ac: 'ativar' },
+      { ic: '⚪', rot: 'Desativar no sistema', ac: 'desativar' },
       ehExcluido
         ? { ic: '♻️', rot: 'Restaurar (tirar da lixeira)', ac: 'restaurar' }
-        : { ic: '🗑', rot: 'Mover p/ lixeira', ac: 'lixeira', perigo: true },
+        : { ic: '🗑', rot: 'Excluir no sistema (lixeira)', ac: 'lixeira', perigo: true },
+      { sep: true },
+      // v33k.1579: daqui pra baixo é o que sai do painel e vai pro canal.
+      // Cada uma abre a escolha dos anúncios: um produto pode ter 14
+      // vinculados, em lojas diferentes, e agir em todos às cegas seria errado.
+      { ic: '⏸', rot: 'Pausar no marketplace…', ac: 'mkt-pausar' },
+      { ic: '▶', rot: 'Reativar no marketplace…', ac: 'mkt-ativar' },
+      { ic: '🗑', rot: 'Excluir no marketplace…', ac: 'mkt-excluir', perigo: true },
     ];
     const menu = document.createElement('div');
     menu.id = 'anMenuFlutuante';
@@ -52630,6 +52746,218 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window._anAbrirMenu = _anAbrirMenu;
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // AÇÕES NO MARKETPLACE COM ESCOLHA DOS ANÚNCIOS (v33k.1579)
+  // ─────────────────────────────────────────────────────────────────────
+  // Um produto pode ter 14 anúncios vinculados, em lojas e canais diferentes.
+  // Pausar, reativar ou excluir "o produto" não quer dizer nada nesse contexto:
+  // quase sempre a pessoa quer agir em ALGUNS. Então toda ação que sai do
+  // painel e vai para o canal passa por uma escolha explícita.
+  //
+  // A separação que faltava no menu: "excluir no sistema" (a lixeira daqui,
+  // reversível) e "excluir no marketplace" (lá fora, irreversível) eram a mesma
+  // linha. São ações de gravidade completamente diferente.
+
+  function _amListarVinculos(p) {
+    const vistos = {};
+    (p.variacoes || []).forEach((v, varIdx) => {
+      (v.vinculos || []).forEach((vi, vincIdx) => {
+        const k = String(vi.lojaIdBanco || vi.lojaId || '') + ':' + String(vi.anuncioId || '');
+        if (!vi.anuncioId) return;
+        if (!vistos[k]) {
+          vistos[k] = {
+            chave: k, vinc: vi, varIdx, vincIdx,
+            status: (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido',
+            variacoes: 0,
+          };
+        }
+        vistos[k].variacoes++;
+      });
+    });
+    return Object.values(vistos);
+  }
+
+  function _amNomeLoja(vinc) {
+    try {
+      const lojas = (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp)) ? lojasErp : [];
+      const l = lojas.find(x => String(x.id) === String(vinc.lojaIdBanco));
+      if (l && l.nome) return l.nome;
+    } catch (_) {}
+    return vinc.lojaNome || ('loja ' + (vinc.lojaIdBanco || '?'));
+  }
+
+  // acao: 'pausar' | 'ativar' | 'excluir'
+  function _amModalEscolher(p, acao) {
+    return new Promise(resolve => {
+      const antigo = document.getElementById('amEscolherModal');
+      if (antigo) antigo.remove();
+
+      const lista = _amListarVinculos(p);
+      if (!lista.length) {
+        showToast('Este produto não tem anúncios vinculados.', true);
+        return resolve(null);
+      }
+
+      const cfg = {
+        pausar:  { titulo: 'Pausar anúncios no marketplace', cor: '#b45309', fundo: '#fffbeb', botao: 'Pausar selecionados',
+                   elegivel: (s) => s === 'ativo', porque: 'já não está ativo' },
+        ativar:  { titulo: 'Reativar anúncios no marketplace', cor: '#15803d', fundo: '#f0fdf4', botao: 'Reativar selecionados',
+                   elegivel: (s) => s === 'pausado' || s === 'inativo', porque: 'não está pausado' },
+        excluir: { titulo: 'Excluir anúncios no marketplace', cor: '#b91c1c', fundo: '#fef2f2', botao: 'Excluir definitivamente',
+                   // ★ a regra da v1575 vale aqui também: só pausado pode ser
+                   //   excluído. Pausar antes obriga uma parada consciente.
+                   elegivel: (s) => s === 'pausado' || s === 'inativo', porque: 'precisa estar pausado antes' },
+      }[acao];
+
+      const linhas = lista.map((it, idx) => {
+        const ok = cfg.elegivel(it.status);
+        const rotStatus = { ativo: 'ativo', pausado: 'pausado', inativo: 'inativo',
+                            fechado: 'fechado', banido: 'banido', em_revisao: 'em revisão' }[it.status] || it.status;
+        return '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid ' + (ok ? 'var(--lc-border)' : '#e5e7eb') + ';border-radius:9px;margin-bottom:6px;'
+          + (ok ? 'cursor:pointer;background:#fff' : 'opacity:.55;background:#f9fafb;cursor:not-allowed') + '">'
+          + '<input type="checkbox" class="am-item" data-idx="' + idx + '" ' + (ok ? '' : 'disabled') + ' style="margin-top:3px">'
+          + '<div style="flex:1;min-width:0">'
+          +   '<div style="font-size:13.5px;font-weight:600;color:#0f172a">' + escapeHtml(_amNomeLoja(it.vinc))
+          +     ' <span style="font-weight:500;color:#64748b">· ' + escapeHtml(String(it.vinc.marketplace || '').toUpperCase()) + '</span></div>'
+          +   '<div style="font-size:11.5px;color:#64748b;font-family:monospace;margin-top:2px">' + escapeHtml(String(it.vinc.anuncioId)) + '</div>'
+          +   '<div style="font-size:11.5px;color:#64748b;margin-top:3px">' + it.variacoes + ' variação(ões) · status: <b>' + rotStatus + '</b>'
+          +     (ok ? '' : ' <span style="color:#b45309">— ' + cfg.porque + '</span>') + '</div>'
+          + '</div></label>';
+      }).join('');
+
+      const ehExcluir = acao === 'excluir';
+      const html =
+        '<div id="amEscolherModal" style="position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.72);display:flex;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="background:#fff;border-radius:16px;max-width:620px;width:100%;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,.35);overflow:hidden">'
+        +   '<div style="background:' + cfg.cor + ';color:#fff;padding:16px 20px">'
+        +     '<div style="font-size:17px;font-weight:800">' + cfg.titulo + '</div>'
+        +     '<div style="font-size:12.5px;opacity:.92;margin-top:2px">' + escapeHtml((p.nome || '').slice(0, 70)) + '</div>'
+        +   '</div>'
+        +   '<div style="padding:16px 20px;overflow-y:auto;flex:1">'
+        +     (ehExcluir
+              ? '<div style="background:' + cfg.fundo + ';border:1px solid #fecaca;border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;color:#7f1d1d">'
+                + 'Esta ação é <b>IRREVERSÍVEL</b>. Os anúncios marcados serão excluídos de forma definitiva das lojas indicadas. '
+                + 'Só aparecem marcáveis os que já estão pausados.'
+                + '</div>'
+              : '')
+        +     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        +       '<div style="font-size:12.5px;font-weight:700;color:#334155">' + lista.length + ' anúncio(s) vinculado(s)</div>'
+        +       '<button type="button" id="amMarcarTodos" style="border:none;background:none;color:#4338ca;font-size:12px;font-weight:700;cursor:pointer">Marcar todos elegíveis</button>'
+        +     '</div>'
+        +     linhas
+        +     (ehExcluir
+              ? '<div style="margin-top:12px"><div style="font-size:13px;margin-bottom:6px">Para confirmar, digite <b>EXCLUIR</b>:</div>'
+                + '<input id="amTextoConfirma" autocomplete="off" placeholder="EXCLUIR" style="width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:15px;letter-spacing:1px;box-sizing:border-box"></div>'
+              : '')
+        +   '</div>'
+        +   '<div style="padding:14px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;gap:10px;justify-content:flex-end">'
+        +     '<button id="amCancelar" style="padding:11px 20px;border-radius:9px;border:1px solid #d1d5db;background:#fff;font-weight:600;cursor:pointer">Cancelar</button>'
+        +     '<button id="amConfirmar" disabled style="padding:11px 20px;border-radius:9px;border:none;background:#e5e7eb;color:#9ca3af;font-weight:700;cursor:not-allowed">' + cfg.botao + '</button>'
+        +   '</div>'
+        + '</div></div>';
+      document.body.insertAdjacentHTML('beforeend', html);
+
+      const btn = document.getElementById('amConfirmar');
+      const txt = document.getElementById('amTextoConfirma');
+      const marcados = () => Array.from(document.querySelectorAll('.am-item:checked'))
+        .map(el => lista[Number(el.dataset.idx)]).filter(Boolean);
+      const revisar = () => {
+        // exclusão exige seleção E a palavra digitada; as outras só seleção
+        const pronto = marcados().length > 0 && (!ehExcluir || (txt && txt.value.trim().toUpperCase() === 'EXCLUIR'));
+        btn.disabled = !pronto;
+        btn.style.background = pronto ? cfg.cor : '#e5e7eb';
+        btn.style.color = pronto ? '#fff' : '#9ca3af';
+        btn.style.cursor = pronto ? 'pointer' : 'not-allowed';
+      };
+      document.querySelectorAll('.am-item').forEach(el => el.addEventListener('change', revisar));
+      if (txt) txt.addEventListener('input', revisar);
+      document.getElementById('amMarcarTodos').onclick = () => {
+        document.querySelectorAll('.am-item:not([disabled])').forEach(el => { el.checked = true; });
+        revisar();
+      };
+      const fechar = (r) => {
+        const el = document.getElementById('amEscolherModal');
+        if (el) el.remove();
+        resolve(r);
+      };
+      document.getElementById('amCancelar').onclick = () => fechar(null);
+      btn.onclick = () => { if (!btn.disabled) fechar(marcados()); };
+    });
+  }
+
+  // executa a ação escolhida, um anúncio por vez, contando o resultado real
+  async function _amExecutar(p, acao, itens) {
+    const rota = { pausar: '/pausar', ativar: '/ativar', excluir: '' };
+    let ok = 0, falhou = 0, parciais = 0;
+    const avisos = [];
+
+    for (const it of itens) {
+      const vinc = it.vinc;
+      const lojaId = vinc.lojaIdBanco || vinc.lojaId;
+      if (!lojaId) { falhou++; continue; }
+      const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaId
+        + '/anuncio/' + encodeURIComponent(vinc.anuncioId) + rota[acao];
+      try {
+        const resp = await fetch(url, {
+          method: acao === 'excluir' ? 'DELETE' : 'POST',
+          headers: { 'x-api-token': getApiToken(), 'Content-Type': 'application/json' },
+        });
+        const data = await resp.json();
+        if (!data.ok) {
+          falhou++;
+          avisos.push(_amNomeLoja(vinc) + ': ' + (data.erro || 'erro'));
+          continue;
+        }
+        // v33k.1579: exclusão que o canal não completou NÃO conta como sucesso
+        // e NÃO tira o vínculo — o anúncio ainda existe lá fora.
+        if (acao === 'excluir' && data.excluido === false) {
+          parciais++;
+          avisos.push(_amNomeLoja(vinc) + ': ' + (data.aviso || 'o canal não excluiu, apenas despublicou.'));
+          continue;
+        }
+        ok++;
+        if (acao === 'excluir') {
+          (p.variacoes || []).forEach(vv => {
+            vv.vinculos = (vv.vinculos || []).filter(x => String(x.anuncioId) !== String(vinc.anuncioId));
+          });
+        } else {
+          const novo = acao === 'pausar' ? 'UNLIST' : 'NORMAL';
+          (p.variacoes || []).forEach(vv => {
+            (vv.vinculos || []).forEach(x => {
+              if (String(x.anuncioId) === String(vinc.anuncioId)) x.statusMl = novo;
+            });
+          });
+        }
+      } catch (e) {
+        falhou++;
+        avisos.push(_amNomeLoja(vinc) + ': ' + e.message);
+      }
+    }
+
+    if (ok && acao === 'excluir') { try { await salvarProdutoNoBackend(p); } catch (_) {} }
+
+    const verbo = { pausar: 'pausado(s)', ativar: 'reativado(s)', excluir: 'excluído(s)' }[acao];
+    let msg = '✓ ' + ok + ' anúncio(s) ' + verbo;
+    if (parciais) msg += ' · ' + parciais + ' não concluído(s) pelo canal';
+    if (falhou) msg += ' · ' + falhou + ' com erro';
+    showToast(msg, (falhou > 0 || parciais > 0));
+    // os motivos, um por linha, pra a pessoa saber o que fazer com cada um
+    if (avisos.length) setTimeout(() => lcAlert(avisos.join('\n')), 350);
+
+    if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
+    if (typeof renderProdutos === 'function') renderProdutos();
+  }
+
+  async function _amAcaoMarketplace(prodId, acao) {
+    const p = (produtosErp || []).find(x => String(x.id) === String(prodId));
+    if (!p) { showToast('Produto não encontrado', true); return; }
+    const escolhidos = await _amModalEscolher(p, acao);
+    if (!escolhidos || !escolhidos.length) return;
+    showToast('Aplicando em ' + escolhidos.length + ' anúncio(s)…');
+    await _amExecutar(p, acao, escolhidos);
+  }
+  window._amAcaoMarketplace = _amAcaoMarketplace;
+
   async function _anMenuAcao(prodId, acao) {
     _anFecharMenu();
     const id = String(prodId);
@@ -52642,10 +52970,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       case 'nova-variacao': if (typeof window.abrirNovaVariação === 'function') window.abrirNovaVariação(id); break;
       case 'preco':    await _anComSelecaoUnica(id, acaoMassaAjustarPreco); break;
       case 'desconto': await _anComSelecaoUnica(id, acaoMassaReguaPromocao); break;
+      // v33k.1579: as ações do PAINEL (status interno) e as do MARKETPLACE
+      // ficaram separadas. Antes "Ativar/Desativar" mexia só no status daqui e
+      // "Mover p/ lixeira" era a única exclusão — nada tocava o canal, e isso
+      // não estava dito em lugar nenhum na tela.
       case 'ativar':    await _anMudarStatusProduto(id, 'ativo'); break;
       case 'desativar': await _anMudarStatusProduto(id, 'inativo'); break;
       case 'restaurar': await _anMudarStatusProduto(id, 'ativo', true); break;
       case 'lixeira':   await _anMudarStatusProduto(id, 'excluido'); break;
+      case 'mkt-pausar':  await _amAcaoMarketplace(id, 'pausar'); break;
+      case 'mkt-ativar':  await _amAcaoMarketplace(id, 'ativar'); break;
+      case 'mkt-excluir': await _amAcaoMarketplace(id, 'excluir'); break;
     }
   }
   window._anMenuAcao = _anMenuAcao;
@@ -62670,7 +63005,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1577-variacoes-matriz';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1580-mesclar-familia-sku';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
