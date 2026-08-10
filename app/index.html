@@ -45142,6 +45142,260 @@ REGRAS DURAS:
     _variacoesProduto.push({ id: gerarId(), cor: '', tamanho: '', nome: '', sku: '', estoque: 0, preco: '', _livre: true });
     renderVariacoesProduto();
   }
+  // ═══════════════════════════════════════════════════════════════════════
+  // EDITOR DE VARIAÇÕES EM MATRIZ (v33k.1577)
+  // ─────────────────────────────────────────────────────────────────────
+  // Antes: uma lista vertical, um bloco por variação. Num calçado com 4 cores
+  // e 10 tamanhos são 40 blocos empilhados — pra conferir se falta o Preto 38
+  // você rola a página inteira, e pra adicionar uma cor precisa criar as 10
+  // variações dela uma a uma.
+  //
+  // Agora: o mesmo desenho que a SHEIN e a Shopee usam, porque ele espelha
+  // como o produto realmente é:
+  //   · EIXOS em cima  — Cor: [Azul, Branco, Preto, Rosa]
+  //                      Tamanho: [34, 35, 36, ...]
+  //   · MATRIZ embaixo — uma linha por combinação, com Preço, Estoque, SKU
+  //                      e GTIN, agrupada por cor, com a FOTO da cor ao lado.
+  //
+  // Mexer no eixo regenera a matriz: adicionar "Verde" cria as linhas de todos
+  // os tamanhos de uma vez. E regenerar PRESERVA o que já estava preenchido —
+  // casando por cor+tamanho — senão adicionar um tamanho apagaria o estoque de
+  // 40 variações, que seria um desastre silencioso.
+
+  // eixos derivados das variações atuais, na ordem em que aparecem
+  function _mtxEixos() {
+    const cores = [], tamanhos = [];
+    (_variacoesProduto || []).forEach(v => {
+      const c = String(v.cor || '').trim();
+      const t = String(v.tamanho || '').trim();
+      if (c && !cores.includes(c)) cores.push(c);
+      if (t && !tamanhos.includes(t)) tamanhos.push(t);
+    });
+    // cores cadastradas sem variação ainda (recém-adicionadas) também entram
+    (_coresProdutoSessao || []).forEach(c => {
+      const nome = String(c.nome || '').trim();
+      if (nome && !cores.includes(nome)) cores.push(nome);
+    });
+    return { cores, tamanhos };
+  }
+
+  function _mtxChave(cor, tam) {
+    return String(cor || '').trim().toLowerCase() + '|' + String(tam || '').trim().toLowerCase();
+  }
+
+  // Regenera a matriz a partir dos eixos, PRESERVANDO o que já existe.
+  // Combinação que sai do eixo é removida; combinação nova nasce vazia.
+  function _mtxRegenerar(cores, tamanhos) {
+    const antigas = {};
+    (_variacoesProduto || []).forEach(v => { antigas[_mtxChave(v.cor, v.tamanho)] = v; });
+
+    const novas = [];
+    const listaTam = tamanhos.length ? tamanhos : [''];
+    cores.forEach(cor => {
+      listaTam.forEach(tam => {
+        const anterior = antigas[_mtxChave(cor, tam)];
+        if (anterior) { novas.push(anterior); return; }
+        const corObj = (_coresProdutoSessao || []).find(c =>
+          String(c.nome || '').trim().toLowerCase() === String(cor).trim().toLowerCase());
+        novas.push({
+          nome: [cor, tam].filter(Boolean).join(','),
+          cor, tamanho: tam,
+          corId: corObj ? corObj.id : null,
+          sku: '', estoque: 0, ean: '', preco: '',
+        });
+      });
+    });
+    _variacoesProduto = novas;
+  }
+
+  // ── ações dos eixos ──────────────────────────────────────────────────
+  async function _mtxAddOpcao(eixo) {
+    const { cores, tamanhos } = _mtxEixos();
+    const rotulo = eixo === 'cor' ? 'cor' : 'tamanho';
+    const valor = await lcPrompt('Nova ' + rotulo + ':', '');
+    const v = String(valor || '').trim();
+    if (!v) return;
+    const lista = eixo === 'cor' ? cores : tamanhos;
+    if (lista.some(x => x.toLowerCase() === v.toLowerCase())) {
+      showToast('Essa ' + rotulo + ' já existe', true);
+      return;
+    }
+    lista.push(v);
+    // cor nova precisa existir em _coresProdutoSessao pra receber foto
+    if (eixo === 'cor' && typeof _slugCorUnico === 'function') {
+      _coresProdutoSessao.push({ id: _slugCorUnico(v), nome: v, fotos: [] });
+    }
+    _mtxRegenerar(cores, tamanhos);
+    renderVariacoesProduto();
+  }
+
+  async function _mtxRemoverOpcao(eixo, valor) {
+    const { cores, tamanhos } = _mtxEixos();
+    const rotulo = eixo === 'cor' ? 'cor' : 'tamanho';
+    const afetadas = (_variacoesProduto || []).filter(v =>
+      String(eixo === 'cor' ? v.cor : v.tamanho).trim().toLowerCase() === String(valor).trim().toLowerCase());
+    // ★ o aviso diz QUANTAS linhas somem. Remover "Azul" apaga 10 variações
+    //   com estoque e SKU; a pessoa precisa saber disso ANTES de confirmar.
+    const ok = await lcConfirm('Remover a ' + rotulo + ' "' + valor + '"?\n\n' +
+      'Isso apaga ' + afetadas.length + ' variação(ões) desta grade, com o estoque e o SKU delas.');
+    if (!ok) return;
+    const nova = (eixo === 'cor' ? cores : tamanhos).filter(x =>
+      x.toLowerCase() !== String(valor).toLowerCase());
+    if (eixo === 'cor') {
+      _coresProdutoSessao = (_coresProdutoSessao || []).filter(c =>
+        String(c.nome || '').trim().toLowerCase() !== String(valor).trim().toLowerCase());
+      _mtxRegenerar(nova, tamanhos);
+    } else {
+      _mtxRegenerar(cores, nova);
+    }
+    renderVariacoesProduto();
+  }
+
+  // ── edição de célula ─────────────────────────────────────────────────
+  function _mtxSetCampo(idx, campo, valor) {
+    const v = (_variacoesProduto || [])[idx];
+    if (!v) return;
+    if (campo === 'estoque') v.estoque = Math.max(0, parseInt(valor, 10) || 0);
+    else if (campo === 'preco') v.preco = valor === '' ? '' : (parseFloat(valor) || 0);
+    else v[campo] = valor;
+  }
+
+  // Preenche a coluna inteira a partir da primeira linha preenchida: é o que
+  // transforma 40 digitações em uma. Só toca no que está VAZIO, pra não
+  // atropelar valor que a pessoa ajustou de propósito.
+  function _mtxReplicarColuna(campo) {
+    const lista = _variacoesProduto || [];
+    const origem = lista.find(v => String(v[campo] != null ? v[campo] : '').trim() !== '' && v[campo] !== 0);
+    if (!origem) { showToast('Preencha a primeira linha para replicar', true); return; }
+    let n = 0;
+    lista.forEach(v => {
+      const atual = String(v[campo] != null ? v[campo] : '').trim();
+      if (atual === '' || (campo === 'estoque' && Number(v[campo]) === 0)) {
+        v[campo] = origem[campo]; n++;
+      }
+    });
+    showToast('✓ ' + n + ' linha(s) preenchida(s) com "' + origem[campo] + '"');
+    renderVariacoesProduto();
+  }
+
+  // Gera o SKU de cada linha a partir de um prefixo: PREFIXO-COR-TAM.
+  // O calçado tem dezenas de variações e digitar SKU a mão é onde nasce o
+  // erro de separação lá na expedição.
+  async function _mtxGerarSkus() {
+    const base = await lcPrompt('Prefixo do SKU (vira PREFIXO-COR-TAMANHO):',
+      String((document.getElementById('prodSku') || {}).value || '').trim());
+    const pref = String(base || '').trim();
+    if (!pref) return;
+    const limpa = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 12);
+    let n = 0;
+    (_variacoesProduto || []).forEach(v => {
+      const partes = [pref.toUpperCase(), limpa(v.cor), limpa(v.tamanho)].filter(Boolean);
+      v.sku = partes.join('-'); n++;
+    });
+    showToast('✓ ' + n + ' SKU(s) gerado(s)');
+    renderVariacoesProduto();
+  }
+
+  window._mtxAddOpcao = _mtxAddOpcao;
+  window._mtxRemoverOpcao = _mtxRemoverOpcao;
+  window._mtxSetCampo = _mtxSetCampo;
+  window._mtxReplicarColuna = _mtxReplicarColuna;
+  window._mtxGerarSkus = _mtxGerarSkus;
+
+  // ── desenho ──────────────────────────────────────────────────────────
+  function _mtxHtmlEixos() {
+    const { cores, tamanhos } = _mtxEixos();
+    const chip = (eixo, valor) =>
+      '<span style="display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid var(--lc-border);border-radius:8px;padding:5px 8px 5px 10px;font-size:13px;margin:0 6px 6px 0">'
+      + escapeHtml(valor)
+      + '<button type="button" onclick="_mtxRemoverOpcao(\'' + eixo + '\',\'' + String(valor).replace(/'/g, "\\'") + '\')" '
+      + 'title="Remover" style="border:none;background:none;cursor:pointer;color:#b91c1c;font-size:15px;line-height:1;padding:0 2px">×</button></span>';
+
+    const bloco = (titulo, eixo, lista, vazio) =>
+      '<div style="background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:10px;padding:12px;margin-bottom:10px">'
+      + '<div style="font-size:12.5px;font-weight:700;color:#334155;margin-bottom:8px">' + titulo + '</div>'
+      + '<div>' + (lista.length ? lista.map(v => chip(eixo, v)).join('') :
+          '<span style="font-size:12.5px;color:#94a3b8">' + vazio + '</span>')
+      + '<button type="button" onclick="_mtxAddOpcao(\'' + eixo + '\')" '
+      + 'style="border:1px dashed #94a3b8;background:#fff;color:#334155;padding:5px 12px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer">+ Adicionar</button>'
+      + '</div></div>';
+
+    return bloco('Variação 1 · Cor', 'cor', cores, 'Nenhuma cor ainda. ')
+         + bloco('Variação 2 · Tamanho', 'tamanho', tamanhos, 'Nenhum tamanho ainda. ');
+  }
+
+  function _mtxHtmlTabela() {
+    const lista = _variacoesProduto || [];
+    if (!lista.length) return '';
+
+    // agrupa por cor pra a foto aparecer uma vez só, ao lado do bloco dela
+    const porCor = [];
+    lista.forEach((v, i) => {
+      const cor = String(v.cor || '').trim();
+      let g = porCor.find(x => x.cor === cor);
+      if (!g) { g = { cor, linhas: [] }; porCor.push(g); }
+      g.linhas.push({ v, i });
+    });
+
+    const inp = (i, campo, valor, ph, tipo) =>
+      '<input type="' + (tipo || 'text') + '" value="' + escapeHtml(String(valor == null ? '' : valor)) + '" placeholder="' + ph + '" '
+      + (tipo === 'number' ? 'step="' + (campo === 'preco' ? '0.01' : '1') + '" min="0" ' : '')
+      + 'oninput="_mtxSetCampo(' + i + ',\'' + campo + '\',this.value)" '
+      + 'style="width:100%;padding:7px 9px;border:1px solid var(--lc-border);border-radius:7px;font-size:13px;box-sizing:border-box">';
+
+    const cabecalho = (rot, campo) =>
+      '<th style="padding:8px 10px;text-align:left;font-size:11.5px;font-weight:700;color:#475569;border-bottom:1px solid var(--lc-border);white-space:nowrap">'
+      + rot + (campo ? ' <button type="button" onclick="_mtxReplicarColuna(\'' + campo + '\')" title="Repetir o valor da primeira linha nas vazias" '
+        + 'style="border:none;background:#eef2ff;color:#4338ca;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;padding:2px 6px;margin-left:4px">replicar</button>' : '')
+      + '</th>';
+
+    let corpo = '';
+    porCor.forEach(g => {
+      const corObj = (_coresProdutoSessao || []).find(c =>
+        String(c.nome || '').trim().toLowerCase() === g.cor.toLowerCase());
+      const foto = corObj && corObj.fotos && corObj.fotos[0];
+      g.linhas.forEach((item, k) => {
+        const { v, i } = item;
+        corpo += '<tr>';
+        if (k === 0) {
+          // a coluna da cor ocupa todas as linhas dela, com a foto ali mesmo
+          corpo += '<td rowspan="' + g.linhas.length + '" style="padding:10px;border-bottom:1px solid var(--lc-border);border-right:1px solid var(--lc-border);vertical-align:top;text-align:center;background:var(--lc-surface-2)">'
+            + '<div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:6px">' + escapeHtml(g.cor || '—') + '</div>'
+            + (foto
+              ? '<img src="' + escapeHtml(foto) + '" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--lc-border)">'
+              : '<div style="width:56px;height:56px;border:1px dashed #cbd5e1;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:20px;margin:0 auto">+</div>')
+            + (corObj && typeof abrirUploadFotosCor === 'function'
+              ? '<div><button type="button" onclick="abrirUploadFotosCor(\'' + corObj.id + '\')" style="margin-top:6px;border:none;background:none;color:#4338ca;font-size:11px;font-weight:700;cursor:pointer">' + (foto ? 'trocar' : 'enviar foto') + '</button></div>'
+              : '')
+            + '</td>';
+        }
+        corpo += '<td style="padding:6px 8px;border-bottom:1px solid var(--lc-border);font-size:13px;white-space:nowrap">' + escapeHtml(v.tamanho || '—') + '</td>'
+          + '<td style="padding:6px 8px;border-bottom:1px solid var(--lc-border)">' + inp(i, 'preco', v.preco, 'do pai', 'number') + '</td>'
+          + '<td style="padding:6px 8px;border-bottom:1px solid var(--lc-border)">' + inp(i, 'estoque', v.estoque, '0', 'number') + '</td>'
+          + '<td style="padding:6px 8px;border-bottom:1px solid var(--lc-border)">' + inp(i, 'sku', v.sku, 'SKU') + '</td>'
+          + '<td style="padding:6px 8px;border-bottom:1px solid var(--lc-border)">' + inp(i, 'ean', v.ean, 'EAN') + '</td>'
+          + '</tr>';
+      });
+    });
+
+    return '<div style="display:flex;justify-content:space-between;align-items:center;margin:14px 0 8px">'
+      + '<div style="font-size:12.5px;font-weight:700;color:#334155">Grade · ' + lista.length + ' variação(ões)</div>'
+      + '<button type="button" onclick="_mtxGerarSkus()" style="border:1px solid var(--lc-border);background:var(--lc-surface);color:#334155;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">Gerar SKUs automaticamente</button>'
+      + '</div>'
+      + '<div style="overflow-x:auto;border:1px solid var(--lc-border);border-radius:10px">'
+      + '<table style="width:100%;border-collapse:collapse;background:var(--lc-surface)">'
+      + '<thead><tr style="background:var(--lc-surface-2)">'
+      + cabecalho('Cor') + cabecalho('Tamanho')
+      + cabecalho('Preço', 'preco') + cabecalho('Estoque', 'estoque')
+      + cabecalho('SKU da variação') + cabecalho('GTIN (EAN)')
+      + '</tr></thead><tbody>' + corpo + '</tbody></table></div>';
+  }
+
+  function _mtxHtml() {
+    return _mtxHtmlEixos() + _mtxHtmlTabela();
+  }
+
   function renderVariacoesProduto() {
     const cont = document.getElementById('prodVariacoesList');
     if (!cont) return;
@@ -45164,8 +45418,14 @@ REGRAS DURAS:
         badge.style.display = n ? 'inline-block' : 'none';
       }
     } catch (_) {}
+    // v33k.1577: sem variação ainda, a matriz já oferece os eixos pra montar
+    // a grade — antes a tela era um beco sem saída ("nenhuma variação") e a
+    // pessoa tinha que descobrir sozinha onde criar.
     if (_variacoesProduto.length === 0) {
-      cont.innerHTML = '<div style="font-size:12px;color:var(--cinza-texto)">Nenhuma variação. Produtos com tamanho/cor precisam de variações.</div>';
+      cont.innerHTML =
+        '<div style="font-size:12.5px;color:var(--cinza-texto);margin-bottom:10px">'
+        + 'Monte a grade pelos eixos abaixo: escolha as cores e os tamanhos, e as combinações aparecem prontas pra preencher.'
+        + '</div>' + _mtxHtmlEixos();
       return;
     }
     
@@ -45257,6 +45517,16 @@ REGRAS DURAS:
       }
     } catch (_) {}
 
+    // ═══════════════════════════════════════════════════════════════════
+    // v33k.1577: a MATRIZ é o desenho padrão. A lista vertical antiga
+    // sobrevive só para produtos com dimensões customizadas (voltagem,
+    // material...), que dois eixos não conseguem representar — jogar esses
+    // casos na matriz esconderia a terceira dimensão e a pessoa salvaria um
+    // produto incompleto sem perceber.
+    if (!temDimsExtra) {
+      cont.innerHTML = resumoHtml + _mtxHtml();
+      return;
+    }
     cont.innerHTML = resumoHtml + bannerHtml + _variacoesProduto.map((v, i) => {
       // ═══════════════════════════════════════════════════════════════
       // v33k.853: separação de cor/tamanho a partir do `nome`
@@ -62400,7 +62670,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1576-excluir-todos-canais';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1577-variacoes-matriz';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
