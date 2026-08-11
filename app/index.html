@@ -21103,7 +21103,7 @@ window.LC_SVG = {
 
     <div class="prod-toolbar">
       <div class="prod-busca">
-        <input type="text" id="estoqueBusca" placeholder="🔍 Nome, ID ou SKU do produto..." oninput="_estoquePagina=1; renderEstoque()">
+        <input type="text" id="estoqueBusca" placeholder="Buscar por título do anúncio, nome, SKU, EAN ou código (MLB…)" oninput="_estoquePagina=1; renderEstoque()">
       </div>
       <div id="estoqueLojasSel" style="min-width:240px"></div>
       <select id="estoqueFiltroLoja" style="display:none"><option value="">Todas as lojas</option></select>
@@ -40982,6 +40982,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   window._lcNormBusca = _lcNormBusca;
   window._lcCasaBusca = _lcCasaBusca;
   window._lcPorQueCasou = _lcPorQueCasou;
+  window._lcLinhaMotivo = _lcLinhaMotivo;   // v33k.1630: usada pelo card da tela de Anúncios
 
   // ═════════════════════════════════════════════════════════════════════════
   // O CARD (v33k.1624) — menos chip, mais resposta
@@ -55742,9 +55743,33 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         if (abaSel !== 'todos' && !tabs.has(abaSel)) return false;
       }
       if (mktSel) { if (!_mktsEfetivos(p).has(mktSel)) return false; }
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1630: ESTA é a busca da tela de Anúncios.
+      // ─────────────────────────────────────────────────────────────────
+      // Até aqui ela olhava três campos: nome, SKU pai e id. Título do
+      // anúncio, código dele (MLB…/id Shopee), SKU do marketplace, SKU e EAN
+      // de variação ficavam todos de fora — e é por esses que o cliente
+      // procura, porque é o que ele lê no painel do marketplace.
+      //
+      // O casamento agora usa `_lcCasaBusca`, o mesmo critério do backend e da
+      // coluna `busca_texto`: todas as palavras do termo, em qualquer ordem,
+      // em qualquer campo, sem depender de acento.
+      //
+      // E vale para o GRUPO, não só para o pai: nesta tela um produto pai
+      // representa os filhos mesclados (`duplicadoDeId`), e depois da
+      // mesclagem é justamente lá que muitos anúncios vivem. Procurar só no
+      // pai repetiria o bug dos 14 produtos do Renato, que estavam nos filhos.
+      //
+      // O `id` continua sendo condição própria desta tela: é um número do
+      // painel, não faz parte do texto do catálogo, e por isso não entra em
+      // `_lcCasaBusca` (senão os três lados divergiriam de novo).
       if (busca) {
-        const txt = (p.nome + ' ' + (p.skuPai||'') + ' ' + (p.id||'')).toLowerCase();
-        if (!txt.includes(busca)) return false;
+        const _casa = window._lcCasaBusca;
+        const bateNoGrupo = _casa
+          ? _paiEFilhos(p).some(x => _casa(x, busca))
+          : (p.nome + ' ' + (p.skuPai || '')).toLowerCase().includes(busca);
+        const bateNoId = String(p.id || '').toLowerCase().includes(busca);
+        if (!bateNoGrupo && !bateNoId) return false;
       }
       return true;
     };
@@ -55860,6 +55885,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               ${logosProd ? `<span style="flex-shrink:0;display:inline-flex;align-items:center">${logosProd}</span>` : ''}
             </div>
             <div style="font-size:11px;color:var(--lc-info);margin-top:2px">${escapeHtml(p.skuPai||'sem SKU')} · ${nVars} variaç${nVars>1?'ões':'ão'}</div>
+            ${(() => {
+              // v33k.1630: quando o casamento veio de dentro (título do anúncio,
+              // código, SKU do marketplace), o card mostra ONDE. Sem isso o
+              // cliente lê um nome que não reconhece e conclui que a busca errou
+              // — o produto pai costuma ter o nome de UM dos anúncios, e ele
+              // procurou por outro.
+              if (!busca || typeof window._lcLinhaMotivo !== 'function') return '';
+              // o motivo pode estar num filho mesclado, não no pai
+              for (const _x of _paiEFilhos(p)) {
+                const _l = window._lcLinhaMotivo(_x, busca);
+                if (_l) return _l;
+              }
+              return '';
+            })()}
             <div style="margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">${vincBadge} ${totalTag}</div>
           </div>
           <button type="button" onclick="event.stopPropagation(); abrirHistoricoProduto('${p.id}')" title="Histórico do produto inteiro: vendas, devoluções, entradas, balanços e replicações de todas as variações" style="border:1px solid var(--lc-border);background:var(--lc-surface);cursor:pointer;color:#4338ca;padding:6px 9px;border-radius:8px;font-size:13px;flex-shrink:0" title="Histórico do produto">🕑</button>
@@ -63917,7 +63956,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1629-busca-palavras';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1630-tela-anuncios';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
