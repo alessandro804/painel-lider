@@ -41010,6 +41010,16 @@ Retorne JSON: {"ID": "valor", ...}`;
       let vincBadges = '';
       if (totalVinc > 0) {
         vincBadges += `<span class="prod-card-mkt-chip" style="background:#3b82f6;cursor:pointer" title="${totalVinc} anúncio(s) vinculado(s) - clique pra ver" onclick="event.stopPropagation();abrirGerenciarVinculos('${p.id}')">🔗 ${totalVinc}</span>`;
+        // v33k.1613: quantos vínculos deste produto pedem conferência. Sem
+        // isto o aviso só apareceria abrindo produto por produto, e com
+        // centenas de mesclagens ninguém abriria.
+        const _nConf = (p.variacoes || []).reduce((n, v) =>
+          n + ((v.vinculos || []).filter(vi => vi && vi.conferir).length), 0);
+        if (_nConf) {
+          vincBadges += `<span class="prod-card-mkt-chip" style="background:#f59e0b;cursor:pointer"
+            title="${_nConf} anúncio(s) juntados sem prova de foto: confirme se são deste produto"
+            onclick="event.stopPropagation();abrirGerenciarVinculos('${p.id}')">⚠ conferir ${_nConf}</span>`;
+        }
       }
       if (totalSusp > 0) {
         vincBadges += `<span class="prod-card-mkt-chip" style="background:#f59e0b;cursor:pointer" title="${totalSusp} vínculo(s) com SKU suspeito - clique pra revisar" onclick="event.stopPropagation();abrirGerenciarVinculos('${p.id}')">⚠ ${totalSusp}</span>`;
@@ -45033,6 +45043,9 @@ REGRAS DURAS:
             <code style="margin-left:6px;font-size:11px;background:#f3f4f6;padding:1px 5px;border-radius:3px">${escapeHtml(String(vinc.anuncioId))}</code>
             ${v32d_htmlTagStatus(v32d_statusVinculo(vinc))}
             ${badge}
+            ${vinc.conferir ? `<span class="lc-tag-conferir" title="${escapeHtml(vinc.conferirMotivo || 'Confirme se este anúncio é mesmo deste produto')}"
+              style="margin-left:6px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700">
+              CONFERIR</span>` : ''}
           </div>
           <div style="font-size:11px;color:#6b7280;text-overflow:ellipsis;overflow:hidden;white-space:nowrap" title="${escapeHtml(tituloEfetivo)}">
             ${escapeHtml(tituloEfetivo.slice(0, 60))}${tituloEfetivo.length > 60 ? '…' : ''}
@@ -45049,6 +45062,11 @@ REGRAS DURAS:
                  🔗
                </a>`
             : ''}
+          ${vinc.conferir ? `<button onclick="lcConferirVinculo('${p.id}','${escapeHtml(String(vinc.anuncioId))}')"
+            style="padding:5px 10px;background:#f59e0b;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600"
+            title="${escapeHtml(vinc.conferirMotivo || '')}">
+            ✓ É este mesmo
+          </button>` : ''}
           <button onclick="v31AbrirModalEditar('${p.id}', ${varIdx}, ${vincIdx})" 
             style="padding:5px 10px;background:#3b82f6;color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600"
             title="Customizar SÓ este anúncio sem afetar os outros">
@@ -45090,6 +45108,40 @@ REGRAS DURAS:
   }
   
   // v31b: re-renderiza a lista (chamado depois de editar/salvar)
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1613: O "É ESTE MESMO" DA CONFERÊNCIA.
+  // ─────────────────────────────────────────────────────────────────────
+  // A mesclagem carimba `conferir` no vínculo que juntou sem prova de foto.
+  // Nem título nem imagem decidem sozinhos: a Shopee gera um ID novo a cada
+  // upload, então dois anúncios do MESMO par nunca dividem URL de foto, e
+  // tratar isso como diferença marcaria produto legítimo como estranho.
+  //
+  // Então o vínculo fica valendo, para não sumir anúncio nem venda, e espera
+  // o olho de quem conhece o catálogo. Aqui o carimbo sai.
+  async function lcConferirVinculo(produtoId, anuncioId) {
+    const r = await _vvApi('/api/produtos/' + encodeURIComponent(produtoId) + '/conferido', {
+      method: 'POST',
+      body: JSON.stringify({ anuncioId: anuncioId }),
+    });
+    if (!r || !r.ok) {
+      showToast((r && r.erro) || 'Não consegui salvar agora. Tente de novo.', true);
+      return;
+    }
+    showToast('Confirmado. O aviso saiu deste anúncio.');
+    // tira o selo da tela sem recarregar tudo
+    try {
+      const p = (produtosErp || []).find(x => String(x.id) === String(produtoId));
+      (p && p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+        if (String(vi.anuncioId) === String(anuncioId)) {
+          delete vi.conferir; delete vi.conferirMotivo; delete vi.conferirEm; delete vi.conferirOrigem;
+        }
+      }));
+    } catch (_) {}
+    if (typeof v31RenderListaVinculos === 'function') v31RenderListaVinculos();
+    if (typeof lcHydrateIcons === 'function') lcHydrateIcons();
+  }
+  window.lcConferirVinculo = lcConferirVinculo;
+
   function v31RenderListaVinculos() {
     if (!_produtoEditandoId) return;
     const p = produtosErp.find(x => String(x.id) === String(_produtoEditandoId));
@@ -63427,7 +63479,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1606-kit-e-marcador';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1614-limpeza-como-rotina';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
