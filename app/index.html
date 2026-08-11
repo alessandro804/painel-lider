@@ -40985,6 +40985,71 @@ Retorne JSON: {"ID": "valor", ...}`;
   window._lcLinhaMotivo = _lcLinhaMotivo;   // v33k.1630: usada pelo card da tela de Anúncios
 
   // ═════════════════════════════════════════════════════════════════════════
+  // lcDiagBusca(termo) — v33k.1631
+  // ─────────────────────────────────────────────────────────────────────────
+  // Cinco rodadas trocando prints para descobrir em que degrau a busca parava.
+  // Isto responde tudo de uma vez, no console do navegador (F12):
+  //
+  //     lcDiagBusca('Sandália Feminina Confortável Macia')
+  //
+  // Diz qual versão do painel está carregada (cache do navegador engana),
+  // se o catálogo tem os títulos na memória, quantos produtos casam e por quê.
+  window.lcDiagBusca = function (termo) {
+    const linha = (k, v) => console.log(String(k).padEnd(34) + ' ' + v);
+    console.group('DIAGNÓSTICO DA BUSCA');
+    linha('versão do painel', (typeof _DIAG_VERSAO_PAINEL !== 'undefined') ? _DIAG_VERSAO_PAINEL : '(não achei)');
+    linha('_lcCasaBusca disponível', typeof window._lcCasaBusca === 'function' ? 'sim' : 'NÃO — código antigo em cache');
+
+    const cat = window.produtosErp || [];
+    linha('produtos na memória', cat.length);
+    const resumidos = cat.filter(x => x && x._resumo).length;
+    linha('ainda no modo resumo', resumidos + (resumidos ? '  ← sem títulos; a busca por título não acha' : ''));
+
+    let comTitulo = 0, vinculos = 0;
+    cat.forEach(p => (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+      vinculos++; if (vi && vi.titulo) comTitulo++;
+    })));
+    linha('vínculos na memória', vinculos);
+    linha('com título preenchido', comTitulo + (vinculos && !comTitulo ? '  ← nenhum título carregado' : ''));
+
+    if (!termo) { console.log('\nPasse o termo: lcDiagBusca("titulo do anuncio")'); console.groupEnd(); return; }
+
+    linha('termo', JSON.stringify(termo));
+    if (typeof window._lcNormBusca === 'function') linha('normalizado', JSON.stringify(window._lcNormBusca(termo)));
+
+    if (typeof window._lcCasaBusca !== 'function') {
+      console.log('\nSem _lcCasaBusca não dá para continuar: recarregue com Ctrl+Shift+R.');
+      console.groupEnd(); return;
+    }
+    const achados = cat.filter(p => window._lcCasaBusca(p, termo));
+    linha('produtos que casam', achados.length);
+    achados.slice(0, 5).forEach(p => {
+      const m = window._lcPorQueCasou ? window._lcPorQueCasou(p, termo) : null;
+      console.log('   • id ' + p.id + ' · ' + String(p.nome || '').slice(0, 45)
+        + (m ? '   [casou em ' + m.tipo + ': ' + String(m.texto || '').slice(0, 45) + ']' : '   [casou no nome/SKU]'));
+    });
+    if (!achados.length) {
+      // mostra o título mais parecido que existe na memória, para comparar
+      const alvo = window._lcNormBusca(termo).split(' ')[0] || '';
+      const parecidos = [];
+      cat.forEach(p => (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+        if (vi && vi.titulo && window._lcNormBusca(vi.titulo).includes(alvo)) parecidos.push(vi.titulo);
+      })));
+      console.log('\nNenhum produto casou.');
+      if (parecidos.length) {
+        console.log('Títulos na memória que contêm "' + alvo + '":');
+        parecidos.slice(0, 5).forEach(t => console.log('   - ' + t));
+        console.log('Se o seu termo aparece aí, sobra alguma palavra que não bate.');
+      } else if (!comTitulo) {
+        console.log('Não há NENHUM título na memória — o catálogo completo ainda não chegou.');
+      } else {
+        console.log('Nenhum título contém nem a primeira palavra do termo.');
+      }
+    }
+    console.groupEnd();
+  };
+
+  // ═════════════════════════════════════════════════════════════════════════
   // O CARD (v33k.1624) — menos chip, mais resposta
   // ─────────────────────────────────────────────────────────────────────────
   // O card acumulou nove tipos de chip em versões diferentes, cada um resolvendo
@@ -55631,6 +55696,35 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   window.toggleVariacoesEstoque = toggleVariacoesEstoque;
 
   function renderEstoque() {
+    // ═══════════════════════════════════════════════════════════════════════
+    // v33k.1631: PROCURAR POR TÍTULO EXIGE OS TÍTULOS NA MEMÓRIA.
+    // ─────────────────────────────────────────────────────────────────────
+    // A carga rápida da v33k.1600 monta variações SINTÉTICAS, com vínculo que
+    // tem só anuncioId, loja, marketplace e status — sem `titulo`. Enquanto o
+    // painel opera nesse modo, nenhum critério de busca acha título: o dado
+    // não está aqui. Corrigir o casamento (1630) não bastava; faltava o texto.
+    //
+    // Então: havendo termo de busca e catálogo ainda resumido, puxa o catálogo
+    // completo (o mesmo `garantirCatalogoCompleto` que o filtro por loja usa) e
+    // redesenha. A guarda evita laço — dispara uma vez por termo.
+    try {
+      const _termo = (document.getElementById('estoqueBusca')?.value || '').trim();
+      const _resumido = (produtosErp || []).some(x => x && x._resumo);
+      if (_termo && _resumido && window._lcPuxandoCatalogo !== _termo) {
+        window._lcPuxandoCatalogo = _termo;
+        const _l = document.getElementById('estoqueLista');
+        if (_l) _l.innerHTML = '<div style="padding:26px;text-align:center;color:var(--lc-muted);font-size:13px">Carregando o catálogo completo para procurar nos títulos dos anúncios…</div>';
+        if (typeof garantirCatalogoCompleto === 'function') {
+          garantirCatalogoCompleto().then(() => { renderEstoque(); }).catch(e => {
+            console.warn('[busca anúncios] catálogo completo falhou:', e && e.message);
+            renderEstoque();
+          });
+          return;
+        }
+      }
+      if (!_termo) window._lcPuxandoCatalogo = null;
+    } catch (e) { /* nunca impede a tela de desenhar */ }
+
     // v33k.1202: seletor de loja AO VIVO do backend (mesma fonte de Notas
     // Fiscais: /api/lucro/minhas-lojas), usando o ID DO BANCO como valor. Antes
     // vinha do cache local (lojasErp), cujo nome ficava preso após renomear
@@ -63956,7 +64050,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1630-tela-anuncios';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1631-titulos-na-memoria';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
