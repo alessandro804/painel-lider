@@ -40995,7 +40995,8 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Diz qual versão do painel está carregada (cache do navegador engana),
   // se o catálogo tem os títulos na memória, quantos produtos casam e por quê.
   window.lcDiagBusca = function (termo) {
-    const linha = (k, v) => console.log(String(k).padEnd(34) + ' ' + v);
+    const linha = (k, v) => console.log(String(k).padEnd(36) + ' ' + v);
+    const N = window._lcNormBusca;
     console.group('DIAGNÓSTICO DA BUSCA');
     linha('versão do painel', (typeof _DIAG_VERSAO_PAINEL !== 'undefined') ? _DIAG_VERSAO_PAINEL : '(não achei)');
     linha('_lcCasaBusca disponível', typeof window._lcCasaBusca === 'function' ? 'sim' : 'NÃO — código antigo em cache');
@@ -41003,24 +41004,26 @@ Retorne JSON: {"ID": "valor", ...}`;
     const cat = window.produtosErp || [];
     linha('produtos na memória', cat.length);
     const resumidos = cat.filter(x => x && x._resumo).length;
-    linha('ainda no modo resumo', resumidos + (resumidos ? '  ← sem títulos; a busca por título não acha' : ''));
+    linha('ainda no modo resumo', resumidos + (resumidos ? '  ← sem títulos' : ''));
 
     let comTitulo = 0, vinculos = 0;
     cat.forEach(p => (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
       vinculos++; if (vi && vi.titulo) comTitulo++;
     })));
     linha('vínculos na memória', vinculos);
-    linha('com título preenchido', comTitulo + (vinculos && !comTitulo ? '  ← nenhum título carregado' : ''));
+    linha('com título gravado', comTitulo);
+    // v33k.1632: este é o número que explica o anúncio que "existe e não acha".
+    // Vínculo sem título não é achável POR TÍTULO — só por código ou SKU.
+    linha('SEM título gravado', (vinculos - comTitulo)
+      + (vinculos - comTitulo ? '  ← estes só aparecem por código/SKU' : ''));
 
-    if (!termo) { console.log('\nPasse o termo: lcDiagBusca("titulo do anuncio")'); console.groupEnd(); return; }
-
+    if (!termo) { console.log('\nUso: lcDiagBusca("titulo ou codigo do anuncio")'); console.groupEnd(); return; }
     linha('termo', JSON.stringify(termo));
-    if (typeof window._lcNormBusca === 'function') linha('normalizado', JSON.stringify(window._lcNormBusca(termo)));
-
+    if (typeof N === 'function') linha('normalizado', JSON.stringify(N(termo)));
     if (typeof window._lcCasaBusca !== 'function') {
-      console.log('\nSem _lcCasaBusca não dá para continuar: recarregue com Ctrl+Shift+R.');
-      console.groupEnd(); return;
+      console.log('\nRecarregue com Ctrl+Shift+R.'); console.groupEnd(); return;
     }
+
     const achados = cat.filter(p => window._lcCasaBusca(p, termo));
     linha('produtos que casam', achados.length);
     achados.slice(0, 5).forEach(p => {
@@ -41028,24 +41031,68 @@ Retorne JSON: {"ID": "valor", ...}`;
       console.log('   • id ' + p.id + ' · ' + String(p.nome || '').slice(0, 45)
         + (m ? '   [casou em ' + m.tipo + ': ' + String(m.texto || '').slice(0, 45) + ']' : '   [casou no nome/SKU]'));
     });
-    if (!achados.length) {
-      // mostra o título mais parecido que existe na memória, para comparar
-      const alvo = window._lcNormBusca(termo).split(' ')[0] || '';
-      const parecidos = [];
-      cat.forEach(p => (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
-        if (vi && vi.titulo && window._lcNormBusca(vi.titulo).includes(alvo)) parecidos.push(vi.titulo);
-      })));
-      console.log('\nNenhum produto casou.');
-      if (parecidos.length) {
-        console.log('Títulos na memória que contêm "' + alvo + '":');
-        parecidos.slice(0, 5).forEach(t => console.log('   - ' + t));
-        console.log('Se o seu termo aparece aí, sobra alguma palavra que não bate.');
-      } else if (!comTitulo) {
-        console.log('Não há NENHUM título na memória — o catálogo completo ainda não chegou.');
+    if (achados.length) { console.groupEnd(); return; }
+
+    // ── nada casou: qual título chega mais perto? ─────────────────────────
+    // Listar os que contêm a PRIMEIRA palavra não servia: a primeira palavra é
+    // genérica ("rasteira") e os cinco primeiros nunca eram o candidato certo.
+    // Agora ranqueia por quantas palavras do termo o título cobre e diz quais
+    // faltaram — é isso que separa "falta uma palavra" de "não está aqui".
+    const ps = N(termo).split(' ').filter(Boolean);
+    const ranking = [];
+    cat.forEach(p => (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
+      if (!vi || !vi.titulo) return;
+      const n = N(vi.titulo);
+      const faltam = ps.filter(w => !n.includes(w));
+      if (faltam.length < ps.length) ranking.push({ t: vi.titulo, ok: ps.length - faltam.length, faltam, id: p.id, an: vi.anuncioId });
+    })));
+    ranking.sort((a, b) => b.ok - a.ok);
+    console.log('\nNenhum produto casou. Títulos mais próximos na memória:');
+    if (!ranking.length) {
+      console.log('   nenhum título contém sequer UMA palavra do termo.');
+      console.log('   → o anúncio não está no catálogo carregado, ou o vínculo dele está sem título.');
+    } else {
+      ranking.slice(0, 5).forEach(r => {
+        console.log('   ' + r.ok + '/' + ps.length + ' palavras · produto ' + r.id + ' · anúncio ' + (r.an || '?'));
+        console.log('        ' + String(r.t).slice(0, 90));
+        console.log('        faltou: ' + r.faltam.join(', '));
+      });
+      const melhor = ranking[0];
+      if (melhor.ok >= ps.length - 2) {
+        console.log('\n   O título está aqui, faltando poucas palavras — confira se o anúncio');
+        console.log('   foi renomeado no marketplace depois da última sincronização.');
       } else {
-        console.log('Nenhum título contém nem a primeira palavra do termo.');
+        console.log('\n   Nenhum título chega perto: este anúncio provavelmente está entre os');
+        console.log('   ' + (vinculos - comTitulo) + ' vínculos SEM título gravado. Rode lcDiagAnuncio("<código>") para confirmar.');
       }
     }
+    console.groupEnd();
+  };
+
+  // ─── lcDiagAnuncio(codigo) — v33k.1632 ───────────────────────────────────
+  // Pega o código que aparece no card (#58206600461) e mostra o vínculo cru:
+  // se `titulo` está vazio, buscar por título nunca vai achar esse anúncio, e
+  // o problema não é a busca — é o dado que nunca foi gravado.
+  window.lcDiagAnuncio = function (codigo) {
+    const alvo = String(codigo || '').replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+    console.group('DIAGNÓSTICO DO ANÚNCIO ' + codigo);
+    if (!alvo) { console.log('Passe o código: lcDiagAnuncio("58206600461")'); console.groupEnd(); return; }
+    let achou = 0;
+    (window.produtosErp || []).forEach(p => (p.variacoes || []).forEach(v => (p && v.vinculos || []).forEach(vi => {
+      if (!vi || String(vi.anuncioId || '').toLowerCase() !== alvo) return;
+      if (achou++) return;
+      console.log('produto        ' + p.id + ' · ' + String(p.nome || ''));
+      console.log('marketplace    ' + (vi.marketplace || '?') + ' · loja ' + (vi.lojaIdBanco || vi.lojaId || '?'));
+      console.log('titulo         ' + (vi.titulo ? JSON.stringify(vi.titulo) : 'VAZIO  ← por isso não acha por título'));
+      console.log('skuExterno     ' + (vi.skuExterno ? JSON.stringify(vi.skuExterno) : 'vazio'));
+      console.log('criadoPor      ' + (vi.criadoPor || '(nulo)'));
+      if (!vi.titulo) {
+        console.log('\nO anúncio está vinculado, mas o título nunca foi gravado neste vínculo.');
+        console.log('Busque por ele pelo código. Para achar por título, o importador precisa');
+        console.log('carimbar o título nos vínculos que já existem (pendência conhecida).');
+      }
+    })));
+    if (!achou) console.log('Este código não está no catálogo carregado desta conta.');
     console.groupEnd();
   };
 
@@ -64050,7 +64097,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1631-titulos-na-memoria';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1632-diag-titulo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
