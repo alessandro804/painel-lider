@@ -837,13 +837,124 @@
   // ════════════════════════════════════════════════════════════════
   // UPLOAD DO CERTIFICADO A1 (.pfx → base64 → backend cifra)
   // ════════════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════════════════
+  // CERTIFICADO A1 — VER, TROCAR E BAIXAR (v33k.1626)
+  // ────────────────────────────────────────────────────────────────
+  // A tela era só um formulário de envio: não dizia QUAL certificado estava
+  // valendo, nem quanto tempo faltava, e não havia como tirar o arquivo daqui.
+  // Quem abria não sabia se ia trocar ou cadastrar pela primeira vez.
+  //
+  // Agora ela abre no estado atual — titular, quanto falta pra vencer — e o
+  // envio fica atrás de "Trocar certificado". Cadastrar pela primeira vez cai
+  // direto no formulário, que é o que faz sentido quando não há nada.
   function _gfUploadCert(empresaId, nome) {
+    document.getElementById('gfConteudo').innerHTML =
+      '<div style="' + card + ';text-align:center;color:#64748b;font-size:13px">Carregando certificado…</div>';
+    _api('/api/nfe/empresas/' + empresaId + '/certificado')
+      .then((d) => _gfPintarCert(empresaId, nome, (d && d.ok) ? d : null))
+      .catch(() => _gfPintarCert(empresaId, nome, null));
+  }
+
+  // "157d 1h 48m" — dia arredondado sozinho esconde o caso pior: um
+  // certificado que vence hoje às 18h aparece como "0 dias" às 8h da manhã.
+  function _gfTempoRestante(ms) {
+    if (ms == null) return '';
+    const neg = ms < 0; const t = Math.abs(ms);
+    const d = Math.floor(t / 86400000);
+    const h = Math.floor((t % 86400000) / 3600000);
+    const m = Math.floor((t % 3600000) / 60000);
+    const txt = d + 'd ' + h + 'h ' + m + 'm';
+    return neg ? ('vencido há ' + txt) : txt;
+  }
+
+  function _gfPintarCert(empresaId, nome, est) {
+    const tem = est && est.temCertificado;
+    // Sem certificado não há o que mostrar: vai direto pro formulário.
+    if (!tem) { _gfFormCert(empresaId, nome, false); return; }
+
+    const dias = est.dias != null ? est.dias : null;
+    const cor = est.vencido ? '#b91c1c' : (dias != null && dias <= 30 ? '#b45309' : '#15803d');
+    const fundo = est.vencido ? '#fef2f2' : (dias != null && dias <= 30 ? '#fffbeb' : '#f0fdf4');
+    const borda = est.vencido ? '#fecaca' : (dias != null && dias <= 30 ? '#fde68a' : '#bbf7d0');
+    const venc = est.validade ? new Date(est.validade).toLocaleDateString('pt-BR') : '—';
+
+    const corpo =
+      '<div style="' + card + '">' +
+        '<div style="font-weight:700;margin-bottom:14px">Certificado A1 · ' + _esc(nome) + '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px;background:' + fundo + ';border:1px solid ' + borda + ';border-radius:10px">' +
+          '<span class="lc-ic" data-lucide="' + (est.vencido ? 'triangle-alert' : 'shield-check') + '" style="color:' + cor + '"></span>' +
+          '<div style="flex:1;min-width:200px">' +
+            '<div style="font-weight:700;color:#0f172a;font-size:14px">' + _esc(est.titular || 'Certificado ativo') + '</div>' +
+            '<div style="font-size:12px;color:' + cor + ';font-weight:600;margin-top:2px">' +
+              (est.vencido ? 'Vencido em ' + venc : 'Vence em ' + venc + ' · ' + _gfTempoRestante(est.msRestantes)) +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px">' +
+            '<button class="lc-btn lc-btn--sm" style="background:#0ea5e9;color:#fff" onclick="_gfFormCert(' + empresaId + ',\'' + _esc(nome).replace(/'/g, "\\'") + '\',true)">' +
+              '<span class="lc-ic" data-lucide="refresh-cw"></span> Trocar</button>' +
+            '<button class="lc-btn lc-btn--sm lc-btn--ghost" onclick="_gfBaixarCert(' + empresaId + ')">' +
+              '<span class="lc-ic" data-lucide="download"></span> Baixar</button>' +
+          '</div>' +
+        '</div>' +
+        (est.vencido || (dias != null && dias <= 30)
+          ? '<div style="font-size:12px;color:#92400e;margin-top:10px;line-height:1.45">' +
+            (est.vencido
+              ? 'Com o certificado vencido a SEFAZ recusa as emissões. Troque para voltar a emitir.'
+              : 'Renove antes do vencimento: quando vence, a emissão para no mesmo dia.') + '</div>'
+          : '') +
+        '<div id="gfCertMsg" style="font-size:12px;margin-top:10px;color:#64748b"></div>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button class="lc-btn lc-btn--ghost" onclick="_carregarEmpresas()">Voltar</button>' +
+      '</div>';
+    document.getElementById('gfConteudo').innerHTML = corpo;
+    _hidratarIcones(document.getElementById('gfConteudo'));
+  }
+
+  async function _gfBaixarCert(empresaId) {
+    const msg = document.getElementById('gfCertMsg');
+    if (msg) { msg.textContent = 'Preparando o arquivo…'; msg.style.color = '#64748b'; }
+    try {
+      const r = await fetch(BACKEND_URL + '/api/nfe/empresas/' + empresaId + '/certificado/arquivo', {
+        headers: { 'x-api-token': getApiToken() },
+      });
+      if (!r.ok) {
+        // o backend responde JSON no erro e binário no sucesso
+        let erro = 'Não foi possível baixar o certificado.';
+        try { const j = await r.json(); if (j && j.erro) erro = j.erro; } catch (_) {}
+        if (msg) { msg.textContent = erro; msg.style.color = '#b91c1c'; }
+        return;
+      }
+      const blob = await r.blob();
+      // o nome vem do Content-Disposition do servidor; se faltar, cai num padrão
+      let arquivo = 'certificado.pfx';
+      const cd = r.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename="([^"]+)"/);
+      if (m) arquivo = m[1];
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = arquivo;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      if (msg) {
+        msg.textContent = 'Arquivo baixado. A senha não vai junto — guarde-a por fora.';
+        msg.style.color = '#15803d';
+      }
+    } catch (e) {
+      if (msg) { msg.textContent = 'Falha ao baixar: ' + e.message; msg.style.color = '#b91c1c'; }
+    }
+  }
+
+  function _gfFormCert(empresaId, nome, ehTroca) {
     const corpo =
       '<div style="' + card + '">' +
         '<div style="display:flex;gap:10px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;font-size:13px;color:#1e40af;line-height:1.45;margin-bottom:16px">' +
-          '<span>🔒</span><div>O certificado é <b>cifrado antes de ser guardado</b>. A senha nunca fica em texto puro. Apenas seu servidor consegue decifrar.</div>' +
+          '<span class="lc-ic" data-lucide="lock"></span><div>O certificado é <b>cifrado antes de ser guardado</b>. A senha nunca fica em texto puro. Apenas seu servidor consegue decifrar.</div>' +
         '</div>' +
-        '<div style="font-weight:700;margin-bottom:10px">Certificado de: ' + _esc(nome) + '</div>' +
+        '<div style="font-weight:700;margin-bottom:10px">' + (ehTroca ? 'Trocar o certificado de: ' : 'Certificado de: ') + _esc(nome) + '</div>' +
+        (ehTroca
+          ? '<div style="font-size:12px;color:#64748b;margin-bottom:12px;line-height:1.45">O certificado atual continua valendo até o novo ser aceito. Se o arquivo ou a senha estiverem errados, nada muda.</div>'
+          : '') +
         '<label style="' + lbl + '">Arquivo do certificado (.pfx ou .p12)</label>' +
         '<input type="file" id="gfCertFile" accept=".pfx,.p12,application/x-pkcs12" ' +
           'style="display:block;width:100%;box-sizing:border-box;padding:10px;border:2px dashed #93c5fd;border-radius:8px;background:#f0f9ff;font-size:13px;color:#0f172a;cursor:pointer;margin-bottom:4px">' +
@@ -853,8 +964,10 @@
         '<div id="gfCertMsg" style="font-size:12px;margin-top:8px;color:#64748b"></div>' +
       '</div>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px">' +
-        '<button class="lc-btn lc-btn--ghost" onclick="_carregarEmpresas()">Voltar</button>' +
-        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_gfEnviarCert(' + empresaId + ')"><span class="lc-ic" data-lucide="paperclip"></span> Enviar certificado</button>' +
+        '<button class="lc-btn lc-btn--ghost" onclick="' + (ehTroca
+          ? '_gfUploadCert(' + empresaId + ',\'' + _esc(nome).replace(/'/g, "\\'") + '\')'
+          : '_carregarEmpresas()') + '">Voltar</button>' +
+        '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_gfEnviarCert(' + empresaId + ')"><span class="lc-ic" data-lucide="paperclip"></span> ' + (ehTroca ? 'Trocar certificado' : 'Enviar certificado') + '</button>' +
       '</div>';
     document.getElementById('gfConteudo').innerHTML = corpo;
     _hidratarIcones(document.getElementById('gfConteudo'));
@@ -9183,6 +9296,11 @@
   window._gfConsultarCnpj = _gfConsultarCnpj;
   window._gfSalvarEmpresa = _gfSalvarEmpresa;
   window._gfUploadCert = _gfUploadCert;
+  // v33k.1626: chamadas por onclick= no HTML gerado. Sem expor, o botão
+  // lança ReferenceError e a tela do certificado não abre — o mesmo erro já
+  // registrado neste arquivo com o _overlay.
+  window._gfFormCert = _gfFormCert;
+  window._gfBaixarCert = _gfBaixarCert;
   window._gfEnviarCert = _gfEnviarCert;
   window._gfLogo = _gfLogo;
   window._gfEnviarLogo = _gfEnviarLogo;
@@ -20048,6 +20166,8 @@ window.LC_SVG = {
       <button class="prod-filtro-btn" id="btnLimparFiltros" onclick="limparTodosFiltros()" style="background:#fef3c7;color:#92400e;display:none">✕ Limpar filtros</button>
     </div>
     
+    <div id="prodAvisoBusca" style="display:none"></div>
+
     <!-- Painel de filtros avançados (toggle) -->
     <div id="prodFiltrosAvancados" style="display:none;padding:12px;background:#f9fafb;border-radius:8px;margin-bottom:8px;border:1px solid #e5e7eb">
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
@@ -40552,7 +40672,55 @@ Retorne JSON: {"ID": "valor", ...}`;
       
       est.paginaAtual = filtros.page;
       est.total = dados.total || 0;
+      // v33k.1628: o backend avisa quando a busca só olhou nome e SKU pai
+      // (índice de anúncios não instalado). Guardar aqui é o que permite a
+      // tela dizer isso em vez de mostrar "Nenhum anúncio" e deixar o cliente
+      // achando que o recurso está quebrado.
+      window._prodBuscaLimitada = !!dados.buscaLimitada;
       est.filtrosAtivos = filtros;
+
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1629: BUSCAR POR TÍTULO SEM DEPENDER DO BANCO.
+      // ─────────────────────────────────────────────────────────────────
+      // O índice `busca_texto` é uma questão de VELOCIDADE, não de
+      // possibilidade: os títulos dos anúncios já estão aqui, dentro de
+      // `variacoes[].vinculos[]` do catálogo que o painel carrega em segundo
+      // plano desde a v33k.1600. O `_lcCasaBusca` já sabe lê-los.
+      //
+      // Enquanto a migração não roda, o backend só acha por nome e sku_pai —
+      // e o front, filtrando só a página que o backend devolveu, não tinha
+      // como achar o que o backend não mandou. Agora, quando a resposta vem
+      // marcada como limitada, a busca é refeita AQUI, sobre o catálogo
+      // inteiro. É o mesmo caminho que o filtro por loja já usa.
+      //
+      // Mais lento que o índice — precisa do catálogo carregado e varre em
+      // memória — mas funciona hoje, sem tocar no banco. Quando o SQL entrar,
+      // o backend passa a responder e este trecho nem roda.
+      if (busca && dados.buscaLimitada) {
+        const el = document.getElementById('prodLista');
+        if (el) el.innerHTML = '<div class="prod-grid-v2">' + _prodSkeletons() + '</div>';
+        try {
+          await garantirCatalogoCompleto();
+          let achados = (produtosErp || []).filter(p => {
+            if (p.status === 'excluido') return false;
+            // duplicado com pai vivo não aparece na lista principal
+            if (p.duplicadoDeId && produtosErp.some(pp =>
+              String(pp.id) === String(p.duplicadoDeId) && pp.status !== 'excluido')) return false;
+            return _lcCasaBusca(p, busca);
+          });
+          // teto de segurança: termo curto casa com meio catálogo e pintar
+          // 1600 cards trava a aba. Corta e diz que cortou.
+          const TETO = 300;
+          window._prodBuscaCortada = achados.length > TETO ? achados.length : 0;
+          if (achados.length > TETO) achados = achados.slice(0, TETO);
+          window._prodPaginaLista = achados;
+          est.total = achados.length;
+        } catch (e) {
+          console.warn('[busca local]', e && e.message);
+        }
+      } else {
+        window._prodBuscaCortada = 0;
+      }
       
       // Persiste só os 50 atuais (leve)
       try { saveProdutos(); } catch(_) {}
@@ -40699,10 +40867,18 @@ Retorne JSON: {"ID": "valor", ...}`;
     return out;
   }
 
+  // v33k.1629: casa quando TODAS as palavras do termo aparecem no texto do
+  // produto — não a substring inteira. "rasteirinha luxo" tem que achar
+  // "Rasteirinha Feminina Luxo…", e ordem não pode importar. Espelho exato do
+  // `casa()` do backend e do AND de ilikes que o banco faz.
+  function _lcPalavrasBusca(termo) {
+    return _lcNormBusca(termo).split(' ').filter(Boolean);
+  }
   function _lcCasaBusca(p, termo) {
-    const t = _lcNormBusca(termo);
-    if (!t) return true;
-    return _lcPedacosBusca(p).some(pedaco => pedaco.includes(t));
+    const ps = _lcPalavrasBusca(termo);
+    if (!ps.length) return true;
+    const txt = _lcPedacosBusca(p).join(' ');
+    return ps.every(w => txt.includes(w));
   }
 
   // ─── por que este produto apareceu? ──────────────────────────────────────
@@ -40712,25 +40888,41 @@ Retorne JSON: {"ID": "valor", ...}`;
   // null quando casou no nome ou no SKU pai: aí o card já se explica sozinho e
   // uma linha a mais só polui uma tela que já tem chip demais.
   function _lcPorQueCasou(p, termo) {
-    const t = _lcNormBusca(termo);
-    if (!t || !p) return null;
-    if (_lcNormBusca(p.nome).includes(t)) return null;
-    if (_lcNormBusca(p.skuPai).includes(t)) return null;
+    const ps = _lcPalavrasBusca(termo);
+    if (!ps.length || !p) return null;
+    const quantas = (txt) => { const n = _lcNormBusca(txt); return ps.filter(w => n.includes(w)).length; };
+    const todas = (txt) => quantas(txt) === ps.length;
+    if (todas(p.nome)) return null;
+    if (todas(p.skuPai)) return null;
+    // com palavras soltas mais de um título pode responder: fica o que cobre
+    // mais palavras, que é o mais perto do que a pessoa procurou
+    let melhor = null, melhorN = 0;
+    for (const v of (p.variacoes || [])) {
+      for (const vi of ((v && v.vinculos) || [])) {
+        if (!vi) continue;
+        const n = quantas(vi.titulo);
+        if (n > melhorN) {
+          melhorN = n;
+          melhor = { marketplace: vi.marketplace || null, anuncioId: vi.anuncioId || null,
+            tipo: 'titulo', texto: vi.titulo };
+        }
+      }
+    }
+    if (melhor) return melhor;
     for (const v of (p.variacoes || [])) {
       for (const vi of ((v && v.vinculos) || [])) {
         if (!vi) continue;
         const base = { marketplace: vi.marketplace || null, anuncioId: vi.anuncioId || null };
-        if (_lcNormBusca(vi.titulo).includes(t)) return { ...base, tipo: 'titulo', texto: vi.titulo };
-        if (_lcNormBusca(vi.anuncioId).includes(t)) return { ...base, tipo: 'anuncio', texto: vi.anuncioId };
-        if (_lcNormBusca(vi.skuExterno).includes(t)) return { ...base, tipo: 'skuExterno', texto: vi.skuExterno };
+        if (quantas(vi.anuncioId)) return { ...base, tipo: 'anuncio', texto: vi.anuncioId };
+        if (quantas(vi.skuExterno)) return { ...base, tipo: 'skuExterno', texto: vi.skuExterno };
       }
     }
     for (const v of (p.variacoes || [])) {
       if (!v) continue;
-      if (_lcNormBusca(v.sku).includes(t)) return { tipo: 'skuVariacao', texto: v.sku };
-      if (_lcNormBusca(v.ean).includes(t)) return { tipo: 'ean', texto: v.ean };
+      if (quantas(v.sku)) return { tipo: 'skuVariacao', texto: v.sku };
+      if (quantas(v.ean)) return { tipo: 'ean', texto: v.ean };
     }
-    if (_lcNormBusca(p.ean).includes(t)) return { tipo: 'ean', texto: p.ean };
+    if (quantas(p.ean)) return { tipo: 'ean', texto: p.ean };
     return null;
   }
 
@@ -40749,22 +40941,40 @@ Retorne JSON: {"ID": "valor", ...}`;
       ean: 'Encontrado no EAN',
     }[m.tipo] || 'Encontrado dentro do produto';
     const bruto = String(m.texto || '');
-    // Para DESTACAR é preciso um normalizador que preserve as posições: o
-    // _lcNormBusca colapsa espaços, e há títulos reais com espaço duplo
-    // ("Tênis  Infantil Meninos", dono 1). Com o índice do texto colapsado, o
-    // slice sobre o bruto corta deslocado e o realce cai na letra errada.
-    // Aqui só tiro acento e caixa, mantendo o comprimento 1:1.
-    const posNorm = (s) => String(s == null ? '' : s)
+    // v33k.1629: agora se busca por PALAVRAS, então o realce marca cada uma
+    // onde ela estiver, em vez da frase inteira num lugar só.
+    //
+    // Para achar as posições é preciso um normalizador que preserve o
+    // comprimento: o _lcNormBusca colapsa espaços, e há títulos reais com
+    // espaço duplo ("Tênis  Infantil Meninos", dono 1) — com o índice do texto
+    // colapsado, o corte cai na letra errada. Aqui só tiro acento e caixa.
+    const posNorm = (x) => String(x == null ? '' : x)
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-    const t = posNorm(termo).trim();
-    const pos = t ? posNorm(bruto).indexOf(t) : -1;
+    const alvo = posNorm(bruto);
+    const marcas = [];
+    _lcPalavrasBusca(termo).forEach(w => {
+      let de = 0, i;
+      while (w && (i = alvo.indexOf(w, de)) !== -1) { marcas.push([i, i + w.length]); de = i + w.length; }
+    });
     let texto;
-    if (pos >= 0 && t) {
-      texto = escapeHtml(bruto.slice(0, pos))
-        + '<mark style="background:#fde68a;padding:0 1px;border-radius:2px">' + escapeHtml(bruto.slice(pos, pos + t.length)) + '</mark>'
-        + escapeHtml(bruto.slice(pos + t.length));
-    } else {
+    if (!marcas.length) {
       texto = escapeHtml(bruto);
+    } else {
+      // funde trechos que se sobrepõem, senão as tags <mark> se cruzam
+      marcas.sort((a, b) => a[0] - b[0]);
+      const juntas = [marcas[0]];
+      for (let k = 1; k < marcas.length; k++) {
+        const ult = juntas[juntas.length - 1];
+        if (marcas[k][0] <= ult[1]) ult[1] = Math.max(ult[1], marcas[k][1]);
+        else juntas.push(marcas[k]);
+      }
+      texto = ''; let cursor = 0;
+      juntas.forEach(([ini, fim]) => {
+        texto += escapeHtml(bruto.slice(cursor, ini))
+          + '<mark style="background:#fde68a;padding:0 1px;border-radius:2px">' + escapeHtml(bruto.slice(ini, fim)) + '</mark>';
+        cursor = fim;
+      });
+      texto += escapeHtml(bruto.slice(cursor));
     }
     return '<div style="margin-top:4px;padding:4px 6px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:0 4px 4px 0;font-size:10px;line-height:1.35;color:#1e3a5f">'
       + '<span style="font-weight:700;display:inline-flex;align-items:center;gap:3px">' + icone + rotulo + ':</span> ' + texto + '</div>';
@@ -41169,6 +41379,28 @@ Retorne JSON: {"ID": "valor", ...}`;
       resumo.textContent = `${filtrados.length} produto(s) exibido(s) · ${totalBackend} no catálogo`;
     }
     
+    // v33k.1628: busca capada tem que aparecer NA TELA, não só no log.
+    const _avisoBusca = document.getElementById('prodAvisoBusca');
+    if (_avisoBusca) {
+      if (busca && window._prodBuscaLimitada) {
+        _avisoBusca.style.display = 'block';
+        // v33k.1629: a busca por título FUNCIONA — só está sendo feita aqui no
+        // painel, sobre o catálogo carregado, em vez de no banco. O aviso diz
+        // o que está acontecendo, não que o recurso falta.
+        const _cortou = window._prodBuscaCortada || 0;
+        _avisoBusca.innerHTML =
+          '<div style="display:flex;gap:8px;align-items:flex-start;padding:9px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1e40af;line-height:1.45;margin-bottom:8px">'
+          + '<span style="flex:0 0 auto;color:#2563eb">' + _lcIc('search') + '</span>'
+          + '<div><b>Procurando no catálogo carregado.</b> A busca está lendo os títulos dos anúncios aqui no painel, '
+          + 'porque o índice do banco ainda não foi instalado. O resultado é o mesmo; só demora um pouco mais.'
+          + (_cortou ? ' <b>Mostrando os primeiros 300 de ' + _cortou + '</b> — refine o termo para ver o resto.' : '')
+          + '</div></div>';
+      } else {
+        _avisoBusca.style.display = 'none';
+        _avisoBusca.innerHTML = '';
+      }
+    }
+
     if (filtrados.length === 0) {
       lista.innerHTML = `<div class="empty-state-v2">
         <div class="empty-icon-v2">📦</div>
@@ -63685,7 +63917,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1625-icones-sem-emoji';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1629-busca-palavras';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
