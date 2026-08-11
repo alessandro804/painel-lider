@@ -40644,6 +40644,266 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window._precoCardHTML = _precoCardHTML;
 
+  // ═════════════════════════════════════════════════════════════════════════
+  // BUSCA DO CATÁLOGO (v33k.1623) — espelho de src/util/busca-catalogo.js
+  // ─────────────────────────────────────────────────────────────────────────
+  // Estas três funções PRECISAM concordar com o backend e com a função SQL
+  // lc_busca_texto. Se divergirem, volta o problema que elas vieram consertar:
+  // o banco acha o produto, o front descarta, e o cliente vê "nenhum produto"
+  // numa busca que casou. qa_busca_anuncio.js compara os lados e falha se um
+  // sair da linha — mexeu aqui, mexa lá.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ─── ícone, nunca emoji ──────────────────────────────────────────────────
+  // O painel tem dicionário próprio (LC_SVG) e um helper que devolve o SVG
+  // inline pronto — não precisa hidratar depois, o que importa aqui porque
+  // estes trechos são montados dentro de template string e injetados via
+  // innerHTML. Os nomes seguem o LC_EMOJI_MAP, que é a equivalência canônica
+  // já usada no resto do sistema.
+  const _LC_MK_ICONE = { mercadolivre: 'package', shopee: 'shopping-cart', tiktok: 'music', shein: 'shirt' };
+  function _lcIc(nome, tam) {
+    if (typeof window.LC_ICON !== 'function') return '';
+    return window.LC_ICON(nome, tam || 'sm');
+  }
+  function _lcIcMk(marketplace) {
+    return _lcIc(_LC_MK_ICONE[marketplace] || 'link');
+  }
+
+  // minúscula e sem acento. O mesmo par é "Tênis" no ML e "Tenis" na Shopee.
+  function _lcNormBusca(s) {
+    return String(s == null ? '' : s)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  // tudo que um produto oferece pra ser encontrado
+  function _lcPedacosBusca(p) {
+    if (!p) return [];
+    const nomeNorm = _lcNormBusca(p.nome);
+    const vistos = new Set(); const out = [];
+    const add = (valor) => {
+      const n = _lcNormBusca(valor);
+      if (!n || vistos.has(n)) return;
+      vistos.add(n); out.push(n);
+    };
+    add(p.nome); add(p.skuPai); add(p.ean); add(p.marca); add(p.categoria);
+    for (const v of (p.variacoes || [])) {
+      if (!v) continue;
+      add(v.sku); add(v.ean); add(v.cor); add(v.tamanho);
+      for (const vi of (v.vinculos || [])) {
+        if (!vi) continue;
+        if (_lcNormBusca(vi.titulo) !== nomeNorm) add(vi.titulo);
+        add(vi.anuncioId); add(vi.skuExterno);
+      }
+    }
+    return out;
+  }
+
+  function _lcCasaBusca(p, termo) {
+    const t = _lcNormBusca(termo);
+    if (!t) return true;
+    return _lcPedacosBusca(p).some(pedaco => pedaco.includes(t));
+  }
+
+  // ─── por que este produto apareceu? ──────────────────────────────────────
+  // Achar não basta. Quando o termo casou com o título de um anúncio que está
+  // DENTRO do produto, o card mostra um nome que o cliente não reconhece — e
+  // ele conclui que a busca falhou de novo, que é onde ele está hoje. Devolve
+  // null quando casou no nome ou no SKU pai: aí o card já se explica sozinho e
+  // uma linha a mais só polui uma tela que já tem chip demais.
+  function _lcPorQueCasou(p, termo) {
+    const t = _lcNormBusca(termo);
+    if (!t || !p) return null;
+    if (_lcNormBusca(p.nome).includes(t)) return null;
+    if (_lcNormBusca(p.skuPai).includes(t)) return null;
+    for (const v of (p.variacoes || [])) {
+      for (const vi of ((v && v.vinculos) || [])) {
+        if (!vi) continue;
+        const base = { marketplace: vi.marketplace || null, anuncioId: vi.anuncioId || null };
+        if (_lcNormBusca(vi.titulo).includes(t)) return { ...base, tipo: 'titulo', texto: vi.titulo };
+        if (_lcNormBusca(vi.anuncioId).includes(t)) return { ...base, tipo: 'anuncio', texto: vi.anuncioId };
+        if (_lcNormBusca(vi.skuExterno).includes(t)) return { ...base, tipo: 'skuExterno', texto: vi.skuExterno };
+      }
+    }
+    for (const v of (p.variacoes || [])) {
+      if (!v) continue;
+      if (_lcNormBusca(v.sku).includes(t)) return { tipo: 'skuVariacao', texto: v.sku };
+      if (_lcNormBusca(v.ean).includes(t)) return { tipo: 'ean', texto: v.ean };
+    }
+    if (_lcNormBusca(p.ean).includes(t)) return { tipo: 'ean', texto: p.ean };
+    return null;
+  }
+
+  // A linha que o card mostra quando o casamento não foi no nome. Destaca o
+  // trecho buscado dentro do título do anúncio, porque em título de 72
+  // caracteres o cliente precisa VER onde casou, não caçar.
+  function _lcLinhaMotivo(p, termo) {
+    const m = _lcPorQueCasou(p, termo);
+    if (!m) return '';
+    const icone = _lcIcMk(m.marketplace);
+    const rotulo = {
+      titulo: 'Encontrado no anúncio',
+      anuncio: 'Encontrado pelo código do anúncio',
+      skuExterno: 'Encontrado pelo SKU do marketplace',
+      skuVariacao: 'Encontrado no SKU da variação',
+      ean: 'Encontrado no EAN',
+    }[m.tipo] || 'Encontrado dentro do produto';
+    const bruto = String(m.texto || '');
+    // Para DESTACAR é preciso um normalizador que preserve as posições: o
+    // _lcNormBusca colapsa espaços, e há títulos reais com espaço duplo
+    // ("Tênis  Infantil Meninos", dono 1). Com o índice do texto colapsado, o
+    // slice sobre o bruto corta deslocado e o realce cai na letra errada.
+    // Aqui só tiro acento e caixa, mantendo o comprimento 1:1.
+    const posNorm = (s) => String(s == null ? '' : s)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const t = posNorm(termo).trim();
+    const pos = t ? posNorm(bruto).indexOf(t) : -1;
+    let texto;
+    if (pos >= 0 && t) {
+      texto = escapeHtml(bruto.slice(0, pos))
+        + '<mark style="background:#fde68a;padding:0 1px;border-radius:2px">' + escapeHtml(bruto.slice(pos, pos + t.length)) + '</mark>'
+        + escapeHtml(bruto.slice(pos + t.length));
+    } else {
+      texto = escapeHtml(bruto);
+    }
+    return '<div style="margin-top:4px;padding:4px 6px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:0 4px 4px 0;font-size:10px;line-height:1.35;color:#1e3a5f">'
+      + '<span style="font-weight:700;display:inline-flex;align-items:center;gap:3px">' + icone + rotulo + ':</span> ' + texto + '</div>';
+  }
+  window._lcNormBusca = _lcNormBusca;
+  window._lcCasaBusca = _lcCasaBusca;
+  window._lcPorQueCasou = _lcPorQueCasou;
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // O CARD (v33k.1624) — menos chip, mais resposta
+  // ─────────────────────────────────────────────────────────────────────────
+  // O card acumulou nove tipos de chip em versões diferentes, cada um resolvendo
+  // um problema real na época. Somados no pior caso passavam de vinte por card:
+  // quatro de marketplace, UM POR LOJA (o dono 5 tem 13), o contador de
+  // vínculos, o de anúncios, três variantes de alerta em duas cores parecidas,
+  // e até três de status.
+  //
+  // Dois deles diziam a mesma coisa com números diferentes: um contava VÍNCULOS
+  // (variação × anúncio: um anúncio ML com 42 variações vira 42) e o outro,
+  // anúncios distintos. Os dois abriam o mesmo modal. Quem lê a tela vê dois
+  // números para "quantos anúncios" e não sabe em qual acreditar.
+  //
+  // A tela não estava confusa por falta de informação — estava por excesso sem
+  // hierarquia. O card agora responde três perguntas em ordem: o que é, onde
+  // está anunciado, e se precisa de atenção. O que FALTAVA não era chip nenhum:
+  // era poder ver os títulos dos anúncios que estão lá dentro sem abrir modal.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Os anúncios reais de um produto, um por anuncioId (não um por vínculo).
+  function _lcAnunciosDoProduto(p) {
+    const porId = new Map();
+    for (const v of ((p && p.variacoes) || [])) {
+      for (const vi of ((v && v.vinculos) || [])) {
+        if (!vi || !vi.anuncioId) continue;
+        const k = String(vi.lojaIdBanco || vi.lojaId || '') + ':' + String(vi.anuncioId);
+        if (!porId.has(k)) {
+          const loja = (typeof lojasErp !== 'undefined' ? lojasErp : []).find(l =>
+            (vi.lojaIdBanco && String(l.idBanco) === String(vi.lojaIdBanco)) ||
+            (vi.lojaId && String(l.id) === String(vi.lojaId)));
+          porId.set(k, {
+            anuncioId: String(vi.anuncioId),
+            marketplace: vi.marketplace || (loja && loja.marketplace) || '',
+            titulo: vi.titulo || '',
+            lojaNome: (loja && loja.nome) || '',
+            status: vi.statusMl || '',
+            nVariacoes: 0,
+            conferir: false,
+            suspeito: false,
+          });
+        }
+        const a = porId.get(k);
+        a.nVariacoes++;
+        if (vi.conferir) a.conferir = true;
+        if (vi.skuSuspeito) a.suspeito = true;
+        if (!a.titulo && vi.titulo) a.titulo = vi.titulo;
+      }
+    }
+    return Array.from(porId.values());
+  }
+  window._lcAnunciosDoProduto = _lcAnunciosDoProduto;
+
+  // UM selo de pendência no lugar de três. Conferir, SKU suspeito e dados
+  // faltantes eram chips separados, dois deles com o MESMO ícone e cores quase
+  // iguais (#f59e0b duas vezes, #ea580c a terceira) — na grade viravam manchas
+  // laranjas indistinguíveis. Agora é um número só, e o tooltip discrimina.
+  function _lcSeloPendencia(p) {
+    const nConf = (p.variacoes || []).reduce((n, v) =>
+      n + ((v.vinculos || []).filter(vi => vi && vi.conferir).length), 0);
+    const nSusp = (typeof contarVinculosSuspeitos === 'function') ? contarVinculosSuspeitos(p) : 0;
+    const faltantes = (typeof listarFaltantes === 'function') ? listarFaltantes(p) : [];
+    const total = nConf + nSusp + faltantes.length;
+    if (!total) return '';
+    const linhas = [];
+    if (nConf) linhas.push(nConf + ' anúncio(s) juntados sem prova de foto: confirme se são deste produto');
+    if (nSusp) linhas.push(nSusp + ' vínculo(s) com SKU suspeito');
+    if (faltantes.length) linhas.push('Faltam: ' + faltantes.join(', '));
+    const acao = (nConf || nSusp) ? "abrirGerenciarVinculos('" + p.id + "')" : "abrirEditarProduto('" + p.id + "')";
+    return '<span class="prod-card-mkt-chip" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;cursor:pointer"'
+      + ' title="' + escapeHtml(linhas.join('\n')) + '"'
+      + ' onclick="event.stopPropagation();' + acao + '">' + _lcIc('triangle-alert') + ' ' + total + ' a revisar</span>';
+  }
+
+  // As lojas, colapsadas. Um chip por loja explodia em dono-agência: 13 chips
+  // de loja num card de 200px, empurrando preço e estoque pra fora da vista.
+  function _lcChipLojas(p) {
+    const lojas = new Map();
+    for (const a of _lcAnunciosDoProduto(p)) {
+      if (!a.lojaNome) continue;
+      lojas.set(a.lojaNome, (lojas.get(a.lojaNome) || 0) + 1);
+    }
+    if (!lojas.size) return '';
+    const nomes = Array.from(lojas.keys());
+    const tt = nomes.map(n => n + ': ' + lojas.get(n) + ' anúncio(s)').join('\n');
+    const rotulo = nomes.length === 1 ? nomes[0] : nomes.length + ' lojas';
+    return '<span class="prod-card-mkt-chip" style="background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;cursor:pointer"'
+      + ' title="' + escapeHtml(tt) + '" onclick="event.stopPropagation();abrirGerenciarVinculos(\'' + p.id + '\')">' + _lcIc('store') + ' ' + escapeHtml(rotulo) + '</span>';
+  }
+
+  // ─── o painel que resolve o pedido original ──────────────────────────────
+  // "mostrar melhor que aquele produto está vinculado lá dentro". Nenhum chip
+  // faz isso: chip mostra QUANTOS, e o cliente procura por QUAL — pelo título,
+  // que é o que ele lê no painel da Shopee. Aqui os títulos ficam a um clique,
+  // sem sair da tela e sem abrir modal.
+  function _lcPainelAnuncios(p) {
+    const ans = _lcAnunciosDoProduto(p);
+    if (!ans.length) return '';
+    const linhas = ans.slice(0, 12).map(a => {
+      const titulo = a.titulo || a.anuncioId;
+      // sem título gravado o código é o que sobra — e é honesto dizer isso em
+      // vez de mostrar linha vazia: são 107 mil vínculos assim hoje.
+      const semTitulo = !a.titulo;
+      const marca = a.conferir ? ' <span style="color:#b45309" title="Pede conferência">' + _lcIc('triangle-alert') + '</span>' : '';
+      return '<div style="display:flex;gap:6px;align-items:baseline;padding:3px 0;border-top:1px solid #f1f5f9">'
+        + '<span style="flex:0 0 auto;color:#64748b">' + _lcIcMk(a.marketplace) + '</span>'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'
+        + (semTitulo ? ';color:#94a3b8;font-style:italic' : ';color:#1e293b') + '" title="' + escapeHtml(titulo) + '">'
+        + escapeHtml(titulo) + marca + '</span>'
+        + (a.lojaNome ? '<span style="flex:0 0 auto;font-size:9px;color:#64748b">' + escapeHtml(a.lojaNome) + '</span>' : '')
+        + '</div>';
+    }).join('');
+    const resto = ans.length > 12
+      ? '<div style="padding:4px 0 0;font-size:9px;color:#64748b">+ ' + (ans.length - 12) + ' outros — abra o produto pra ver todos</div>'
+      : '';
+    return '<div id="lcAn-' + p.id + '" style="display:none;margin-top:5px;font-size:10px;line-height:1.4">' + linhas + resto + '</div>';
+  }
+
+  function _lcToggleAnuncios(prodId, ev) {
+    if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+    const el = document.getElementById('lcAn-' + prodId);
+    if (!el) return;
+    const abrindo = el.style.display === 'none';
+    el.style.display = abrindo ? 'block' : 'none';
+    // o ícone vive num span próprio: `textContent` não serve pra trocar um SVG,
+    // e mexer no texto do botão inteiro apagaria o ícone junto.
+    const ic = document.getElementById('lcAnIc-' + prodId);
+    if (ic) ic.innerHTML = _lcIc(abrindo ? 'chevron-up' : 'chevron-down');
+  }
+  window._lcToggleAnuncios = _lcToggleAnuncios;
+
   function renderProdutos() {
     // Popula o select OCULTO (fonte da lógica de filtro existente) e monta o
     // seletor premium visível (padrão imagem 1). O premium é multi, mas a lógica
@@ -40864,14 +41124,16 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (filtroFaltante === 'sem-descricao' && p.descricao && p.descricao.trim().length > 20) return false;
       }
       
-      // Busca textual: nome, SKU pai, EAN pai, SKU das variações, EAN das variações
+      // Busca textual (v33k.1623): nome, SKU pai, EAN, marca, categoria, os
+      // SKUs/EANs das variações E — o que faltava — o título do anúncio, o
+      // código dele (MLB…) e o SKU do marketplace.
+      //
+      // Este filtro roda DEPOIS do backend e sobre o que ele mandou. Enquanto
+      // os dois critérios divergiam, o backend achava por um campo e o front
+      // descartava por não conhecer o mesmo campo — o resultado sumia no meio
+      // do caminho. Agora os dois usam a mesma definição.
       if (busca) {
-        const partes = [p.nome, p.skuPai, p.ean, p.marca, p.categoria];
-        for (const v of (p.variacoes || [])) {
-          partes.push(v.sku, v.ean, v.cor, v.tamanho);
-        }
-        const txt = partes.filter(Boolean).join(' ').toLowerCase();
-        if (!txt.includes(busca)) return false;
+        if (!_lcCasaBusca(p, busca)) return false;
       }
       return true;
     });
@@ -40963,82 +41225,11 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (p.temDrop) {
         mktChips += `<span class="prod-card-mkt-chip" title="Vinculado no módulo Dropshipping" style="background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe">🛍 Drop</span>`;
       }
-      // SELO DE LOJA: mostra de qual conta o produto pertence/está vinculado.
-      // Coleta lojas únicas: loja de origem (p.lojaId) + lojas dos vínculos das variações
-      const nomesLojas = new Map(); // nome → { marketplace, count }
-      if (p.lojaId) {
-        const lojaOrigem = lojasErp.find(l => String(l.id) === String(p.lojaId));
-        if (lojaOrigem) {
-          nomesLojas.set(lojaOrigem.nome, { 
-            marketplace: lojaOrigem.marketplace, 
-            count: 0, 
-            origem: true 
-          });
-        }
-      }
-      (p.variacoes || []).forEach(v => {
-        (v.vinculos || []).forEach(vinc => {
-          const loja = lojasErp.find(l => 
-            (vinc.lojaIdBanco && String(l.idBanco) === String(vinc.lojaIdBanco)) ||
-            (vinc.lojaId && String(l.id) === String(vinc.lojaId))
-          );
-          if (loja) {
-            if (!nomesLojas.has(loja.nome)) {
-              nomesLojas.set(loja.nome, { marketplace: loja.marketplace, count: 0, origem: false });
-            }
-            nomesLojas.get(loja.nome).count++;
-          }
-        });
-      });
-      let lojaChips = '';
-      nomesLojas.forEach((info, nome) => {
-        const mkCores = {
-          mercadolivre: '#2D3277', shopee: '#EE4D2D', 
-          tiktok: '#000000', shein: '#000000'
-        };
-        const corBg = mkCores[info.marketplace] || '#6b7280';
-        const sufixo = info.count > 0 ? ' (' + info.count + ')' : '';
-        const tt = info.origem 
-          ? 'Produto criado na loja: ' + nome 
-          : 'Anúncio(s) nesta loja: ' + nome;
-        lojaChips += `<span class="prod-card-mkt-chip" style="background:${corBg};color:white;font-size:9px;padding:1px 6px;cursor:pointer" title="${escapeHtml(tt)}, clique pra abrir e ver os vínculos">🏪 ${escapeHtml(nome)}${sufixo}</span>`;
-      });
-      
-      // FASE A/B: badges de vínculos e suspeitos (CLICÁVEIS, abrem modal)
-      const totalVinc = contarVinculosProduto(p);
-      const totalSusp = contarVinculosSuspeitos(p);
-      let vincBadges = '';
-      if (totalVinc > 0) {
-        vincBadges += `<span class="prod-card-mkt-chip" style="background:#3b82f6;cursor:pointer" title="${totalVinc} anúncio(s) vinculado(s) - clique pra ver" onclick="event.stopPropagation();abrirGerenciarVinculos('${p.id}')">🔗 ${totalVinc}</span>`;
-        // v33k.1613: quantos vínculos deste produto pedem conferência. Sem
-        // isto o aviso só apareceria abrindo produto por produto, e com
-        // centenas de mesclagens ninguém abriria.
-        const _nConf = (p.variacoes || []).reduce((n, v) =>
-          n + ((v.vinculos || []).filter(vi => vi && vi.conferir).length), 0);
-        if (_nConf) {
-          vincBadges += `<span class="prod-card-mkt-chip" style="background:#f59e0b;cursor:pointer"
-            title="${_nConf} anúncio(s) juntados sem prova de foto: confirme se são deste produto"
-            onclick="event.stopPropagation();abrirGerenciarVinculos('${p.id}')">⚠ conferir ${_nConf}</span>`;
-        }
-      }
-      if (totalSusp > 0) {
-        vincBadges += `<span class="prod-card-mkt-chip" style="background:#f59e0b;cursor:pointer" title="${totalSusp} vínculo(s) com SKU suspeito - clique pra revisar" onclick="event.stopPropagation();abrirGerenciarVinculos('${p.id}')">⚠ ${totalSusp}</span>`;
-      }
-      
-      // Badge de dados faltantes (cor laranja)
-      const faltantes = listarFaltantes(p);
-      const qtdFaltantes = faltantes.length;
-      if (qtdFaltantes > 0) {
-        const tt = 'Faltam: ' + faltantes.join(', ');
-        vincBadges += `<span class="prod-card-mkt-chip" style="background:#ea580c" title="${escapeHtml(tt)}">⚠ ${qtdFaltantes} falta</span>`;
-      }
-      
-      // Badge de anúncios vinculados (substitui o antigo "cópias", fluxo único)
-      const _anunSet = new Set();
-      (p.variacoes||[]).forEach(v => (v.vinculos||[]).forEach(vi => { if (vi.anuncioId) _anunSet.add(String(vi.anuncioId)); }));
-      if (_anunSet.size > 0) {
-        vincBadges += `<span class="prod-card-mkt-chip" style="background:#7c3aed;cursor:pointer" title="Ver e gerenciar os ${_anunSet.size} anúncios vinculados" onclick="event.stopPropagation();abrirGerenciarVinculos('${p.id}')">📌 ${_anunSet.size} anúncio${_anunSet.size>1?'s':''}</span>`;
-      }
+      // v33k.1624: as lojas em UM chip colapsado (era um por loja: 13 no dono 5)
+      // e as pendências em UM selo (eram três, dois com o mesmo ícone).
+      const lojaChips = _lcChipLojas(p);
+      let vincBadges = _lcSeloPendencia(p);
+
       // v33k.1122 (Leva 3): selo agregado de status (só aparece se houver não-ativo)
       vincBadges += _chipStatusAgregado(p, p.id);
       
@@ -41090,8 +41281,23 @@ Retorne JSON: {"ID": "valor", ...}`;
         <div class="prod-card-body">
           <div class="prod-card-nome">${escapeHtml(p.nome)}</div>
           <div class="prod-card-sku">SKU: ${escapeHtml(p.skuPai||'—')}</div>
-          <div class="prod-card-mkts">${mktChips}${vincBadges || (mktChips ? '' : '<span style="font-size:10px;color:#9ca3af">Não publicado</span>')}</div>
-          ${lojaChips ? `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px">${lojaChips}</div>` : ''}
+          ${busca ? _lcLinhaMotivo(p, busca) : ''}
+          <div class="prod-card-mkts">${mktChips}${lojaChips}${vincBadges || (mktChips ? '' : '<span style="font-size:10px;color:#9ca3af">Não publicado</span>')}</div>
+          ${(() => {
+            // v33k.1624: o botão que faltava. Chip diz QUANTOS; o cliente
+            // procura por QUAL — pelo título, que é o que ele lê no painel do
+            // marketplace. Depois da mesclagem o nome do card é o de UM dos
+            // anúncios (um produto do dono 1 reúne 164), e os outros só
+            // existiam dentro de um modal que ninguém abre produto a produto.
+            const _n = _lcAnunciosDoProduto(p).length;
+            if (!_n) return '';
+            return `<div style="margin-top:4px">
+              <button id="lcAnBt-${p.id}" onclick="_lcToggleAnuncios('${p.id}', event)"
+                style="background:none;border:none;padding:0;font-size:10px;font-weight:700;color:#3b82f6;cursor:pointer;display:inline-flex;align-items:center;gap:3px"
+                title="Ver os títulos dos anúncios que estão neste produto"><span id="lcAnIc-${p.id}" style="display:inline-flex">${_lcIc('chevron-down')}</span>${_n} anúncio${_n>1?'s':''} aqui dentro</button>
+              ${_lcPainelAnuncios(p)}
+            </div>`;
+          })()}
           ${(() => {
             const cores = obterCoresDoProduto(p);
             if (!cores || cores.length === 0) return '';
@@ -46130,7 +46336,7 @@ REGRAS DURAS:
       return;
     }
     
-    const skuPai = (document.getElementById('prodSku')||{}).value.trim();
+    const skuPai = lcSkuPaiBase((document.getElementById('prodSku')||{}).value);
     if (!skuPai) {
       showToast('Preencha o "SKU do produto" antes de gerar SKUs das variações', true);
       return;
@@ -63479,7 +63685,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1615-ciclo-unico';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1625-icones-sem-emoji';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
