@@ -35347,12 +35347,31 @@ Retorne JSON: {"ID": "valor", ...}`;
   async function carregarTodosProdutos() {
     try {
       // Primeiro descobre o total (rápido, count=true não retorna produtos)
-      const respCount = await fetch(BACKEND_URL + '/api/produtos?count=true', {
-        headers: { 'x-api-token': getApiToken() }
-      });
-      const dCount = await respCount.json();
-      const total = (dCount.ok && dCount.total) || 0;
-      if (total <= 0) return [];
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1636: A CONTAGEM NÃO PODE MAIS DECIDIR SE O CATÁLOGO CARREGA.
+      // ─────────────────────────────────────────────────────────────────
+      // `count=true` estava devolvendo 500 em produção (11/08). O código lia
+      // `total <= 0` e devolvia [] — o catálogo INTEIRO não carregava por
+      // causa de uma consulta que só servia de otimização.
+      //
+      // O efeito era invisível: a tela pintava, o painel não reclamava, e o
+      // diagnóstico mostrava 248.060 vínculos com ZERO títulos. Foi o que fez
+      // a busca por título continuar falhando mesmo depois de os títulos
+      // estarem gravados no banco (provado por SQL no produto 2214).
+      //
+      // O laço abaixo já sabe parar sozinho: para quando uma página vem com
+      // menos de 200. A contagem nunca foi necessária — era só um atalho.
+      let total = 0;
+      try {
+        const respCount = await fetch(BACKEND_URL + '/api/produtos?count=true', {
+          headers: { 'x-api-token': getApiToken() }
+        });
+        const dCount = await respCount.json();
+        total = (dCount && dCount.ok && dCount.total) || 0;
+      } catch (e) {
+        console.warn('[carregarTodosProdutos] contagem falhou, varrendo assim mesmo:', e && e.message);
+      }
+      if (!total) console.warn('[carregarTodosProdutos] sem contagem; a varredura por cursor decide onde parar.');
 
       // ═══════════════════════════════════════════════════════════════════
       // v33k.1571: VARRE POR CURSOR, NÃO POR OFFSET.
@@ -64097,7 +64116,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1635-rastro-anuncio';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1636-contagem-nao-bloqueia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
