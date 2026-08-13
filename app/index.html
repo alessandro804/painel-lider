@@ -33703,6 +33703,9 @@ Retorne JSON: {"ID": "valor", ...}`;
 
     _adsAnunciosCache = juntos;
     adsDesenharAnuncios();
+    // v33k.1664: metas por anúncio em segundo plano. Desenha primeiro, o selo
+    // aparece no redesenho — a lista não espera por um enfeite.
+    adsCarregarMetasAnuncio(alvos).then(() => { try { adsDesenharAnuncios(); } catch (e) {} });
     // corrige os status (selo ativo/pausado) com a verdade ao vivo da Shopee,
     // porque o ETL (ads_diario) pode estar defasado.
     adsCorrigirStatusAoVivo();
@@ -33897,6 +33900,72 @@ Retorne JSON: {"ID": "valor", ...}`;
     return '<span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:10px;font-weight:800">' + txt + '</span>';
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // META DE ACOS POR ANÚNCIO (v33k.1664)
+  // Carrega as metas das lojas em tela e permite editar por anúncio. Sem meta
+  // própria, o anúncio herda a da loja — e limpar o campo devolve pra herança
+  // em vez de congelar o número atual.
+  // ═══════════════════════════════════════════════════════════════════════
+  window._adsMetasAnuncio = window._adsMetasAnuncio || {};
+  window._adsMetaLoja = window._adsMetaLoja || {};
+
+  window._adsEstoqueCobertura = window._adsEstoqueCobertura || {};
+
+  async function adsCarregarMetasAnuncio(lojaIds) {
+    const alvos = [...new Set((lojaIds || []).map(String).filter(Boolean))];
+    const h = { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') };
+    // UMA LOJA POR VEZ: as rotas são por loja e nunca recebem lista.
+    for (const lid of alvos) {
+      try {
+        const r = await fetch(BACKEND_URL + '/api/ads/loja/' + lid + '/metas-anuncio', { headers: h }).then(x => x.json());
+        if (r && r.ok) {
+          window._adsMetaLoja[lid] = r.metaLoja;
+          Object.entries(r.metas || {}).forEach(([item, v]) => { window._adsMetasAnuncio[lid + '|' + item] = Number(v); });
+        }
+      } catch (e) { /* meta é enfeite no card: falha não pode derrubar a lista */ }
+      try {
+        // v33k.1665: cobertura de estoque em dias. É o dado que só o ERP tem.
+        const e = await fetch(BACKEND_URL + '/api/ads/loja/' + lid + '/estoque-cobertura', { headers: h }).then(x => x.json());
+        if (e && e.ok) {
+          Object.entries(e.itens || {}).forEach(([item, v]) => { window._adsEstoqueCobertura[lid + '|' + item] = v; });
+        }
+      } catch (e2) { /* idem: selo não derruba a lista */ }
+    }
+  }
+  window.adsCarregarMetasAnuncio = adsCarregarMetasAnuncio;
+
+  async function adsEditarMetaAnuncio(lojaId, itemId) {
+    const chave = String(lojaId) + '|' + String(itemId);
+    const atual = window._adsMetasAnuncio[chave];
+    const metaLoja = window._adsMetaLoja[String(lojaId)];
+    const txt = prompt(
+      'Meta de ACOS deste anúncio, em %.\n\n' +
+      'A meta da loja é ' + (metaLoja != null ? metaLoja + '%' : 'não definida') + '.\n' +
+      'Deixe VAZIO para o anúncio voltar a seguir a meta da loja.',
+      atual != null ? String(atual) : '');
+    if (txt === null) return; // cancelou
+    const limpo = String(txt).trim().replace(',', '.');
+    const valor = limpo === '' ? null : Number(limpo);
+    if (valor !== null && (!isFinite(valor) || valor <= 0 || valor > 100)) {
+      alert('Informe um número entre 0 e 100, ou deixe vazio para seguir a meta da loja.');
+      return;
+    }
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + lojaId + '/metas-anuncio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({ itemId: String(itemId), acosObjetivo: valor }),
+      }).then(x => x.json());
+      if (!r || !r.ok) { alert('Não deu pra salvar: ' + ((r && r.erro) || 'falha')); return; }
+      if (r.metaPropria == null) delete window._adsMetasAnuncio[chave];
+      else window._adsMetasAnuncio[chave] = Number(r.metaPropria);
+      adsDesenharAnuncios();
+    } catch (e) {
+      alert('Não deu pra salvar: ' + e.message);
+    }
+  }
+  window.adsEditarMetaAnuncio = adsEditarMetaAnuncio;
+
   function cardAnuncio(a) {
     const acosCor = corAcos(a.acos);
     const acosTxt = a.acos === null ? '—' : a.acos + '%';
@@ -33907,6 +33976,31 @@ Retorne JSON: {"ID": "valor", ...}`;
     const thumb = a.foto
       ? '<img id="adsAnFoto-' + a.itemId + '" src="' + a.foto + '" data-foto="1" style="width:72px;height:72px;object-fit:cover;border-radius:12px;flex-shrink:0" onerror="this.outerHTML=window._adsThumbFallback(\'' + a.itemId + '\',\'' + inicial + '\')">'
       : placeholderThumb;
+
+    // v33k.1664: meta de ACOS do anúncio. Sem meta própria mostra a da loja em
+    // cinza (é o padrão herdado); com meta própria, destaca em roxo pra deixar
+    // claro que aquele anúncio saiu da régua da loja.
+    const _metaPropria = (window._adsMetasAnuncio || {})[String(a.lojaId || '') + '|' + String(a.itemId)];
+    const _metaLoja = (window._adsMetaLoja || {})[String(a.lojaId || '')];
+    const _temPropria = Number.isFinite(_metaPropria) && _metaPropria > 0;
+    const _metaVale = _temPropria ? _metaPropria : _metaLoja;
+    const seloMeta = (_metaVale == null) ? '' :
+      '<span onclick="adsEditarMetaAnuncio(' + (a.lojaId || 0) + ',\'' + a.itemId + '\')" title="Clique para definir a meta de ACOS deste anúncio" ' +
+      'style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;' +
+      (_temPropria ? 'background:#f5f3ff;color:#6d28d9;border:1px solid #ddd6fe' : 'background:#f8fafc;color:#64748b;border:1px solid #e2e8f0') + '">' +
+      'meta ' + _metaVale + '%' + (_temPropria ? ' (própria)' : '') + '</span>';
+
+    // v33k.1665: selo de estoque. Só aparece quando a cobertura é BAIXA — selo
+    // permanente em anúncio saudável vira ruído e ninguém olha mais nenhum.
+    const _cob = (window._adsEstoqueCobertura || {})[String(a.lojaId || '') + '|' + String(a.itemId)];
+    let seloEstoque = '';
+    if (_cob && _cob.baixo && _cob.dias != null) {
+      const critico = _cob.dias < 3;
+      seloEstoque = '<span title="Estoque para ' + _cob.dias + ' dias no ritmo de venda dos ultimos 30 dias (' + _cob.unidades + ' unidades). O analista segura o investimento neste anuncio ate a reposicao." ' +
+        'style="font-size:10px;font-weight:800;padding:2px 7px;border-radius:5px;' +
+        (critico ? 'background:#fef2f2;color:#b91c1c;border:1px solid #fecaca' : 'background:#fff7ed;color:#c2410c;border:1px solid #fed7aa') + '">' +
+        (critico ? 'estoque critico ' : 'estoque ') + _cob.dias + 'd</span>';
+    }
 
     let alerta = '';
     if (a.gastouSemVender) alerta = '<span style="font-size:10px;background:#fef2f2;color:#b91c1c;padding:2px 7px;border-radius:5px">gastou s/ vender</span>';
@@ -33947,7 +34041,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         '<div style="flex:1;min-width:0">' +
           '<div style="font-weight:700;color:#1e293b;font-size:14px;line-height:1.3;margin-bottom:3px">' + escapeHtml(a.nome || ('Item ' + a.itemId)) + '</div>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-            '<span style="font-size:11px;color:#3b82f6;font-weight:600">' + a.itemId + '</span>' + seloLoja + alerta +
+            '<span style="font-size:11px;color:#3b82f6;font-weight:600">' + a.itemId + '</span>' + seloLoja + seloMeta + seloEstoque + alerta +
           '</div>' +
         '</div>' +
         '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0">' +
@@ -34503,11 +34597,21 @@ Retorne JSON: {"ID": "valor", ...}`;
 
     // ── painel do Motor inteligente (chave + comparativo) ──
     html += '<div id="adsMotorPainel" style="margin-top:22px"></div>';
+    // v33k.1666: modo do motor (a MESMA chave do card de automação) e a fila.
+    html += '<div id="adsModoMotor" style="margin-top:18px"></div>';
+    html += '<div id="adsPendentes"></div>';
+    html += '<div id="adsCalendario"></div>';
+    // v33k.1651: diário do analista — o que ele mudou de verdade, e por quê.
+    html += '<div id="adsAnalistaDiario" style="margin-top:18px"></div>';
     html += '<div id="adsDiretrizes" style="margin-top:18px"></div>';
 
     cont.innerHTML = html;
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(cont); } catch (e) {} }
     try { renderAdsMotorPainel(lojaId); } catch (e) {}
+    try { adsRenderModoMotor(lojaId, 'adsModoMotor'); } catch (e) {}
+    try { renderAdsPendentes(lojaId); } catch (e) {}
+    try { renderAdsCalendario(); } catch (e) {}
+    try { renderAdsAnalistaDiario(lojaId, 30, false); } catch (e) {}
     try { renderAdsDiretrizes(lojaId, nomeLoja); } catch (e) {}
   }
   window.renderAdsAnalista = renderAdsAnalista;
@@ -34670,6 +34774,379 @@ Retorne JSON: {"ID": "valor", ...}`;
     box.innerHTML = h;
   }
   window.adsMotorComparar = adsMotorComparar;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // MODO DO MOTOR: APLICA DIRETO vs PEDE APROVAÇÃO (v33k.1666)
+  // ───────────────────────────────────────────────────────────────────────
+  // A chave é UMA SÓ no banco (ads_config_loja.motor_modo). Estas funções são
+  // usadas pelos DOIS pontos de controle — página do Analista e card de
+  // automação — de propósito: dois estados que "sincronizam" divergem no
+  // primeiro erro de rede, e aí a tela mostra um e o motor obedece outro.
+  // ═══════════════════════════════════════════════════════════════════════
+  function _adsHeaders() {
+    return { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') };
+  }
+
+  async function adsLerModoMotor(lojaId) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + lojaId + '/motor-modo', { headers: _adsHeaders() }).then(x => x.json());
+      return (r && r.ok) ? r : null;
+    } catch (e) { return null; }
+  }
+  window.adsLerModoMotor = adsLerModoMotor;
+
+  async function adsSalvarModoMotor(lojaId, modo, aoTerminar) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/loja/' + lojaId + '/motor-modo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ..._adsHeaders() },
+        body: JSON.stringify({ modo }),
+      }).then(x => x.json());
+      if (!r || !r.ok) { alert('Não deu pra salvar: ' + ((r && r.erro) || 'falha')); return false; }
+      if (typeof aoTerminar === 'function') aoTerminar(r);
+      return true;
+    } catch (e) { alert('Não deu pra salvar: ' + e.message); return false; }
+  }
+  window.adsSalvarModoMotor = adsSalvarModoMotor;
+
+  // Bloco de controle, reaproveitado nos dois lugares. `destinoId` é o div que
+  // recebe o HTML; `aoTrocar` deixa cada tela reagir do seu jeito.
+  async function adsRenderModoMotor(lojaId, destinoId, aoTrocar) {
+    const host = document.getElementById(destinoId);
+    if (!host) return;
+    const est = await adsLerModoMotor(lojaId);
+    if (!est) { host.innerHTML = ''; return; }
+    const aprovacao = est.modo === 'aprovacao';
+    const btn = (valor, rotulo, ativo) =>
+      '<button onclick="adsTrocarModoMotor(' + lojaId + ',\'' + valor + '\',\'' + destinoId + '\')" ' +
+      'style="padding:7px 14px;border-radius:9px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid ' +
+      (ativo ? '#7c3aed;background:#7c3aed;color:#fff' : '#d1d5db;background:#fff;color:#475569') + '">' + rotulo + '</button>';
+    host.innerHTML =
+      '<div style="border:1px solid #e5e7eb;border-radius:14px;padding:14px 16px;background:#fff">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">' +
+          '<div>' +
+            '<div style="font-size:13.5px;font-weight:800;color:#1e293b"><span class="lc-ic" data-lucide="shield-check"></span> Como o motor aplica as ações</div>' +
+            '<div style="font-size:12px;color:#64748b;margin-top:3px;max-width:520px">' +
+              (aprovacao
+                ? 'O motor decide e deixa na fila. Nada é alterado no anúncio até você aprovar.'
+                : 'O motor aplica direto no anúncio, sem passar por você.') +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px">' + btn('auto', 'Aplica direto', !aprovacao) + btn('aprovacao', 'Pede aprovação', aprovacao) + '</div>' +
+        '</div>' +
+        (est.pendentes ? '<div style="margin-top:10px;font-size:12px;color:#c2410c;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 10px">' +
+          est.pendentes + ' aç' + (est.pendentes === 1 ? 'ão aguardando' : 'ões aguardando') + ' sua decisão.</div>' : '') +
+      '</div>';
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(host); } catch (e) {} }
+    if (typeof aoTrocar === 'function') aoTrocar(est);
+  }
+  window.adsRenderModoMotor = adsRenderModoMotor;
+
+  async function adsTrocarModoMotor(lojaId, modo, destinoId) {
+    const ok = await adsSalvarModoMotor(lojaId, modo);
+    if (!ok) return;
+    await adsRenderModoMotor(lojaId, destinoId);
+    // a fila muda de tamanho junto: redesenha se o bloco estiver na tela
+    if (document.getElementById('adsPendentes')) { try { renderAdsPendentes(lojaId); } catch (e) {} }
+  }
+  window.adsTrocarModoMotor = adsTrocarModoMotor;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CALENDÁRIO SAZONAL (v33k.1667)
+  // Janelas do DONO: valem para todas as lojas dele. Vazio = nada muda.
+  // ═══════════════════════════════════════════════════════════════════════
+  async function renderAdsCalendario() {
+    const host = document.getElementById('adsCalendario');
+    if (!host) return;
+    let r;
+    try {
+      r = await fetch(BACKEND_URL + '/api/ads/calendario', { headers: _adsHeaders() }).then(x => x.json());
+    } catch (e) { host.innerHTML = ''; return; }
+    if (!r || !r.ok) { host.innerHTML = ''; return; }
+    const itens = r.itens || [];
+
+    const hoje = r.hoje
+      ? '<div style="margin-top:10px;font-size:12.5px;font-weight:700;padding:8px 11px;border-radius:8px;' +
+        (r.hoje.tipo === 'forte' ? 'background:#f0fdf4;color:#166534;border:1px solid #bbf7d0' : 'background:#fff7ed;color:#9a3412;border:1px solid #fed7aa') + '">' +
+        'Hoje o motor está em período ' + r.hoje.tipo.toUpperCase() +
+        (r.hoje.nome ? ' · ' + escapeHtml(r.hoje.nome) : '') +
+        (r.hoje.fonte === 'data' ? ' (janela de data)' : ' (ciclo do mês)') + '</div>'
+      : '<div style="margin-top:10px;font-size:12.5px;color:#64748b">Hoje nenhuma janela está valendo: o motor decide sem contexto sazonal.</div>';
+
+    let h = '<div style="border:1px solid #e5e7eb;border-radius:16px;padding:18px;background:#fff;margin-top:18px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
+        '<div>' +
+          '<div style="font-size:14px;font-weight:800;color:#1e293b"><span class="lc-ic" data-lucide="calendar"></span> Calendário sazonal</div>' +
+          '<div style="font-size:12px;color:#64748b;margin-top:4px;max-width:620px">Em período <strong>forte</strong> o motor não pausa por um dia isolado e não aperta o ROAS. ' +
+          'Em período <strong>fraco</strong> ele não aumenta orçamento, mas continua cortando o que está ruim. ' +
+          'Uma janela de data específica sempre vence o ciclo do mês, porque Black Friday cai no fim de novembro.</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button onclick="adsNovaJanela(\'unica\')" style="padding:7px 12px;border:1px solid #d1d5db;border-radius:9px;background:#fff;color:#334155;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit">+ Data</button>' +
+          '<button onclick="adsNovaJanela(\'mensal\')" style="padding:7px 12px;border:1px solid #d1d5db;border-radius:9px;background:#fff;color:#334155;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit">+ Ciclo do mês</button>' +
+        '</div>' +
+      '</div>' + hoje;
+
+    if (!itens.length) {
+      h += '<div style="margin-top:12px;border:1px dashed #e5e7eb;border-radius:10px;padding:14px;font-size:12.5px;color:#64748b">' +
+        'Nenhuma janela cadastrada. Enquanto estiver vazio, o motor roda exatamente como antes.</div>';
+    } else {
+      itens.forEach(i => {
+        const quando = i.recorrencia === 'unica'
+          ? (String(i.inicio || '').split('-').reverse().join('/') + ' a ' + String(i.fim || '').split('-').reverse().join('/'))
+          : ('todo mês, dia ' + i.dia_inicio + ' a ' + i.dia_fim);
+        const cor = i.tipo === 'forte' ? '#16a34a' : '#c2410c';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid #f1f5f9;border-left:3px solid ' + cor + ';border-radius:9px;padding:9px 12px;margin-top:8px">' +
+          '<div><span style="font-size:13px;font-weight:700;color:#1e293b">' + escapeHtml(i.nome || '') + '</span>' +
+          '<span style="font-size:11px;font-weight:800;color:' + cor + ';margin-left:8px">' + (i.tipo || '').toUpperCase() + '</span>' +
+          '<div style="font-size:11.5px;color:#94a3b8;margin-top:2px">' + escapeHtml(quando) + '</div></div>' +
+          '<button onclick="adsRemoverJanela(' + i.id + ')" style="padding:5px 11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit">Remover</button>' +
+        '</div>';
+      });
+    }
+    h += '</div>';
+    host.innerHTML = h;
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(host); } catch (e) {} }
+  }
+  window.renderAdsCalendario = renderAdsCalendario;
+
+  async function adsNovaJanela(recorrencia) {
+    const nome = prompt(recorrencia === 'unica'
+      ? 'Nome da data (ex.: Black Friday, 11.11, Dia das Maes):'
+      : 'Nome do ciclo (ex.: Comeco de mes, Fim de mes):');
+    if (nome === null || !String(nome).trim()) return;
+    const t = prompt('Este periodo e FORTE ou FRACO de vendas?\n\nDigite: forte ou fraco', 'forte');
+    if (t === null) return;
+    const tipo = String(t).trim().toLowerCase();
+    if (tipo !== 'forte' && tipo !== 'fraco') { alert('Digite exatamente "forte" ou "fraco".'); return; }
+
+    const corpo = { nome: String(nome).trim(), tipo, recorrencia };
+    if (recorrencia === 'unica') {
+      const ini = prompt('Data de inicio, no formato AAAA-MM-DD:');
+      if (ini === null) return;
+      const fim = prompt('Data final, no formato AAAA-MM-DD:', ini);
+      if (fim === null) return;
+      corpo.inicio = String(ini).trim(); corpo.fim = String(fim).trim();
+    } else {
+      const a = prompt('Comeca no dia do mes (1 a 31):', '1');
+      if (a === null) return;
+      const z = prompt('Termina no dia do mes (1 a 31):', '10');
+      if (z === null) return;
+      corpo.diaInicio = String(a).trim(); corpo.diaFim = String(z).trim();
+    }
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/calendario', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ..._adsHeaders() }, body: JSON.stringify(corpo),
+      }).then(x => x.json());
+      if (!r || !r.ok) { alert('Não deu pra salvar: ' + ((r && r.erro) || 'falha')); return; }
+      renderAdsCalendario();
+    } catch (e) { alert('Não deu pra salvar: ' + e.message); }
+  }
+  window.adsNovaJanela = adsNovaJanela;
+
+  async function adsRemoverJanela(id) {
+    if (!confirm('Remover esta janela do calendário?')) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/calendario/' + id, { method: 'DELETE', headers: _adsHeaders() }).then(x => x.json());
+      if (!r || !r.ok) { alert('Não deu pra remover: ' + ((r && r.erro) || 'falha')); return; }
+      renderAdsCalendario();
+    } catch (e) { alert('Não deu pra remover: ' + e.message); }
+  }
+  window.adsRemoverJanela = adsRemoverJanela;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // FILA DE APROVAÇÃO (v33k.1666)
+  // ═══════════════════════════════════════════════════════════════════════
+  async function renderAdsPendentes(lojaId) {
+    const host = document.getElementById('adsPendentes');
+    if (!host) return;
+    host.innerHTML = '<div style="font-size:12px;color:#9ca3af;padding:8px 0">Carregando a fila…</div>';
+    let r;
+    try {
+      r = await fetch(BACKEND_URL + '/api/ads/pendentes?lojaId=' + lojaId, { headers: _adsHeaders() }).then(x => x.json());
+    } catch (e) {
+      host.innerHTML = '<div style="font-size:12px;color:#b91c1c">Não consegui abrir a fila: ' + escapeHtml(e.message) + '</div>';
+      return;
+    }
+    if (!r || !r.ok) { host.innerHTML = ''; return; }
+    if (!r.itens || !r.itens.length) { host.innerHTML = ''; return; }
+
+    let h = '<div style="border:1px solid #fed7aa;border-radius:16px;padding:18px;background:#fffbf5;margin-top:18px">' +
+      '<div style="font-size:14px;font-weight:800;color:#9a3412"><span class="lc-ic" data-lucide="clock"></span> Aguardando sua aprovação · ' + r.itens.length + '</div>' +
+      '<div style="font-size:12px;color:#9a3412;margin-top:4px;max-width:640px">Estas ações foram decididas no último ciclo e não foram aplicadas. ' +
+      'Quando o motor rodar de novo nesta loja, as que sobrarem aqui são substituídas pelas novas: uma decisão tomada com o dado de dias atrás não vale mais.</div>';
+
+    r.itens.forEach(i => {
+      const porAnalista = i.analista
+        ? '<span style="font-size:10.5px;font-weight:700;color:#7c3aed;background:#7c3aed18;padding:1px 7px;border-radius:999px">analista</span>' : '';
+      h += '<div style="border:1px solid #fde3c8;border-radius:10px;background:#fff;padding:11px 13px;margin-top:10px">' +
+        '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">' +
+          '<div style="font-size:13px;font-weight:700;color:#1e293b">' + escapeHtml(i.descricao || '') + '</div>' + porAnalista +
+        '</div>' +
+        '<div style="font-size:12px;color:#64748b;margin-top:4px">Anúncio ' + escapeHtml(String(i.itemId)) +
+          (i.regra ? ' · regra ' + escapeHtml(String(i.regra)) : '') + '</div>' +
+        (i.motivoAnalista || i.motivo
+          ? '<div style="font-size:12.5px;color:#475569;margin-top:4px;line-height:1.45">' + escapeHtml(i.motivoAnalista || i.motivo) + '</div>' : '') +
+        '<div style="display:flex;gap:8px;margin-top:9px">' +
+          '<button onclick="adsDecidirPendente(' + i.id + ',\'aprovar\',' + lojaId + ')" style="padding:6px 13px;border:1px solid #86efac;background:#f0fdf4;color:#166534;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Aprovar</button>' +
+          '<button onclick="adsDecidirPendente(' + i.id + ',\'recusar\',' + lojaId + ')" style="padding:6px 13px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Recusar</button>' +
+        '</div>' +
+      '</div>';
+    });
+    h += '</div>';
+    host.innerHTML = h;
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(host); } catch (e) {} }
+  }
+  window.renderAdsPendentes = renderAdsPendentes;
+
+  async function adsDecidirPendente(id, decisao, lojaId) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/ads/pendentes/' + id + '/decidir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ..._adsHeaders() },
+        body: JSON.stringify({ decisao }),
+      }).then(x => x.json());
+      if (decisao === 'aprovar' && r && r.aplicou === false) {
+        alert('A ação foi aprovada, mas o marketplace recusou: ' + ((r && r.erro) || 'sem detalhe'));
+      } else if (!r || (!r.ok && !r.aplicou)) {
+        alert('Não deu certo: ' + ((r && r.erro) || 'falha'));
+      }
+    } catch (e) {
+      alert('Não deu certo: ' + e.message);
+    }
+    renderAdsPendentes(lojaId);
+    adsRenderModoMotor(lojaId, 'adsModoMotor');
+  }
+  window.adsDecidirPendente = adsDecidirPendente;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DIÁRIO DO ANALISTA (v33k.1651)
+  // ───────────────────────────────────────────────────────────────────────
+  // O comparativo acima é uma SIMULAÇÃO ("o que ele mudaria agora"). Este
+  // bloco é o REGISTRO ("o que ele mudou, quando, e se foi pro anúncio").
+  // São coisas diferentes e as duas precisam existir: a simulação responde
+  // antes de rodar, o diário responde depois.
+  // ═══════════════════════════════════════════════════════════════════════
+  const _AN_DEC = {
+    vetou:    { rot: 'Vetou o motor',   cor: '#dc2626', ic: 'ban' },
+    criou:    { rot: 'Criou a ação',    cor: '#7c3aed', ic: 'sparkles' },
+    trocou:   { rot: 'Trocou a ação',   cor: '#2563eb', ic: 'git-compare-arrows' },
+    nota:     { rot: 'Ressalva',        cor: '#d97706', ic: 'triangle-alert' },
+    sugestao: { rot: 'Sugestão',        cor: '#16a34a', ic: 'lightbulb' },
+  };
+
+  async function renderAdsAnalistaDiario(lojaId, dias, todasAsLojas) {
+    const host = document.getElementById('adsAnalistaDiario');
+    if (!host) return;
+    dias = dias || 30;
+    host.innerHTML = '<div style="font-size:12px;color:#9ca3af;padding:8px 0">Abrindo o diário do analista…</div>';
+    let r;
+    const qs = '?dias=' + dias + (todasAsLojas ? '' : '&lojaId=' + lojaId);
+    try {
+      r = await fetch(BACKEND_URL + '/api/ads/analista/historico' + qs, {
+        headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+    } catch (e) {
+      host.innerHTML = '<div style="font-size:12px;color:#b91c1c;padding:8px 0">Não consegui abrir o diário agora: ' + escapeHtml(e.message) + '</div>';
+      return;
+    }
+    if (!r || !r.ok) {
+      host.innerHTML = '<div style="font-size:12px;color:#b91c1c;padding:8px 0">Erro: ' + escapeHtml((r && r.erro) || 'falha') + '</div>';
+      return;
+    }
+
+    const s = r.resumo || {};
+    const alvo = todasAsLojas ? 'todas as suas lojas' : 'esta loja';
+    const troca = todasAsLojas
+      ? '<button onclick="renderAdsAnalistaDiario(' + lojaId + ',' + dias + ',false)" style="padding:6px 12px;border:1px solid #d1d5db;border-radius:9px;background:#fff;color:#334155;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit">Só esta loja</button>'
+      : '<button onclick="renderAdsAnalistaDiario(' + lojaId + ',' + dias + ',true)" style="padding:6px 12px;border:1px solid #d1d5db;border-radius:9px;background:#fff;color:#334155;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit">Ver todas as lojas</button>';
+
+    let h = '<div style="border:1px solid #e5e7eb;border-radius:16px;padding:18px;background:#fff">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">' +
+        '<div>' +
+          '<div style="font-size:14px;font-weight:800;color:#1e293b"><span class="lc-ic" data-lucide="history"></span> Diário do analista</div>' +
+          '<div style="font-size:12px;color:#64748b;margin-top:4px;max-width:600px">Cada vez que o analista revisou o motor em ' + alvo + ' nos últimos ' + dias + ' dias: o que o motor ia fazer, o que ele decidiu, o porquê, e se aquilo chegou ao anúncio.</div>' +
+        '</div>' + troca +
+      '</div>';
+
+    // tabela ainda não migrada: diz o que fazer, não some em silêncio
+    if (r.semTabela) {
+      h += '<div style="margin-top:14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;font-size:12.5px;color:#92400e">' +
+        'O diário ainda não foi criado no banco (falta rodar a migração <code>ads_analista_log</code>). Enquanto isso o analista continua revisando normalmente, só não fica o registro.</div></div>';
+      host.innerHTML = h;
+      if (window.lcHydrateIcons) { try { window.lcHydrateIcons(host); } catch (e) {} }
+      return;
+    }
+
+    // ── contadores ──
+    const card = (n, lbl, cor) => '<div style="flex:1;min-width:104px;border:1px solid #e5e7eb;border-radius:12px;padding:12px;text-align:center">' +
+      '<div style="font-size:24px;font-weight:800;color:' + cor + ';line-height:1">' + n + '</div>' +
+      '<div style="font-size:11.5px;color:#94a3b8;margin-top:3px">' + lbl + '</div></div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">' +
+      card(s.intervencoes || 0, 'intervenções', '#7c3aed') +
+      card(s.vetou || 0, 'vetos ao motor', '#dc2626') +
+      card((s.criou || 0) + (s.trocou || 0), 'ações trocadas', '#2563eb') +
+      card(s.aplicadas || 0, 'aplicadas no anúncio', '#16a34a') +
+    '</div>';
+
+    if (!r.dias || !r.dias.length) {
+      h += '<div style="margin-top:14px;border:1px dashed #e5e7eb;border-radius:12px;padding:18px;font-size:13px;color:#64748b;line-height:1.55">' +
+        '<strong>Nenhuma intervenção registrada ainda.</strong><br>' +
+        'Três motivos possíveis, nesta ordem: (1) o analista está desligado nesta loja — a chave fica logo acima; ' +
+        '(2) ele está ligado e concordou com o motor em tudo (o silêncio aqui é proposital: concordância não vira linha); ' +
+        '(3) o motor ainda não rodou desde que o diário passou a ser gravado.' +
+      '</div></div>';
+      host.innerHTML = h;
+      if (window.lcHydrateIcons) { try { window.lcHydrateIcons(host); } catch (e) {} }
+      return;
+    }
+
+    // ── linha do tempo ──
+    (r.dias || []).forEach(d => {
+      const dataBr = d.dia.split('-').reverse().join('/');
+      h += '<div style="margin-top:16px"><div style="font-size:12px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">' + dataBr + ' · ' + d.itens.length + ' intervenç' + (d.itens.length === 1 ? 'ão' : 'ões') + '</div>';
+      d.itens.forEach(i => {
+        const dec = _AN_DEC[i.decisao] || { rot: i.decisao, cor: '#64748b', ic: 'info' };
+        const titulo = i.anuncio || ('Anúncio ' + i.itemId);
+        // "aplicado" só quando o marketplace confirmou. Veto NUNCA vira ação e
+        // isso precisa ficar explícito, senão parece que faltou executar algo.
+        let selo;
+        if (i.decisao === 'vetou') selo = '<span style="font-size:11px;font-weight:700;color:#dc2626;background:#dc262618;padding:2px 9px;border-radius:999px">ação do motor impedida</span>';
+        else if (i.executado && i.sucesso === true) selo = '<span style="font-size:11px;font-weight:700;color:#16a34a;background:#16a34a18;padding:2px 9px;border-radius:999px">aplicado no anúncio</span>';
+        else if (i.executado && i.sucesso === false) selo = '<span style="font-size:11px;font-weight:700;color:#b91c1c;background:#b91c1c18;padding:2px 9px;border-radius:999px">falhou: ' + escapeHtml(String(i.erro || 'sem detalhe')).slice(0, 60) + '</span>';
+        else selo = '<span style="font-size:11px;font-weight:700;color:#94a3b8;background:#94a3b818;padding:2px 9px;border-radius:999px">não virou ação' + (i.erro ? ' · ' + escapeHtml(String(i.erro)).slice(0, 50) : '') + '</span>';
+
+        const num = [];
+        if (i.categoria) num.push(i.categoria);
+        if (i.acos != null) num.push('ACOS ' + i.acos + '%' + (i.meta != null ? ' (meta ' + i.meta + '%)' : ''));
+        if (i.tendReceitaPct != null) num.push('vendas ' + (i.tendReceitaPct >= 0 ? '+' : '') + i.tendReceitaPct + '%');
+        if (i.tendAcosPP != null) num.push('ACOS ' + (i.tendAcosPP >= 0 ? '+' : '') + i.tendAcosPP + 'pp');
+        if (i.orcamento != null) num.push('orçamento R$' + i.orcamento);
+
+        h += '<div style="border:1px solid #f1f5f9;border-left:3px solid ' + dec.cor + ';border-radius:10px;padding:11px 13px;margin-bottom:8px">' +
+          '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">' +
+            '<div style="font-size:13px;font-weight:700;color:#1e293b">' + escapeHtml(titulo) + (todasAsLojas ? ' <span style="font-weight:400;color:#94a3b8">· ' + escapeHtml(i.loja || '') + '</span>' : '') + '</div>' +
+            '<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:' + dec.cor + '"><span class="lc-ic" data-lucide="' + dec.ic + '"></span>' + dec.rot + '</span>' +
+          '</div>' +
+          '<div style="font-size:12.5px;color:#334155;margin-top:5px">' +
+            '<span style="color:#94a3b8">Motor' + (i.motor.regra ? ' (regra ' + escapeHtml(String(i.motor.regra)) + ')' : '') + ':</span> ' + escapeHtml(String(i.motor.descricao || i.motor.tipo || '—')) +
+            ' <span style="color:#cbd5e1">→</span> <strong style="color:' + dec.cor + '">' + escapeHtml(String(i.analista.descricao || i.analista.tipo || '—')) + '</strong>' +
+          '</div>' +
+          (i.motivo ? '<div style="font-size:12.5px;color:#475569;margin-top:4px;line-height:1.45"><span class="lc-ic" data-lucide="message-square-text"></span> ' + escapeHtml(i.motivo) + '</div>' : '') +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:7px">' + selo +
+            (num.length ? '<span style="font-size:11px;color:#94a3b8">' + escapeHtml(num.join(' · ')) + '</span>' : '') +
+          '</div>' +
+        '</div>';
+      });
+      h += '</div>';
+    });
+
+    if (r.truncado) h += '<div style="font-size:11.5px;color:#94a3b8;margin-top:10px">Mostrando as intervenções mais recentes (o período tem mais do que cabe numa página).</div>';
+    h += '</div>';
+    host.innerHTML = h;
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(host); } catch (e) {} }
+  }
+  window.renderAdsAnalistaDiario = renderAdsAnalistaDiario;
 
   // ═══════════════════════════════════════════════════════════════════════
   // ABA APRENDIZADO (Pro+): o que a inteligência aprendeu, por usuário
@@ -36211,31 +36688,46 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   async function carregarProdutosDoBackend() {
     try {
-      // Busca TODOS os produtos paginando (a rota sem limit corta em 1000 no Supabase).
-      // Primeiro o total, depois em chunks de 200.
+      // Busca TODOS os produtos paginando, por CURSOR (v33k.1650).
       let produtosBanco = [];
-      const respCount = await fetch(BACKEND_URL + '/api/produtos?count=true', { headers: { 'x-api-token': getApiToken() } });
-      const dCount = await respCount.json();
-      const total = (dCount.ok && dCount.total) || 0;
-      if (total > 0) {
-        const totalPaginas = Math.ceil(total / 200);
-        // PARALELO (v33k.133): antes buscava página por página em série (cada await
-        // esperando o anterior), lento conforme a base cresce. Agora dispara as
-        // páginas em paralelo, em lotes de 5 pra não sobrecarregar o backend/banco.
-        const LOTE = 5;
-        for (let inicio = 1; inicio <= totalPaginas; inicio += LOTE) {
-          const fim = Math.min(inicio + LOTE - 1, totalPaginas);
-          const promessas = [];
-          for (let p = inicio; p <= fim; p++) {
-            promessas.push(
-              fetch(BACKEND_URL + '/api/produtos?page=' + p + '&limit=200', { headers: { 'x-api-token': getApiToken() } })
-                .then(r => r.json())
-                .then(dp => (dp.ok && Array.isArray(dp.produtos)) ? dp.produtos : [])
-                .catch(() => [])
-            );
+      // A contagem saiu daqui: era a consulta mais cara da rota (varre tudo
+      // que casa) e servia só pra calcular quantas páginas disparar. Com
+      // cursor, o próprio laço sabe onde parar.
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1650: DE 5 PÁGINAS EM PARALELO POR OFFSET PARA CURSOR EM SÉRIE.
+      // ─────────────────────────────────────────────────────────────────
+      // Medido em 12/08: nove `500 canceling statement due to statement
+      // timeout` em /api/produtos, e a tela de Notas Fiscais caindo com
+      // "não deu pra carregar a lista".
+      //
+      // A consulta sozinha é rápida — 181ms no EXPLAIN, com índice e sem I/O.
+      // O que derrubava era CONTENÇÃO: cinco páginas simultâneas aqui, mais o
+      // `carregarTodosProdutos` varrendo em paralelo, mais o motor de Ads e os
+      // crons de expedição, todos na mesma tabela.
+      //
+      // Três problemas somados, e o do OFFSET é o pior: `page=9&limit=200`
+      // manda o banco ler 1.800 linhas e jogar 1.600 fora. A v33k.1600 já
+      // tinha trocado offset por cursor no outro carregador; este ficou para
+      // trás. Agora usa o mesmo caminho: cursor por id, em série, com o modo
+      // leve (o `select('*')` trazia o JSONB inteiro de cada produto).
+      {
+        let cursor = null;
+        for (let i = 0; i < 200; i++) {
+          const url = BACKEND_URL + '/api/produtos?ordem=id&limit=200&leve=1'
+            + (cursor ? '&desdeId=' + encodeURIComponent(cursor) : '');
+          let lote = [];
+          try {
+            const r = await fetch(url, { headers: { 'x-api-token': getApiToken() } });
+            const dp = await r.json();
+            lote = (dp && dp.ok && Array.isArray(dp.produtos)) ? dp.produtos : [];
+          } catch (e) {
+            console.warn('[catalogo] página falhou, parando a varredura:', e && e.message);
+            break;
           }
-          const resultados = await Promise.all(promessas);
-          resultados.forEach(arr => produtosBanco.push(...arr));
+          if (!lote.length) break;
+          produtosBanco.push(...lote);
+          cursor = lote[lote.length - 1].id;
+          if (lote.length < 200 || !cursor) break;
         }
       }
       const data = { ok: true, produtos: produtosBanco };
@@ -55444,11 +55936,51 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (falhaTotal === 0) {
       showToast(`✓ ${okTotal} atualização(ões) concluída(s) com sucesso`);
     } else {
-      showToast(`⚠ ${okTotal} ok, ${falhaTotal} falha(s). Ver console pra detalhes.`, true);
+      // v33k.1672: os erros existiam e iam SÓ pro console. O cliente via
+      // "0 ok, 4 falha(s). Ver console pra detalhes." e ninguém — nem ele, nem
+      // o suporte — sabia o motivo. Agora aparecem na tela.
       console.warn('[replicar selecionadas] falhas:', erros);
+      lcMostrarFalhasEstoque(okTotal, falhaTotal, erros);
     }
   }
   window.replicarSelecionadas = replicarSelecionadas;
+
+  // Painel de falhas da replicação de estoque (v33k.1672).
+  // Agrupa por mensagem: 4 variações com o mesmo motivo são UM problema, não
+  // quatro. Listar quatro vezes a mesma linha esconde a causa em vez de mostrar.
+  function lcMostrarFalhasEstoque(okTotal, falhaTotal, erros) {
+    const lista = Array.isArray(erros) ? erros : [];
+    const porMsg = {};
+    lista.forEach(linha => {
+      const txt = String(linha || '');
+      const sep = txt.indexOf(': ');
+      const sku = sep > 0 ? txt.slice(0, sep) : '';
+      const msg = sep > 0 ? txt.slice(sep + 2) : txt;
+      if (!porMsg[msg]) porMsg[msg] = [];
+      if (sku) porMsg[msg].push(sku);
+    });
+    const grupos = Object.entries(porMsg).sort((a, b) => b[1].length - a[1].length);
+
+    let h = '<div style="font-size:13px;color:#334155;margin-bottom:10px">' +
+      '<strong>' + okTotal + '</strong> atualizaç' + (okTotal === 1 ? 'ão concluída' : 'ões concluídas') +
+      ' · <strong style="color:#b91c1c">' + falhaTotal + '</strong> falha' + (falhaTotal === 1 ? '' : 's') + '.</div>';
+    grupos.forEach(([msg, skus]) => {
+      h += '<div style="border:1px solid #fecaca;background:#fef2f2;border-radius:10px;padding:11px 13px;margin-bottom:9px">' +
+        '<div style="font-size:12.5px;color:#7f1d1d;line-height:1.5">' + escapeHtml(msg) + '</div>' +
+        (skus.length ? '<div style="font-size:11.5px;color:#991b1b;margin-top:6px">' +
+          skus.length + ' variaç' + (skus.length === 1 ? 'ão' : 'ões') + ': ' +
+          escapeHtml(skus.slice(0, 8).join(', ')) + (skus.length > 8 ? ' (+' + (skus.length - 8) + ')' : '') +
+        '</div>' : '') +
+      '</div>';
+    });
+    if (!grupos.length) h += '<div style="font-size:12.5px;color:#64748b">Sem detalhe devolvido pelo marketplace.</div>';
+
+    // lcAlert(msg, opts) — o 2o argumento e um OBJETO, nao o titulo
+    if (typeof lcAlert === 'function') { lcAlert(h, { tipo: 'perigo', titulo: 'Falhas ao replicar estoque' }); return; }
+    // fallback: sem modal disponível, ao menos o motivo vai no toast
+    showToast('⚠ ' + okTotal + ' ok, ' + falhaTotal + ' falha(s): ' + (grupos[0] ? grupos[0][0] : 'sem detalhe'), true);
+  }
+  window.lcMostrarFalhasEstoque = lcMostrarFalhasEstoque;
 
   // Avalia se a NOSSA variação casa bem com a variação correspondente em cada
   // anúncio vinculado. Compara nosso SKU com o skuExterno guardado em cada vínculo.
@@ -64116,7 +64648,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1640-sync-estoque-resumo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1673-dono-movimento';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -82134,7 +82666,12 @@ ${JSON.stringify(metricas, null, 2)}`
                 foto +
                 '<div class="auto-hist-item-info">' +
                   '<div class="auto-hist-item-nome" title="' + (it.anuncio ? escapeHtml(it.anuncio) : '') + '">' + titulo + '</div>' +
-                  '<div class="auto-hist-item-alt ' + corCls + '"><span class="lc-ic" data-lucide="' + icone + '"></span> ' + escapeHtml(it.alteracao) + '</div>' +
+                  '<div class="auto-hist-item-alt ' + corCls + '"><span class="lc-ic" data-lucide="' + icone + '"></span> ' + escapeHtml(it.alteracao) +
+                    // v33k.1651: quem decidiu. Antes o histórico filtrava as
+                    // ações do analista PARA FORA (origem 'motor-analista'), e
+                    // por isso nunca apareceu uma linha dele nesta tela.
+                    (it.analista ? ' <span style="font-size:10.5px;font-weight:700;color:#7c3aed;background:#7c3aed18;padding:1px 7px;border-radius:999px;vertical-align:middle">analista</span>' : '') +
+                  '</div>' +
                   (it.sucesso ? '' : '<div class="auto-hist-item-erro">⚠ ' + escapeHtml(it.erro || 'não aplicado') + '</div>') +
                 '</div>' +
                 '<span class="auto-hist-item-hora">' + _autoFmtHora(it.hora) + '</span>' +
@@ -82455,6 +82992,20 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.autoRegrasCarregarLoja = autoRegrasCarregarLoja;
 
+  // v33k.1666: SEGUNDO ponto de controle do modo do motor, dentro do modal
+  // "Editar automação". Lê e escreve a MESMA chave da página do Analista
+  // (ads_config_loja.motor_modo) através das mesmas funções — não há estado
+  // duplicado pra divergir.
+  function autoRegrasModoCardHtml() {
+    return '<div class="auto-motor-padrao" style="margin-top:12px"><div id="autoRegrasModoMotor"></div></div>';
+  }
+  async function autoRegrasModoCarregar() {
+    if (!_autoRegrasLojaId) return;
+    if (typeof adsRenderModoMotor !== 'function') return;
+    try { await adsRenderModoMotor(_autoRegrasLojaId, 'autoRegrasModoMotor'); } catch (e) {}
+  }
+  window.autoRegrasModoCarregar = autoRegrasModoCarregar;
+
   // Card do Analista dentro do modal "Editar automação" (Regras do motor), por loja.
   function autoRegrasAnalistaCardHtml() {
     return '<div class="auto-motor-padrao" style="margin-top:12px">' +
@@ -82544,9 +83095,14 @@ ${JSON.stringify(metricas, null, 2)}`
     }
     html += autoMotorPadraoCardHtml(cfg.motorPadrao, cfg.regras.length);
     html += '</div>';
+    // v33k.1666: o modo vem ANTES do card do analista e no TOPO da lista de
+    // cards de configuração — foi onde o Alessandro pediu ("parte superior da
+    // página ao clicar em editar").
+    html = autoRegrasModoCardHtml() + html;
     html += autoRegrasAnalistaCardHtml();
 
     body.innerHTML = html;
+    try { autoRegrasModoCarregar(); } catch (e) {}
     try { autoRegrasAnalistaCarregar(); } catch (e) {}
 
     if (foot) {
