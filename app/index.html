@@ -42610,6 +42610,217 @@ Retorne JSON: {"ID": "valor", ...}`;
     return migrado;
   }
   
+  // ══════════════════════════════════════════════════════════════════════
+  // PRÉ-VOO NO ATO DA EXPORTAÇÃO (v33k.1684)
+  // ──────────────────────────────────────────────────────────────────────
+  // Mesmo padrão da pré-checagem de NCM na emissão em massa (v33k.547):
+  // em vez de tentar, falhar e o usuário descobrir um produto por vez, checa
+  // ANTES e abre UM modal com tudo que falta — preenchimento individual ou em
+  // massa por coluna.
+  //
+  // A checagem usa a MESMA classificação do backend. Se a tela pedisse coisa
+  // diferente do que a exportação cobra, a pessoa preencheria tudo e a
+  // exportação falharia mesmo assim — que é justamente o que estamos matando.
+  async function mlPreVooChecar(lojaIdBanco, produtoIds) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/pre-voo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({ produtoIds }),
+      }).then(x => x.json());
+      return (r && r.ok) ? (r.pendencias || []) : [];
+    } catch (e) {
+      // ★ falha aberta: se a checagem não responde, a exportação segue. Uma
+      // consulta de metadados não pode impedir export que funcionaria.
+      console.warn('[pré-voo] não consegui checar:', e.message);
+      return [];
+    }
+  }
+  window.mlPreVooChecar = mlPreVooChecar;
+
+  // Abre o modal de preenchimento. Resolve `true` quando o usuário salvou tudo
+  // (e a exportação pode seguir), `false` quando cancelou.
+  // Abre o modal de preenchimento. Resolve `true` quando o usuário salvou tudo
+  // (e a exportação pode seguir), `false` quando cancelou.
+  //
+  // ★ AGRUPADO POR CATEGORIA (v33k.1685). Uma leva mista — cadeiras pedindo 3
+  // campos, bonés pedindo 1 — numa tabela só viraria 4 colunas com a maioria
+  // das células vazias, e "aplicar a todos" espalharia altura de cadeira em
+  // boné. Como as colunas são DETERMINADAS pela categoria, agrupar por ela dá
+  // tabelas densas, sem célula vazia, e cada "aplicar a todos" só alcança
+  // produtos que realmente têm aquele campo.
+  //
+  // Por categoria e não por produto: produtos da mesma categoria pedem
+  // exatamente os mesmos campos, então o grupo é naturalmente homogêneo.
+  function mlAbrirModalAtributos(pendencias) {
+    return new Promise((resolve) => {
+      const id = 'mlPreVooModal';
+      const old = document.getElementById(id); if (old) old.remove();
+
+      // agrupa por categoria, preservando o índice global de cada produto
+      // (o índice é a chave dos campos e do salvamento, não pode ser por grupo)
+      const grupos = [];
+      pendencias.forEach((p, idx) => {
+        let g = grupos.find(x => x.cat === p.categoryId);
+        if (!g) { g = { cat: p.categoryId, nome: p.categoriaNome || null, colunas: [], itens: [] }; grupos.push(g); }
+        g.itens.push({ p, idx });
+        p.faltando.forEach(a => { if (!g.colunas.find(c => c.id === a.id)) g.colunas.push(a); });
+      });
+      // grupo maior primeiro: começa pelo que resolve mais de uma vez
+      grupos.sort((a, b) => b.itens.length - a.itens.length);
+
+      const inp = 'width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:7px;font-size:12.5px;box-sizing:border-box';
+      const campo = (a, linha, cat) => {
+        const cid = 'pv_' + linha + '_' + a.id;
+        const marca = ' data-pvcol="' + a.id + '" data-pvgrupo="' + cat + '"';
+        if (a.valores && a.valores.length) {
+          return '<select id="' + cid + '"' + marca + ' style="' + inp + '">' +
+            '<option value="">—</option>' +
+            a.valores.map(v => '<option value="' + escapeHtml(v.nome) + '">' + escapeHtml(v.nome) + '</option>').join('') +
+            '</select>';
+        }
+        return '<input id="' + cid + '"' + marca + ' style="' + inp + '" placeholder="' + escapeHtml(a.nome) + '">';
+      };
+
+      const totalCampos = grupos.reduce((s2, g) => s2 + g.itens.length * g.colunas.length, 0);
+      let h = '<div style="padding:14px 16px;font-size:13px;color:#334155;background:#eff6ff;border-bottom:1px solid #dbeafe">' +
+        '<strong>' + pendencias.length + ' produto(s)</strong> em <strong>' + grupos.length + ' categoria(s)</strong> ' +
+        'precisam de campos obrigatórios do Mercado Livre (' + totalCampos + ' no total). ' +
+        'Cada categoria pede campos diferentes, por isso estão separadas. ' +
+        '<strong>Nada foi criado ainda.</strong></div>' +
+        '<div style="overflow:auto;max-height:58vh;padding:0 4px 4px">';
+
+      grupos.forEach(g => {
+        const titulo = g.nome ? (escapeHtml(g.nome) + ' <span style="font-weight:400;color:#94a3b8">· ' + escapeHtml(g.cat) + '</span>')
+          : escapeHtml(g.cat);
+        h += '<div style="margin-top:12px;border:1px solid #e2e8f0;border-radius:11px;overflow:hidden">' +
+          '<div style="padding:9px 12px;background:#f8fafc;border-bottom:1px solid #eef2f7;font-size:12.5px;font-weight:800;color:#1e293b">' +
+            titulo + ' <span style="font-weight:600;color:#64748b">· ' + g.itens.length + ' produto(s) · ' +
+            g.colunas.length + ' campo(s)</span></div>' +
+          '<table style="width:100%;border-collapse:collapse"><thead><tr>' +
+            '<th style="text-align:left;padding:8px 10px;font-size:11.5px;font-weight:700;color:#64748b">Produto</th>' +
+            g.colunas.map(a =>
+              '<th style="text-align:left;padding:8px 10px;font-size:11.5px;font-weight:700;color:#64748b;min-width:170px">' +
+                escapeHtml(a.nome) + ' <span style="color:#dc2626">*</span>' +
+                '<a onclick="mlPreVooAplicarTodos(\'' + a.id + '\',\'' + g.cat + '\')" style="display:block;font-size:11px;font-weight:600;color:#2563eb;cursor:pointer;margin-top:2px">aplicar a todos desta categoria</a>' +
+              '</th>').join('') +
+          '</tr></thead><tbody>';
+
+        g.itens.forEach(({ p, idx }) => {
+          const foto = p.foto
+            ? '<img src="' + escapeHtml(p.foto) + '" style="width:36px;height:36px;object-fit:cover;border-radius:7px;border:1px solid #e2e8f0">'
+            : '<div style="width:36px;height:36px;border-radius:7px;background:#f1f5f9"></div>';
+          h += '<tr style="border-top:1px solid #f1f5f9">' +
+            '<td style="padding:8px 10px;vertical-align:middle"><div style="display:flex;gap:9px;align-items:center">' + foto +
+              '<div style="min-width:0"><div style="font-size:12.5px;font-weight:600;color:#1e293b">' + escapeHtml(p.nome || '') + '</div>' +
+              '<div style="font-size:11px;color:#94a3b8">' + escapeHtml(p.sku || '') + '</div></div>' +
+            '</div></td>' +
+            g.colunas.map(a => {
+              const precisa = p.faltando.find(x => x.id === a.id);
+              return '<td style="padding:8px 10px">' + (precisa ? campo(precisa, idx, g.cat) : '<span style="color:#cbd5e1">—</span>') + '</td>';
+            }).join('') +
+          '</tr>';
+        });
+        h += '</tbody></table></div>';
+      });
+      h += '</div>';
+
+      window._pvPendencias = pendencias;
+      window._pvResolve = resolve;
+      lcAlert(h, {
+        tipo: 'info', titulo: 'Campos obrigatórios do Mercado Livre',
+        largura: 1000,
+        botoes: [
+          { texto: 'Cancelar exportação', onclick: 'mlPreVooCancelar()' },
+          { texto: 'Salvar e exportar', primario: true, onclick: 'mlPreVooSalvar()' },
+        ],
+      });
+      setTimeout(() => {
+        if (document.getElementById('pvBtnSalvar')) return;
+        const box = document.querySelector('#lcModalOverlay .lc-modal-acoes, #lcModalOverlay [class*=acoes]');
+        if (!box) return;
+        box.innerHTML = '<button class="lc-btn" onclick="mlPreVooCancelar()" style="background:#fff;color:#0f172a">Cancelar exportação</button>' +
+          '<button id="pvBtnSalvar" class="lc-btn" onclick="mlPreVooSalvar()" style="background:#2563eb;color:#fff">Salvar e exportar</button>';
+      }, 60);
+    });
+  }
+  window.mlAbrirModalAtributos = mlAbrirModalAtributos;
+
+  // Replica o valor da PRIMEIRA linha preenchida daquela coluna nas demais.
+  // Só preenche o que está VAZIO: sobrescrever o que a pessoa já digitou seria
+  // apagar trabalho dela.
+  function mlPreVooAplicarTodos(colId, grupo) {
+    // ★ escopado à CATEGORIA: sem isso, "aplicar a todos" de um campo que
+    // existe em duas categorias espalharia o valor de uma na outra.
+    const sel = '[data-pvcol="' + colId + '"]' + (grupo ? '[data-pvgrupo="' + grupo + '"]' : '');
+    const campos = [...document.querySelectorAll(sel)];
+    const origem = campos.find(c => String(c.value || '').trim());
+    if (!origem) { showToast('Preencha uma linha primeiro, depois use "aplicar a todos".', true); return; }
+    let n = 0;
+    campos.forEach(c => { if (c !== origem && !String(c.value || '').trim()) { c.value = origem.value; n++; } });
+    showToast('Valor aplicado em ' + n + ' linha(s) desta categoria.');
+  }
+  window.mlPreVooAplicarTodos = mlPreVooAplicarTodos;
+
+  function mlPreVooCancelar() {
+    const r = window._pvResolve; window._pvResolve = null;
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    const ov = document.getElementById('lcModalOverlay'); if (ov) ov.style.display = 'none';
+    if (r) r(false);
+  }
+  window.mlPreVooCancelar = mlPreVooCancelar;
+
+  async function mlPreVooSalvar() {
+    const pend = window._pvPendencias || [];
+    // 1) valida ANTES de salvar qualquer um: salvar metade e travar no meio
+    // deixaria o cadastro num estado que a pessoa não pediu
+    const faltou = [];
+    pend.forEach((p, i) => p.faltando.forEach(a => {
+      const el = document.getElementById('pv_' + i + '_' + a.id);
+      if (!el || !String(el.value || '').trim()) faltou.push((p.nome || p.produtoId) + ' · ' + a.nome);
+    }));
+    if (faltou.length) {
+      showToast('Ainda falta preencher ' + faltou.length + ' campo(s). Ex.: ' + faltou[0], true);
+      return;
+    }
+    // 2) salva produto a produto, juntando com o que já existia
+    let erros = 0;
+    for (let i = 0; i < pend.length; i++) {
+      const p = pend[i];
+      const novos = p.faltando.map(a => ({ id: a.id, valor: String(document.getElementById('pv_' + i + '_' + a.id).value).trim() }));
+      try {
+        const r = await fetch(BACKEND_URL + '/api/produtos/' + p.produtoId + '/atributos-ml', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+            'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+          body: JSON.stringify({ atributos: novos }),
+        }).then(x => x.json());
+        if (!r || !r.ok) erros++;
+      } catch (e) { erros++; }
+    }
+    const resolve = window._pvResolve; window._pvResolve = null;
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    const ov = document.getElementById('lcModalOverlay'); if (ov) ov.style.display = 'none';
+    if (erros) {
+      showToast(erros + ' produto(s) não salvaram os atributos. A exportação foi cancelada.', true);
+      if (resolve) resolve(false);
+      return;
+    }
+    showToast('Campos salvos. Exportando…');
+    if (resolve) resolve(true);
+  }
+  window.mlPreVooSalvar = mlPreVooSalvar;
+
+  // Ponto único que a exportação chama: checa, e se faltar abre o modal.
+  // Devolve true quando pode seguir.
+  async function mlPreVooLiberado(lojaIdBanco, produtoIds) {
+    const pend = await mlPreVooChecar(lojaIdBanco, produtoIds);
+    if (!pend.length) return true;
+    return await mlAbrirModalAtributos(pend);
+  }
+  window.mlPreVooLiberado = mlPreVooLiberado;
+
   async function carregarAtributosCategoria(categoryId) {
     if (!categoryId) return [];
     
@@ -44286,6 +44497,35 @@ REGRAS DURAS:
         // o mesmo SKU físico, e o agrupamento automático por SKU pai funcione.
         novo.skuPai = p.skuPai;
         // Variações já vieram clonadas com SKUs originais, não mexer.
+        //
+        // ★ v33k.1680: EXCETO quando a variação veio SEM SKU. Acontece com
+        // anúncio criado direto no marketplace, onde preencher SKU é opcional:
+        // a cópia chega sem ele e o nosso validador barra com
+        // "Variacao 1: o SKU da variacao e obrigatorio" — o print de 13/08.
+        //
+        // Preenche no formato do projeto ({SKU_PAI}-{COR}-{TAMANHO}) usando o
+        // que a variação tem. Só toca em quem está VAZIO: SKU existente é a
+        // ligação com o estoque físico e não pode ser reescrito.
+        {
+          const _limpaTxt = (t) => String(t == null ? '' : t)
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 12);
+          let _gerados = 0;
+          (novo.variacoes || []).forEach((v, i) => {
+            if (v.sku && String(v.sku).trim()) return;
+            const partes = [_limpaTxt(novo.skuPai) || 'SKU'];
+            const cor = _limpaTxt(v.cor || v.corNome);
+            const tam = _limpaTxt(v.tamanho || v.grade);
+            if (cor) partes.push(cor);
+            if (tam) partes.push(tam);
+            // sem cor nem tamanho não dá pra distinguir uma variação da outra:
+            // o índice entra pra garantir SKU único dentro do produto
+            if (partes.length === 1) partes.push('V' + (i + 1));
+            v.sku = partes.join('-');
+            _gerados++;
+          });
+          if (_gerados) dupLogStep('  ✓ ' + _gerados + ' SKU(s) de variação gerado(s) (vinham vazios do anúncio de origem)', 'ok');
+        }
         
         // 2. Título via IA
         if (opts.variarTitulo) {
@@ -48596,6 +48836,23 @@ REGRAS DURAS:
       return { ok: false, erro: 'Backend não configurado' };
     }
     
+    // ★ PRÉ-VOO (v33k.1684): antes de qualquer escrita, confere os campos
+    // obrigatórios da categoria do ML. Se faltar, abre o modal de
+    // preenchimento (individual ou em massa por coluna, igual ao do NCM na
+    // emissão em massa) e só segue depois de salvo.
+    //
+    // Silencioso não abre modal: exportação automática não tem quem preencha.
+    // Ela segue e o pré-voo do backend devolve o erro explicado, sem criar nada.
+    if (marketplace === 'mercadolivre' && !opts.silencioso && produtoParaExportar.idBanco) {
+      try {
+        const liberado = await mlPreVooLiberado(lojaIdBanco, [produtoParaExportar.idBanco]);
+        if (!liberado) return { ok: false, erro: 'Exportação cancelada: faltam campos obrigatórios da categoria.', cancelado: true };
+      } catch (e) {
+        // falha aberta: a checagem não pode impedir export que funcionaria
+        console.warn('[pré-voo] seguindo sem checar:', e.message);
+      }
+    }
+
     // SHEIN: registra os SKUs usados (pra próxima vez detectar duplicata)
     if (marketplace === 'shein') {
       if (produtoParaExportar.skuPai) registrarSkuShein(produtoParaExportar.skuPai);
@@ -55921,7 +56178,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     for (const t of tarefas) {
       try {
         const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
           body: JSON.stringify({ ...t, ..._ctxEstoqueDoSku(t.sku) }),
         });
         const data = await resp.json();
@@ -57038,7 +57295,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       _seloEstoque(sku, 'enviando', 'enviando aos anúncios…');
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
         body: JSON.stringify({ sku, estoque, anuncios, ..._ctxEstoqueDoSku(sku), motivo: 'Estoque em tempo real' }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -57348,7 +57605,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     try {
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
         body: JSON.stringify({ sku, estoque: novoEstoque, anuncios, ..._ctxEstoqueDoSku(sku), motivo: 'Replicar estoque nos anúncios' }),
       });
       const data = await resp.json();
@@ -57526,7 +57783,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       try {
         const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-por-sku', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
           body: JSON.stringify({
             sku: a.sku, estoque: novoValor, anuncios: a.anuncios,
             ..._ctxEstoqueDoSku(a.sku),
@@ -59107,6 +59364,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // local (produtosErp), casando pelo vínculo do anúncio TikTok (product_id ==
   // vinculo.anuncioId). Assim o detalhe da promoção mostra produto + foto (como
   // na Shopee) em vez de só o ID cru. Testado em qa_harness.js.
+  let _tkPromoOrdem = '';   // v33k.1677: ordenação escolhida no modal do TikTok
+
   function _tkResolverProdutoLocal(productId) {
     const pid = String(productId || '');
     if (!pid) return null;
@@ -59183,8 +59442,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     html += '<div style="font-size:12.5px;font-weight:800;color:#334155;margin:6px 0 8px">Produtos na promoção (' + prods.length + ')</div>';
     // v33k.1211: busca + marcar tudo (padrão Shopee)
     if (prods.length && !encerrada) {
+      // v33k.1677: mesma barra do modal da Shopee — busca por nome/ID/SKU e
+      // ORDENAÇÃO, que aqui não existia (a Shopee já tinha três opções).
       html += '<div style="display:flex;gap:8px;align-items:center;margin:0 0 8px;flex-wrap:wrap">' +
-        '<input id="tkPromoBusca" oninput="_tkFiltrarPromoProds()" placeholder="🔍 Buscar por nome ou ID..." style="' + _TK_INP + ';flex:1;min-width:180px">' +
+        '<input id="tkPromoBusca" oninput="_tkFiltrarPromoProds()" placeholder="🔍 Buscar por nome, ID ou SKU (aceita várias palavras)" style="' + _TK_INP + ';flex:1;min-width:180px">' +
+        '<select id="tkPromoOrdem" onchange="_tkFiltrarPromoProds()" style="' + _TK_INP + ';width:auto;min-width:170px">' + _promoOpcoesOrdem(_tkPromoOrdem) + '</select>' +
         '<label style="font-size:11.5px;color:#64748b;display:flex;align-items:center;gap:5px;white-space:nowrap"><input type="checkbox" onchange="tkPromoMarcarTudo(this.checked)" style="width:14px;height:14px"> Marcar tudo</label>' +
       '</div>';
     }
@@ -59208,34 +59470,75 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         const foto = (loc && loc.foto)
           ? '<img src="' + escapeHtml(loc.foto) + '" style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid #eef2f7" onerror="this.style.visibility=\'hidden\'">'
           : '<div style="width:44px;height:44px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#94a3b8"><span class="lc-ic" data-size="sm" data-lucide="image"></span></div>';
-        const titulo = loc ? escapeHtml(loc.nome) : ('ID ' + escapeHtml(pid));
-        const sub = (loc && loc.skuPai) ? ('SKU ' + escapeHtml(loc.skuPai) + ' · ' + pid) : ('ID ' + escapeHtml(pid));
+        // ★ v33k.1676: sem vínculo local, a linha mostrava "ID 1735…" no título
+        // E "ID 1735…" de novo no subtítulo — o mesmo número duas vezes, sem
+        // dizer nada. Agora: nome local > nome que o próprio TikTok devolve >
+        // aviso explícito de que o produto não está vinculado no Lider 10.
+        // "Não vinculado" é informação acionável; ID repetido é ruído.
+        const nomeTk = p.product_name || p.title || p.name
+          || (p.product && (p.product.title || p.product.product_name)) || null;
+        const semVinculo = !loc && !nomeTk;
+        const titulo = loc ? escapeHtml(loc.nome)
+          : (nomeTk ? escapeHtml(String(nomeTk)) : 'Produto sem vínculo no Lider 10');
+        const sub = (loc && loc.skuPai) ? ('SKU ' + escapeHtml(loc.skuPai) + ' · ' + escapeHtml(pid))
+          : (semVinculo
+              ? ('ID ' + escapeHtml(pid) + ' · anúncio criado no TikTok e ainda não vinculado aqui')
+              : ('ID ' + escapeHtml(pid)));
         // v33k.1213: TRÊS colunas como o usuário pediu — Preço de VENDA (referência,
         // riscado) · PROMO ATUAL (o preço promocional que está valendo) · NOVO (campo).
-        const _fmt = (n) => 'R$ ' + Number(n).toFixed(2).replace('.', ',');
+        // ★ v33k.1676: `_fmt` fazia `Number(n).toFixed(2)` sem checar. Quando o
+        // TikTok devolve o preço num formato que não vira número (objeto,
+        // string com moeda, campo ausente virando ''), saía **"R$ NaN"** na
+        // coluna PROMO ATUAL — foi o que apareceu no print de 13/08.
+        // Agora: número vira moeda; não-número não vira nada, e a coluna some
+        // em vez de mostrar lixo.
+        const _num = (n) => {
+          if (n == null || n === '') return null;
+          if (typeof n === 'object') return null;   // {amount:…} não vira preço por acidente
+          const limpo = String(n).replace(/[^\d.,-]/g, '').replace(',', '.');
+          // ★ sem NENHUM dígito, `Number('')` é 0 e a tela mostraria "R$ 0,00" —
+          // pior que o NaN original, porque 0,00 PARECE um preço válido e o
+          // usuário pode salvar achando que é o valor da promoção.
+          if (!/\d/.test(limpo)) return null;
+          const x = Number(limpo);
+          return Number.isFinite(x) ? x : null;
+        };
+        const _fmt = (n) => { const x = _num(n); return x == null ? null : ('R$ ' + x.toFixed(2).replace('.', ',')); };
         const vendaTxt = (loc && loc.preco != null) ? _fmt(loc.preco) : null;
-        const atualTxt = (atual !== '') ? (campoPct ? (atual + '%') : _fmt(atual)) : null;
+        const _atualNum = _num(atual);
+        const atualTxt = (atual === '') ? null
+          : (campoPct ? (_atualNum != null ? _atualNum + '%' : null) : _fmt(atual));
         const colVenda = vendaTxt
           ? '<div style="text-align:right;flex-shrink:0"><div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:.3px">Venda</div><div style="font-size:11px;color:#94a3b8;text-decoration:line-through">' + vendaTxt + '</div></div>'
           : '';
         const colAtual = atualTxt
           ? '<div style="text-align:right;flex-shrink:0"><div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:.3px">Promo atual</div><div style="font-size:11px;color:#16a34a;font-weight:700">' + atualTxt + '</div></div>'
           : '';
+        // ★ v33k.1677: o bloco da direita era `flex-shrink:0` com três colunas
+        // fixas dentro. Em tela estreita ele não encolhia e EMPURRAVA a linha
+        // pra fora do modal — a quebra à direita do print. Agora ele pode
+        // quebrar pra linha de baixo em vez de estourar o container.
         const editor = encerrada
-          ? ('<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">' + colVenda + colAtual + '</div>')
-          : ('<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">' +
+          ? ('<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">' + colVenda + colAtual + '</div>')
+          : ('<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">' +
               colVenda + colAtual +
               '<span style="color:#cbd5e1;flex-shrink:0">→</span>' +
               '<div style="text-align:right;flex-shrink:0"><div style="font-size:9px;color:#2563eb;text-transform:uppercase;letter-spacing:.3px;font-weight:700">Novo</div>' +
                 '<div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:#2563eb;font-weight:700">' + (campoPct ? '%' : 'R$') + '</span>' +
-                '<input type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" value="' + escapeHtml(atual) + '" data-tkpid="' + escapeHtml(pid) + '" data-tkbase="' + (loc && loc.preco != null ? loc.preco : '') + '" class="tk-preco-inp" placeholder="' + (campoPct ? 'ex 15' : 'ex 79,90') + '" style="' + _TK_INP + ';width:88px;padding:6px 8px"></div>' +
+                '<input type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" value="' + escapeHtml(_atualNum != null ? String(_atualNum) : '') + '" data-tkpid="' + escapeHtml(pid) + '" data-tkbase="' + (loc && loc.preco != null ? loc.preco : '') + '" class="tk-preco-inp" placeholder="' + (campoPct ? 'ex 15' : 'ex 79,90') + '" style="' + _TK_INP + ';width:88px;padding:6px 8px"></div>' +
               '</div>' +
             '</div>');
         const buscaChave = ((loc ? loc.nome : '') + ' ' + (loc && loc.skuPai ? loc.skuPai : '') + ' ' + pid).toLowerCase();
-        return '<div data-tkrow="1" data-tksearch="' + escapeHtml(buscaChave) + '" style="display:flex;align-items:center;gap:10px;padding:9px 11px;background:#fff;border:1px solid #eef2f7;border-radius:9px">' +
+        // v33k.1677: os dados da linha viajam em data-*, pra ordenar e filtrar sem
+        // refazer a requisição nem perder o que já foi digitado nos campos.
+        return '<div data-tkrow="1" data-tksearch="' + escapeHtml(buscaChave) +
+          '" data-tknome="' + escapeHtml(loc ? loc.nome : (nomeTk || '')) +
+          '" data-tkvenda="' + (loc && loc.preco != null ? loc.preco : '') +
+          '" data-tkpromo="' + (_atualNum != null ? _atualNum : '') +
+          '" style="display:flex;align-items:center;gap:10px;padding:9px 11px;background:#fff;border:1px solid #eef2f7;border-radius:9px;flex-wrap:wrap">' +
           (encerrada ? '' : '<input type="checkbox" class="tk-preco-chk" data-tkpid="' + escapeHtml(pid) + '" onchange="tkPromoAtualizarSel()" style="width:15px;height:15px;flex-shrink:0">') +
           foto +
-          '<div style="flex:1;min-width:0">' +
+          '<div style="flex:1 1 220px;min-width:0">' +
             '<div style="font-size:12.5px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + titulo + '</div>' +
             '<div style="font-size:10.5px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + sub + '</div></div>' +
           editor +
@@ -59251,7 +59554,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         '<div style="font-size:12.5px;font-weight:800;color:#334155;margin-bottom:8px">Adicionar produtos</div>' +
         '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">' +
           '<div style="flex:1;min-width:180px"><label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px">Buscar produto</label>' +
-            '<input id="tkAddBusca" oninput="_tkFiltrarProdutos()" placeholder="Nome ou ID…" style="' + _TK_INP + '"></div>' +
+            '<input id="tkAddBusca" oninput="_tkFiltrarProdutos()" placeholder="Nome, ID ou SKU…" style="' + _TK_INP + '"></div>' +
+          '<label style="font-size:11.5px;color:#64748b;display:flex;align-items:center;gap:5px;white-space:nowrap;padding-bottom:8px"><input type="checkbox" onchange="_tkAddMarcarTudo(this.checked)" style="width:14px;height:14px"> Marcar todos os listados</label>' +
           '<div style="width:150px"><label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px">' + (campoPct ? '% de desconto' : 'Preço final (R$)') + '</label>' +
             '<input id="tkAddValor" type="number" min="0" step="' + (campoPct ? '1' : '0.01') + '" placeholder="' + (campoPct ? 'ex.: 15' : 'ex.: 79.90') + '" style="' + _TK_INP + '"></div>' +
           '<button class="lc-btn lc-btn--primary lc-btn--sm" style="background:#111827;border-color:#111827" onclick="tkPromoAddSelecionados(\'' + activityId + '\',\'' + tipo + '\')"><span class="lc-ic" data-size="sm" data-lucide="plus"></span> Adicionar selecionados</button>' +
@@ -59294,6 +59598,151 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // lote) pros produtos da promoção aberta, guarda em _tkPrecoRealMap e re-renderiza.
   // Assim o "Venda" mostra o valor real (não o local defasado) e a checagem
   // "promo ≥ venda" para de pular produtos por engano.
+  // ══════════════════════════════════════════════════════════════════════
+  // PROMOÇÃO ESPELHO NO TIKTOK (v33k.1679)
+  // ──────────────────────────────────────────────────────────────────────
+  // Mesmo padrão da Shopee: toda alteração numa promoção é replicada numa
+  // promoção AGENDADA que começa quando a atual terminar, +120 dias. Assim a
+  // loja nunca fica sem promoção quando a campanha vigente encerra.
+  //
+  // DECISÃO DO ALESSANDRO (13/08): **UM espelho por loja** (opção A), ancorado
+  // na atividade com MAIS anúncios vinculados.
+  //
+  // ★ O RISCO QUE ESSA ESCOLHA CRIA, e como está tratado:
+  // No TikTok as atividades têm TIPO. `FIXED_PRICE` carrega PREÇO,
+  // `DIRECT_DISCOUNT` carrega PERCENTUAL. Com um espelho só por loja, ele tem
+  // UM tipo — o da atividade âncora. Replicar cego uma alteração de preço fixo
+  // dentro de um espelho de desconto direto mandaria R$79 como "79% de
+  // desconto", e o produto sairia a R$16. Por isso: quando o tipo não bate, o
+  // espelho NÃO é tocado e o usuário é avisado. Errar aqui é irreversível
+  // assim que alguém compra.
+  const _TK_ESPELHO_PREFIXO = 'Lider 10 criação de campanha';
+  // ★ v33k.1680: o nome mudou de "Lider Commerce" para "Lider 10". A DETECÇÃO
+  // aceita os dois: um espelho já criado com o nome antigo continua sendo
+  // reconhecido. Sem isso o sistema criaria um segundo espelho ao lado do que
+  // já existe, e a loja passaria a ter duas promoções futuras iguais.
+  const _TK_ESPELHO_PREFIXOS = [_TK_ESPELHO_PREFIXO, 'Lider Commerce criação de campanha'];
+  function _tkEhEspelho(titulo) {
+    const t = String(titulo || '');
+    return _TK_ESPELHO_PREFIXOS.some(pre => t.startsWith(pre));
+  }
+
+  // A atividade âncora: a com mais anúncios vinculados entre as ATIVAS.
+  // "?" na contagem (o TikTok nem sempre devolve product_count) conta como 0 —
+  // âncora tem que ser escolhida por dado que existe.
+  function _tkPromoAncora() {
+    const ativas = (_tkPromoAtiv || []).filter(a => _tkEstado(a) === 'ativa'
+      && !_tkEhEspelho(a.titulo));
+    if (!ativas.length) return null;
+    return ativas.slice().sort((a, b) =>
+      (Number(b.qtdProdutos) || 0) - (Number(a.qtdProdutos) || 0))[0];
+  }
+
+  // O espelho já existente: promoção AGENDADA criada por nós. Se houver mais de
+  // uma (rodadas anteriores, criação concorrente), fica a que começa PRIMEIRO —
+  // é a que assume quando a atual encerrar.
+  function _tkPromoDetectarEspelho() {
+    const cand = (_tkPromoAtiv || []).filter(a =>
+      _tkEhEspelho(a.titulo) && _tkEstado(a) !== 'encerrada');
+    if (!cand.length) return null;
+    return cand.slice().sort((a, b) => (Number(a.inicio) || 0) - (Number(b.inicio) || 0))[0];
+  }
+
+  // Cria o espelho a partir da âncora e copia os produtos dela.
+  // Nunca lança: falhar no espelho não pode derrubar a alteração na atual.
+  async function _tkPromoCriarEspelho() {
+    const ancora = _tkPromoAncora();
+    if (!ancora) return null;
+    const fimAtual = Number(ancora.fim) || 0;
+    if (!fimAtual) {
+      lcAlert('Não consegui criar a promoção espelho: a promoção "' + (ancora.titulo || '') + '" não tem data de fim.', { tipo: 'aviso' });
+      return null;
+    }
+    const inicioB = fimAtual + 60;                  // +1 min após o fim da âncora
+    const fimB = inicioB + (120 * 24 * 60 * 60);    // +120 dias, igual à Shopee
+    const d = new Date();
+    const dataStr = String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear();
+    const nomeB = _TK_ESPELHO_PREFIXO + ' ' + dataStr;
+    const tipoB = ancora.tipo || 'FIXED_PRICE';
+
+    const rc = await _tkApi('POST', '/loja/' + _tkPromoLoja + '/promocoes', {
+      titulo: nomeB, tipo: tipoB, productLevel: 'PRODUCT', inicio: inicioB, fim: fimB,
+    });
+    if (!rc || !rc.ok || !(rc.activityId || rc.id)) {
+      lcAlert('Não consegui criar a promoção espelho: ' + ((rc && rc.erro) || 'erro') +
+        '\n\nA alteração foi aplicada só na promoção atual.', { tipo: 'aviso' });
+      return null;
+    }
+    const novoId = String(rc.activityId || rc.id);
+
+    // copia os produtos da âncora, com os preços que já valem nela
+    try {
+      const det = await _tkApi('GET', '/loja/' + _tkPromoLoja + '/promocao/' + ancora.id);
+      const prods = (det && det.ok && det.atividade && ((det.atividade.raw || {}).products || det.atividade.produtos)) || [];
+      const usaPct = tipoB === 'DIRECT_DISCOUNT';
+      const copia = prods.map(pr => {
+        const pid = String(pr.id || pr.product_id || '');
+        if (!pid) return null;
+        const v = _tkValorPromoDoProduto(pr);
+        if (v == null) return null;
+        return usaPct ? { productId: pid, discountPct: v } : { productId: pid, precoFixo: v };
+      }).filter(Boolean);
+      if (copia.length) {
+        await _tkApi('POST', '/loja/' + _tkPromoLoja + '/promocao/' + novoId + '/produtos',
+          { tipo: tipoB, productLevel: 'PRODUCT', produtos: copia });
+      }
+    } catch (e) { /* o espelho existe; a cópia dos itens é o melhor esforço */ }
+
+    await tkPromoCarregar();
+    lcAlert('🆕 Promoção espelho criada: "' + nomeB + '"\n\nEla começa quando "' + (ancora.titulo || '') +
+      '" terminar e dura 120 dias, já com os produtos copiados.', { tipo: 'sucesso' });
+    return _tkPromoDetectarEspelho();
+  }
+  window._tkPromoCriarEspelho = _tkPromoCriarEspelho;
+
+  // Extrai o valor promocional de um produto do payload do TikTok. Mesma
+  // tolerância de nomes de campo do detalhe (a API varia por versão).
+  function _tkValorPromoDoProduto(pr) {
+    const s0 = (pr.skus && pr.skus[0]) || {};
+    const cru = (pr.activity_price_amount != null && pr.activity_price_amount !== '') ? pr.activity_price_amount
+      : (pr.activity_price && (pr.activity_price.amount != null ? pr.activity_price.amount : pr.activity_price))
+      ?? pr.deal_price ?? pr.discount
+      ?? (s0.activity_price_amount != null ? s0.activity_price_amount : (s0.activity_price && (s0.activity_price.amount != null ? s0.activity_price.amount : s0.activity_price)))
+      ?? null;
+    if (cru == null || cru === '' || typeof cru === 'object') return null;
+    const n = Number(String(cru).replace(/[^\d.,-]/g, '').replace(',', '.'));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  // Replica no espelho os produtos que acabaram de ser salvos na atual.
+  // `tipoAtual` é o tipo da promoção onde a alteração foi feita.
+  async function _tkPromoReplicarNoEspelho(tipoAtual, produtos) {
+    if (!produtos || !produtos.length) return;
+    try {
+      let esp = _tkPromoDetectarEspelho();
+      if (!esp) esp = await _tkPromoCriarEspelho();
+      if (!esp) return;
+      // ★ tipos diferentes: NÃO replica. Preço no lugar de percentual sai a 1/5
+      // do valor no anúncio, e ninguém percebe até a venda.
+      if (String(esp.tipo || '') !== String(tipoAtual || '')) {
+        lcAlert('A promoção espelho é do tipo "' + ((_TK_TIPOS[esp.tipo] && _TK_TIPOS[esp.tipo].rot) || esp.tipo) +
+          '" e esta alteração é de "' + ((_TK_TIPOS[tipoAtual] && _TK_TIPOS[tipoAtual].rot) || tipoAtual) +
+          '".\n\nNão repliquei no espelho: preço e percentual não se misturam. A alteração vale na promoção atual.',
+          { tipo: 'aviso' });
+        return;
+      }
+      const r = await _tkApi('POST', '/loja/' + _tkPromoLoja + '/promocao/' + esp.id + '/produtos',
+        { tipo: tipoAtual, productLevel: 'PRODUCT', produtos });
+      if (!r || !r.ok) {
+        lcAlert('A alteração foi salva na promoção atual, mas não consegui replicar no espelho: ' +
+          ((r && r.erro) || 'erro'), { tipo: 'aviso' });
+      }
+    } catch (e) {
+      lcAlert('A alteração foi salva, mas o espelho falhou: ' + e.message, { tipo: 'aviso' });
+    }
+  }
+  window._tkPromoReplicarNoEspelho = _tkPromoReplicarNoEspelho;
+
   async function tkPromoSincronizarPrecos() {
     if (_tkSincronizando || !_tkPromoDetAtivId || !_tkPromoLoja) return;
     // coleta os productIds da promoção que está na tela
@@ -59338,11 +59787,26 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
   // v33k.1211: busca nos produtos da promoção (padrão Shopee) — filtra as linhas.
   function _tkFiltrarPromoProds() {
-    const t = ((document.getElementById('tkPromoBusca') || {}).value || '').toLowerCase().trim();
-    document.querySelectorAll('[data-tkrow]').forEach(row => {
-      const s = row.getAttribute('data-tksearch') || '';
-      row.style.display = (!t || s.includes(t)) ? '' : 'none';
+    const t = ((document.getElementById('tkPromoBusca') || {}).value || '');
+    const ord = (document.getElementById('tkPromoOrdem') || {}).value || '';
+    _tkPromoOrdem = ord;
+    const linhas = [...document.querySelectorAll('[data-tkrow]')];
+    // v33k.1677: mesma busca do modal da Shopee (sem acento, termos fora de ordem)
+    linhas.forEach(row => {
+      const casa = _promoCasaBusca(t, row.getAttribute('data-tksearch') || '');
+      row.style.display = casa ? '' : 'none';
     });
+    if (!linhas.length) return;
+    const pai = linhas[0].parentNode;
+    if (!pai) return;
+    // ★ reordena o DOM em vez de re-renderizar: um re-render aqui apagaria os
+    // preços já digitados nos campos, que é o trabalho do operador.
+    const ordenadas = _promoOrdenarLista(linhas, ord, (row) => ({
+      nome: row.getAttribute('data-tknome') || '',
+      venda: row.getAttribute('data-tkvenda'),
+      promo: row.getAttribute('data-tkpromo'),
+    }));
+    ordenadas.forEach(row => pai.appendChild(row));
   }
   window._tkFiltrarPromoProds = _tkFiltrarPromoProds;
 
@@ -59488,6 +59952,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     let msg = '✅ ' + okCount + ' preço(s) enviado(s) ao TikTok com sucesso.';
     if (pulados.length) msg += '\n⏭️ ' + pulados.length + ' pulado(s): preço promocional ≥ preço de venda (não é desconto).';
     if (falhasApi) msg += '\n⚠️ ' + falhasApi + ' recusado(s) pelo TikTok (confira no Seller Center).';
+    // v33k.1679: replica no espelho DEPOIS de confirmar sucesso na atual. Antes
+    // seria escrever numa promoção futura algo que talvez nem tenha valido aqui.
+    await _tkPromoReplicarNoEspelho(tipo, produtos);
     lcAlert(msg, { tipo: (pulados.length || falhasApi) ? 'aviso' : 'sucesso' });
     await tkPromoDetalhe(activityId, tipo);
   }
@@ -59499,21 +59966,55 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     cont.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12.5px">Carregando produtos ativos…</div>';
     const r = await _tkApi('GET', '/loja/' + _tkPromoLoja + '/produtos?status=ACTIVATE');
     const arr = (r && r.ok && Array.isArray(r.produtos)) ? r.produtos : [];
-    _tkPromoProdCache[_tkPromoLoja] = arr.map(p => ({ id: String(p.id || p.product_id || ''), titulo: p.title || p.product_name || '(sem título)' })).filter(p => p.id);
+    // v33k.1677: guarda também a FOTO. A lista de adicionar mostrava só texto
+    // nos dois modais, e escolher anúncio por nome numa lista de 200 chinelos
+    // parecidos é justamente onde o olho erra.
+    const _fotoDe = (p) => {
+      const c = p.main_images || p.images || p.image_list || (p.skus && p.skus[0] && p.skus[0].images) || [];
+      const f = Array.isArray(c) ? c[0] : c;
+      if (!f) return null;
+      return f.thumb_urls && f.thumb_urls[0] ? f.thumb_urls[0]
+        : (f.urls && f.urls[0] ? f.urls[0] : (f.url || (typeof f === 'string' ? f : null)));
+    };
+    _tkPromoProdCache[_tkPromoLoja] = arr.map(p => ({
+      id: String(p.id || p.product_id || ''),
+      titulo: p.title || p.product_name || '(sem título)',
+      sku: (p.skus && p.skus[0] && (p.skus[0].seller_sku || p.skus[0].sku_id)) || '',
+      foto: _fotoDe(p),
+    })).filter(p => p.id);
     _tkRenderProdutos();
   }
   function _tkFiltrarProdutos() { _tkRenderProdutos(); }
+  // v33k.1677: marca/desmarca TODOS os produtos que a busca deixou visíveis.
+  // Respeitar o filtro é o ponto: marcar 200 produtos escondidos seria pior
+  // que não ter o botão.
+  function _tkAddMarcarTudo(on) {
+    document.querySelectorAll('#tkAddLista .tk-add-chk').forEach(cb => {
+      if (cb.checked === !!on) return;
+      cb.checked = !!on;
+      cb.dispatchEvent(new Event('change'));
+    });
+  }
+  window._tkAddMarcarTudo = _tkAddMarcarTudo;
   window._tkFiltrarProdutos = _tkFiltrarProdutos;
   function _tkRenderProdutos() {
     const cont = document.getElementById('tkAddLista'); if (!cont) return;
-    const termo = ((document.getElementById('tkAddBusca') || {}).value || '').toLowerCase().trim();
+    const termo = ((document.getElementById('tkAddBusca') || {}).value || '');
     let arr = _tkPromoProdCache[_tkPromoLoja] || [];
-    if (termo) arr = arr.filter(p => p.titulo.toLowerCase().includes(termo) || p.id.includes(termo));
+    // v33k.1677: mesma busca do resto (sem acento, termos fora de ordem, SKU)
+    if (String(termo).trim()) arr = arr.filter(p => _promoCasaBusca(termo, p.titulo, p.id, p.sku));
     if (!arr.length) { cont.innerHTML = '<div style="padding:18px;text-align:center;color:#94a3b8;font-size:12.5px">' + (termo ? 'Nenhum produto encontrado.' : 'Nenhum produto ativo nesta loja.') + '</div>'; return; }
     cont.innerHTML = arr.slice(0, 200).map(p => {
       const ck = _tkPromoSel[p.id] ? 'checked' : '';
+      // foto: a do TikTok, ou a do vínculo local se existir
+      const _loc = _tkResolverProdutoLocal(p.id);
+      const _url = p.foto || (_loc && _loc.foto) || null;
+      const _thumb = _url
+        ? '<img src="' + escapeHtml(_url) + '" style="width:36px;height:36px;border-radius:7px;object-fit:cover;flex-shrink:0;border:1px solid #eef2f7" onerror="this.style.visibility=\'hidden\'">'
+        : '<div style="width:36px;height:36px;border-radius:7px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#cbd5e1"><span class="lc-ic" data-size="sm" data-lucide="image"></span></div>';
       return '<label style="display:flex;align-items:center;gap:9px;padding:8px 11px;border-bottom:1px solid #f1f5f9;cursor:pointer">' +
-        '<input type="checkbox" ' + ck + ' onchange="_tkToggleProd(\'' + p.id + '\',this.checked)" style="width:15px;height:15px">' +
+        '<input type="checkbox" class="tk-add-chk" ' + ck + ' onchange="_tkToggleProd(\'' + p.id + '\',this.checked)" style="width:15px;height:15px">' +
+        _thumb +
         '<div style="flex:1;min-width:0"><div style="font-size:12.5px;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(p.titulo) + '</div>' +
         '<div style="font-size:10.5px;color:#94a3b8">ID ' + escapeHtml(p.id) + '</div></div>' +
       '</label>';
@@ -59536,6 +60037,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (!r.ok) { lcAlert('Falha ao adicionar produtos: ' + (r.erro || 'erro.'), { tipo: 'perigo' }); await tkPromoDetalhe(activityId, tipo); return; }
     if (r.falhas && r.falhas.length) lcAlert('Adicionado, mas ' + r.falhas.length + ' produto(s) falharam (veja no Seller Center).', { tipo: 'aviso' });
     else lcAlert('Produtos adicionados à promoção.', { tipo: 'sucesso' });
+    // v33k.1679: o que entra na atual entra no espelho também, senão a promoção
+    // seguinte nasce sem os produtos adicionados hoje.
+    await _tkPromoReplicarNoEspelho(tipo, produtos);
     await tkPromoDetalhe(activityId, tipo);
   }
   window.tkPromoAddSelecionados = tkPromoAddSelecionados;
@@ -61049,11 +61553,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     return isNaN(n) ? '—' : 'R$ ' + n.toFixed(2);
   }
 
-  // Parse de input de preço aceitando vírgula ou ponto
+  // Parse de input de preço aceitando vírgula ou ponto.
+  // ★ v33k.1675: tinha O MESMO BUG do `_parsePrecoPromo` — o comentário dizia
+  // "aceitando vírgula ou ponto" e a linha `replace(/[^\d.]/g, '')` APAGAVA a
+  // vírgula antes do `.replace(',', '.')` logo ao lado, que virava código morto.
+  // "30,90" virava 3090 também aqui, no fluxo de promoções da Shein.
+  // Agora delega para a fonte única, em vez de manter dois parsers de preço
+  // com o mesmo defeito em lugares diferentes.
   function _promoParsePreco(str) {
+    if (typeof window !== 'undefined' && typeof window._parsePrecoPromo === 'function') {
+      return window._parsePrecoPromo(str);
+    }
+    // fallback defensivo (ordem de carga): a vírgula PRECISA sobreviver
     if (str === null || str === undefined) return null;
-    const limpo = String(str).replace(/[^\d.]/g, '').replace(',', '.');
+    let limpo = String(str).replace(/[^\d.,]/g, '');
     if (limpo === '') return null;
+    if (limpo.includes(',')) limpo = limpo.replace(/\./g, '').replace(',', '.');
     const n = parseFloat(limpo);
     return isNaN(n) ? null : n;
   }
@@ -64590,11 +65105,23 @@ Responda APENAS com JSON válido (sem markdown), formato:
     v = v.replace('.', ',').replace(/(\d)(?=(\d{3})+(?!\d))/g, '$1.');
     input.value = (isNeg ? '- ' : '') + 'R$ ' + v;
   }
+  // ★ v33k.1675: aqui o defeito era o INVERSO do bug das promoções: a classe
+  // `[^\d,]` apagava o PONTO, então "30.90" virava 3090. Um campo aceitava só
+  // vírgula, o outro só ponto, e os dois se diziam tolerantes.
   function parseMoney(str) {
     if (!str) return 0;
-    const isNeg = str.trim().startsWith('-');
-    const num = parseFloat(str.replace(/[^\d,]/g, '').replace(',', '.')) || 0;
-    return isNeg ? -num : num;
+    const isNeg = String(str).trim().startsWith('-');
+    let n = null;
+    if (typeof window !== 'undefined' && typeof window._parsePrecoPromo === 'function') {
+      n = window._parsePrecoPromo(str);
+    }
+    if (n == null) {
+      let limpo = String(str).replace(/[^\d.,]/g, '');
+      if (limpo.includes(',')) limpo = limpo.replace(/\./g, '').replace(',', '.');
+      n = parseFloat(limpo);
+    }
+    if (!isFinite(n)) n = 0;
+    return isNeg ? -n : n;
   }
 
   function showToast(msg, isError = false) {
@@ -64648,7 +65175,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1673-dono-movimento';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1688-mapa-reclamacoes';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -73185,7 +73712,11 @@ ${JSON.stringify(metricas, null, 2)}`
       const imposto = parseFloat((document.getElementById('lucroImposto') || {}).value) || 0;
       const ignFrete = (document.getElementById('lucroIgnFrete') || {}).checked ? '1' : '0';
       const cAdicRaw = (document.getElementById('lucroCustosAdic') || {}).value || '';
-      const cAdic = parseFloat(cAdicRaw.replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+      // v33k.1675: usava `[^\d,]`, que apagava o ponto — "1.500" virava 1500 por
+      // acidente e "30.90" virava 3090. Passa pela leitura única de preço.
+      const cAdic = (typeof window._parsePrecoPromo === 'function'
+        ? (window._parsePrecoPromo(cAdicRaw) || 0)
+        : (parseFloat(String(cAdicRaw).replace(/[^\d.,]/g, '').replace(',', '.')) || 0));
 
       const params = new URLSearchParams({
         imposto: String(imposto / 100),
@@ -73544,7 +74075,8 @@ ${JSON.stringify(metricas, null, 2)}`
   window.custosToggleAnuncio = custosToggleAnuncio;
 
   function lucroMarcarCusto(itemId, modelName, valorStr) {
-    const num = parseFloat(String(valorStr).replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+    // v33k.1675: `[^\d,]` apagava o PONTO — custo digitado "30.90" virava 3090.
+    const num = (typeof window._parsePrecoPromo === 'function' ? (window._parsePrecoPromo(valorStr) || 0) : 0);
     _lucroCustosPag.alterados[itemId + '|' + modelName] = { item_id: Number(itemId), variacao: modelName, custo: num };
   }
 
@@ -73576,7 +74108,8 @@ ${JSON.stringify(metricas, null, 2)}`
   function custosAplicarMassa() {
     const op = (document.getElementById('custosMassaOp') || {}).value || 'definir';
     const raw = (document.getElementById('custosMassaValor') || {}).value || '';
-    const valor = parseFloat(raw.replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+    // v33k.1675: idem, no valor em massa dos custos.
+    const valor = (typeof window._parsePrecoPromo === 'function' ? (window._parsePrecoPromo(raw) || 0) : 0);
     const sel = document.querySelectorAll('.custos-var-cb:checked');
     if (!sel.length) { showToast('Selecione ao menos uma variação', true); return; }
     if (valor <= 0 && op === 'definir') { /* permite zerar via definir */ }
@@ -73584,7 +74117,8 @@ ${JSON.stringify(metricas, null, 2)}`
       const chave = cb.dataset.chave;
       const inp = document.querySelector('.lucro-custo-inp[data-chave="' + (window.CSS && CSS.escape ? CSS.escape(chave) : chave) + '"]');
       if (!inp) return;
-      const atual = parseFloat((inp.value || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+      // v33k.1675: idem, ao ler o custo que já estava no campo.
+      const atual = (typeof window._parsePrecoPromo === 'function' ? (window._parsePrecoPromo(inp.value) || 0) : 0);
       let novo = atual;
       if (op === 'definir') novo = valor;
       else if (op === 'addR') novo = atual + valor;
@@ -73833,7 +74367,8 @@ ${JSON.stringify(metricas, null, 2)}`
     const imposto = parseFloat((document.getElementById('lucroImposto') || {}).value) || 0;
     const ignFrete = (document.getElementById('lucroIgnFrete') || {}).checked ? '1' : '0';
     const cAdicRaw = (document.getElementById('lucroCustosAdic') || {}).value || '';
-    const cAdic = parseFloat(cAdicRaw.replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+    // v33k.1675: `[^\d,]` apagava o ponto nos custos adicionais do Lucro.
+    const cAdic = (typeof window._parsePrecoPromo === 'function' ? (window._parsePrecoPromo(cAdicRaw) || 0) : 0);
     const params = new URLSearchParams({
       imposto: String(imposto / 100), custosAdicionais: String(cAdic), ignorarFreteComprador: ignFrete,
     });
@@ -74175,7 +74710,8 @@ ${JSON.stringify(metricas, null, 2)}`
     const imposto = parseFloat((document.getElementById('lucroImposto') || {}).value) || 0;
     const ignFrete = (document.getElementById('lucroIgnFrete') || {}).checked ? '1' : '0';
     const cAdicRaw = (document.getElementById('lucroCustosAdic') || {}).value || '';
-    const cAdic = parseFloat(cAdicRaw.replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+    // v33k.1675: `[^\d,]` apagava o ponto nos custos adicionais do Lucro.
+    const cAdic = (typeof window._parsePrecoPromo === 'function' ? (window._parsePrecoPromo(cAdicRaw) || 0) : 0);
     const params = new URLSearchParams({
       imposto: String(imposto / 100),
       custosAdicionais: String(cAdic),
@@ -86425,20 +86961,33 @@ ${JSON.stringify(metricas, null, 2)}`
     return Number(item.item_promotion_price) || 0;
   }
 
-  // Filtra (nome/ID) e ordena os itens pra exibição, preservando o índice original
+  // Preço de VENDA (não o promocional): base do cálculo de desconto.
+  function _promoPrecoVenda(item) {
+    const models = item.model_list || [];
+    if (models.length) {
+      const p = models.map(m => Number(m.model_original_price)).filter(n => !isNaN(n) && n > 0);
+      if (p.length) return Math.min(...p);
+    }
+    const v = Number(item.item_original_price);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+
+  // Filtra (nome/ID/SKU) e ordena os itens pra exibição, preservando o índice original
   function _promoFiltrarOrdenar(itensComIdx) {
     let arr = itensComIdx;
-    const q = (_promoBusca || '').trim().toLowerCase();
-    if (q) {
-      arr = arr.filter(({ item }) =>
-        String(item.item_name || '').toLowerCase().includes(q) ||
-        String(item.item_id || '').includes(q)
-      );
+    // v33k.1677: busca compartilhada com o modal do TikTok — sem acento, termos
+    // fora de ordem, e casando também pelo SKU (que o operador tem na mão).
+    if ((_promoBusca || '').trim()) {
+      arr = arr.filter(({ item }) => _promoCasaBusca(_promoBusca,
+        item.item_name, item.item_id, item.item_sku,
+        ((item.model_list || []).map(m => m.model_sku || '').join(' '))));
     }
-    if (_promoOrdem === 'preco_desc') arr = [...arr].sort((a, b) => _promoPrecoRef(b.item) - _promoPrecoRef(a.item));
-    else if (_promoOrdem === 'preco_asc') arr = [...arr].sort((a, b) => _promoPrecoRef(a.item) - _promoPrecoRef(b.item));
-    else if (_promoOrdem === 'nome') arr = [...arr].sort((a, b) => String(a.item.item_name||'').localeCompare(String(b.item.item_name||'')));
-    return arr;
+    // ordenação compartilhada, agora incluindo DESCONTO
+    return _promoOrdenarLista(arr, _promoOrdem, ({ item }) => ({
+      nome: item.item_name,
+      venda: _promoPrecoVenda(item),
+      promo: _promoPrecoRef(item),
+    }));
   }
 
   // Lê os campos da barra, guarda o estado e re-renderiza (preservando preços digitados)
@@ -86569,18 +87118,15 @@ ${JSON.stringify(metricas, null, 2)}`
           🔗 <b>Espelhamento ativo:</b> tudo que você fizer aqui (adicionar, mudar preço, remover) é replicado automaticamente na promoção agendada "<b>${escapeHtml(espelho.campanha.nome)}</b>".</div>`;
       } else {
         html += `<div style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;font-size:12px;color:#854d0e;margin-bottom:12px">
-          🆕 <b>Sem promoção agendada nesta loja.</b> Na primeira alteração que você fizer, o sistema cria automaticamente uma promoção espelho ("Lider Commerce criação de campanha [data]") que inicia quando esta terminar (+120 dias), já com todos os itens copiados.</div>`;
+          🆕 <b>Sem promoção agendada nesta loja.</b> Na primeira alteração que você fizer, o sistema cria automaticamente uma promoção espelho ("Lider 10 criação de campanha [data]") que inicia quando esta terminar (+120 dias), já com todos os itens copiados.</div>`;
       }
     }
 
     // Barra de busca (nome/ID) + ordenação por valor
     html += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-      <input type="text" id="promoBusca" value="${escapeHtml(_promoBusca)}" placeholder="🔍 Buscar por nome ou ID..." oninput="promoAplicarBuscaFiltro()" style="flex:1;min-width:160px;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+      <input type="text" id="promoBusca" value="${escapeHtml(_promoBusca)}" placeholder="🔍 Buscar por nome, ID ou SKU (aceita várias palavras)" oninput="promoAplicarBuscaFiltro()" style="flex:1;min-width:160px;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
       <select id="promoOrdem" onchange="promoAplicarBuscaFiltro()" style="padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
-        <option value="">Ordem original</option>
-        <option value="preco_desc">Valor: maior → menor</option>
-        <option value="preco_asc">Valor: menor → maior</option>
-        <option value="nome">Nome (A-Z)</option>
+        ${_promoOpcoesOrdem(_promoOrdem)}
       </select>
     </div>
     <div id="promoItensContainer">`;
@@ -86763,21 +87309,176 @@ ${JSON.stringify(metricas, null, 2)}`
   window.promoAjustarMassa = promoAjustarMassa;
 
   // Parse robusto de preço: aceita "54,90", "54.90", "1.234,56", "R$ 54,90"
+  // ══════════════════════════════════════════════════════════════════════
+  // PREÇO PROMOCIONAL: LEITURA DE VALOR (corrigido v33k.1675)
+  // ──────────────────────────────────────────────────────────────────────
+  // BUG (13/08): digitar "30,90" virava R$ 3090,00 — a promocao ia pra Shopee
+  // com preco 100x maior.
+  //
+  // CAUSA: a primeira linha era `replace(/[^\d.]/g, '')`. A virgula NAO estava
+  // na lista do que sobrevive, entao era APAGADA ali. "30,90" virava "3090"
+  // antes de qualquer coisa. As duas linhas seguintes, que tratavam virgula,
+  // eram CODIGO MORTO: `s.includes(',')` nunca podia ser verdade depois disso.
+  // Por isso "30.90" com ponto funcionava e so a virgula quebrava.
+  //
+  // REGRA AGORA:
+  //   dois separadores  -> o ULTIMO e o decimal, o outro e milhar
+  //                        ("1.234,56" = 1234,56 · "1,234.56" = 1234,56)
+  //   um separador so, com EXATAMENTE 3 digitos depois e algo antes
+  //                     -> e MILHAR ("1.500" = 1500 · "1,500" = 1500)
+  //   qualquer outro    -> e DECIMAL ("30,90" = 30,90 · "30.90" = 30,90)
+  //
+  // O caso de 3 digitos e o unico ambiguo de verdade. Preco com 3 casas
+  // decimais nao existe em varejo; preco na casa do milhar existe todo dia.
+  // ══════════════════════════════════════════════════════════════════════
+  // BUSCA E ORDENAÇÃO DE PROMOÇÕES — MESMO CÓDIGO NOS DOIS MODAIS (v33k.1677)
+  // ──────────────────────────────────────────────────────────────────────
+  // Antes cada modal tinha a sua: `String(x).toLowerCase().includes(termo)`.
+  // Isso falha em tudo que o operador realmente digita:
+  //   "sandalia"  não acha "Sandália"     (acento)
+  //   "chinelo strass" não acha nada       (duas palavras fora de ordem)
+  //   " RF-170 "  não acha                 (espaço em volta)
+  // E o TikTok não tinha ordenação nenhuma, enquanto a Shopee tinha três.
+  //
+  // Uma implementação só, usada pelos dois. Se melhorar aqui, melhora nos dois.
+  //
+  // ★ NOMES COM PREFIXO `_promo` DE PROPÓSITO. A primeira versão destes helpers
+  // se chamava `_lcNormBusca` / `_lcCasaBusca` — e essas funções JÁ EXISTEM
+  // neste MESMO bloco <script>, desde a v33k.1629, servindo à busca por título
+  // dos anúncios (a que levou nove versões pra ficar de pé). Declarar funções
+  // homônimas aqui sobrescreveria aquelas, com assinatura DIFERENTE
+  // (`(produto, termo)` lá, `(consulta, ...campos)` aqui), e a busca de
+  // anúncios quebraria em silêncio. Não reaproveitei as de lá porque elas
+  // recebem um PRODUTO do catálogo, e aqui os itens vêm da Shopee e do TikTok
+  // com outro formato.
+  function _promoNorm(v) {
+    return String(v == null ? '' : v)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // tira acento
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  // Casa quando TODOS os termos aparecem em ALGUM dos campos. Termos fora de
+  // ordem funcionam: "strass chinelo" acha "Chinelo ... Strass".
+  function _promoCasaBusca(consulta, ...campos) {
+    const q = _promoNorm(consulta);
+    if (!q) return true;
+    const alvo = campos.map(_promoNorm).join(' ');
+    return q.split(' ').every(t => t && alvo.includes(t));
+  }
+  window._promoCasaBusca = _promoCasaBusca;
+
+  // Desconto em % entre o preço de venda e o promocional. Devolve null quando
+  // não dá pra calcular — ordenar por "maior desconto" com base em zero
+  // inventado colocaria os SEM dado no topo, que é o oposto do pedido.
+  function _promoDescontoPct(venda, promo) {
+    const v = Number(venda), pr = Number(promo);
+    if (!Number.isFinite(v) || !Number.isFinite(pr) || v <= 0 || pr <= 0) return null;
+    if (pr >= v) return 0;
+    return ((v - pr) / v) * 100;
+  }
+  window._promoDescontoPct = _promoDescontoPct;
+
+  // Opções de ordenação, idênticas nos dois modais.
+  const _PROMO_ORDENS = [
+    ['', 'Ordem original'],
+    ['desc_desc', 'Maior desconto'],
+    ['desc_asc', 'Menor desconto'],
+    ['preco_desc', 'Valor de venda: maior'],
+    ['preco_asc', 'Valor de venda: menor'],
+    ['promo_desc', 'Preço promocional: maior'],
+    ['promo_asc', 'Preço promocional: menor'],
+    ['nome', 'Nome (A-Z)'],
+  ];
+  function _promoOpcoesOrdem(sel) {
+    return _PROMO_ORDENS.map(([v, r]) =>
+      '<option value="' + v + '"' + (String(sel || '') === v ? ' selected' : '') + '>' + r + '</option>').join('');
+  }
+  window._promoOpcoesOrdem = _promoOpcoesOrdem;
+
+  // Ordena uma lista qualquer. `leitor` devolve { venda, promo, nome } de cada
+  // item, para o mesmo comparador servir aos dois modais.
+  // ★ itens SEM dado ficam sempre no FIM, em qualquer ordem: quem pediu "maior
+  // desconto" quer ver desconto, não linhas vazias primeiro.
+  function _promoOrdenarLista(arr, ordem, leitor) {
+    if (!ordem) return arr;
+    const chave = (x) => {
+      const d = leitor(x) || {};
+      if (ordem === 'desc_desc' || ordem === 'desc_asc') return _promoDescontoPct(d.venda, d.promo);
+      if (ordem === 'preco_desc' || ordem === 'preco_asc') {
+        const v = Number(d.venda); return Number.isFinite(v) && v > 0 ? v : null;
+      }
+      if (ordem === 'promo_desc' || ordem === 'promo_asc') {
+        const v = Number(d.promo); return Number.isFinite(v) && v > 0 ? v : null;
+      }
+      return null;
+    };
+    if (ordem === 'nome') {
+      return [...arr].sort((a, b) => _promoNorm((leitor(a) || {}).nome).localeCompare(_promoNorm((leitor(b) || {}).nome)));
+    }
+    const desc = /_desc$/.test(ordem);
+    return [...arr].sort((a, b) => {
+      const ka = chave(a), kb = chave(b);
+      if (ka == null && kb == null) return 0;
+      if (ka == null) return 1;   // sem dado vai pro fim
+      if (kb == null) return -1;
+      return desc ? (kb - ka) : (ka - kb);
+    });
+  }
+  window._promoOrdenarLista = _promoOrdenarLista;
+
   function _parsePrecoPromo(str) {
     if (str == null) return null;
-    let s = String(str).replace(/[^\d.]/g, '');
+    // a virgula PRECISA sobreviver a esta linha. Foi tira-la daqui que criou o bug.
+    let s = String(str).replace(/[^\d.,]/g, '');
     if (s === '') return null;
-    // Se tem vírgula E ponto, assume ponto = milhar, vírgula = decimal
-    if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.');
-    else if (s.includes(',')) s = s.replace(',', '.'); // só vírgula = decimal
+
+    const ultVirg = s.lastIndexOf(',');
+    const ultPonto = s.lastIndexOf('.');
+
+    if (ultVirg >= 0 && ultPonto >= 0) {
+      if (ultVirg > ultPonto) s = s.replace(/\./g, '').replace(',', '.');
+      else s = s.replace(/,/g, '');
+    } else if (ultVirg >= 0 || ultPonto >= 0) {
+      const sep = ultVirg >= 0 ? ',' : '.';
+      const pos = ultVirg >= 0 ? ultVirg : ultPonto;
+      const depois = s.length - pos - 1;
+      const ocorrencias = s.split(sep).length - 1;
+      // ★ separador REPETIDO nunca e decimal: "1.234.567" e milhar puro.
+      // A primeira versao caia no ramo decimal e devolvia 1234,57 — erro de
+      // 1000x no mesmo campo que acabou de causar o bug de 100x.
+      if (ocorrencias > 1) {
+        s = s.split(sep).join('');
+      } else if (depois === 3 && pos > 0) {
+        // 3 digitos depois de um separador unico: MILHAR.
+        // Escolha deliberada e assimetrica: ler "1.500" como 1,50 venderia a
+        // 1000x menos (prejuizo real); ler "30,999" como 30999 so faz nao
+        // vender. Na duvida, erra pro lado que nao da prejuizo.
+        s = s.split(sep).join('');
+      } else {
+        s = s.replace(/,/g, '.');
+      }
+    }
     const n = parseFloat(s);
     return isNaN(n) ? null : Math.round((n + Number.EPSILON) * 100) / 100;
   }
 
-  // Toast acima do modal de promoção (z-index > 99999), antes ficava atrás
+  // Preco em formato brasileiro para a confirmacao. O usuario digita com
+  // virgula; mostrar "3090.00" na pergunta e justamente o que passou batido.
+  function _precoPromoBR(n) {
+    return Number(n || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  window._parsePrecoPromo = _parsePrecoPromo;
+
+  // Toast acima de QUALQUER modal do painel (ver z-index abaixo).
   function promoToast(msg, erro) {
     const t = document.createElement('div');
-    t.style.cssText = 'position:fixed;top:24px;left:50%;transform:translateX(-50%);z-index:100001;' +
+    // ★ v33k.1675: era 100001 e o `promoAddModal` e 100002 — o aviso aparecia
+    // ATRAS dele. O comentario antigo dizia "> 99999", verdade quando os modais
+    // paravam ali; desde entao subiram ate 100004, e `#lcModalOverlay` e o
+    // `expProgresso` usam 2147483000. Aviso transitorio fica acima de TUDO por
+    // definicao: nao adianta avisar atras de um overlay.
+    t.style.cssText = 'position:fixed;top:24px;left:50%;transform:translateX(-50%);z-index:2147483001;' +
       'background:' + (erro ? '#dc2626' : '#16a34a') + ';color:white;padding:12px 20px;border-radius:10px;' +
       'font-weight:600;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,0.3);max-width:90vw;text-align:center';
     t.textContent = msg;
@@ -86809,7 +87510,7 @@ ${JSON.stringify(metricas, null, 2)}`
   // Replica uma ação no espelho. metodo: 'PUT'|'POST'|'DELETE'; itens: payload.
   // Retorna { ok, totalSucesso, erro }, nunca lança (falha no espelho não quebra a atual).
   // Cria a promoção-espelho (B) automaticamente: início = fim da atual +1min,
-  // fim = +120 dias, nome "Lider Commerce criação de campanha DD/MM/AAAA".
+  // fim = +120 dias, nome "Lider 10 criação de campanha DD/MM/AAAA".
   // Depois copia TODOS os itens da promoção atual pra ela. Retorna {loja,campanha} ou null.
   async function _promoCriarEspelho() {
     if (!_promoEditando) return null;
@@ -86820,7 +87521,7 @@ ${JSON.stringify(metricas, null, 2)}`
     const fimB = inicioB + (120 * 24 * 60 * 60);   // +120 dias
     const hoje = new Date();
     const dataStr = String(hoje.getDate()).padStart(2,'0') + '/' + String(hoje.getMonth()+1).padStart(2,'0') + '/' + hoje.getFullYear();
-    const nomeB = 'Lider Commerce criação de campanha ' + dataStr;
+    const nomeB = 'Lider 10 criação de campanha ' + dataStr;
 
     // 1. Cria a campanha na Shopee
     let novaId;
@@ -87049,7 +87750,10 @@ ${JSON.stringify(metricas, null, 2)}`
       <div style="padding:14px 18px;overflow:auto;flex:1">
         ${candidatos.length === 0
           ? '<div style="text-align:center;color:#6b7280;padding:30px">Todos os produtos vinculados a esta loja já estão na promoção (ou não há produtos vinculados).</div>'
-          : `<input type="text" id="promoAddBusca" placeholder="🔍 Buscar produto..." oninput="promoFiltrarAdd()" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;margin-bottom:10px;box-sizing:border-box">
+          : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+               <input type="text" id="promoAddBusca" placeholder="🔍 Buscar por nome ou ID (aceita várias palavras)" oninput="promoFiltrarAdd()" style="flex:1;min-width:180px;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+               <label style="font-size:12px;color:#6b7280;display:flex;align-items:center;gap:5px;white-space:nowrap"><input type="checkbox" onchange="promoAddMarcarTudo(this.checked)" style="width:14px;height:14px"> Marcar todos os listados</label>
+             </div>
              <div id="promoAddLista">${candidatos.map((c, i) => `
                <label style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #f3f4f6;cursor:pointer" data-nome="${escapeHtml((c.nome||'').toLowerCase())}" data-itemid="${c.itemId}">
                  <input type="checkbox" class="promo-add-chk" data-itemid="${c.itemId}" data-nome="${escapeHtml(c.nome)}">
@@ -87127,11 +87831,24 @@ ${JSON.stringify(metricas, null, 2)}`
   }
 
   function promoFiltrarAdd() {
-    const q = (document.getElementById('promoAddBusca').value || '').toLowerCase();
+    // v33k.1677: mesma busca do resto (sem acento, termos fora de ordem) e
+    // casando também pelo ID — antes só o nome entrava na conta, então colar
+    // um itemId na busca não achava nada.
+    const q = (document.getElementById('promoAddBusca') || {}).value || '';
     document.querySelectorAll('#promoAddLista label').forEach(l => {
-      l.style.display = (l.dataset.nome || '').includes(q) ? 'flex' : 'none';
+      const casa = _promoCasaBusca(q, l.dataset.nome || '', l.dataset.itemid || '');
+      l.style.display = casa ? 'flex' : 'none';
     });
   }
+  // v33k.1677: marcar todos os VISÍVEIS, igual ao modal do TikTok.
+  function promoAddMarcarTudo(on) {
+    document.querySelectorAll('#promoAddLista label').forEach(l => {
+      if (l.style.display === 'none') return;
+      const cb = l.querySelector('.promo-add-chk');
+      if (cb) cb.checked = !!on;
+    });
+  }
+  window.promoAddMarcarTudo = promoAddMarcarTudo;
   window.promoFiltrarAdd = promoFiltrarAdd;
 
   async function promoConfirmarAdicionar() {
@@ -87141,7 +87858,7 @@ ${JSON.stringify(metricas, null, 2)}`
     if (preco == null || preco <= 0) { promoToast('Informe um preço promocional válido (ex: 54,90)', true); return; }
     const sel = [...document.querySelectorAll('.promo-add-chk:checked')];
     if (sel.length === 0) { promoToast('Selecione ao menos um produto', true); return; }
-    if (!await lcConfirm(`Adicionar ${sel.length} produto(s) à promoção "${campanha.nome}" com preço R$ ${preco.toFixed(2)}? Isso vale pra todas as variações COM estoque.`)) return;
+    if (!await lcConfirm(`Adicionar ${sel.length} produto(s) à promoção "${campanha.nome}" com preço R$ ${_precoPromoBR(preco)}? Isso vale pra todas as variações COM estoque.`)) return;
 
     promoToast('⏳ Buscando variações e adicionando...');
     // Pra cada produto: busca os models reais da Shopee (model_id confiável) e monta o item
@@ -95200,6 +95917,19 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   function sacVerRespAval(v) { _sacAval.mostrarRespondidas = !!v; _sacDesenharAvaliacoes(); }
   window.sacVerRespAval = sacVerRespAval;
 
+  // Nome da loja a partir do que a tela já carregou (capacidades por aba).
+  // Sem isso o card mostraria só o logo do marketplace, e a conta tem 24 lojas.
+  function _sacNomeDaLoja(lojaId) {
+    if (lojaId == null) return null;
+    const abas = (_sacCap && _sacCap.abas) || [];
+    for (const ab of abas) {
+      const l = (ab.lojas || []).find(x => String(x.id) === String(lojaId));
+      if (l) return l.nome;
+    }
+    return null;
+  }
+  window._sacNomeDaLoja = _sacNomeDaLoja;
+
   function _sacEstrelas(n) {
     const q = Number(n) || 0;
     let h = '<span style="letter-spacing:1px;font-size:13px;color:var(--lc-warning)">';
@@ -95267,11 +95997,34 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     let h = '<div style="background:#fff;border:1px solid ' + (baixa && aberta ? '#fecaca' : (aberta ? '#fde68a' : 'var(--lc-border)'))
       + ';border-radius:var(--lc-radius-lg);padding:15px 17px;margin-bottom:10px">';
 
-    h += '<div style="display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--lc-muted);margin-bottom:9px">'
-      + _sacEstrelas(i.estrelas) + _sacLogo(i.marketplace)
-      + '<span style="font-weight:600;color:var(--lc-ink-2)">' + escapeHtml(i.anuncio_titulo || i.anuncio_ref || '') + '</span>'
-      + (i.pedido_ref ? '<span>pedido ' + escapeHtml(i.pedido_ref) + '</span>' : '')
-      + '<div style="flex:1"></div><span>' + _sacQuando(i.ultima_em) + '</span></div>';
+    // ★ v33k.1687: a linha mostrava só o item_id ("56410747701") e nenhuma loja.
+    // Com 24 lojas na conta, saber DE QUAL loja veio a avaliação é a primeira
+    // coisa que quem atende precisa. E foto do produto identifica mais rápido
+    // que qualquer título.
+    const _lojaNome = _sacNomeDaLoja(i.loja_id) || '';
+    const _foto = i.anuncio_foto
+      ? '<img src="' + escapeHtml(i.anuncio_foto) + '" style="width:42px;height:42px;border-radius:8px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
+      : '<div style="width:42px;height:42px;border-radius:8px;background:var(--lc-surface-2);flex-shrink:0"></div>';
+    // selo só quando TEM imagem: selo em toda avaliação vira ruído e ninguém
+    // olha mais nenhum. Avaliação com foto é a que aparece em destaque na
+    // página do produto, por isso merece o destaque aqui também.
+    const _selImg = i.tem_imagem
+      ? '<span style="font-size:10px;font-weight:800;color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe;padding:1px 7px;border-radius:999px">com foto do cliente</span>'
+      : '';
+
+    h += '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">' + _foto +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--lc-muted)">'
+          + _sacEstrelas(i.estrelas) + _sacLogo(i.marketplace)
+          + (_lojaNome ? '<span style="font-weight:700;color:var(--lc-ink-2)">' + escapeHtml(_lojaNome) + '</span>' : '')
+          + _selImg
+          + '<div style="flex:1"></div><span>' + _sacQuando(i.ultima_em) + '</span>'
+        + '</div>' +
+        '<div style="font-size:12.5px;font-weight:600;color:var(--lc-ink);margin-top:3px;overflow:hidden;text-overflow:ellipsis">'
+          + escapeHtml(i.anuncio_titulo || ('Anúncio ' + (i.anuncio_ref || ''))) + '</div>' +
+        (i.pedido_ref ? '<div style="font-size:11px;color:var(--lc-muted);margin-top:1px">pedido ' + escapeHtml(i.pedido_ref) + '</div>' : '') +
+      '</div>' +
+    '</div>';
 
     h += '<div style="font-size:14px;color:var(--lc-ink);line-height:1.5;margin-bottom:11px">'
       + (i.resumo ? escapeHtml(i.resumo) : '<em style="color:var(--lc-muted)">Deixou só a nota, sem escrever nada.</em>')
