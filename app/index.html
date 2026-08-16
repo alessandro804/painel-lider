@@ -65175,7 +65175,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1716-espelho-decisoes';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1721-aba-conferencia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -96991,6 +96991,191 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     return h;
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // CONFERÊNCIA DE DEVOLUÇÕES (v33k.1721)
+  // ──────────────────────────────────────────────────────────────────────
+  // Pedido de 14/08: o vendedor confere, mês a mês, se as devoluções que
+  // deveriam ter chegado chegaram mesmo.
+  //
+  // ★★ A TELA EXISTE PORQUE A PLATAFORMA DIZER "ENTREGUE" NÃO É PROVA.
+  // O caso que dói é o rastreio dizer entregue e o produto não chegar — furto,
+  // extravio ou baixa errada. Por isso o DIVERGENTE vem primeiro e em vermelho:
+  // é o único número aqui que representa dinheiro sumindo agora.
+  // ══════════════════════════════════════════════════════════════════════
+  let _sacConf = { mes: null, dados: null, filtro: 'todos', carregando: false };
+
+  function _sacMesAtual() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  }
+
+  async function _sacCarregarConferencia() {
+    if (!_sacConf.mes) _sacConf.mes = _sacMesAtual();
+    _sacConf.carregando = true;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/sac/conferencia?mes=' + encodeURIComponent(_sacConf.mes), {
+        headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      _sacConf.dados = (r && r.ok) ? r : null;
+      if (r && !r.ok) _sacConf.erro = r.erro || 'falha';
+    } catch (e) {
+      _sacConf.dados = null;
+      _sacConf.erro = e.message;
+    } finally { _sacConf.carregando = false; }
+    return _sacConf.dados;
+  }
+
+  function sacConfMes(v) { _sacConf.mes = v; _sacCarregarConferencia().then(_sacDesenharConferencia); }
+  window.sacConfMes = sacConfMes;
+  function sacConfFiltro(v) { _sacConf.filtro = v; _sacDesenharConferencia(); }
+  window.sacConfFiltro = sacConfFiltro;
+
+  // Marca (ou desmarca) que a devolução chegou de verdade.
+  async function sacConfMarcar(externoId, conferido) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/sac/conferencia/' + encodeURIComponent(externoId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({ conferido: !!conferido }),
+      }).then(x => x.json());
+      if (!r || !r.ok) { showToast('Não deu pra salvar: ' + ((r && r.erro) || 'falha'), true); return; }
+      // ★ recarrega do servidor em vez de mexer no objeto local: o servidor
+      // recalcula a situação (divergente/conferido) e o resumo. Atualizar só a
+      // tela deixaria o total mentindo até o próximo F5.
+      showToast(conferido ? 'Marcada como recebida.' : 'Desmarcada.');
+      await _sacCarregarConferencia();
+      _sacDesenharConferencia();
+    } catch (e) { showToast('Não deu pra salvar: ' + e.message, true); }
+  }
+  window.sacConfMarcar = sacConfMarcar;
+
+  function _sacDesenharConferencia() {
+    const box = document.getElementById('sacConteudo');
+    if (!box) return;
+    const d = _sacConf.dados;
+    if (!d) {
+      box.innerHTML = '<div style="background:#fff;border:1px solid var(--lc-border);border-radius:14px;padding:22px;color:var(--lc-muted)">'
+        + 'Não consegui carregar a conferência' + (_sacConf.erro ? ': ' + escapeHtml(_sacConf.erro) : '.') + '</div>';
+      return;
+    }
+    const R = d.resumo || {};
+    const S = R.porSituacao || {};
+    const rot = d.rotulos || {};
+    const brl = (v) => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    // seletor de mês: 12 meses pra trás
+    const meses = [];
+    for (let i = 0; i < 12; i++) {
+      const dt = new Date();
+      dt.setMonth(dt.getMonth() - i);
+      const v = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
+      meses.push('<option value="' + v + '"' + (v === _sacConf.mes ? ' selected' : '') + '>' + v + '</option>');
+    }
+
+    const div = S.divergente || { qtd: 0, valor: 0 };
+    const nchg = S.nao_chegou || { qtd: 0, valor: 0 };
+    const semRet = S.sem_retorno || { qtd: 0, valor: 0 };
+    const conf = S.conferido || { qtd: 0, valor: 0 };
+    const aConf = S.a_conferir || { qtd: 0, valor: 0 };
+    const aCam = S.a_caminho || { qtd: 0, valor: 0 };
+    const semRas = S.sem_rastreio || { qtd: 0, valor: 0 };
+
+    const cartao = (rotulo, qtd, valor, cor, fundo, borda, chave) =>
+      '<div onclick="sacConfFiltro(\'' + chave + '\')" style="cursor:pointer;flex:1;min-width:150px;background:' + fundo
+      + ';border:1px solid ' + borda + ';border-radius:12px;padding:12px 14px' + (_sacConf.filtro === chave ? ';box-shadow:0 0 0 2px ' + cor : '') + '">'
+      + '<div style="font-size:22px;font-weight:800;color:' + cor + '">' + qtd + '</div>'
+      + '<div style="font-size:11.5px;font-weight:600;color:#334155;line-height:1.35;margin-top:2px">' + rotulo + '</div>'
+      + (valor ? '<div style="font-size:11px;color:#64748b;margin-top:3px">' + brl(valor) + '</div>' : '')
+      + '</div>';
+
+    let h = '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">'
+      + '<label style="font-size:12.5px;color:var(--lc-muted)">Mês</label>'
+      + '<select onchange="sacConfMes(this.value)" style="padding:7px 10px;border:1px solid var(--lc-border);border-radius:9px;font-size:13px">'
+      + meses.join('') + '</select>'
+      + '<div style="flex:1"></div>'
+      + '<span style="font-size:12.5px;color:var(--lc-muted)">' + d.total + ' devolução(ões) no mês</span>'
+      + '</div>';
+
+    // ★ o número do prejuízo primeiro, e sozinho: é o que motivou a tela.
+    if (R.emRisco && R.emRisco.qtd) {
+      h += '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:13px;padding:14px 16px;margin-bottom:12px">'
+        + '<div style="font-size:13px;font-weight:800;color:#991b1b">'
+        + R.emRisco.qtd + ' devolução(ões) sem o produto de volta &middot; ' + brl(R.emRisco.valor) + '</div>'
+        + '<div style="font-size:12.5px;color:#7f1d1d;margin-top:4px;line-height:1.5">'
+        + 'Junta o que a plataforma diz que entregou e você não confirmou, o que voltou ao comprador '
+        + 'e os reembolsos sem devolução. <strong>O que ainda está a caminho não entra aqui</strong> — '
+        + 'só o que já se perdeu.</div></div>';
+    }
+
+    h += '<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px">'
+      + cartao(rot.divergente || 'Divergente', div.qtd, div.valor, '#dc2626', '#fef2f2', '#fecaca', 'divergente')
+      + cartao(rot.nao_chegou || 'Não chegou', nchg.qtd, nchg.valor, '#c2410c', '#fff7ed', '#fed7aa', 'nao_chegou')
+      + cartao(rot.a_conferir || 'A conferir', aConf.qtd, aConf.valor, '#b45309', '#fffbeb', '#fde68a', 'a_conferir')
+      + cartao(rot.a_caminho || 'A caminho', aCam.qtd, aCam.valor, '#0369a1', '#f0f9ff', '#bae6fd', 'a_caminho')
+      + cartao(rot.sem_rastreio || 'Sem rastreio', semRas.qtd, semRas.valor, '#475569', '#f8fafc', '#e2e8f0', 'sem_rastreio')
+      + cartao(rot.conferido || 'Conferido', conf.qtd, conf.valor, '#15803d', '#f0fdf4', '#bbf7d0', 'conferido')
+      + cartao(rot.sem_retorno || 'Sem devolução', semRet.qtd, semRet.valor, '#7c3aed', '#faf5ff', '#e9d5ff', 'sem_retorno')
+      + '</div>';
+
+    h += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;font-size:12.5px;color:var(--lc-muted)">'
+      + '<button onclick="sacConfFiltro(\'todos\')" style="padding:6px 12px;border:1px solid '
+      + (_sacConf.filtro === 'todos' ? '#0f766e;background:#0f766e;color:#fff' : 'var(--lc-border);background:#fff;color:#334155')
+      + ';border-radius:9px;cursor:pointer;font-size:12.5px;font-weight:600">Todas</button>'
+      + '<span>Conferência feita em ' + (R.coberturaConferencia || 0) + '% do que deveria ter chegado.</span>'
+      + '</div>';
+
+    const casos = (d.casos || []).filter(c => _sacConf.filtro === 'todos' || c.situacao === _sacConf.filtro);
+    if (!casos.length) {
+      h += '<div style="background:#fff;border:1px solid var(--lc-border);border-radius:14px;padding:22px;color:var(--lc-muted);font-size:13px">'
+        + (d.total ? 'Nenhuma devolução nesta situação.' : 'Nenhuma devolução registrada neste mês.') + '</div>';
+      box.innerHTML = h;
+      return;
+    }
+
+    const COR = { divergente: '#dc2626', nao_chegou: '#c2410c', a_conferir: '#b45309',
+      a_caminho: '#0369a1', sem_rastreio: '#475569', conferido: '#15803d', sem_retorno: '#7c3aed' };
+
+    h += '<div style="display:flex;flex-direction:column;gap:9px">';
+    casos.forEach(c => {
+      const cor = COR[c.situacao] || '#475569';
+      const foto = c.foto
+        ? '<img src="' + escapeHtml(c.foto) + '" style="width:44px;height:44px;border-radius:9px;object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0" onerror="this.style.display=\'none\'">'
+        : '<div style="width:44px;height:44px;border-radius:9px;background:var(--lc-surface-2);flex-shrink:0"></div>';
+      const jaConf = c.conferencia && c.conferencia.conferido;
+      h += '<div style="background:#fff;border:1px solid var(--lc-border);border-left:4px solid ' + cor
+        + ';border-radius:12px;padding:12px 14px;display:flex;gap:11px;align-items:flex-start">'
+        + foto
+        + '<div style="flex:1;min-width:0">'
+          + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+            + '<span style="font-size:10.5px;font-weight:800;color:' + cor + ';text-transform:uppercase">' + escapeHtml(rot[c.situacao] || c.situacao) + '</span>'
+            + '<span style="font-size:11px;color:var(--lc-muted)">' + escapeHtml(c.lojaNome || '') + ' &middot; ' + escapeHtml(c.marketplace || '') + '</span>'
+          + '</div>'
+          + '<div style="font-size:12.5px;font-weight:600;color:var(--lc-ink);margin-top:3px">' + escapeHtml(c.produto || '(sem produto)') + '</div>'
+          + '<div style="font-size:11px;color:var(--lc-muted);margin-top:2px">'
+            + 'devolução ' + escapeHtml(c.externoId || '') + (c.pedido ? ' &middot; pedido ' + escapeHtml(c.pedido) : '')
+            + (c.valor ? ' &middot; ' + brl(c.valor) : '')
+            + (c.rastreio && c.rastreio.codigo ? ' &middot; rastreio ' + escapeHtml(c.rastreio.codigo) : '')
+          + '</div>'
+          + (c.rastreio && c.rastreio.entregueEm
+            ? '<div style="font-size:11px;color:var(--lc-muted);margin-top:1px">plataforma marcou entrega em ' + escapeHtml(String(c.rastreio.entregueEm).slice(0, 10)) + '</div>' : '')
+          + (jaConf && c.conferencia.em
+            ? '<div style="font-size:11px;color:#15803d;margin-top:1px">conferido por ' + escapeHtml(c.conferencia.por || '') + ' em ' + escapeHtml(String(c.conferencia.em).slice(0, 10)) + '</div>' : '')
+        + '</div>'
+        // ★ o botão é o ponto da tela: só o vendedor pode dizer que chegou.
+        + (c.situacao === 'sem_retorno'
+          ? '<span style="font-size:11px;color:var(--lc-muted);align-self:center">não há produto a receber</span>'
+          : '<button onclick="sacConfMarcar(\'' + escapeHtml(c.externoId) + '\',' + (jaConf ? 'false' : 'true') + ')" '
+            + 'style="align-self:center;padding:8px 13px;border-radius:9px;border:1px solid '
+            + (jaConf ? 'var(--lc-border);background:#fff;color:#334155' : '#15803d;background:#15803d;color:#fff')
+            + ';font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap">'
+            + (jaConf ? 'Desmarcar' : 'Recebi') + '</button>')
+        + '</div>';
+    });
+    h += '</div>';
+    box.innerHTML = h;
+  }
+
   function _sacDesenharConteudo(aba) {
     const box = document.getElementById('sacConteudo');
     const avisoEl = document.getElementById('sacAvisoSonda');
@@ -97005,6 +97190,12 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           + aba.bloqueadas.map(l => '<div>' + escapeHtml(l.nome) + ': ' + escapeHtml(l.motivo) + '</div>').join('')
           + '</div>';
       } else { avisoEl.style.display = 'none'; avisoEl.innerHTML = ''; }
+    }
+
+    if (aba.tipo === 'conferencia') {
+      box.innerHTML = '<div style="text-align:center;padding:40px;color:var(--lc-muted)">Carregando...</div>';
+      _sacCarregarConferencia().then(_sacDesenharConferencia);
+      return;
     }
 
     if (aba.tipo === 'reclamacao') {
