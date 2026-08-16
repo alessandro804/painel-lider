@@ -65175,7 +65175,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1721-aba-conferencia';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1727-conferencia-dados';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -96852,6 +96852,21 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const r = await _sacApi('/api/sac/reclamacoes/' + id + '/responder',
       { method: 'POST', body: JSON.stringify({ texto: texto }) });
     if (botao) { botao.disabled = false; botao.textContent = rotulo; }
+    // ★ v33k.1725: recusa por REGRA da plataforma não é "Erro".
+    //
+    // O print de 16/08 mostrava um modal só com "Invalid action
+    // send_message_to_complainant for player" — texto do ML, que não diz o que
+    // fazer e parece defeito do painel. Não é: a reclamação simplesmente não
+    // aceita mais mensagem do vendedor (mediação, encerrada, ou vez do
+    // comprador).
+    if (!r.ok && r.naoPermitido) {
+      const acoes = (r.acoesDisponiveis || []).length
+        ? '\n\nO que ainda dá pra fazer nesta reclamação: ' + r.acoesDisponiveis.join(', ') + '.'
+        : '';
+      lcAlert((r.erro || 'O Mercado Livre não aceita mensagem nesta reclamação agora.') + acoes,
+        { tipo: 'aviso', titulo: 'Mensagem não permitida' });
+      return;
+    }
     if (!r.ok) { lcAlert(r.erro || 'Não consegui enviar.'); return; }
     lcAlert('Enviado: ' + (r.comoFoi || 'resposta registrada') + '.');
     await _sacCarregarReclamacoes();
@@ -96908,13 +96923,25 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     let h = '<div style="background:#fff;border:1px solid ' + (urgente ? '#fecaca' : 'var(--lc-border)')
       + ';border-radius:var(--lc-radius-lg);padding:15px 17px;margin-bottom:10px">';
 
-    h += '<div style="display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--lc-muted);margin-bottom:9px;flex-wrap:wrap">'
+    // ★ v33k.1726: o cabeçalho mostrava "Sem produto" e nada mais. Agora traz
+    // produto, comprador e quando foi comprado — que é o que identifica o caso
+    // sem precisar abrir o painel do marketplace.
+    const _dt = (v) => { if (!v) return ''; const d2 = new Date(v);
+      return Number.isFinite(d2.getTime()) ? d2.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : ''; };
+    h += '<div style="display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--lc-muted);margin-bottom:6px;flex-wrap:wrap">'
       + _sacLogo(c.marketplace)
-      + '<span style="font-weight:700;color:var(--lc-ink)">' + escapeHtml(c.produto_nome || 'Sem produto') + '</span>'
-      + (c.order_id ? '<span>pedido ' + escapeHtml(c.order_id) + '</span>' : '')
+      + '<span style="font-weight:700;color:var(--lc-ink)">'
+        + escapeHtml(c.produto_nome || 'Produto ainda não carregado') + '</span>'
       + (c.loja_nome ? '<span>' + escapeHtml(c.loja_nome) + '</span>' : '')
       + '<div style="flex:1"></div>'
       + (c.valor ? '<b style="color:var(--lc-ink)">R$ ' + Number(c.valor).toFixed(2) + '</b>' : '')
+      + '</div>';
+
+    h += '<div style="display:flex;align-items:center;gap:10px;font-size:11px;color:var(--lc-muted);margin-bottom:9px;flex-wrap:wrap">'
+      + (c.order_id ? '<span>pedido ' + escapeHtml(c.order_id) + '</span>' : '')
+      + (c.comprador ? '<span>comprador ' + escapeHtml(c.comprador) + '</span>' : '')
+      + (c.comprado_em ? '<span>comprado ' + escapeHtml(_dt(c.comprado_em)) + '</span>' : '')
+      + (c.criado_em ? '<span>reclamou ' + escapeHtml(_dt(c.criado_em)) + '</span>' : '')
       + '</div>';
 
     if (urgente) {
@@ -96924,9 +96951,16 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         + (hs <= 0 ? 'Prazo vencido' : 'Faltam cerca de ' + hs + 'h para responder') + '</div>';
     }
 
-    h += '<div style="font-size:13px;color:var(--lc-ink-2);line-height:1.5;margin-bottom:9px">'
-      + escapeHtml(c.motivo || 'Motivo não informado')
-      + (c.status_externo ? ' <span style="color:var(--lc-muted)">(' + escapeHtml(c.status_externo) + ')</span>' : '')
+    // ★ motivo e estágio separados: antes vinham na mesma linha, e o estágio
+    // entre parênteses parecia detalhe do motivo. São perguntas diferentes —
+    // "por que reclamou" e "em que pé está".
+    h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:9px">'
+      + '<span style="font-size:13px;color:var(--lc-ink-2);line-height:1.5">'
+        + escapeHtml(c.motivo || 'Motivo não informado') + '</span>'
+      + (c.status_externo
+        ? '<span style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;'
+          + 'background:var(--lc-surface-2);color:var(--lc-ink-2);border:1px solid var(--lc-border);'
+          + 'padding:2px 8px;border-radius:999px">' + escapeHtml(c.status_externo) + '</span>' : '')
       + '</div>';
 
     // A sugestao da IA ja nasce DENTRO da caixa de texto, editavel. Mostrar em
@@ -97118,6 +97152,21 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + cartao(rot.sem_retorno || 'Sem devolução', semRet.qtd, semRet.valor, '#7c3aed', '#faf5ff', '#e9d5ff', 'sem_retorno')
       + '</div>';
 
+    // ★★ v33k.1727: o print de 16/08 mostrava 266 casos TODOS em "sem rastreio",
+    // e o Alessandro achou que a tela estava errada. Não estava: a coleta ainda
+    // não tinha preenchido nenhum rastreio. Uma tela que mostra tudo numa
+    // categoria só, sem explicar, parece quebrada — e a dúvida é justificada.
+    if (semRas.qtd && semRas.qtd === d.total && d.total > 0) {
+      h += '<div style="background:#f8fafc;border:1px solid var(--lc-border);border-radius:12px;'
+        + 'padding:12px 14px;margin-bottom:12px;font-size:12.5px;color:#334155;line-height:1.5">'
+        + '<strong>Todas as ' + d.total + ' ainda estão sem rastreio.</strong> '
+        + 'A busca do rastreio roda junto da coleta de devoluções, a cada 12 horas, e só '
+        + 'consulta casos que ainda fazem sentido. Se a coleta acabou de ser ligada, é '
+        + 'esperado — o quadro se preenche nas próximas rodadas. '
+        + 'Você pode marcar "Recebi" agora mesmo: sua conferência vale mais que o rastreio.'
+        + '</div>';
+    }
+
     h += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;font-size:12.5px;color:var(--lc-muted)">'
       + '<button onclick="sacConfFiltro(\'todos\')" style="padding:6px 12px;border:1px solid '
       + (_sacConf.filtro === 'todos' ? '#0f766e;background:#0f766e;color:#fff' : 'var(--lc-border);background:#fff;color:#334155')
@@ -97135,6 +97184,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
     const COR = { divergente: '#dc2626', nao_chegou: '#c2410c', a_conferir: '#b45309',
       a_caminho: '#0369a1', sem_rastreio: '#475569', conferido: '#15803d', sem_retorno: '#7c3aed' };
+    // data com HORA, como o Alessandro pediu. Data inválida vira vazio em vez
+    // de "Invalid Date" na tela.
+    const _dtc = (v) => { if (!v) return ''; const d2 = new Date(v);
+      return Number.isFinite(d2.getTime()) ? d2.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : ''; };
 
     h += '<div style="display:flex;flex-direction:column;gap:9px">';
     casos.forEach(c => {
@@ -97157,6 +97210,15 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
             + (c.valor ? ' &middot; ' + brl(c.valor) : '')
             + (c.rastreio && c.rastreio.codigo ? ' &middot; rastreio ' + escapeHtml(c.rastreio.codigo) : '')
           + '</div>'
+          // ★ v33k.1727: comprador e as DUAS datas. Sem elas o conferente não
+          // consegue casar a caixa que chegou com o caso na tela — que é o
+          // trabalho inteiro dessa aba.
+          + ((c.comprador || c.compradoEm || c.devolvidaEm)
+            ? '<div style="font-size:11px;color:var(--lc-muted);margin-top:1px">'
+              + (c.comprador ? 'comprador ' + escapeHtml(c.comprador) : '')
+              + (c.compradoEm ? (c.comprador ? ' &middot; ' : '') + 'comprou ' + escapeHtml(_dtc(c.compradoEm)) : '')
+              + (c.devolvidaEm ? ' &middot; devolveu ' + escapeHtml(_dtc(c.devolvidaEm)) : '')
+            + '</div>' : '')
           + (c.rastreio && c.rastreio.entregueEm
             ? '<div style="font-size:11px;color:var(--lc-muted);margin-top:1px">plataforma marcou entrega em ' + escapeHtml(String(c.rastreio.entregueEm).slice(0, 10)) + '</div>' : '')
           + (jaConf && c.conferencia.em
