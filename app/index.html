@@ -65175,7 +65175,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1688-mapa-reclamacoes';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1716-espelho-decisoes';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -81217,6 +81217,91 @@ ${JSON.stringify(metricas, null, 2)}`
   // Só o Motor de Ads tem o construtor de regras condição→ação.
   function _autoTemRegras(tipo) { return tipo === 'motor_ads_automatico'; }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // RESPOSTA AUTOMÁTICA DE RECLAMAÇÕES (v33k.1692)
+  // ──────────────────────────────────────────────────────────────────────
+  // A BUSCA de devoluções não é opção: ela vive ligada em todas as lojas,
+  // porque só LÊ e é o que enche a tela do SAC. Ficou pausada uma vez e 24
+  // lojas pararam de receber devolução nova sem ninguém notar.
+  //
+  // O que é escolha do usuário é a IA ANALISAR E RESOLVER. Padrão: DESLIGADO.
+  // ══════════════════════════════════════════════════════════════════════
+  async function autoRenderAbaReclamacaoIa() {
+    // mesmo acesso que as outras abas do modal usam (autoRenderAbaMlRegras).
+    // A primeira versão chamava um `_autoBody()` que eu inventei e não existe.
+    const box = document.getElementById('autoModalBody');
+    if (!box) return;
+    box.innerHTML = '<div style="padding:18px;color:#64748b;font-size:13px">Carregando…</div>';
+
+    let modo = 'desligado';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/sac/config', {
+        headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      modo = (r && r.ok && r.config && r.config.automacao && r.config.automacao.reclamacao) || 'desligado';
+    } catch (e) { /* falha aberta: mostra desligado, que é o padrão seguro */ }
+
+    const op = (v, titulo, texto, cor) =>
+      '<label style="display:flex;gap:10px;align-items:flex-start;border:1px solid ' + (modo === v ? cor : '#e5e7eb') +
+      ';background:' + (modo === v ? '#f8fafc' : '#fff') + ';border-radius:11px;padding:12px 14px;margin-bottom:9px;cursor:pointer">' +
+        '<input type="radio" name="recIaModo" value="' + v + '"' + (modo === v ? ' checked' : '') + ' style="margin-top:3px">' +
+        '<div><div style="font-size:13px;font-weight:700;color:#1e293b">' + titulo + '</div>' +
+        '<div style="font-size:12.5px;color:#64748b;margin-top:3px;line-height:1.5">' + texto + '</div></div>' +
+      '</label>';
+
+    box.innerHTML =
+      '<div style="padding:16px 18px">' +
+        '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:11px 13px;font-size:12.5px;color:#166534;margin-bottom:14px">' +
+          '<strong>A busca de devoluções está sempre ligada</strong>, em todas as lojas. Ela só lê e enche a tela de SAC, ' +
+          'não responde nem aceita nada. Não precisa configurar.</div>' +
+        '<div style="font-size:13.5px;font-weight:800;color:#1e293b;margin-bottom:4px">O que a IA faz com as reclamações</div>' +
+        '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">Vale para todas as suas lojas.</div>' +
+        op('desligado', 'Desligado', 'A IA não analisa nem sugere nada. Você resolve tudo pela tela de SAC.', '#94a3b8') +
+        op('sugerir', 'Analisar e sugerir', 'A IA analisa cada caso e deixa a resposta pronta na tela. <strong>Nada é enviado sem você aprovar.</strong>', '#2563eb') +
+        op('automatico', 'Analisar e resolver sozinho', 'A IA aceita a devolução sozinha quando a plataforma oferece essa opção. ' +
+          '<strong>Nunca aceita reembolso sem o produto voltar</strong>, e chama você quando não há opção de devolução.', '#c2410c') +
+        '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:11px 13px;font-size:12.5px;color:#9a3412;margin-top:6px;line-height:1.5">' +
+          'No modo automático a ordem é sempre: <strong>troca</strong>, depois <strong>devolução</strong>, e nunca reembolso direto. ' +
+          'Se a plataforma não oferecer nenhuma das duas, o caso fica esperando você.</div>' +
+        '<button onclick="autoSalvarReclamacaoIa(this)" style="margin-top:14px;padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">Salvar</button>' +
+      '</div>';
+  }
+  window.autoRenderAbaReclamacaoIa = autoRenderAbaReclamacaoIa;
+
+  async function autoSalvarReclamacaoIa(botao) {
+    const sel = document.querySelector('input[name="recIaModo"]:checked');
+    if (!sel) return;
+    if (botao) { botao.disabled = true; botao.textContent = 'Salvando…'; }
+    try {
+      // ★ o POST /api/sac/config SUBSTITUI a config inteira (`normalizarConfig`
+      // do corpo, upsert). Mandar só `{ automacao: {...} }` apagaria tom,
+      // respostas prontas e o resto — e a pessoa só descobriria depois, sem
+      // ligar uma coisa à outra. Então: lê a atual, mexe num campo, devolve tudo.
+      const atual = await fetch(BACKEND_URL + '/api/sac/config', {
+        headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json()).catch(() => null);
+      if (!atual || !atual.ok || !atual.config) {
+        lcAlert('Não consegui ler a configuração atual. Nada foi alterado.', { tipo: 'perigo' });
+        return;
+      }
+      const cfg = JSON.parse(JSON.stringify(atual.config));
+      cfg.automacao = Object.assign({}, cfg.automacao || {}, { reclamacao: sel.value });
+      const r = await fetch(BACKEND_URL + '/api/sac/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({ config: cfg }),
+      }).then(x => x.json());
+      if (!r || !r.ok) { lcAlert('Não deu pra salvar: ' + ((r && r.erro) || 'falha'), { tipo: 'perigo' }); return; }
+      showToast('Resposta automática de reclamações: ' + sel.value + '.');
+    } catch (e) {
+      lcAlert('Não deu pra salvar: ' + e.message, { tipo: 'perigo' });
+    } finally {
+      if (botao) { botao.disabled = false; botao.textContent = 'Salvar'; }
+    }
+  }
+  window.autoSalvarReclamacaoIa = autoSalvarReclamacaoIa;
+
   // --------------------------------------------------------------------
   // ABRIR "EDITAR AUTOMAÇÃO"
   // --------------------------------------------------------------------
@@ -81291,6 +81376,13 @@ ${JSON.stringify(metricas, null, 2)}`
         abas.push('<button class="auto-tab" data-aba="mlregras" onclick="autoTrocarAba(\'mlregras\')">Regras do Mercado Livre</button>');
       }
       abaInicial = 'etapas';
+    } else if (tipo === 'analisar_disputas_shopee') {
+      // ★ v33k.1692: a BUSCA de devoluções é essencial e vive ligada em todas as
+      // lojas — ela só lê e enche a tela do SAC. O que é escolha do usuário é a
+      // IA ANALISAR E RESOLVER, e é isso que esta aba controla.
+      abas.push('<button class="auto-tab ativa" data-aba="reclamacaoia" onclick="autoTrocarAba(\'reclamacaoia\')">Resposta automática</button>');
+      abas.push('<button class="auto-tab" data-aba="contas" onclick="autoTrocarAba(\'contas\')">Contas</button>');
+      abaInicial = 'reclamacaoia';
     } else if (ehRelampago) {
       // relâmpago que NÃO é mestre (ex.: gerar_flash_sale aberto direto)
       abas.push('<button class="auto-tab ativa" data-aba="relampago" onclick="autoTrocarAba(\'relampago\')">Configuração</button>');
@@ -81530,6 +81622,7 @@ ${JSON.stringify(metricas, null, 2)}`
     else if (aba === 'relampago') autoRenderAbaRelampago();
     else if (aba === 'tiktokpromo') autoRenderAbaTikTokPromo();
     else if (aba === 'mlregras') autoRenderAbaMlRegras();
+    else if (aba === 'reclamacaoia') autoRenderAbaReclamacaoIa();
     else if (aba === 'etapas') {
       // volta o foco pro mestre (o usuário pode ter entrado nas contas de uma etapa)
       if (_autoModalMestre) _autoModalTipo = _autoModalMestre;
