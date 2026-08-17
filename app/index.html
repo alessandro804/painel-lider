@@ -36498,9 +36498,26 @@ Retorne JSON: {"ID": "valor", ...}`;
     return true;
   }
   
-  // Aplica migração em lote, usado ao carregar produtos do backend
+  // ★★ MEDIÇÃO (v33k.1733) — quanto ISTO custa no carregamento da tela.
+  //
+  // RELATO DE 16/08: a tela de Notas Fiscais levou 29 segundos. O servidor
+  // respondeu em menos de 1,5s (o log de lentidão da rota nem disparou), e o
+  // `/contadores` mede 600ms. Os segundos NÃO estão no backend.
+  //
+  // O console mostrou o que está: esta migração e o recálculo logo abaixo
+  // varrem produtos -> variações -> vínculos a CADA carregamento. Um único
+  // produto do Alessandro tem 2.632 vínculos, e são ~20 mil produtos.
+  //
+  // ★ MAS EU AINDA NÃO SEI QUANTO ISSO CUSTA — e já errei três vezes nesta
+  // semana agindo sobre suposição de custo: escrevi uma contagem "rápida" que
+  // era mais lenta, medi o caminho sem normalização achando que era o da rota,
+  // e continuei otimizando o `/contadores` que é 0,6s de 29s.
+  //
+  // Então mede primeiro. O número aparece no console e diz se vale reescrever.
   function _migrarTodosOsProdutos() {
     if (!Array.isArray(produtosErp)) return;
+    const _t0 = performance.now();
+    let _vinculosVistos = 0;
     let migrados = 0;
     let statusCorrigidos = 0;
     let vincStatusMigrados = 0;
@@ -36535,6 +36552,16 @@ Retorne JSON: {"ID": "valor", ...}`;
         p._statusMlVincMigrado = true;
       }
     });
+    // ★ o custo sai SEMPRE, não só quando migrou algo: o caso caro é justamente
+    // quando não migra nada e mesmo assim varre tudo — e esse é invisível se o
+    // log depender de `migrados > 0`.
+    const _ms = Math.round(performance.now() - _t0);
+    if (_ms >= 200 || migrados > 0) {
+      console.log('[migracao] ' + _ms + 'ms · ' + produtosErp.length + ' produto(s) · '
+        + _vinculosVistos.toLocaleString('pt-BR') + ' vínculo(s) percorridos · '
+        + migrados + ' migrado(s)'
+        + (_ms >= 2000 ? '  ← ISTO É PARTE DA LENTIDÃO DA TELA' : ''));
+    }
     if (migrados > 0) {
       console.log('[cores] ' + migrados + ' produto(s) migrado(s) pro modelo de cores[]');
     }
@@ -36561,6 +36588,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       const todosStatus = [];
       (p.variacoes || []).forEach(v => {
         (v.vinculos || []).forEach(vi => {
+          _vinculosVistos++;
           if (vi.statusMl) todosStatus.push(vi.statusMl);
         });
       });
@@ -65175,7 +65203,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1727-conferencia-dados';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1736-fonte-avaliacao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -96269,6 +96297,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const chk = document.getElementById('sacCfgNotaBaixa');
     if (chk) cfg.responderNotaBaixaSozinho = !!chk.checked;
     cfg.respostasAvaliacao = cfg.respostasAvaliacao || {};
+    // ★ v33k.1736: a fonte escolhida também é estado do modal. Sem recolher
+    // aqui, trocar a opção e salvar guardaria a antiga.
+    const rf = document.querySelector('input[name="sacFonteAval"]:checked');
+    if (rf) cfg.fonteAvaliacao = (rf.value === 'ia' ? 'ia' : 'pronto');
     [1, 2, 3, 4, 5].forEach(n => {
       const ta = document.getElementById('sacCfg' + n);
       if (ta) cfg.respostasAvaliacao[n] = ta.value.split('\n').map(t => t.trim()).filter(Boolean);
@@ -96331,11 +96363,73 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   }
   window.sacMarcarFrente = sacMarcarFrente;
 
+  // ★ v33k.1736: troca quem escreve a resposta da avaliação.
+  function sacFonteAval(v) {
+    _sacAval.config = _sacAval.config || {};
+    _sacAval.config.fonteAvaliacao = (v === 'ia' ? 'ia' : 'pronto');
+    // ★ redesenha pelo mesmo caminho que o resto do modal usa. Antes eu tinha
+    // inventado um id de contêiner que não existe — o `sacModalBody` é o real.
+    //
+    // ★★ E RECOLHE ANTES: os textos digitados vivem nos <textarea>, não no
+    // objeto. Redesenhar sem `_sacRecolherModal()` apagaria o que a pessoa
+    // acabou de escrever só por ter trocado a opção.
+    _sacRecolherModal();
+    const body = document.getElementById('sacModalBody');
+    if (body) {
+      body.innerHTML = _sacHtmlAbaTextos();
+      if (window.lcHydrateIcons) { try { window.lcHydrateIcons(body); } catch (e) {} }
+    }
+  }
+  window.sacFonteAval = sacFonteAval;
+
   function _sacHtmlAbaTextos() {
     const cfg = _sacAval.config || { respostasAvaliacao: {} };
-    let h = '<div style="font-size:12.5px;color:var(--lc-muted);line-height:1.55;margin-bottom:14px">'
-      + 'Um texto por linha. Na hora de responder o sistema sorteia um deles e nunca repete o usado '
-      + 'da vez anterior, para dez compradores do mesmo anúncio não verem a mesma frase.</div>';
+    // ★★ v33k.1736: A ESCOLHA DE QUEM ESCREVE, EXPLÍCITA.
+    //
+    // PROPOSTA DE 16/08: "se a pessoa ativar para ser automático é respondido
+    // com IA, fica personalizado, o que é muito bom, mas esse campo se torna
+    // inviável. A não ser que a gente deixe de cinza claro se estiver
+    // selecionado responder com IA, e coloque uma nova opção pra responder por
+    // padrão."
+    //
+    // ★ E ELE APONTOU UM CONFLITO QUE JÁ EXISTIA E ERA INVISÍVEL: até aqui o
+    // texto pronto vencia a IA SEMPRE, e ter texto pronto impedia a IA de
+    // rodar. Quem preenchia os textos e ligava o automático achava que teria
+    // resposta personalizada e recebia a frase fixa, sem aviso.
+    const fonte = cfg.fonteAvaliacao === 'ia' ? 'ia' : 'pronto';
+    const opcao = (valor, titulo, desc) => {
+      const ativa = fonte === valor;
+      return '<label style="display:flex;gap:10px;align-items:flex-start;padding:11px 13px;cursor:pointer;'
+        + 'border:1px solid ' + (ativa ? 'var(--lc-primary)' : 'var(--lc-border)') + ';border-radius:11px;'
+        + 'background:' + (ativa ? 'var(--lc-primary-soft, #f0fdfa)' : '#fff') + ';margin-bottom:8px">'
+        + '<input type="radio" name="sacFonteAval" value="' + valor + '"' + (ativa ? ' checked' : '')
+        + ' onchange="sacFonteAval(\'' + valor + '\')" style="margin-top:2px">'
+        + '<span><span style="font-size:13px;font-weight:700;color:var(--lc-ink)">' + titulo + '</span>'
+        + '<span style="display:block;font-size:12px;color:var(--lc-muted);line-height:1.5;margin-top:2px">'
+        + desc + '</span></span></label>';
+    };
+
+    let h = '<div style="margin-bottom:14px">'
+      + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink);margin-bottom:7px">Quem escreve a resposta</div>'
+      + opcao('pronto', 'Meus textos prontos',
+        'Sorteia um dos textos abaixo, sem repetir o da vez anterior. Não gasta IA.')
+      + opcao('ia', 'A IA escreve cada resposta',
+        'Cada comprador recebe um texto próprio, citando o que ele escreveu. '
+        + 'Os textos abaixo ficam de reserva, para o caso de a IA não responder.')
+      + '</div>';
+
+    const apagado = fonte === 'ia';
+    h += '<div style="font-size:12.5px;color:var(--lc-muted);line-height:1.55;margin-bottom:14px">'
+      + (apagado
+        ? '<strong>A IA está escolhida.</strong> Estes textos só entram se a IA não gerar resposta — '
+          + 'vale manter pelo menos um por nota como rede de segurança.'
+        : 'Um texto por linha. Na hora de responder o sistema sorteia um deles e nunca repete o usado '
+          + 'da vez anterior, para dez compradores do mesmo anúncio não verem a mesma frase.')
+      + '</div>';
+
+    // ★ escurece, mas NÃO desabilita: os textos continuam servindo de reserva,
+    // e bloquear a edição impediria a pessoa de preparar a rede de segurança.
+    h += '<div style="opacity:' + (apagado ? '0.55' : '1') + ';transition:opacity .15s">';
     [5, 4, 3, 2, 1].forEach(n => {
       const lista = (cfg.respostasAvaliacao && cfg.respostasAvaliacao[n]) || [];
       h += '<label style="font-size:12px;font-weight:700;display:flex;align-items:center;gap:8px;margin-bottom:6px">'
@@ -96346,6 +96440,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         + 'font-size:13px;font-family:inherit;resize:vertical;box-sizing:border-box;margin-bottom:13px">'
         + escapeHtml(lista.join('\n')) + '</textarea>';
     });
+    h += '</div>';
     h += '<button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="sacPreviaAval(5)">Ver o que sairia num 5 estrelas</button>';
     return h;
   }
@@ -96485,7 +96580,35 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     const porLoja = {};
     todas.forEach(i => { if (i.aguardando_nos) porLoja[i.loja_id] = (porLoja[i.loja_id] || 0) + 1; });
 
-    let h = '<div class="sacchat">';
+    // ★★ v33k.1735: DIZ O QUE NÃO ESTÁ AQUI, com o nome da plataforma.
+    //
+    // RELATO DE 16/08: "na parte de mensagens ainda não está com o selo que a
+    // Shopee não está disponível e que não vai estar."
+    //
+    // Antes, loja sem a capacidade simplesmente sumia. Com 24 lojas Shopee e
+    // "0 mensagens" na tela, isso se lê como sistema quebrado — e enquanto a
+    // pessoa não descobre, ela acha que perdeu mensagem de cliente. Ausência
+    // silenciosa é a pior forma de dizer "não dá".
+    let h = '';
+    (aba.semSuporte || []).forEach(x => {
+      const NOME = { shopee: 'Shopee', mercadolivre: 'Mercado Livre', tiktok: 'TikTok Shop', shein: 'Shein' };
+      h += '<div style="background:var(--lc-surface-2);border:1px solid var(--lc-border);'
+        + 'border-radius:12px;padding:11px 14px;margin-bottom:10px;font-size:12.5px;color:var(--lc-ink-2);line-height:1.5">'
+        + '<strong>' + escapeHtml(NOME[x.marketplace] || x.marketplace) + '</strong> '
+        + '(' + x.lojas + ' loja' + (x.lojas > 1 ? 's' : '') + ') não aparece aqui. '
+        + escapeHtml(x.motivo)
+        + '</div>';
+    });
+    // ★ o chat de influencer do TikTok: existe e não é lido. Dizer isso evita
+    // que alguém procure por ele achando que deveria estar na lista.
+    if ((aba.lojas || []).some(l => l.marketplace === 'tiktok')) {
+      h += '<div style="background:var(--lc-surface-2);border:1px solid var(--lc-border);'
+        + 'border-radius:12px;padding:11px 14px;margin-bottom:10px;font-size:12.5px;color:var(--lc-ink-2);line-height:1.5">'
+        + '<strong>TikTok Shop</strong>: aqui está o chat de <strong>atendimento ao comprador</strong>. '
+        + 'O chat com criadores e afiliados é outra área do TikTok e ainda não é lido por aqui.'
+        + '</div>';
+    }
+    h += '<div class="sacchat">';
 
     // ── coluna 1: lojas, agrupadas por canal ──
     h += '<div class="cx"><div class="rol">';
@@ -96849,8 +96972,31 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     }
     const rotulo = botao ? botao.textContent : '';
     if (botao) { botao.disabled = true; botao.textContent = 'Enviando...'; }
+    // ★★ v33k.1734: PERGUNTA PRA QUEM VAI, em vez de mandar pro comprador calado.
+    //
+    // No Mercado Livre são dois caminhos diferentes: o COMPRADOR e a MEDIAÇÃO.
+    // Até aqui a tela sempre mandava pro comprador sem dizer — e é a mediação
+    // que decide o caso. O Alessandro perguntou exatamente isso em 16/08.
+    let destino = 'complainant';
+    try {
+      const d = await _sacApi('/api/sac/reclamacoes/' + id + '/destinos');
+      const lista = (d && d.ok && d.destinos) ? d.destinos : [];
+      if (lista.length > 1) {
+        // ★ com dois ou mais, PERGUNTA. Escolher por ele seria repetir o erro
+        // que ele acabou de apontar, só que com um destino diferente.
+        const opcoes = lista.map((x, i) => (i + 1) + ') ' + x.rotulo + (x.efeito ? ' — ' + x.efeito : ''));
+        const escolha = await lcPrompt('Para quem enviar esta mensagem?\n\n' + opcoes.join('\n\n')
+          + '\n\nDigite o número:', '1');
+        if (escolha == null) { if (botao) { botao.disabled = false; botao.textContent = rotulo; } return; }
+        const idx = Math.max(1, Math.min(lista.length, parseInt(escolha, 10) || 1)) - 1;
+        destino = lista[idx].papel;
+      } else if (lista.length === 1) {
+        destino = lista[0].papel;
+      }
+    } catch (e) { /* sem destinos: segue com o padrão e o backend valida */ }
+
     const r = await _sacApi('/api/sac/reclamacoes/' + id + '/responder',
-      { method: 'POST', body: JSON.stringify({ texto: texto }) });
+      { method: 'POST', body: JSON.stringify({ texto: texto, destino: destino }) });
     if (botao) { botao.disabled = false; botao.textContent = rotulo; }
     // ★ v33k.1725: recusa por REGRA da plataforma não é "Erro".
     //
@@ -96868,7 +97014,10 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       return;
     }
     if (!r.ok) { lcAlert(r.erro || 'Não consegui enviar.'); return; }
-    lcAlert('Enviado: ' + (r.comoFoi || 'resposta registrada') + '.');
+    // ★ diz PRA QUEM foi: confirmar sem dizer o destino deixa a mesma dúvida
+    // que motivou a mudança.
+    const _rot = { complainant: 'ao comprador', mediator: 'à mediação do Mercado Livre' };
+    lcAlert('Enviado ' + (_rot[destino] || '') + ': ' + (r.comoFoi || 'resposta registrada') + '.');
     await _sacCarregarReclamacoes();
     _sacDesenharReclamacoes();
   }
