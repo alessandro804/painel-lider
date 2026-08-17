@@ -36517,7 +36517,11 @@ Retorne JSON: {"ID": "valor", ...}`;
   function _migrarTodosOsProdutos() {
     if (!Array.isArray(produtosErp)) return;
     const _t0 = performance.now();
-    let _vinculosVistos = 0;
+    // ★ v33k.1742: `_vinculosVistos` REMOVIDO. Ele contava dentro do laço do
+    // recálculo, que roda DEPOIS de eu fechar este cronômetro — então sempre
+    // somava zero. Contador que devolve zero por estar no lugar errado é pior
+    // que contador nenhum: parece medição e é ruído, e eu li "0 vínculo(s)"
+    // duas vezes sem estranhar.
     let migrados = 0;
     let statusCorrigidos = 0;
     let vincStatusMigrados = 0;
@@ -36567,17 +36571,16 @@ Retorne JSON: {"ID": "valor", ...}`;
     // cometi com o `/contadores`: o número certo de uma parte não responde
     // pelo todo. O acumulado responde.
     const _ms = Math.round(performance.now() - _t0);
-    window._migAcum = window._migAcum || { chamadas: 0, ms: 0, vinculos: 0, migrados: 0 };
+    window._migAcum = window._migAcum || { chamadas: 0, ms: 0, migrados: 0 };
     window._migAcum.chamadas++;
     window._migAcum.ms += _ms;
-    window._migAcum.vinculos += _vinculosVistos;
     window._migAcum.migrados += migrados;
     const A = window._migAcum;
     if (_ms >= 200 || migrados > 0 || A.chamadas % 10 === 0) {
       console.log('[migracao] esta: ' + _ms + 'ms · ' + produtosErp.length + ' produto(s) · '
-        + _vinculosVistos.toLocaleString('pt-BR') + ' vínculo(s) · ' + migrados + ' migrado(s)'
+        + migrados + ' migrado(s)'
         + '   ||   ACUMULADO: ' + A.chamadas + ' chamada(s) · ' + A.ms + 'ms · '
-        + A.vinculos.toLocaleString('pt-BR') + ' vínculo(s) · ' + A.migrados + ' migrado(s)'
+        + A.migrados + ' migrado(s)'
         + (A.ms >= 2000 ? '  ← ISTO É PARTE DA LENTIDÃO DA TELA' : ''));
     }
     // ★ e deixa o total à mão: digitar `_migAcum` no console responde a
@@ -36596,6 +36599,23 @@ Retorne JSON: {"ID": "valor", ...}`;
       saveProdutos();
     }
     
+    // ★★ v33k.1742: A MEDIÇÃO PARAVA AQUI, E O CARO VEM DEPOIS.
+    //
+    // O acumulado de 17/08 deu 2 chamadas · 8ms · 0 vínculos — e eu quase
+    // concluí "a migração não é o gargalo, procura em outro lugar". Está certo
+    // sobre a migração e errado sobre a conclusão: eu fechava o cronômetro
+    // ANTES do recálculo abaixo, que é justamente o trecho que varre
+    // produtos → variações → vínculos (um produto tem 2.632).
+    //
+    // Os `0 vínculo(s)` do acumulado eram a denúncia: o contador estava dentro
+    // do laço do recálculo, que rodava DEPOIS de eu já ter somado. Número
+    // impossível — nenhum vínculo percorrido e 22 produtos reclassificados por
+    // vínculo — e eu tinha lido sem estranhar.
+    //
+    // ★ QUARTA vez nesta semana que meço o trecho vizinho em vez do exato.
+    const _t1 = performance.now();
+    let _vincRecalc = 0;
+
     // v32d.9: Recalcula status agregado de TODOS os produtos baseado nos vínculos atuais.
     // Lógica OR: se qualquer vínculo é NORMAL/active → produto = ativo.
     // Roda no carregamento pra corrigir produtos onde o status agregado ficou
@@ -36609,7 +36629,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       const todosStatus = [];
       (p.variacoes || []).forEach(v => {
         (v.vinculos || []).forEach(vi => {
-          _vinculosVistos++;
+          _vincRecalc++;
           if (vi.statusMl) todosStatus.push(vi.statusMl);
         });
       });
@@ -36632,6 +36652,21 @@ Retorne JSON: {"ID": "valor", ...}`;
     });
     if (statusRecalculados > 0) {
       console.log('[v32d.9] ' + statusRecalculados + ' produto(s) tiveram status agregado recalculado');
+    }
+    // ★ o custo do RECÁLCULO, separado da migração. Sai sempre que passar de
+    // 200ms, mesmo sem reclassificar nada — varrer 1,2 milhão de vínculos e
+    // concluir que está tudo certo custa igual.
+    {
+      const _msR = Math.round(performance.now() - _t1);
+      const R = window._recalcAcum || (window._recalcAcum = { chamadas: 0, ms: 0, vinculos: 0, mudados: 0 });
+      R.chamadas++; R.ms += _msR; R.vinculos += _vincRecalc; R.mudados += statusRecalculados;
+      if (_msR >= 200 || statusRecalculados > 0) {
+        console.log('[recalc-status] esta: ' + _msR + 'ms · '
+          + _vincRecalc.toLocaleString('pt-BR') + ' vínculo(s) · ' + statusRecalculados + ' mudado(s)'
+          + '   ||   ACUMULADO: ' + R.chamadas + ' chamada(s) · ' + R.ms + 'ms · '
+          + R.vinculos.toLocaleString('pt-BR') + ' vínculo(s)'
+          + (R.ms >= 2000 ? '  ← ISTO É PARTE DA LENTIDÃO DA TELA' : ''));
+      }
       saveProdutos();
     }
   }
@@ -42870,6 +42905,383 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.mlPreVooLiberado = mlPreVooLiberado;
 
+  // ══════════════════════════════════════════════════════════════════════
+  // TABELA DE PRÉ-VOO DA DUPLICAÇÃO (v33k.1753)
+  // ──────────────────────────────────────────────────────────────────────
+  // PEDIDO DE 17/08, com o print do Editar em Massa da Shopee: "sempre que a
+  // gente for duplicar, abrir um modal com todos os dados já preenchidos, o
+  // que está pendente o usuário preenche na hora, e aí sim começa a rodar a
+  // exportação."
+  //
+  // Diferença pro `mlAbrirModalAtributos`, que continua atendendo as outras
+  // três telas de exportação:
+  //
+  //   modal antigo   só o que FALTA, agrupado por categoria, depois do save
+  //   esta tabela    TUDO, preenchido e vazio, ANTES do save
+  //
+  // Por que antes do save importa: hoje a duplicação grava o produto, tenta
+  // exportar, o marketplace recusa e o código faz rollback. Abrindo aqui,
+  // cancelar não deixa sujeira, porque nada foi criado ainda.
+  //
+  // O desenho segue o print: uma tabela pros campos do anúncio e outra pras
+  // variações, com lápis por coluna pra repetir o valor em todas as linhas.
+  // Quem decide se o campo é do anúncio ou da variação é o `deVariacao` que o
+  // backend manda, e ele vale pros três marketplaces.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // Converte o produto do painel pro formato que a rota de pré-voo entende.
+  // ★ Os nomes aqui são os do BANCO (`sku_pai`, `category_id_ml`), porque é o
+  // mesmo formato que a rota recebe quando lê do Supabase. Uma forma só dos
+  // dois lados: se divergir, o modo memória e o modo banco dariam respostas
+  // diferentes pro mesmo produto.
+  function preVooProdutoParaFicha(p, ref) {
+    return {
+      ref: ref,
+      nome: p.nome || null,
+      sku_pai: p.skuPai || null,
+      fotos: p.fotos || [],
+      categoria: p.categoria || null,
+      category_id_ml: p.categoryIdMl || null,
+      atributos_ml: p.atributosMl || {},
+      productTypeId: p.productTypeIdShein || null,
+      variacoes: (p.variacoes || []).map(v => ({
+        id: v.id != null ? v.id : null,
+        nome: v.nome || null,
+        cor: v.cor || null,
+        tamanho: v.tamanho != null ? v.tamanho : null,
+        atributos: v.atributos || [],
+      })),
+      marketplaces: {
+        _lc_extras: {
+          categoryIdTiktok: p.categoryIdTiktok || null,
+          atributosTikTok: p.atributosTikTok || {},
+        },
+      },
+    };
+  }
+
+  // Pede as fichas ao backend em modo memória. Falha aberta: se a consulta não
+  // responde, devolve null e quem chamou segue sem tabela. Uma consulta de
+  // metadado não pode impedir exportação que funcionaria.
+  async function preVooBuscarFichas(lojaIdBanco, produtos) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco + '/pre-voo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({ produtos: produtos }),
+      }).then(x => x.json());
+      if (!r || !r.ok) return null;
+      return Array.isArray(r.fichas) ? r.fichas : [];
+    } catch (e) {
+      console.warn('[pré-voo tabela] não consegui buscar as fichas:', e.message);
+      return null;
+    }
+  }
+  window.preVooBuscarFichas = preVooBuscarFichas;
+
+  // Estado da tabela aberta. Um modal por vez, igual ao resto do painel.
+  var _pvtEstado = null;
+
+  function _pvtCelula(campo, idCel, pendente) {
+    const base = 'width:100%;padding:6px 8px;border-radius:6px;font-size:12.5px;box-sizing:border-box;border:1px solid ' +
+      (pendente ? '#f87171' : '#cbd5e1') + ';background:' + (pendente ? '#fef2f2' : '#fff');
+    const marca = ' data-pvtcol="' + escapeHtml(campo.id) + '" oninput="pvtRecontar()" onchange="pvtRecontar()"';
+    if (campo.valores && campo.valores.length) {
+      return '<select id="' + idCel + '"' + marca + ' style="' + base + '">' +
+        '<option value="">—</option>' +
+        campo.valores.map(v => '<option value="' + escapeHtml(v.nome) + '"' +
+          (String(campo.valor || '') === String(v.nome) ? ' selected' : '') + '>' +
+          escapeHtml(v.nome) + '</option>').join('') +
+        '</select>';
+    }
+    return '<input id="' + idCel + '"' + marca + ' style="' + base + '"' +
+      ' value="' + escapeHtml(String(campo.valor || '')) + '"' +
+      (campo.maxLen ? ' maxlength="' + Number(campo.maxLen) + '"' : '') +
+      ' placeholder="' + escapeHtml(campo.nome) + '">';
+  }
+
+  function _pvtCabecalho(campo, escopo) {
+    return '<th style="text-align:left;padding:8px 10px;font-size:11.5px;font-weight:700;color:#64748b;min-width:150px;white-space:nowrap">' +
+      escapeHtml(campo.nome) + (campo.obrigatorio ? ' <span style="color:#dc2626">*</span>' : '') +
+      '<div style="margin-top:3px;display:flex;gap:8px;align-items:center">' +
+        '<a title="repetir o primeiro valor em todas as linhas" onclick="pvtAplicarColuna(\'' +
+          escapeHtml(campo.id) + '\',\'' + escopo + '\')" style="cursor:pointer;color:#2563eb;display:inline-flex">' +
+          '<i data-lucide="pencil" style="width:13px;height:13px"></i></a>' +
+        '<a title="limpar a coluna" onclick="pvtLimparColuna(\'' +
+          escapeHtml(campo.id) + '\',\'' + escopo + '\')" style="cursor:pointer;color:#94a3b8;display:inline-flex">' +
+          '<i data-lucide="eraser" style="width:13px;height:13px"></i></a>' +
+      '</div></th>';
+  }
+
+  // Repete o PRIMEIRO valor preenchido da coluna nas demais linhas. Só onde
+  // está vazio: sobrescrever o que a pessoa digitou seria apagar trabalho dela.
+  function pvtAplicarColuna(colId, escopo) {
+    const campos = [...document.querySelectorAll('[data-pvtcol="' + colId + '"][data-pvtescopo="' + escopo + '"]')];
+    const origem = campos.find(c => String(c.value || '').trim());
+    if (!origem) { showToast('Preencha uma linha primeiro, depois use o lápis.', true); return; }
+    let n = 0;
+    campos.forEach(c => { if (c !== origem && !String(c.value || '').trim()) { c.value = origem.value; n++; } });
+    pvtRecontar();
+    showToast(n ? ('Valor repetido em ' + n + ' linha(s).') : 'Nada vazio pra preencher nesta coluna.');
+  }
+  window.pvtAplicarColuna = pvtAplicarColuna;
+
+  function pvtLimparColuna(colId, escopo) {
+    const campos = [...document.querySelectorAll('[data-pvtcol="' + colId + '"][data-pvtescopo="' + escopo + '"]')];
+    campos.forEach(c => { c.value = ''; });
+    pvtRecontar();
+  }
+  window.pvtLimparColuna = pvtLimparColuna;
+
+  // Reconta as pendências a cada digitação e trava o botão enquanto faltar.
+  // O contador é a única coisa que separa "achei que estava pronto" de
+  // "está pronto": ele mede o mesmo que o backend cobra.
+  function pvtRecontar() {
+    if (!_pvtEstado) return 0;
+    let faltam = 0;
+    _pvtEstado.obrigatorios.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const vazio = !String(el.value || '').trim();
+      el.style.borderColor = vazio ? '#f87171' : '#cbd5e1';
+      el.style.background = vazio ? '#fef2f2' : '#fff';
+      if (vazio) faltam++;
+    });
+    const btn = document.getElementById('pvtBtnExportar');
+    const cont = document.getElementById('pvtContador');
+    if (cont) {
+      cont.textContent = faltam
+        ? (faltam + ' campo(s) obrigatório(s) em branco')
+        : 'Tudo preenchido, pode exportar';
+      cont.style.color = faltam ? '#dc2626' : '#15803d';
+    }
+    if (btn) {
+      btn.disabled = faltam > 0;
+      btn.style.opacity = faltam > 0 ? '0.5' : '1';
+      btn.style.cursor = faltam > 0 ? 'not-allowed' : 'pointer';
+    }
+    return faltam;
+  }
+  window.pvtRecontar = pvtRecontar;
+
+  // Abre a tabela. Resolve `true` quando o usuário confirmou (e os valores já
+  // foram aplicados nos produtos), `false` quando cancelou.
+  //
+  // `idsIA` marca o que a IA deduziu, pra tela dizer o que revisar. Valor
+  // deduzido misturado com valor cadastrado, sem marcação, é pior que campo
+  // vazio: a pessoa não sabe no que confiar.
+  function preVooAbrirTabela(fichas, produtos, idsIA) {
+    return new Promise((resolve) => {
+      const lista = (fichas || []).filter(Boolean);
+      const marcados = idsIA || {};
+
+      const bloqueadas = lista.filter(f => f.bloqueio);
+      const uteis = lista.filter(f => !f.bloqueio);
+
+      // colunas: união dos campos, separadas por onde o valor mora
+      const colsItem = [];
+      const colsVar = [];
+      uteis.forEach(f => {
+        (f.campos || []).forEach(c => { if (!colsItem.find(x => x.id === c.id)) colsItem.push(c); });
+        (f.variacoes || []).forEach(v => (v.campos || []).forEach(c => {
+          if (!colsVar.find(x => x.id === c.id)) colsVar.push(c);
+        }));
+      });
+
+      const obrigatorios = [];
+      const aplicar = [];
+
+      let h = '';
+
+      if (bloqueadas.length) {
+        h += '<div style="padding:11px 13px;background:#fef3c7;border:1px solid #fde68a;border-radius:9px;' +
+          'font-size:12.5px;color:#92400e;margin-bottom:12px">' +
+          '<strong>' + bloqueadas.length + ' anúncio(s) sem categoria definida.</strong><br>' +
+          bloqueadas.slice(0, 4).map(f => escapeHtml(f.nome || f.ref || '') + ': ' + escapeHtml(f.bloqueio)).join('<br>') +
+          '</div>';
+      }
+
+      h += '<div style="padding:11px 13px;background:#eff6ff;border:1px solid #dbeafe;border-radius:9px;' +
+        'font-size:12.5px;color:#334155;margin-bottom:12px;display:flex;gap:9px;align-items:flex-start">' +
+        '<i data-lucide="info" style="width:15px;height:15px;flex:0 0 auto;margin-top:1px"></i>' +
+        '<div>Confira os campos abaixo e corrija o que estiver errado. O que está em ' +
+        '<span style="color:#dc2626;font-weight:700">vermelho</span> é obrigatório e ainda está vazio. ' +
+        '<strong>Nada foi criado ainda</strong>, nem aqui nem no marketplace: o anúncio só é gravado quando você confirmar.</div></div>';
+
+      // ── tabela 1: campos do anúncio ─────────────────────────────────
+      if (uteis.length && colsItem.length) {
+        h += '<div style="border:1px solid #e2e8f0;border-radius:11px;overflow:hidden;margin-bottom:14px">' +
+          '<div style="padding:9px 12px;background:#f8fafc;border-bottom:1px solid #eef2f7;font-size:12.5px;font-weight:800;color:#1e293b">' +
+            'Dados do anúncio <span style="font-weight:600;color:#64748b">· ' + uteis.length + ' anúncio(s)</span></div>' +
+          '<div style="overflow:auto;max-height:34vh"><table style="width:100%;border-collapse:collapse">' +
+          '<thead><tr style="background:#fff">' +
+          '<th style="text-align:left;padding:8px 10px;font-size:11.5px;font-weight:700;color:#64748b;position:sticky;left:0;background:#fff;min-width:210px">Anúncio</th>' +
+          colsItem.map(c => _pvtCabecalho(c, 'item')).join('') + '</tr></thead><tbody>';
+
+        uteis.forEach((f, fi) => {
+          h += '<tr style="border-top:1px solid #f1f5f9">' +
+            '<td style="padding:8px 10px;position:sticky;left:0;background:#fff">' +
+              '<div style="display:flex;gap:9px;align-items:center;min-width:0">' +
+              (f.foto ? '<img src="' + escapeHtml(f.foto) + '" style="width:34px;height:34px;object-fit:cover;border-radius:6px;flex:0 0 auto">' : '') +
+              '<div style="min-width:0">' +
+                '<div style="font-size:12.5px;font-weight:600;color:#1e293b">' + escapeHtml(f.nome || '') + '</div>' +
+                '<div style="font-size:11px;color:#94a3b8">' + escapeHtml(f.sku || '') +
+                  (f.categoria && f.categoria.nome ? ' · ' + escapeHtml(f.categoria.nome) : '') + '</div>' +
+              '</div></div></td>';
+          colsItem.forEach(col => {
+            const campo = (f.campos || []).find(c => c.id === col.id);
+            if (!campo) { h += '<td style="padding:8px 10px;color:#cbd5e1">—</td>'; return; }
+            const idCel = 'pvt_i_' + fi + '_' + col.id;
+            if (campo.obrigatorio) obrigatorios.push(idCel);
+            aplicar.push({ idCel: idCel, ficha: fi, campoId: col.id, variacao: null });
+            const daIA = marcados[col.id] && campo.valor;
+            h += '<td style="padding:8px 10px">' + _pvtCelula(campo, idCel, campo.pendente) +
+              (daIA ? '<div style="font-size:10.5px;color:#7c3aed;margin-top:2px;display:flex;gap:3px;align-items:center">' +
+                '<i data-lucide="sparkles" style="width:11px;height:11px"></i>preenchido pela IA, confira</div>' : '') +
+              '</td>';
+          });
+          h += '</tr>';
+        });
+        h += '</tbody></table></div></div>';
+      }
+
+      // ── tabela 2: variações ─────────────────────────────────────────
+      const linhasVar = [];
+      uteis.forEach((f, fi) => (f.variacoes || []).forEach((v, vi) => linhasVar.push({ f: f, fi: fi, v: v, vi: vi })));
+
+      if (linhasVar.length && colsVar.length) {
+        h += '<div style="border:1px solid #e2e8f0;border-radius:11px;overflow:hidden">' +
+          '<div style="padding:9px 12px;background:#f8fafc;border-bottom:1px solid #eef2f7;font-size:12.5px;font-weight:800;color:#1e293b">' +
+            'Variações <span style="font-weight:600;color:#64748b">· ' + linhasVar.length + ' linha(s)</span></div>' +
+          '<div style="overflow:auto;max-height:38vh"><table style="width:100%;border-collapse:collapse">' +
+          '<thead><tr style="background:#fff">' +
+          '<th style="text-align:left;padding:8px 10px;font-size:11.5px;font-weight:700;color:#64748b;position:sticky;left:0;background:#fff;min-width:180px">Variação</th>' +
+          colsVar.map(c => _pvtCabecalho(c, 'var')).join('') + '</tr></thead><tbody>';
+
+        linhasVar.forEach(ln => {
+          const rotulo = ln.v.nome || [ln.v.cor, ln.v.tamanho].filter(Boolean).join(' ') || ('variação ' + (ln.vi + 1));
+          h += '<tr style="border-top:1px solid #f1f5f9">' +
+            '<td style="padding:8px 10px;position:sticky;left:0;background:#fff">' +
+              '<div style="font-size:12.5px;color:#1e293b">' + escapeHtml(rotulo) + '</div>' +
+              (uteis.length > 1 ? '<div style="font-size:10.5px;color:#94a3b8">' + escapeHtml(ln.f.nome || '') + '</div>' : '') +
+            '</td>';
+          colsVar.forEach(col => {
+            const campo = (ln.v.campos || []).find(c => c.id === col.id);
+            if (!campo) { h += '<td style="padding:8px 10px;color:#cbd5e1">—</td>'; return; }
+            const idCel = 'pvt_v_' + ln.fi + '_' + ln.vi + '_' + col.id;
+            if (campo.obrigatorio) obrigatorios.push(idCel);
+            aplicar.push({ idCel: idCel, ficha: ln.fi, campoId: col.id, variacao: ln.vi });
+            h += '<td style="padding:8px 10px">' + _pvtCelula(campo, idCel, campo.pendente) + '</td>';
+          });
+          h += '</tr>';
+        });
+        h += '</tbody></table></div></div>';
+      }
+
+      if (!colsItem.length && !colsVar.length) {
+        h += '<div style="padding:14px;color:#64748b;font-size:13px">Nenhum campo pra conferir nesta categoria.</div>';
+      }
+
+      h += '<div style="margin-top:12px;font-size:12.5px;font-weight:700" id="pvtContador">—</div>';
+
+      _pvtEstado = { fichas: uteis, produtos: produtos || [], obrigatorios: obrigatorios, aplicar: aplicar, resolve: resolve };
+
+      lcAlert(h, {
+        tipo: 'info',
+        titulo: 'Confira antes de exportar',
+        largura: 1100,
+        botoes: [
+          { texto: 'Cancelar', onclick: 'pvtCancelar()' },
+          { texto: 'Confirmar e exportar', primario: true, onclick: 'pvtConfirmar()' },
+        ],
+      });
+
+      setTimeout(() => {
+        const box = document.querySelector('#lcModalOverlay .lc-modal-acoes, #lcModalOverlay [class*=acoes]');
+        if (box && !document.getElementById('pvtBtnExportar')) {
+          box.innerHTML = '<button class="lc-btn" onclick="pvtCancelar()" style="background:#fff;color:#0f172a">Cancelar</button>' +
+            '<button id="pvtBtnExportar" class="lc-btn" onclick="pvtConfirmar()" style="background:#2563eb;color:#fff">Confirmar e exportar</button>';
+        }
+        // marca o escopo de cada célula, pro lápis não vazar de uma tabela pra outra
+        (_pvtEstado.aplicar || []).forEach(a => {
+          const el = document.getElementById(a.idCel);
+          if (el) el.setAttribute('data-pvtescopo', a.variacao == null ? 'item' : 'var');
+        });
+        if (window._hidratarIcones) window._hidratarIcones(document.getElementById('lcModalOverlay'));
+        else if (window.lcHydrateIcons) window.lcHydrateIcons(document.getElementById('lcModalOverlay'));
+        pvtRecontar();
+      }, 60);
+    });
+  }
+  window.preVooAbrirTabela = preVooAbrirTabela;
+
+  function _pvtFechar() {
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    const ov = document.getElementById('lcModalOverlay');
+    if (ov) ov.style.display = 'none';
+  }
+
+  function pvtCancelar() {
+    const st = _pvtEstado; _pvtEstado = null;
+    _pvtFechar();
+    if (st && st.resolve) st.resolve(false);
+  }
+  window.pvtCancelar = pvtCancelar;
+
+  // Grava o que foi digitado DE VOLTA nos objetos de produto, em memória.
+  // Nada vai pro banco aqui: quem salva é a duplicação, depois, e só se o
+  // usuário confirmar. É esse adiamento que faz o rollback deixar de existir.
+  function pvtConfirmar() {
+    const st = _pvtEstado;
+    if (!st) return;
+    if (pvtRecontar() > 0) {
+      showToast('Ainda faltam campos obrigatórios.', true);
+      return;
+    }
+    st.aplicar.forEach(a => {
+      const el = document.getElementById(a.idCel);
+      if (!el) return;
+      const valor = String(el.value || '').trim();
+      const p = st.produtos[a.ficha];
+      if (!p) return;
+      if (a.variacao == null) {
+        if (!p.atributosMl) p.atributosMl = {};
+        if (valor) p.atributosMl[a.campoId] = valor;
+        else delete p.atributosMl[a.campoId];
+        return;
+      }
+      const v = (p.variacoes || [])[a.variacao];
+      if (!v) return;
+      // ★ COLOR e SIZE voltam pros campos ESTRUTURADOS, não pra lista de
+      // atributos: é de `variacao.cor` e `variacao.tamanho` que o
+      // `montarAttrCombinations` monta o attribute_combinations. Gravar na
+      // lista faria a tela mostrar preenchido e o payload sair sem.
+      if (a.campoId === 'COLOR') { v.cor = valor; return; }
+      if (a.campoId === 'SIZE') { v.tamanho = valor; return; }
+      if (!Array.isArray(v.atributos)) v.atributos = [];
+      const ja = v.atributos.find(x => x && x.id === a.campoId);
+      if (ja) ja.valor = valor;
+      else if (valor) v.atributos.push({ id: a.campoId, valor: valor });
+    });
+    _pvtEstado = null;
+    _pvtFechar();
+    if (st.resolve) st.resolve(true);
+  }
+  window.pvtConfirmar = pvtConfirmar;
+
+  // Ponto único que a duplicação chama. Devolve true quando pode seguir.
+  // Falha aberta: sem resposta do backend, a duplicação segue como antes.
+  async function preVooTabelaLiberado(lojaIdBanco, produtos, idsIA) {
+    if (!lojaIdBanco || !produtos || !produtos.length) return true;
+    const fichas = await preVooBuscarFichas(lojaIdBanco,
+      produtos.map((p, i) => preVooProdutoParaFicha(p, 'p' + i)));
+    if (fichas == null) return true;
+    if (!fichas.length) return true;
+    return await preVooAbrirTabela(fichas, produtos, idsIA);
+  }
+  window.preVooTabelaLiberado = preVooTabelaLiberado;
+
   async function carregarAtributosCategoria(categoryId) {
     if (!categoryId) return [];
     
@@ -44484,7 +44896,7 @@ REGRAS DURAS:
     dupLogStep(`▶ Iniciando ${qtd} cópia(s) → ${lojaDestino.nome} [${lojaDestino.marketplace}]`);
     
     const isShopee = lojaDestino.marketplace === 'shopee';
-    let okCopias = 0, errCopias = 0;
+    let okCopias = 0, errCopias = 0, canceladasCopias = 0;
     
     // v33k.279: acumula títulos já gerados nesta sessão de duplicação pra a IA NÃO
     // repetir. Antes cada cópia mandava o MESMO produto pai e a IA devolvia quase
@@ -44665,6 +45077,50 @@ REGRAS DURAS:
           }
         }
         
+        // ═══════════════════════════════════════════════════════════════
+        // ★ PRÉ-VOO ANTES DO SAVE (v33k.1753)
+        // ───────────────────────────────────────────────────────────────
+        // MEDIDO em 17/08: `mlPreVooLiberado` só existe dentro do
+        // `exportarProdutoMarketplace`, e a duplicação NUNCA passa por lá —
+        // ela chama a rota de exportação direto. Por isso o modal nunca
+        // chegava aqui, que é justamente o fluxo que mais precisa dele.
+        //
+        // A ordem passa a ser: completar (categoria e IA) → CONFERIR →
+        // salvar → exportar. Antes era salvar → exportar → o marketplace
+        // recusa → rollback. Cancelando aqui, nada foi criado.
+        //
+        // `dupCompletarCamposObjeto` roda ANTES da tabela pra ela abrir
+        // preenchida. Conferido que dá: ela só usa `idBanco` da LOJA, nunca
+        // do produto, então não depende do save.
+        if (!opts.silencioso && !opts._coletarParaAgendar) {
+          try {
+            const _antesIA = Object.keys((novo.atributosMl) || {});
+            try {
+              if (typeof garantirFotosUrlsPublicas === 'function') await garantirFotosUrlsPublicas(novo);
+            } catch (eF) { dupLogStep('  ⚠ Falha hospedando fotos: ' + eF.message, 'err'); }
+            await dupCompletarCamposObjeto(novo, lojaDestino);
+            novo._lcCompletado = true;
+            // o que a IA acabou de deduzir, pra tabela marcar "confira"
+            const _idsIA = {};
+            Object.keys((novo.atributosMl) || {}).forEach(k2 => {
+              if (_antesIA.indexOf(k2) < 0) _idsIA[k2] = true;
+            });
+            const _lojaIdPv = await garantirLojaNoBanco(lojaDestino);
+            if (_lojaIdPv && typeof preVooTabelaLiberado === 'function') {
+              const _ok = await preVooTabelaLiberado(_lojaIdPv, [novo], _idsIA);
+              if (!_ok) {
+                dupLogStep('  ↶ Cancelado na conferência. Nada foi criado.', 'err');
+                canceladasCopias++;
+                continue;
+              }
+            }
+          } catch (ePv) {
+            // falha aberta: a conferência não pode impedir duplicação que
+            // funcionaria. O pré-voo do backend segue como rede de trás.
+            console.warn('[pré-voo tabela] seguindo sem conferir:', ePv.message);
+          }
+        }
+
         // 6. Salva no backend (retorna o produto com id do banco)
         passoAtual++;
         dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: salvando produto...`);
@@ -44745,8 +45201,13 @@ REGRAS DURAS:
             dupLogStep('  ⚠ Falha hospedando fotos: ' + e.message, 'err');
           }
           
-          // v33k.127: completa SKU/EAN/atributos vazios (igual criação) antes de montar payload
-          try { await dupCompletarCamposObjeto(novo, lojaDestino); } catch(_){}
+          // v33k.127: completa SKU/EAN/atributos vazios (igual criação) antes de montar payload.
+          // v33k.1753: quando a tabela de conferência já rodou, isso aconteceu ANTES do
+          // save e o usuário já revisou o resultado. Repetir aqui gastaria chamada de IA
+          // de novo e, pior, poderia reescrever por cima do que ele acabou de corrigir.
+          if (!novo._lcCompletado) {
+            try { await dupCompletarCamposObjeto(novo, lojaDestino); } catch(_){}
+          }
 
           // v33k.258: SPLIT de cor ML (cores compostas que colidem na lista fechada).
           // Aplica as cores OFICIAIS ao produto principal (novo) e separa os extras
@@ -44994,10 +45455,12 @@ REGRAS DURAS:
     saveProdutos();
     dupAtualizarProgress(totalPassos, totalPassos, 'Concluído!');
     dupLogStep(`\n━━━━━━━━━━━━━━━━━━━━`);
-    dupLogStep(`✅ ${okCopias} cópia(s) exportada(s) · ${errCopias} falha(s)`, okCopias > 0 ? 'ok' : 'err');
+    dupLogStep(`✅ ${okCopias} cópia(s) exportada(s) · ${errCopias} falha(s)` +
+      (canceladasCopias ? ` · ${canceladasCopias} cancelada(s) na conferência` : ''), okCopias > 0 ? 'ok' : 'err');
     const btnC = document.getElementById('dupBtnCancelar');
     if (btnC) { btnC.disabled = true; btnC.textContent = '✓ Concluído'; }
-    showToast(`Duplicação concluída: ${okCopias} OK · ${errCopias} erro(s)`);
+    showToast(`Duplicação concluída: ${okCopias} OK · ${errCopias} erro(s)` +
+      (canceladasCopias ? ` · ${canceladasCopias} cancelada(s)` : ''));
   }
 
   // ============================================================
@@ -65224,7 +65687,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1741-coluna-tolerante';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1753-ficha-de-pre-voo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -96496,7 +96959,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // ── MENSAGENS (Leva 3) ────────────────────────────────────────────────
   // Quatro colunas: lojas, conversas, thread, pedido. A quarta e o motivo da
   // tela existir: responder sem sair da conversa porque o pedido esta do lado.
-  let _sacMsg = { itens: [], lojaId: '', abertaId: null, thread: null, soNossas: true };
+  let _sacMsg = { itens: [], lojaId: '', abertaId: null, thread: null, soNossas: true, soLojasPendentes: true };
 
   async function _sacCarregarMensagens() {
     const qs = new URLSearchParams({ tipo: 'mensagem' });
@@ -96528,6 +96991,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   window.sacMsgLoja = sacMsgLoja;
   function sacMsgFiltro(v) { _sacMsg.soNossas = !!v; _sacDesenharMensagens(); }
   window.sacMsgFiltro = sacMsgFiltro;
+  // v33k.1747: alterna a coluna de lojas entre "so quem tem pendencia" e todas.
+  function sacMsgLojasPendentes(v) { _sacMsg.soLojasPendentes = !!v; _sacDesenharMensagens(); }
+  window.sacMsgLojasPendentes = sacMsgLojasPendentes;
 
   async function sacAbrirConversa(id) {
     _sacMsg.abertaId = id;
@@ -96640,14 +97106,32 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       + '<div class="sac-lnome">Todas as lojas</div>'
       + '<div class="sac-cont' + (nossas ? '' : ' mudo') + '">' + nossas + '</div></div>';
 
-    (aba.bloqueadas || []).forEach(l => {
-      h += '<div style="margin:8px 10px 0;padding:8px 10px;border-radius:var(--lc-radius-sm);'
-        + 'background:var(--lc-info-soft);border:1px solid #bfdbfe;color:#1e40af;font-size:11.5px;line-height:1.45">'
-        + escapeHtml(l.nome) + ': ' + escapeHtml(l.motivo) + '</div>';
-    });
+    // v33k.1747: FILTRO DE PENDENCIA NA COLUNA DE LOJAS.
+    //
+    // Com 21 lojas capazes e a pendencia concentrada em duas ou tres, rolar a
+    // lista inteira pra achar quem tem conversa esperando e trabalho manual que
+    // a tela deveria fazer. O padrao mostra SO quem tem pendencia; o botao ao
+    // lado devolve a lista completa pra quem quer procurar uma loja calada.
+    //
+    // Os avisos de loja bloqueada sairam daqui: eles ja aparecem agrupados no
+    // topo da tela. Nove paragrafos iguais dentro da coluna empurravam a lista
+    // de lojas pra fora do campo de visao, que era o que a pessoa veio ver.
+    const comPendencia = (aba.lojas || []).filter(l => (porLoja[l.id] || 0) > 0);
+    const listaLojas = _sacMsg.soLojasPendentes ? comPendencia : (aba.lojas || []);
+    h += '<div style="display:flex;gap:5px;padding:8px 10px;border-bottom:1px solid var(--lc-border)">'
+      + '<button class="lc-btn lc-btn--sm ' + (_sacMsg.soLojasPendentes ? 'lc-btn--primary' : 'lc-btn--ghost')
+      + '" style="flex:1" onclick="sacMsgLojasPendentes(true)">Com pendência (' + comPendencia.length + ')</button>'
+      + '<button class="lc-btn lc-btn--sm ' + (_sacMsg.soLojasPendentes ? 'lc-btn--ghost' : 'lc-btn--primary')
+      + '" style="flex:1" onclick="sacMsgLojasPendentes(false)">Todas (' + (aba.lojas || []).length + ')</button>'
+      + '</div>';
+    if (_sacMsg.soLojasPendentes && comPendencia.length === 0) {
+      h += '<div style="padding:18px 14px;text-align:center;color:var(--lc-muted);font-size:12.5px;line-height:1.5">'
+        + 'Nenhuma loja com conversa esperando você.<br>'
+        + 'Clique em <strong>Buscar</strong> para procurar mensagens novas.</div>';
+    }
 
     const grupos = {};
-    (aba.lojas || []).forEach(l => { (grupos[l.marketplace] = grupos[l.marketplace] || []).push(l); });
+    listaLojas.forEach(l => { (grupos[l.marketplace] = grupos[l.marketplace] || []).push(l); });
     Object.keys(grupos).forEach(mk => {
       h += '<div class="sac-grupo">' + _sacLogo(mk) + '<span>' + escapeHtml(_sacNomeCanal(mk)) + '</span></div>';
       grupos[mk].forEach(l => {
@@ -97508,9 +97992,26 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // Sumir com a aba por causa de uma loja bloqueada esconderia as outras.
     if (avisoEl) {
       if (aba.bloqueadas && aba.bloqueadas.length) {
+        // v33k.1747: AGRUPA POR MOTIVO, nao por loja.
+        // Nove lojas TikTok com a mesma sonda viravam nove paragrafos identicos
+        // aqui E outros nove dentro da coluna de lojas, empurrando a lista de
+        // lojas pra fora da tela. O `semSuporte` ja agrupava; este nao, e foi
+        // omissao minha na 1735. Repetir a mesma frase nove vezes nao informa
+        // mais, informa menos: some com o que a pessoa veio ver.
+        const porMotivo = {};
+        aba.bloqueadas.forEach(l => {
+          const k = String(l.motivo || 'Nao liberado pela plataforma.');
+          (porMotivo[k] = porMotivo[k] || []).push(l.nome);
+        });
         avisoEl.style.display = '';
-        avisoEl.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:12px;padding:12px 14px;font-size:13px">'
-          + aba.bloqueadas.map(l => '<div>' + escapeHtml(l.nome) + ': ' + escapeHtml(l.motivo) + '</div>').join('')
+        avisoEl.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.5">'
+          + Object.keys(porMotivo).map(motivo => {
+            const nomes = porMotivo[motivo];
+            const rotulo = nomes.length > 3
+              ? (nomes.length + ' lojas (' + escapeHtml(nomes.slice(0, 3).join(', ')) + ' e mais ' + (nomes.length - 3) + ')')
+              : escapeHtml(nomes.join(', '));
+            return '<div><strong>' + rotulo + '</strong>: ' + escapeHtml(motivo) + '</div>';
+          }).join('')
           + '</div>';
       } else { avisoEl.style.display = 'none'; avisoEl.innerHTML = ''; }
     }
