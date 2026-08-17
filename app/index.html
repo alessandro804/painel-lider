@@ -65203,7 +65203,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1736-fonte-avaliacao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1740-sem-acao-aparece';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -96923,7 +96923,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // Le de disputas_casos, a mesma tabela da varredura que ja roda. O que muda
   // e a organizacao: "aberto" nao e balde. Reclamacao aberta onde a bola esta
   // do outro lado nao e pendencia nossa, e misturar as duas virou ruido.
-  let _sacRec = { casos: [], resumo: {}, fila: 'aguardando_nos', lojaId: '' };
+  let _sacRec = { casos: [], resumo: {}, fila: 'aguardando_nos', lojaId: '', pagina: 1 };
 
   async function _sacCarregarReclamacoes() {
     const qs = new URLSearchParams({ fila: _sacRec.fila });
@@ -96934,9 +96934,12 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     if (!r.ok) _sacRec.erro = r.erro;
     return r;
   }
-  function sacRecFila(v) { _sacRec.fila = v; _sacCarregarReclamacoes().then(_sacDesenharReclamacoes); }
+  // ★ v33k.1737: zera a página ao trocar de fila ou de loja. Sem isto, quem
+  // está na página 3 e troca de fila vê uma lista VAZIA — e conclui que a
+  // outra fila não tem nada.
+  function sacRecFila(v) { _sacRec.fila = v; _sacRec.pagina = 1; _sacCarregarReclamacoes().then(_sacDesenharReclamacoes); }
   window.sacRecFila = sacRecFila;
-  function sacRecLoja(v) { _sacRec.lojaId = v; _sacCarregarReclamacoes().then(_sacDesenharReclamacoes); }
+  function sacRecLoja(v) { _sacRec.lojaId = v; _sacRec.pagina = 1; _sacCarregarReclamacoes().then(_sacDesenharReclamacoes); }
   window.sacRecLoja = sacRecLoja;
 
   async function sacAuditarTaxa(id, botao) {
@@ -97063,9 +97066,64 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       box.innerHTML = h;
       return;
     }
-    _sacRec.casos.forEach(c => { h += _sacCardReclamacao(c); });
+    // ★★ v33k.1737: PAGINAÇÃO. Pedido de 17/08: "vamos colocar paginação
+    // também para não ficar tão grande a listagem".
+    //
+    // ★ E NÃO É SÓ CONFORTO: cada card monta foto, textarea e botões. Com
+    // centenas de casos, o navegador desenha tudo de uma vez — e a tela do
+    // Alessandro já está lenta por causa de trabalho demais no cliente
+    // (a migração de produtos, v33k.1733). Cortar em 25 alivia os dois.
+    const POR_PAGINA = 25;
+    const total = _sacRec.casos.length;
+    const paginas = Math.max(1, Math.ceil(total / POR_PAGINA));
+    // ★ trocar de fila com a página 3 aberta deixaria a lista vazia sem motivo
+    if (_sacRec.pagina == null || _sacRec.pagina > paginas) _sacRec.pagina = 1;
+    const ini = (_sacRec.pagina - 1) * POR_PAGINA;
+    const pagina = _sacRec.casos.slice(ini, ini + POR_PAGINA);
+
+    if (paginas > 1) {
+      h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:11px;font-size:12.5px;color:var(--lc-muted)">'
+        + '<span>' + (ini + 1) + '–' + Math.min(ini + POR_PAGINA, total) + ' de ' + total + '</span>'
+        + '</div>';
+    }
+
+    pagina.forEach(c => { h += _sacCardReclamacao(c); });
+
+    if (paginas > 1) {
+      const btn = (rot, alvo, ativo, hab) =>
+        '<button ' + (hab ? 'onclick="sacRecPagina(' + alvo + ')"' : 'disabled')
+        + ' style="min-width:36px;padding:7px 11px;border-radius:9px;font-size:12.5px;font-weight:600;'
+        + 'cursor:' + (hab ? 'pointer' : 'default') + ';border:1px solid '
+        + (ativo ? 'var(--lc-primary);background:var(--lc-primary);color:#fff'
+          : 'var(--lc-border);background:#fff;color:' + (hab ? '#334155' : 'var(--lc-muted)'))
+        + '">' + rot + '</button>';
+      // ★ com muitas páginas, mostra uma JANELA em volta da atual. Cinquenta
+      // botões de página seriam outra lista grande, que é o que estamos
+      // resolvendo.
+      const nums = [];
+      const de = Math.max(1, _sacRec.pagina - 2);
+      const ate = Math.min(paginas, de + 4);
+      for (let i = Math.max(1, ate - 4); i <= ate; i++) nums.push(i);
+      h += '<div style="display:flex;gap:6px;align-items:center;justify-content:center;'
+        + 'flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--lc-border)">'
+        + btn('&laquo;', _sacRec.pagina - 1, false, _sacRec.pagina > 1)
+        + (nums[0] > 1 ? btn('1', 1, false, true) + '<span style="color:var(--lc-muted)">…</span>' : '')
+        + nums.map(i => btn(String(i), i, i === _sacRec.pagina, true)).join('')
+        + (ate < paginas ? '<span style="color:var(--lc-muted)">…</span>' + btn(String(paginas), paginas, false, true) : '')
+        + btn('&raquo;', _sacRec.pagina + 1, false, _sacRec.pagina < paginas)
+        + '</div>';
+    }
     box.innerHTML = h;
+    if (paginas > 1 && box.scrollIntoView) { try { box.scrollIntoView({ block: 'start' }); } catch (e) {} }
   }
+
+  // ★ trocar de página volta ao topo: ficar no meio da lista antiga depois de
+  // paginar desorienta.
+  function sacRecPagina(n) {
+    _sacRec.pagina = Math.max(1, Number(n) || 1);
+    _sacDesenharReclamacoes();
+  }
+  window.sacRecPagina = sacRecPagina;
 
   function _sacCardReclamacao(c) {
     const urgente = c.horasParaPrazo != null && c.horasParaPrazo <= 24;
@@ -97139,6 +97197,39 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         + '<div style="font-size:10.5px;color:var(--lc-muted);margin-top:5px">enviada'
         + (c.ultima_resposta_por ? ' por ' + escapeHtml(c.ultima_resposta_por) : '')
         + (c.ultima_resposta_em ? ' ' + _sacQuando(c.ultima_resposta_em) : '') + '</div></div>';
+    }
+
+    // ★★ v33k.1740: RECLAMAÇÃO SEM AÇÃO POR API.
+    //
+    // Seis casos do Alessandro estavam ABERTOS no Mercado Livre e nunca
+    // chegaram na tela porque a coleta os descartava. Quatro em MEDIAÇÃO —
+    // com o ML decidindo enquanto ele não sabia que existiam.
+    //
+    // Agora aparecem. Mas mostrar caixa de resposta aqui seria pior que
+    // escondê-los: a pessoa escreve, clica, e leva o "Invalid action" que já
+    // confundiu em 16/08. Melhor dizer onde resolver.
+    if (c.so_no_painel_do_ml) {
+      const emMediacao = /media(ç|c)/i.test(String(c.status_externo || ''));
+      h += '<div style="background:' + (emMediacao ? '#fef2f2' : 'var(--lc-surface-2)')
+        + ';border:1px solid ' + (emMediacao ? '#fecaca' : 'var(--lc-border)')
+        + ';border-radius:11px;padding:12px 14px;margin-top:10px;font-size:12.5px;line-height:1.55;'
+        + 'color:' + (emMediacao ? '#991b1b' : 'var(--lc-ink-2)') + '">'
+        + (emMediacao
+          ? '<strong>Em mediação: o Mercado Livre está decidindo este caso.</strong> '
+          : '<strong>Sem ação por aqui.</strong> ')
+        + 'O Mercado Livre não oferece resposta por API nesta reclamação. '
+        + 'Abra no painel dele para acompanhar e responder.'
+        + '</div>';
+      // ★ link direto pro caso: sem ele a pessoa teria que caçar o número numa
+      // lista, e o atrito é o que faz a mediação passar do prazo.
+      h += '<div style="margin-top:9px">'
+        + '<a href="https://www.mercadolivre.com.br/vendas/' + escapeHtml(c.order_id || '')
+        + '/detalhe" target="_blank" rel="noopener" '
+        + 'style="display:inline-block;padding:8px 13px;border-radius:9px;border:1px solid var(--lc-border);'
+        + 'background:#fff;color:#334155;font-size:12.5px;font-weight:700;text-decoration:none">'
+        + 'Abrir no Mercado Livre</a></div>';
+      h += '</div>';
+      return h;
     }
 
     // CAIXA DE RESPOSTA. O que o texto vira depende do canal, e a tela diz
