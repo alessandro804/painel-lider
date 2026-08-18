@@ -43033,12 +43033,16 @@ Retorne JSON: {"ID": "valor", ...}`;
 
       window._pvPendencias = pendencias;
       window._pvResolve = resolve;
+      // v33k.1762: `html: true`. Este modal nasceu na v33k.1685 passando HTML
+      // pra um renderizador que sempre usou `textContent` — ou seja, ele
+      // aparecia com as tags à mostra desde o primeiro dia. Só quase nunca
+      // abria, então ninguém viu.
       lcAlert(h, {
         tipo: 'info', titulo: 'Campos obrigatórios do Mercado Livre',
-        largura: 1000,
+        largura: 1000, html: true,
         botoes: [
           { texto: 'Cancelar exportação', onclick: 'mlPreVooCancelar()' },
-          { texto: 'Salvar e exportar', primario: true, onclick: 'mlPreVooSalvar()' },
+          { texto: 'Salvar e exportar', primario: true, id: 'pvBtnSalvar', onclick: 'mlPreVooSalvar()' },
         ],
       });
       setTimeout(() => {
@@ -43412,9 +43416,10 @@ Retorne JSON: {"ID": "valor", ...}`;
         tipo: 'info',
         titulo: 'Confira antes de exportar',
         largura: 1100,
+        html: true,
         botoes: [
           { texto: 'Cancelar', onclick: 'pvtCancelar()' },
-          { texto: 'Confirmar e exportar', primario: true, onclick: 'pvtConfirmar()' },
+          { texto: 'Confirmar e exportar', primario: true, id: 'pvtBtnExportar', onclick: 'pvtConfirmar()' },
         ],
       });
 
@@ -45496,6 +45501,7 @@ REGRAS DURAS:
           if (data.ok || data.success) {
             const itemId = data.itemId || (data.dados && data.dados.itemId) || (data.dados && data.dados.id) || '?';
             dupLogStep(`  ✓ Exportado para ${lojaDestino.marketplace} (anuncio ${itemId})`, 'ok');
+            (data.ajustes || []).forEach(aj => dupLogStep('  ⚙ ajuste automático: ' + aj, 'ok'));
             // v33k.260: avisa se o estoque foi redistribuído por exceder o limite do ML
             const _estRedis = data.dados && data.dados.estoqueRedistribuido;
             if (_estRedis && _estRedis.de) {
@@ -45887,6 +45893,10 @@ REGRAS DURAS:
       if (data.ok || data.success) {
         const itemId = data.itemId || (data.dados && data.dados.itemId) || (data.dados && data.dados.id) || '?';
         dupLogStep('  │ ✓ Exportado (anúncio ' + itemId + ')', 'ok');
+        // v33k.1761: mostra o que o backend ajustou sozinho (corte de fotos pelo
+        // limite do canal, peso padrão, guia de tamanhos). Ajuste silencioso é
+        // perda silenciosa: o usuário só descobriria olhando o anúncio publicado.
+        (data.ajustes || []).forEach(aj => dupLogStep('  │ ⚙ ajuste automático: ' + aj, 'ok'));
         // vínculos (mesma lógica do principal: Catalog vs Legado)
         if (itemId && itemId !== '?') {
           if (!extra.marketplaces) extra.marketplaces = {};
@@ -65990,7 +66000,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1760-copia-sem-marca';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1762-modal-html';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -85515,8 +85525,25 @@ ${JSON.stringify(metricas, null, 2)}`
     const msgEl = document.getElementById('lcModalMsg');
     tituloEl.textContent = cfg.titulo || '';
     tituloEl.style.display = cfg.titulo ? '' : 'none';
-    msgEl.textContent = cfg.msg || '';
+    // ★ v33k.1762: SUPORTE A HTML, POR ADESÃO EXPLÍCITA.
+    // BUG DE 17/08: a tabela de conferência apareceu na tela como texto cru,
+    // com as tags à mostra. Motivo: aqui sempre foi `textContent`, e o modal
+    // nunca suportou HTML. O `mlAbrirModalAtributos` (v33k.1685) tem o mesmo
+    // defeito desde que nasceu, e só não incomodava porque quase nunca abre.
+    //
+    // `html: true` é ADESÃO, não padrão: quem passa assume a
+    // responsabilidade de escapar o que vem de fora. Todo o resto do painel
+    // continua em `textContent`, que é o comportamento seguro.
+    if (cfg.html) msgEl.innerHTML = cfg.msg || '';
+    else msgEl.textContent = cfg.msg || '';
     msgEl.style.display = cfg.msg ? '' : 'none';
+
+    // largura sob medida: a tabela precisa de espaço, o alerta comum não
+    const caixaEl = ov.querySelector('.lc-modal');
+    if (caixaEl) {
+      caixaEl.style.maxWidth = cfg.largura ? (Number(cfg.largura) + 'px') : '';
+      caixaEl.style.width = cfg.largura ? 'min(' + Number(cfg.largura) + 'px, 94vw)' : '';
+    }
 
     // campo de input (só no prompt)
     const campoWrap = document.getElementById('lcModalCampoWrap');
@@ -85550,6 +85577,25 @@ ${JSON.stringify(metricas, null, 2)}`
       else _lcModalFechar(true);
     };
     acoes.appendChild(bo);
+
+    // ★ v33k.1762: botões próprios. Antes, quem passava `botoes` era ignorado
+    // em silêncio e caía no OK padrão — foi o que deixou a tabela de
+    // conferência com "só confirmar ou fechar", sem os botões dela.
+    if (Array.isArray(cfg.botoes) && cfg.botoes.length) {
+      acoes.innerHTML = '';
+      cfg.botoes.forEach(b => {
+        if (!b || !b.texto) return;
+        const el = document.createElement('button');
+        el.className = 'lc-modal-btn ' + (b.primario ? 'confirmar' : 'cancelar');
+        el.textContent = b.texto;
+        if (b.id) el.id = b.id;
+        // ★ nada de `eval`: string vira atributo inline, que é como o resto do
+        // painel já chama handler, e função vira handler direto.
+        if (typeof b.onclick === 'function') el.onclick = b.onclick;
+        else if (b.onclick) el.setAttribute('onclick', String(b.onclick));
+        acoes.appendChild(el);
+      });
+    }
 
     ov.classList.add('aberto');
     try { window.lucide && window.lucide.createIcons(); } catch (e) {}
