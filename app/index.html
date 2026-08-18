@@ -41363,6 +41363,19 @@ Retorne JSON: {"ID": "valor", ...}`;
     const params = new URLSearchParams();
     params.set('page', filtros.page || 1);
     params.set('limit', filtros.limit || 50);
+    // ★ v33k.1757: A LISTA NUNCA PEDIU O MODO LEVE.
+    // O `leve=1` nasceu na v33k.1599 e foi ligado nas duas VARREDURAS de
+    // fundo. Este carregador, que é o que o usuário olha, ficou de fora e
+    // seguiu pedindo `select('*')`: `descricao`, `atributos_ml` e
+    // `guia_tamanhos` junto, três campos que a lista não desenha.
+    //
+    // MEDIDO em 17/08, com a tela de Anúncios fora do ar:
+    //   GET /api/produtos?page=1&limit=50  ->  503
+    //   "A consulta demorou demais e foi cancelada pelo banco"
+    //
+    // O comentário da própria rota já dizia o custo: 2,58 segundos por página
+    // só pelos três campos. A lista pagava isso a cada abertura de tela.
+    params.set('leve', '1');
     if (filtros.q) params.set('q', filtros.q);
     if (filtros.lojaId) params.set('lojaId', filtros.lojaId);
     if (filtros.status) params.set('status', filtros.status);
@@ -43486,6 +43499,24 @@ Retorne JSON: {"ID": "valor", ...}`;
       produtos.map((p, i) => preVooProdutoParaFicha(p, 'p' + i)));
     if (fichas == null) return true;
     if (!fichas.length) return true;
+
+    // ★ v33k.1760: SÓ ABRE SE HOUVER O QUE CONFERIR.
+    // BUG DE 17/08, duplicando da Shopee pro TikTok: o produto ainda não tem
+    // categoria do TikTok (ela é resolvida na hora da exportação, pelo
+    // adaptador), então a ficha volta bloqueada e SEM CAMPO NENHUM. A tabela
+    // abria vazia, com um aviso e dois botões, e não dava nada pra pessoa
+    // fazer. Modal que não pede nada é pior que modal nenhum: interrompe o
+    // fluxo, confunde, e ainda faz parecer que quebrou.
+    const temCampo = fichas.some(f => f && (
+      (Array.isArray(f.campos) && f.campos.length) ||
+      (Array.isArray(f.variacoes) && f.variacoes.some(v => v && Array.isArray(v.campos) && v.campos.length))
+    ));
+    if (!temCampo) {
+      const motivos = fichas.filter(f => f && f.bloqueio).map(f => f.bloqueio);
+      if (motivos.length) console.info('[pré-voo tabela] nada a conferir: ' + motivos[0]);
+      return true;
+    }
+
     return await preVooAbrirTabela(fichas, produtos, idsIA);
   }
   window.preVooTabelaLiberado = preVooTabelaLiberado;
@@ -45154,6 +45185,18 @@ REGRAS DURAS:
           v.vinculos = []; 
           delete v.idBanco;
         });
+        // ★ v33k.1760: e SOLTA a marca de sintético junto.
+        // BUG DE 17/08: "Cópia 1 falhou: Os vínculos deste anúncio ainda não
+        // foram carregados por completo". A cópia nasce de um
+        // `JSON.parse(JSON.stringify(p))`, que carrega `_vincSintetico` do
+        // original. Só que a linha acima ZERA todos os vínculos: a cópia é um
+        // produto novo, sem anúncio nenhum. A marca ficava órfã e a trava do
+        // save disparava numa cópia que não tinha o que perder.
+        //
+        // A invariante é essa: a marca acompanha os vínculos. Zerou os
+        // vínculos, a marca vai junto. Isso NÃO enfraquece a trava, porque o
+        // original continua marcado e continua protegido.
+        delete novo._vincSintetico;
         // Limpa marketplaces.exportado
         novo.marketplaces = {};
         // Atribui ID novo
@@ -65947,7 +65990,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1756-vinculos-sinteticos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1760-copia-sem-marca';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
