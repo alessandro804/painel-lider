@@ -35821,7 +35821,12 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window._nVariacoesDoProduto = _nVariacoesDoProduto;
 
-  async function carregarTodosProdutos() {
+  // v33k.1756: `opts.vinculosReais` desliga o modo compacto. Quem VAI ESCREVER
+  // vínculo no catálogo inteiro pede assim, porque carregar produto a produto
+  // pela guarda seria inviável em milhares de itens. Fica caro de propósito:
+  // é o caminho de exceção, não o normal.
+  async function carregarTodosProdutos(opts) {
+    opts = opts || {};
     try {
       // Primeiro descobre o total (rápido, count=true não retorna produtos)
       // ═══════════════════════════════════════════════════════════════════
@@ -35864,22 +35869,49 @@ Retorne JSON: {"ID": "valor", ...}`;
       // que já está ordenada: cada página custa o mesmo, e a página 40 não
       // paga o preço das 39 anteriores.
       const todos = [];
-      const TETO_PAGINAS = 500;   // 100 mil produtos; além disso algo está errado
+      // ★ v33k.1754: PÁGINA DE 50, NÃO DE 200.
+      // MEDIDO em produção em 17/08, na página que estava estourando
+      // (`desdeId=3322`, 200 linhas):
+      //
+      //   explain analyze SEM os jsonb ....... 0,325 ms, index scan, 201 buffers
+      //   a mesma página COM `variacoes` ..... canceling statement due to
+      //                                        statement timeout
+      //
+      // A busca é de graça. O custo inteiro é o payload: a tabela tem 124 MB,
+      // dos quais 39 MB de dados e ~76 MB de JSONB fora de linha (TOAST). Cada
+      // página de 200 obriga o Postgres a destoastar e serializar esse volume
+      // dentro de uma única instrução, e a instrução leva o timeout junto.
+      //
+      // 50 por página é o MESMO total de bytes em 4 vezes mais requisições,
+      // cada uma cabendo folgada dentro do tempo. Não é a correção definitiva
+      // (essa é parar de trazer `variacoes` nesta varredura), mas essa não cabe
+      // numa casa pegando fogo: são 474 leituras de `.variacoes` no painel.
+      const POR_PAGINA = 50;
+      const TETO_PAGINAS = 2000;   // 100 mil produtos; além disso algo está errado
       let cursor = '';
       for (let p = 0; p < TETO_PAGINAS; p++) {
         // v33k.1599: `leve=1` corta descrição, atributos do ML e guia de
         // tamanhos — três JSONB grandes que esta lista não lê. É a varredura
         // do catálogo inteiro; cada byte a menos vale por página.
-        const url = BACKEND_URL + '/api/produtos?ordem=id&limit=200&leve=1'
+        // v33k.1756: `vincCompacto=1` faz o BANCO colapsar os vínculos de
+        // anúncio (medido: 42,1 MB viram 4,4 MB em 250 produtos). Backend que
+        // ainda não tem a função SQL ignora o parâmetro e responde
+        // `vincCompacto: false`, e aí nada é reconstruído.
+        const url = BACKEND_URL + '/api/produtos?ordem=id&limit=' + POR_PAGINA + '&leve=1'
+          + (opts.vinculosReais ? '' : '&vincCompacto=1')
           + (cursor ? '&desdeId=' + encodeURIComponent(cursor) : '');
         const r = await fetch(url, { headers: { 'x-api-token': getApiToken() } });
         const d = await r.json();
-        const lote = (d && d.ok && d.produtos) ? d.produtos : [];
+        const lote = _aplicarCompactoSeVeio(d, (d && d.ok && d.produtos) ? d.produtos : []);
         if (!lote.length) break;
         todos.push(...lote);
         cursor = lote[lote.length - 1].id;
-        if (lote.length < 200) break;   // última página
-        if (!cursor) break;             // sem cursor não dá pra continuar
+        if (lote.length < POR_PAGINA) break;   // última página
+        if (!cursor) break;                    // sem cursor não dá pra continuar
+        // ★ respiro entre páginas: esta varredura roda em SEGUNDO PLANO e não
+        // pode competir com o que o usuário está esperando na tela. Sem isso
+        // ela ocupa a conexão em rajada e a Home fica esperando atrás dela.
+        await new Promise(res => setTimeout(res, 120));
       }
       // v33k.1599: marca que a varredura terminou. A tela precisa distinguir
       // "a loja não tem anúncios" de "o catálogo ainda está chegando" — são
@@ -35897,11 +35929,130 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Cache simples por ID, busca 1 produto pelo backend sem mexer em produtosErp.
   // Útil pra edição, export, duplicação, telas que precisam de UM produto específico
   // que pode não estar na página atual.
-  async function carregarProdutoPorId(idOuIdBanco) {
+  // ══════════════════════════════════════════════════════════════════════
+  // VÍNCULOS SINTÉTICOS — LEVA 2 (v33k.1756)
+  // ──────────────────────────────────────────────────────────────────────
+  // MEDIDO em produção em 17/08, dono 1, 250 produtos:
+  //
+  //   varredura antiga ..... 42,1 MB    página pior: 21,8 MB
+  //   varredura compacta ..... 4,4 MB   página pior:  1,5 MB
+  //   redução .............. 9,6x
+  //
+  //   produto 3709: 355 variações × 140 vínculos = 48.122 vínculos = 8,4 MB
+  //                 pares distintos de anúncio e loja: ~145
+  //
+  // A causa: o vínculo de ANÚNCIO é do produto, não da variação, e estava
+  // gravado dentro de cada uma. `variacaoExternaId` nulo confirma, e v0 contra
+  // v1 deu 140 de 140 idênticos. Guardar 355 cópias não carrega informação.
+  //
+  // ★ O QUE NÃO COLAPSA: 473 dos 5.373 vínculos do catálogo (8,8%) TÊM
+  //   `variacaoExternaId`, e esses apontam mesmo pra variação lá do
+  //   marketplace. Colapsar aqueles quebraria a replicação de estoque por
+  //   variação. A função SQL preserva os dois grupos separados; aqui eles
+  //   voltam a se juntar na mesma forma de sempre.
+  //
+  // Depois da reconstrução, `variacoes[].vinculos` tem EXATAMENTE a forma de
+  // antes, com as mesmas sete chaves. As 103 funções que só leem não têm como
+  // notar diferença. As 28 que escrevem passam pela guarda abaixo.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // Junta o que veio na variação com o que veio compactado por produto.
+  //
+  // ★ OS OBJETOS DE ANÚNCIO SÃO COMPARTILHADOS entre as variações, de
+  //   propósito: são 145 objetos em vez de 51.475. É disso que vem a economia
+  //   de memória no navegador. Ficam congelados pra que uma escrita acidental
+  //   não corrompa todas as variações de uma vez.
+  function _reconstruirVinculosCompactos(produtos) {
+    (produtos || []).forEach(p => {
+      if (!p) return;
+      const anuncios = Array.isArray(p.anuncios) ? p.anuncios : [];
+      anuncios.forEach(a => { try { Object.freeze(a); } catch (_) {} });
+      (Array.isArray(p.variacoes) ? p.variacoes : []).forEach(v => {
+        if (!v) return;
+        const daVariacao = Array.isArray(v.vinculos) ? v.vinculos : [];
+        v.vinculos = daVariacao.concat(anuncios);
+      });
+      // marca ANTES de soltar o produto no catálogo: quem escrever nele sem
+      // passar pela guarda vai bater na trava do save
+      p._vincSintetico = true;
+      delete p.anuncios;
+    });
+    return produtos;
+  }
+  window._reconstruirVinculosCompactos = _reconstruirVinculosCompactos;
+
+  // ★ SÓ reconstrói quando o backend DISSE que veio compacto. Ausência de
+  //   sinal nunca pode ser lida como "veio compacto": se a resposta trouxe os
+  //   vínculos completos e a gente reconstruísse assim mesmo, sobrescreveria
+  //   dado bom por dado derivado.
+  function _aplicarCompactoSeVeio(resposta, lote) {
+    if (resposta && resposta.vincCompacto === true) return _reconstruirVinculosCompactos(lote);
+    return lote;
+  }
+  window._aplicarCompactoSeVeio = _aplicarCompactoSeVeio;
+
+  // Troca a ficha sintética pela real, do banco, antes de qualquer escrita.
+  // Espera no ato, com o overlay da rosquinha verde que o painel já usa.
+  //
+  // Falha ALTA de propósito: sem os vínculos reais, escrever gravaria a união
+  // em cada variação e re-inflaria o catálogo. Erro na tela é melhor que isso.
+  async function garantirVinculosReais(produto, motivo) {
+    if (!produto || !produto._vincSintetico) return produto;
+    const id = produto.idBanco != null ? produto.idBanco : produto.id;
+    if (!id) throw new Error('Não consigo carregar os vínculos deste anúncio: ele ainda não tem id.');
+    if (typeof mostrarOverlayCarregando === 'function') {
+      mostrarOverlayCarregando(motivo || 'Carregando os dados completos do anúncio…');
+    }
+    try {
+      const completo = await carregarProdutoPorId(id, { forcarBackend: true });
+      if (!completo || !Array.isArray(completo.variacoes)) {
+        throw new Error('Não consegui carregar os vínculos deste anúncio. Tente de novo em instantes.');
+      }
+      produto.variacoes = completo.variacoes;
+      delete produto._vincSintetico;
+      return produto;
+    } finally {
+      if (typeof esconderOverlayCarregando === 'function') esconderOverlayCarregando();
+    }
+  }
+  window.garantirVinculosReais = garantirVinculosReais;
+
+  // Versão pra lote: uma volta ao overlay só, em vez de piscar N vezes.
+  async function garantirVinculosReaisEmLote(produtos, motivo) {
+    const lista = (produtos || []).filter(p => p && p._vincSintetico);
+    if (!lista.length) return produtos;
+    if (typeof mostrarOverlayCarregando === 'function') {
+      mostrarOverlayCarregando(motivo || ('Carregando os dados completos de ' + lista.length + ' anúncio(s)…'));
+    }
+    try {
+      for (const p of lista) {
+        const id = p.idBanco != null ? p.idBanco : p.id;
+        if (!id) continue;
+        const completo = await carregarProdutoPorId(id, { forcarBackend: true });
+        if (!completo || !Array.isArray(completo.variacoes)) {
+          throw new Error('Não consegui carregar os vínculos do anúncio ' + id + '. Tente de novo em instantes.');
+        }
+        p.variacoes = completo.variacoes;
+        delete p._vincSintetico;
+      }
+      return produtos;
+    } finally {
+      if (typeof esconderOverlayCarregando === 'function') esconderOverlayCarregando();
+    }
+  }
+  window.garantirVinculosReaisEmLote = garantirVinculosReaisEmLote;
+
+  async function carregarProdutoPorId(idOuIdBanco, opts) {
     if (!idOuIdBanco) return null;
+    opts = opts || {};
     // Tenta primeiro em produtosErp (cache da página atual)
-    const local = produtosErp.find(p => String(p.id) === String(idOuIdBanco) || String(p.idBanco) === String(idOuIdBanco));
-    if (local) return local;
+    // ★ v33k.1756: `forcarBackend` PULA o cache. Sem isso, o helper de vínculos
+    // pediria o produto completo e receberia de volta a MESMA ficha sintética
+    // que ele está tentando substituir, e a guarda não guardaria nada.
+    if (!opts.forcarBackend) {
+      const local = produtosErp.find(p => String(p.id) === String(idOuIdBanco) || String(p.idBanco) === String(idOuIdBanco));
+      if (local) return local;
+    }
     // Senão, busca no backend
     try {
       const r = await fetch(BACKEND_URL + '/api/produtos/' + idOuIdBanco, {
@@ -36166,6 +36317,19 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   async function salvarProdutoNoBackend(produto) {
+    // ★ v33k.1756: TRAVA DOS VÍNCULOS SINTÉTICOS.
+    // A varredura entrega os vínculos de anúncio reconstruídos, iguais em
+    // forma mas compartilhados entre as variações. Salvar um produto nesse
+    // estado gravaria a união DENTRO de cada variação e re-inflaria o
+    // catálogo: no produto 3709 seriam 355 × 145, mais do que os 48.122 de
+    // hoje. Quem for escrever chama `garantirVinculosReais` antes.
+    //
+    // Esta trava existe pra guarda esquecida virar erro NA PRIMEIRA tentativa,
+    // em vez de re-inflar em silêncio e a gente descobrir daqui a um mês.
+    if (produto && produto._vincSintetico) {
+      throw new Error('Os vínculos deste anúncio ainda não foram carregados por completo. '
+        + 'Abra o anúncio de novo e repita a ação. (vínculos sintéticos)');
+    }
     // 1. Sobe as fotos pro Storage antes (troca base64 por URL)
     const produtoComUrls = await enviarFotosParaStorage(produto);
     
@@ -36796,14 +36960,17 @@ Retorne JSON: {"ID": "valor", ...}`;
       // leve (o `select('*')` trazia o JSONB inteiro de cada produto).
       {
         let cursor = null;
-        for (let i = 0; i < 200; i++) {
-          const url = BACKEND_URL + '/api/produtos?ordem=id&limit=200&leve=1'
+        // v33k.1754: mesma página de 50 do outro carregador, pelo mesmo motivo
+        // medido: 200 linhas de JSONB numa instrução só estouram o timeout.
+        const POR_PAGINA_2 = 50;
+        for (let i = 0; i < 2000; i++) {
+          const url = BACKEND_URL + '/api/produtos?ordem=id&vincCompacto=1&limit=' + POR_PAGINA_2 + '&leve=1'
             + (cursor ? '&desdeId=' + encodeURIComponent(cursor) : '');
           let lote = [];
           try {
             const r = await fetch(url, { headers: { 'x-api-token': getApiToken() } });
             const dp = await r.json();
-            lote = (dp && dp.ok && Array.isArray(dp.produtos)) ? dp.produtos : [];
+            lote = _aplicarCompactoSeVeio(dp, (dp && dp.ok && Array.isArray(dp.produtos)) ? dp.produtos : []);
           } catch (e) {
             console.warn('[catalogo] página falhou, parando a varredura:', e && e.message);
             break;
@@ -36811,7 +36978,8 @@ Retorne JSON: {"ID": "valor", ...}`;
           if (!lote.length) break;
           produtosBanco.push(...lote);
           cursor = lote[lote.length - 1].id;
-          if (lote.length < 200 || !cursor) break;
+          if (lote.length < POR_PAGINA_2 || !cursor) break;
+          await new Promise(res => setTimeout(res, 120));
         }
       }
       const data = { ok: true, produtos: produtosBanco };
@@ -37206,6 +37374,13 @@ Retorne JSON: {"ID": "valor", ...}`;
     fecharTodosDropdownsMassa();
     const ids = Array.from(_prodSelecionados);
     if (ids.length === 0) { lcAlert('Selecione produtos primeiro'); return; }
+    // v33k.1756: o laço abaixo é síncrono, então a carga acontece ANTES dele.
+    // Esta função existe justamente pra remendar vínculo faltante; rodá-la
+    // sobre a união reconstruída não acharia falta nenhuma.
+    try {
+      const _sel = ids.map(i => produtosErp.find(x => String(x.id) === String(i))).filter(Boolean);
+      await garantirVinculosReaisEmLote(_sel, 'Carregando os vínculos dos anúncios selecionados…');
+    } catch (e) { showToast(e.message, true); return; }
     
     let recriados = 0, semItemId = 0, jaTinham = 0;
     const detalhes = [];
@@ -37281,6 +37456,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     fecharTodosDropdownsMassa();
     const ids = Array.from(_prodSelecionados);
     if (ids.length === 0) return;
+    // v33k.1756: coleta e depois REMOVE vínculo das variações; precisa dos reais.
+    try {
+      const _sel = ids.map(i => produtosErp.find(x => String(x.id) === String(i))).filter(Boolean);
+      await garantirVinculosReaisEmLote(_sel, 'Carregando os vínculos dos anúncios selecionados…');
+    } catch (e) { showToast(e.message, true); return; }
     
     // Coleta TODOS os vínculos ML dos produtos selecionados
     const todos = [];
@@ -38733,6 +38913,11 @@ Retorne JSON: {"ID": "valor", ...}`;
   async function v32d_excluirAnuncio(produtoId, varIdx, vincIdx) {
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) return;
+    // v33k.1756: ANTES dos índices. `varIdx` e `vincIdx` são POSICIONAIS, e a
+    // carga real troca os arrays: buscar antes e carregar depois apontaria pro
+    // vínculo errado. Mesma armadilha do seletor `grupo N` das mesclagens.
+    try { await garantirVinculosReais(p, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     const v = (p.variacoes || [])[varIdx];
     const vinc = v && (v.vinculos || [])[vincIdx];
     if (!vinc) { showToast('Vínculo não encontrado', true); return; }
@@ -39215,6 +39400,15 @@ Retorne JSON: {"ID": "valor", ...}`;
       return;
     }
     
+    // v33k.1756: o `v32d_mesclarProdutos` é síncrono e move vínculo entre
+    // variações. A carga acontece aqui, antes do laço, com base e mesclados
+    // juntos numa volta só de overlay.
+    try {
+      const _envolvidos = [];
+      grupos.forEach(g => { _envolvidos.push(g.base); (g.mesclar || []).forEach(x => _envolvidos.push(x)); });
+      await garantirVinculosReaisEmLote(_envolvidos, 'Carregando os vínculos dos anúncios da mesclagem…');
+    } catch (e) { showToast(e.message, true); return; }
+
     showToast('🔧 Mesclando...');
     
     let mescladosCount = 0;
@@ -39331,6 +39525,9 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Removida a opção "TODOS" (causou perda acidental de 4965 vínculos pelo Alessandro).
   // Agora pede confirmação digitando NOME do marketplace.
   async function v32d_abrirLimparVinculos() {
+    // v33k.1756: conta e depois LIMPA vínculo do catálogo inteiro.
+    try { await garantirVinculosReaisEmLote(produtosErp, 'Carregando os vínculos do catálogo…'); }
+    catch (e) { showToast(e.message, true); return; }
     // Conta vínculos atuais por marketplace (mostra na tela só os que existem)
     const contVinc = { mercadolivre: 0, shopee: 0, tiktok: 0, shein: 0 };
     produtosErp.forEach(p => {
@@ -39557,6 +39754,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     let totalCriados = 0;
     let produtosAfetados = 0;
     const norm = s => String(s || '').trim().toLowerCase();
+    // v33k.1756: percorre o catálogo inteiro escrevendo vínculo. Carrega os
+    // reais de quem veio sintético ANTES de começar, não no meio do laço.
+    try { await garantirVinculosReaisEmLote(produtosErp, 'Carregando os vínculos do catálogo…'); }
+    catch (e) { showToast(e.message, true); return; }
     
     for (const p of produtosErp) {
       if (!p.marketplaces) continue;
@@ -40689,6 +40890,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     const destino = produtosErp.find(x => String(x.id) === String(_v31MesclarOrigemId));
     const duplicado = produtosErp.find(x => String(x.id) === String(duplicadoId));
     if (!destino || !duplicado) { showToast('Produto não encontrado', true); return; }
+    // v33k.1756: mesclagem MOVE vínculos entre variações. Com ficha sintética
+    // ela moveria a união reconstruída, não o vínculo real daquela variação.
+    try { await garantirVinculosReaisEmLote([destino, duplicado], 'Carregando os vínculos dos dois anúncios…'); }
+    catch (e) { showToast(e.message, true); return; }
     
     // Planeja a mesclagem
     const planeja = [];
@@ -40953,6 +41158,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     const p = produtosErp.find(x => String(x.id) === String(_v31VincularProdId));
     if (!p) { showToast('Produto não encontrado', true); return; }
+    // v33k.1756: vai escrever vínculo em variação; precisa dos reais.
+    try { await garantirVinculosReais(p, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     
     const checkboxes = Array.from(document.querySelectorAll('.v31-vinc-var-' + idxResultado + ':checked'));
     if (checkboxes.length === 0) {
@@ -49245,6 +49453,16 @@ REGRAS DURAS:
       if (!opts.silencioso) lcAlert('❌ ' + erro);
       return { ok: false, erro };
     }
+
+    // v33k.1756: a exportação GRAVA o vínculo do anúncio recém-criado nas
+    // variações e salva em seguida. Com ficha sintética, o save recusaria.
+    // `silencioso` também passa aqui: exportação automática precisa do dado
+    // real igual, só não tem quem veja o overlay.
+    try { await garantirVinculosReais(p, 'Carregando os vínculos do anúncio…'); }
+    catch (e) {
+      if (!opts.silencioso) lcAlert('❌ ' + e.message);
+      return { ok: false, erro: e.message };
+    }
     
     // Verifica pré-requisitos
     const erros = validarProdutoParaExport(p, marketplace);
@@ -52013,7 +52231,11 @@ São o mesmo produto?`;
     // match encontre o produto existente e ATUALIZE em vez de duplicar.
     try {
       if (typeof carregarTodosProdutos === 'function') {
-        const todos = await carregarTodosProdutos();
+        // v33k.1756: ESTE pede os vínculos REAIS. A importação escreve vínculo
+        // em cada produto casado, e a ficha sintética seria recusada no save.
+        // Carregar produto a produto pela guarda, em milhares de itens, não é
+        // opção: aqui vale pagar o payload completo.
+        const todos = await carregarTodosProdutos({ vinculosReais: true });
         if (todos && todos.length) produtosErp = todos;
       }
     } catch(e) { console.warn('[importarAnunciosAutomatico] falha ao carregar catálogo completo:', e); }
@@ -53426,6 +53648,10 @@ São o mesmo produto?`;
   async function removerVinculo(variacaoId, vinculoId) {
     const produto = _produtoVinculosAtual;
     if (!produto) return;
+    // v33k.1756: vai reescrever `variacoes[].vinculos`. A ficha sintética traz
+    // a união reconstruída; escrever nela re-inflaria o catálogo no save.
+    try { await garantirVinculosReais(produto, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     const variacao = produto.variacoes.find(v => String(v.id) === String(variacaoId));
     if (!variacao || !variacao.vinculos) return;
     
@@ -53765,6 +53991,10 @@ São o mesmo produto?`;
   async function abrirExcluirAnuncioML(variacaoId, vinculoId) {
     const produto = _produtoVinculosAtual;
     if (!produto) return;
+    // v33k.1756: vai reescrever `variacoes[].vinculos`. A ficha sintética traz
+    // a união reconstruída; escrever nela re-inflaria o catálogo no save.
+    try { await garantirVinculosReais(produto, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     const variacao = produto.variacoes.find(v => String(v.id) === String(variacaoId));
     if (!variacao || !variacao.vinculos) return;
     const vinc = variacao.vinculos.find(v => String(v.id) === String(vinculoId));
@@ -53871,6 +54101,10 @@ São o mesmo produto?`;
   async function abrirExcluirTodosAnunciosML() {
     const produto = _produtoVinculosAtual;
     if (!produto) return;
+    // v33k.1756: vai reescrever `variacoes[].vinculos`. A ficha sintética traz
+    // a união reconstruída; escrever nela re-inflaria o catálogo no save.
+    try { await garantirVinculosReais(produto, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     
     // Coleta TODOS os vínculos ML deste produto
     const vincsML = [];
@@ -55175,6 +55409,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function _amAcaoMarketplace(prodId, acao) {
     const p = (produtosErp || []).find(x => String(x.id) === String(prodId));
     if (!p) { showToast('Produto não encontrado', true); return; }
+    // v33k.1756: o `_amExecutar` remove vínculo das variações na ação excluir.
+    // A guarda fica aqui, no dono do produto, não no helper.
+    try { await garantirVinculosReais(p, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     const escolhidos = await _amModalEscolher(p, acao);
     if (!escolhidos || !escolhidos.length) return;
     showToast('Aplicando em ' + escolhidos.length + ' anúncio(s)…');
@@ -55860,6 +56098,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function _gvTirarSelecionadas() {
     const p = _gvProdutoAtual(); if (!p) return;
     const pares = _gvParesSelecionados(); if (!pares.length) return;
+    // v33k.1756: vai reescrever `variacoes[].vinculos`. A ficha sintética traz
+    // a união reconstruída; escrever nela re-inflaria o catálogo no save.
+    try { await garantirVinculosReais(p, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
+
     if (!await lcConfirm('Tirar ' + pares.length + ' vínculo(s) selecionado(s)?\n\nOs anúncios continuam no marketplace, só deixam de estar ligados a estas variações.')) return;
     let removidos = 0;
     pares.forEach(({ anuncioId, variacaoId }) => {
@@ -56103,6 +56346,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function desvincularVariação(anuncioId, variacaoId) {
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
     if (!p) return;
+    // v33k.1756: vai reescrever `variacoes[].vinculos`. A ficha sintética traz
+    // a união reconstruída; escrever nela re-inflaria o catálogo no save.
+    try { await garantirVinculosReais(p, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     const v = (p.variacoes||[]).find(x => String(x.id) === String(variacaoId));
     if (!v) return;
     if (!await lcConfirm(`Desvincular a variação "${v.nome||v.sku}" do anúncio ${anuncioId}?`)) return;
@@ -56572,6 +56819,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     const ctx = _gvTrocaCtx;
     const p = produtosErp.find(x => String(x.id) === String(ctx.produtoId));
     if (!p) return;
+    // v33k.1756: vai reescrever `variacoes[].vinculos`. A ficha sintética traz
+    // a união reconstruída; escrever nela re-inflaria o catálogo no save.
+    try { await garantirVinculosReais(p, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     const vAtual = (p.variacoes || []).find(x => String(x.id) === String(ctx.variacaoIdAtual));
     const vNova = (p.variacoes || []).find(x => String(x.id) === String(variacaoIdNova));
     if (!vAtual || !vNova) { showToast('Variação não encontrada', true); return; }
@@ -56596,6 +56847,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   async function desvincularAnuncio(anuncioId) {
     const p = produtosErp.find(x => String(x.id) === String(_produtoGerenciarVinculos));
     if (!p) return;
+    // v33k.1756: vai reescrever `variacoes[].vinculos`. A ficha sintética traz
+    // a união reconstruída; escrever nela re-inflaria o catálogo no save.
+    try { await garantirVinculosReais(p, 'Carregando os vínculos do anúncio…'); }
+    catch (e) { showToast(e.message, true); return; }
     if (!await lcConfirm('Desvincular o anúncio ' + anuncioId + ' deste produto?\n\nIsso remove os vínculos desse anúncio em todas as variações (o anúncio continua existindo no marketplace, só deixa de estar ligado a este produto).')) return;
     let removidos = 0;
     (p.variacoes||[]).forEach(v => {
@@ -56868,6 +57123,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     grupo.sort((a,b) => (b.variacoes||[]).length - (a.variacoes||[]).length);
     const mestre = grupo[0];
     const outros = grupo.slice(1);
+
+    // v33k.1756: `_consolidarVariacoes` é síncrono e junta vínculos entre as
+    // variações do grupo. Carrega os reais do grupo antes de consolidar.
+    try { await garantirVinculosReaisEmLote(grupo, 'Carregando os vínculos do grupo…'); }
+    catch (e) { showToast(e.message, true); return; }
 
     const todasVars = [];
     grupo.forEach(p => (p.variacoes||[]).forEach(v => todasVars.push(v)));
@@ -65687,7 +65947,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1753-ficha-de-pre-voo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1756-vinculos-sinteticos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
