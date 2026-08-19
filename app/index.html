@@ -49662,20 +49662,55 @@ REGRAS DURAS:
       return { ok: false, erro: 'Backend não configurado' };
     }
     
-    // ★ PRÉ-VOO (v33k.1684): antes de qualquer escrita, confere os campos
-    // obrigatórios da categoria do ML. Se faltar, abre o modal de
-    // preenchimento (individual ou em massa por coluna, igual ao do NCM na
-    // emissão em massa) e só segue depois de salvo.
+    // ══════════════════════════════════════════════════════════════════
+    // ★ PORTÃO ÚNICO DA EXPORTAÇÃO (v33k.1804)
+    // ──────────────────────────────────────────────────────────────────
+    // Era o pedido original de 18/08 e virou a nona onda, porque no caminho
+    // apareceram bugs que fariam este portão abrir uma tela inútil.
+    //
+    // O QUE MUDA: a conferência deixa de ser só do Mercado Livre e passa a
+    // valer pros quatro. O `mlPreVooLiberado` (modal antigo, só do ML, só o
+    // que FALTA) continua existindo e atendendo as outras telas; aqui entra o
+    // `preVooTabelaLiberado`, que mostra TUDO — preenchido e vazio, do
+    // anúncio e de cada variação.
+    //
+    // MEDIDO em 18/08, o que este portão passa a pegar:
+    //   shopee   8 erros de "category_id obrigatório" que nunca viram tela
+    //   tiktok   o atributo 101596, invisível até a v33k.1789 corrigir o
+    //            `is_requried` (a API do TikTok escreve com as letras trocadas)
+    //
+    // ★ SALVA ANTES DE EXPORTAR, e isto NÃO é detalhe. O modal grava em
+    //   MEMÓRIA; a rota de exportação lê o produto DO BANCO. Sem o save, a
+    //   pessoa preencheria a tabela inteira, clicaria em exportar, e o backend
+    //   leria a versão antiga — a mesma falha que o modal existe pra impedir,
+    //   só que mais cruel, porque agora ela preencheu.
+    //   Na duplicação isso não aparece: lá o save vem logo depois, por outro
+    //   motivo. Aqui precisa ser explícito.
     //
     // Silencioso não abre modal: exportação automática não tem quem preencha.
-    // Ela segue e o pré-voo do backend devolve o erro explicado, sem criar nada.
-    if (marketplace === 'mercadolivre' && !opts.silencioso && produtoParaExportar.idBanco) {
+    // Segue e o pré-voo do backend devolve o erro explicado, sem criar nada.
+    // (a fila de "pendente de conferência" que você aprovou é onda própria)
+    if (!opts.silencioso && produtoParaExportar.idBanco && lojaIdBanco
+        && typeof preVooTabelaLiberado === 'function') {
       try {
-        const liberado = await mlPreVooLiberado(lojaIdBanco, [produtoParaExportar.idBanco]);
-        if (!liberado) return { ok: false, erro: 'Exportação cancelada: faltam campos obrigatórios da categoria.', cancelado: true };
+        const liberado = await preVooTabelaLiberado(lojaIdBanco, [produtoParaExportar]);
+        if (!liberado) {
+          return { ok: false, erro: 'Exportação cancelada na conferência.', cancelado: true };
+        }
+        // ★ o que a pessoa preencheu só existe em memória: persiste antes de
+        // mandar exportar, senão o backend lê o produto sem as correções.
+        try {
+          await garantirVinculosReais(produtoParaExportar, 'Carregando os vínculos do anúncio…');
+          await salvarProdutoNoBackend(produtoParaExportar);
+        } catch (eSalvar) {
+          const msg = 'Não consegui salvar o que você preencheu: ' + eSalvar.message;
+          if (!opts.silencioso) lcAlert('❌ ' + msg);
+          return { ok: false, erro: msg };
+        }
       } catch (e) {
-        // falha aberta: a checagem não pode impedir export que funcionaria
-        console.warn('[pré-voo] seguindo sem checar:', e.message);
+        // falha aberta: a checagem não pode impedir export que funcionaria.
+        // O pré-voo do backend segue como rede de segurança de trás.
+        console.warn('[portão] seguindo sem conferir:', e.message);
       }
     }
 
@@ -66145,7 +66180,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1803-grava-no-lugar-certo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1804-portao-unico';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
