@@ -38873,6 +38873,48 @@ Retorne JSON: {"ID": "valor", ...}`;
     return 'desconhecido';
   }
   
+  // ═══════════════════════════════════════════════════════════════════════
+  // STATUS POR ANÚNCIO: CONHECIDO GANHA DE 'desconhecido' (v33k.1830)
+  // ───────────────────────────────────────────────────────────────────────
+  // MEDIDO em 19/08 no catálogo real: dos 8 anúncios do INF-80, os 8 têm
+  // status em um vínculo e NÃO têm em outro. O padrão é exato, em dois
+  // produtos e quatro marketplaces: todo vínculo com
+  // `criadoPor = importador-auto` está com `statusMl` vazio; todo vínculo sem
+  // esse marcador tem status.
+  //
+  // A regra antiga era "o primeiro vínculo que aparecer vence". Quando o
+  // primeiro era do importador, o anúncio inteiro virava "sem status" — com o
+  // NORMAL gravado no vínculo do lado. Era por isso que o INF-80 aparecia com
+  // "8 sem status" estando ativo na Shopee.
+  //
+  // Um anúncio tem UM status. Vínculo sem status não é outro estado: é
+  // ausência de informação, e ausência não pode apagar o que se sabe.
+  //
+  // ★ ESTAVA DUPLICADA EM DOIS LUGARES — a classificação das abas e os badges
+  //   do card. Consertar uma só deixaria a aba e o badge discordando na mesma
+  //   tela, que é pior que os dois errados juntos: aí ninguém sabe em qual
+  //   acreditar. Agora a regra mora aqui e as duas chamam.
+  //
+  // Entre dois status CONHECIDOS diferentes o primeiro segue vencendo. Isso é
+  // conflito real (um dos dois está velho) e merece medição própria, não um
+  // desempate inventado agora.
+  function _statusPorAnuncio(p, lojasRecorte) {
+    const porAnuncio = {};
+    const alvo = (lojasRecorte && lojasRecorte.length)
+      ? new Set(lojasRecorte.map(String)) : null;
+    (p && p.variacoes || []).forEach(v => ((v && v.vinculos) || []).forEach(vi => {
+      if (!vi || !vi.anuncioId) return;
+      if (alvo && !alvo.has(String(vi.lojaIdBanco || vi.lojaId))) return;
+      const aid = String(vi.anuncioId);
+      const st = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
+      if (!(aid in porAnuncio) || (porAnuncio[aid] === 'desconhecido' && st !== 'desconhecido')) {
+        porAnuncio[aid] = st;
+      }
+    }));
+    return porAnuncio;
+  }
+  window._statusPorAnuncio = _statusPorAnuncio;
+
   // HTML da tag de status
   function v32d_htmlTagStatus(status) {
     const cfg = {
@@ -56986,16 +57028,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (p.status === 'excluido' || p.excluidoDoML || p.banidoDoML) { tabs.add('excluido'); return tabs; }
     if (p.status === 'rascunho') tabs.add('rascunho');
     let temAtivo = false, temInativo = false, temRevisao = false, total = 0;
-    const alvo = (lojasRecorte && lojasRecorte.length)
-      ? new Set(lojasRecorte.map(String)) : null;
-    const porAnuncio = {};
-    (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
-      if (!vi.anuncioId) return;
-      // com filtro de loja, vínculo de outra loja não conta pra classificar
-      if (alvo && !alvo.has(String(vi.lojaIdBanco || vi.lojaId))) return;
-      const aid = String(vi.anuncioId);
-      if (!(aid in porAnuncio)) porAnuncio[aid] = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
-    }));
+    const porAnuncio = _statusPorAnuncio(p, lojasRecorte);
     Object.values(porAnuncio).forEach(st => {
       total++;
       if (st === 'ativo') temAtivo = true;
@@ -60188,12 +60221,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // único), pra mostrar no card sem abrir a central. Só destaca o que NÃO está
   // ativo (pausado/inativo/revisão/banido/encerrado) — quando está tudo ok, não polui.
   function _statusAgregadoProduto(p) {
-    const porAnuncio = {};
-    (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
-      if (!vi.anuncioId) return;
-      const aid = String(vi.anuncioId);
-      if (!(aid in porAnuncio)) porAnuncio[aid] = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
-    }));
+    // v33k.1830: mesma regra da aba, num lugar só. Antes eram duas cópias, e
+    // um conserto em uma delas faria badge e aba discordarem na mesma tela.
+    const porAnuncio = _statusPorAnuncio(p, null);
     const counts = {}; let naoAtivos = 0, ativos = 0, total = 0;
     Object.values(porAnuncio).forEach(st => {
       total++; counts[st] = (counts[st] || 0) + 1;
@@ -60255,12 +60285,15 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // v33k.1141: status agregado de UMA variação (por anúncio único dos seus
   // vínculos). Mesma lógica do produto, mas no escopo da variação.
   function _statusAgregadoVariação(v) {
-    const porAnuncio = {};
-    (v.vinculos || []).forEach(vi => {
-      if (!vi.anuncioId) return;
-      const aid = String(vi.anuncioId);
-      if (!(aid in porAnuncio)) porAnuncio[aid] = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
-    });
+    // v33k.1830: TERCEIRA cópia da mesma regra. As duas primeiras eram a
+    // classificação das abas e os badges do card; esta é o badge de dentro da
+    // variação. Todas tinham o mesmo defeito — o vínculo sem status apagava o
+    // status conhecido do mesmo anúncio.
+    //
+    // Reaproveita `_statusPorAnuncio` passando um produto de uma variação só:
+    // o escopo muda, a regra não. Foi a duplicação que deixou o defeito vivo
+    // em três lugares.
+    const porAnuncio = _statusPorAnuncio({ variacoes: [v] }, null);
     let ativos = 0, naoAtivos = 0, total = 0;
     Object.values(porAnuncio).forEach(st => {
       total++;
@@ -67967,7 +68000,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1829-aba-respeita-a-loja';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1830-status-conhecido-ganha';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
