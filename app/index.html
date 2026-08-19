@@ -43310,7 +43310,7 @@ Retorne JSON: {"ID": "valor", ...}`;
   // `idsIA` marca o que a IA deduziu, pra tela dizer o que revisar. Valor
   // deduzido misturado com valor cadastrado, sem marcação, é pior que campo
   // vazio: a pessoa não sabe no que confiar.
-  function preVooAbrirTabela(fichas, produtos, idsIA) {
+  function preVooAbrirTabela(fichas, produtos, idsIA, lojaIdBanco) {
     return new Promise((resolve) => {
       const lista = (fichas || []).filter(Boolean);
       const marcados = idsIA || {};
@@ -43333,12 +43333,29 @@ Retorne JSON: {"ID": "valor", ...}`;
 
       let h = '';
 
+      // ── anúncios que precisam de categoria ANTES de qualquer campo ──
+      // v33k.1806: era um aviso amarelo sem ação nenhuma. Agora cada linha
+      // tem o botão que resolve o problema que ela descreve — aviso que não
+      // dá o que fazer só transfere o trabalho de volta pra pessoa.
       if (bloqueadas.length) {
-        h += '<div style="padding:11px 13px;background:#fef3c7;border:1px solid #fde68a;border-radius:9px;' +
-          'font-size:12.5px;color:#92400e;margin-bottom:12px">' +
-          '<strong>' + bloqueadas.length + ' anúncio(s) sem categoria definida.</strong><br>' +
-          bloqueadas.slice(0, 4).map(f => escapeHtml(f.nome || f.ref || '') + ': ' + escapeHtml(f.bloqueio)).join('<br>') +
-          '</div>';
+        h += '<div style="border:1px solid #fde68a;border-radius:11px;overflow:hidden;margin-bottom:14px">' +
+          '<div style="padding:9px 12px;background:#fffbeb;border-bottom:1px solid #fef3c7;font-size:12.5px;font-weight:800;color:#92400e">' +
+            'Falta a categoria <span style="font-weight:600">· ' + bloqueadas.length + ' anúncio(s)</span></div>' +
+          '<div style="overflow:auto;max-height:26vh"><table style="width:100%;border-collapse:collapse">';
+        bloqueadas.forEach((f) => {
+          const bi = lista.indexOf(f);
+          h += '<tr style="border-top:1px solid #fef3c7">' +
+            '<td style="padding:9px 12px">' +
+              '<div style="font-size:12.5px;font-weight:600;color:#1e293b">' + escapeHtml(f.nome || f.ref || '') + '</div>' +
+              '<div style="font-size:11px;color:#a16207;margin-top:2px">' + escapeHtml(f.bloqueio || '') + '</div>' +
+              '<div id="pvtCatBox_' + bi + '" style="margin-top:7px"></div>' +
+            '</td>' +
+            '<td style="padding:9px 12px;width:190px;vertical-align:top;text-align:right">' +
+              '<button class="lc-btn" onclick="pvtAbrirCategoria(' + bi + ')" ' +
+                'style="background:#f59e0b;color:#fff;font-size:12px;padding:6px 12px">Escolher categoria</button>' +
+            '</td></tr>';
+        });
+        h += '</table></div></div>';
       }
 
       h += '<div style="padding:11px 13px;background:#eff6ff;border:1px solid #dbeafe;border-radius:9px;' +
@@ -43426,7 +43443,12 @@ Retorne JSON: {"ID": "valor", ...}`;
 
       h += '<div style="margin-top:12px;font-size:12.5px;font-weight:700" id="pvtContador">—</div>';
 
-      _pvtEstado = { fichas: uteis, produtos: produtos || [], obrigatorios: obrigatorios, aplicar: aplicar, resolve: resolve };
+      // ★ v33k.1806: as fichas BLOQUEADAS entram no estado também. Elas são
+      // justamente as que precisam de categoria, e antes ficavam de fora —
+      // viravam um aviso amarelo sem ação, que foi o que a v1760 removeu.
+      _pvtEstado = { fichas: uteis, bloqueadas: bloqueadas, todas: lista,
+        produtos: produtos || [], obrigatorios: obrigatorios, aplicar: aplicar,
+        resolve: resolve, lojaIdBanco: lojaIdBanco || null };
 
       lcAlert(h, {
         tipo: 'info',
@@ -43458,6 +43480,113 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.preVooAbrirTabela = preVooAbrirTabela;
 
+  // ══════════════════════════════════════════════════════════════════════
+  // ESCOLHER A CATEGORIA DENTRO DA TABELA (v33k.1806)
+  // ──────────────────────────────────────────────────────────────────────
+  // Sem isto, ficha bloqueada era um beco: a tabela mostrava "falta a
+  // categoria" e não oferecia jeito de resolver. Era por isso que a v1760
+  // preferia nem abrir.
+  //
+  // A busca vem da rota única da v33k.1805, que devolve SÓ FOLHA nos quatro
+  // marketplaces — categoria intermediária é recusada na publicação, então
+  // oferecê-la seria empurrar a pessoa pra um erro adiante.
+  //
+  // Sem termo digitado, ela busca pelo TÍTULO do produto: no TikTok isso usa
+  // o `recomendarCategoria`, que devolve a folha que o próprio marketplace
+  // escolheria. É o "tenta automático" que você pediu — e continua editável,
+  // que é a outra metade do pedido.
+  async function _pvtBuscarCategorias(termo, titulo) {
+    const st = _pvtEstado;
+    if (!st || !st.lojaIdBanco) return { categorias: [], motivo: 'Loja não identificada.' };
+    try {
+      const qs = '?q=' + encodeURIComponent(termo || '') + '&titulo=' + encodeURIComponent(titulo || '');
+      const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + st.lojaIdBanco + '/categorias/buscar' + qs, {
+        headers: { 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      if (!r || !r.ok) return { categorias: [], motivo: (r && r.erro) || 'Não consegui buscar agora.' };
+      return { categorias: r.categorias || [], motivo: r.motivo || null };
+    } catch (e) {
+      return { categorias: [], motivo: e.message };
+    }
+  }
+
+  async function pvtAbrirCategoria(bi) {
+    const st = _pvtEstado;
+    if (!st) return;
+    const f = (st.todas || [])[bi];
+    const box = document.getElementById('pvtCatBox_' + bi);
+    if (!f || !box) return;
+    box.innerHTML = '<div style="font-size:12px;color:#64748b">Buscando sugestão…</div>';
+    const termo = (document.getElementById('pvtCatBusca_' + bi) || {}).value || '';
+    const r = await _pvtBuscarCategorias(termo, f.nome);
+    let html = '<div style="display:flex;gap:6px;margin-bottom:6px">' +
+      '<input id="pvtCatBusca_' + bi + '" value="' + escapeHtml(termo) + '" placeholder="buscar categoria pelo nome" ' +
+        'onkeydown="if(event.key===\'Enter\'){event.preventDefault();pvtAbrirCategoria(' + bi + ');}" ' +
+        'style="flex:1;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:12.5px">' +
+      '<button class="lc-btn" onclick="pvtAbrirCategoria(' + bi + ')" style="background:#fff;color:#0f172a;font-size:12px;padding:6px 10px">Buscar</button>' +
+      '</div>';
+    if (r.motivo && !r.categorias.length) {
+      html += '<div style="font-size:12px;color:#b45309">' + escapeHtml(r.motivo) + '</div>';
+    } else if (!r.categorias.length) {
+      html += '<div style="font-size:12px;color:#64748b">Nada encontrado. Tente outra palavra.</div>';
+    } else {
+      html += '<div style="max-height:150px;overflow:auto;border:1px solid #e2e8f0;border-radius:8px;background:#fff">' +
+        r.categorias.map(c =>
+          '<div onclick="pvtEscolherCategoria(' + bi + ',\'' + escapeHtml(String(c.id)) + '\')" ' +
+            'style="padding:7px 10px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12.5px" ' +
+            'onmouseover="this.style.background=\'#f8fafc\'" onmouseout="this.style.background=\'#fff\'">' +
+            (c.origem === 'sugestao'
+              ? '<span style="font-size:10.5px;color:#7c3aed;font-weight:700">SUGESTÃO · </span>' : '') +
+            escapeHtml(c.caminho || c.nome) +
+          '</div>').join('') +
+        '</div>';
+    }
+    box.innerHTML = html;
+    st._catCache = st._catCache || {};
+    st._catCache[bi] = r.categorias;
+  }
+  window.pvtAbrirCategoria = pvtAbrirCategoria;
+
+  // Grava a categoria escolhida NO PRODUTO, no campo que cada marketplace lê,
+  // e manda a tabela se refazer: outra categoria é outra lista de campos.
+  function pvtEscolherCategoria(bi, catId) {
+    const st = _pvtEstado;
+    if (!st) return;
+    const f = (st.todas || [])[bi];
+    if (!f) return;
+    const idx = (st.todas || []).indexOf(f);
+    // a ficha guarda o `ref` que a tela montou como 'p'+i
+    const i = /^p\d+$/.test(String(f.ref || '')) ? Number(String(f.ref).slice(1)) : idx;
+    const p = (st.produtos || [])[i];
+    if (!p) { showToast('Não achei o produto pra gravar a categoria.', true); return; }
+
+    // ★ CADA MARKETPLACE LÊ DE UM CAMPO DIFERENTE. Gravar no campo errado
+    // faria a tela mostrar categoria escolhida e a exportação continuar
+    // dizendo que falta — que é o erro que estamos matando.
+    const mkt = String(f.marketplace || '').toLowerCase();
+    if (mkt === 'mercadolivre') p.categoryIdMl = catId;
+    else if (mkt === 'shopee') { p.category_id = catId; p.categoryIdShopee = catId; }
+    else if (mkt === 'tiktok') p.categoryIdTiktok = catId;
+    else if (mkt === 'shein') p.productTypeIdShein = catId;
+    else { showToast('Marketplace desconhecido: ' + mkt, true); return; }
+
+    pvtRecarregar();
+  }
+  window.pvtEscolherCategoria = pvtEscolherCategoria;
+
+  // Aplica no produto o que já foi digitado e pede uma nova rodada da tabela.
+  // Sem aplicar antes, trocar a categoria apagaria o trabalho das outras linhas.
+  function pvtRecarregar() {
+    const st = _pvtEstado;
+    if (!st) return;
+    _pvtAplicarValores(st);
+    _pvtEstado = null;
+    _pvtFechar();
+    if (st.resolve) st.resolve('recarregar');
+  }
+  window.pvtRecarregar = pvtRecarregar;
+
   function _pvtFechar() {
     if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
     const ov = document.getElementById('lcModalOverlay');
@@ -43481,6 +43610,19 @@ Retorne JSON: {"ID": "valor", ...}`;
       showToast('Ainda faltam campos obrigatórios.', true);
       return;
     }
+    _pvtAplicarValores(st);
+    _pvtEstado = null;
+    _pvtFechar();
+    if (st.resolve) st.resolve(true);
+  }
+  window.pvtConfirmar = pvtConfirmar;
+
+  // v33k.1806: a aplicação virou função própria porque agora tem DOIS
+  // caminhos que precisam dela — confirmar e recarregar depois de trocar a
+  // categoria. Se o recarregamento não aplicasse, trocar a categoria de um
+  // anúncio apagaria o que a pessoa digitou nos outros.
+  function _pvtAplicarValores(st) {
+    if (!st) return;
     // ══════════════════════════════════════════════════════════════════
     // ONDE CADA VALOR É GRAVADO (v33k.1803)
     // ──────────────────────────────────────────────────────────────────
@@ -43533,39 +43675,54 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (ja) ja.valor = valor;
       else if (valor) v.atributos.push({ id: a.campoId, valor: valor });
     });
-    _pvtEstado = null;
-    _pvtFechar();
-    if (st.resolve) st.resolve(true);
   }
-  window.pvtConfirmar = pvtConfirmar;
 
   // Ponto único que a duplicação chama. Devolve true quando pode seguir.
   // Falha aberta: sem resposta do backend, a duplicação segue como antes.
   async function preVooTabelaLiberado(lojaIdBanco, produtos, idsIA) {
     if (!lojaIdBanco || !produtos || !produtos.length) return true;
-    const fichas = await preVooBuscarFichas(lojaIdBanco,
-      produtos.map((p, i) => preVooProdutoParaFicha(p, 'p' + i)));
-    if (fichas == null) return true;
-    if (!fichas.length) return true;
 
-    // ★ v33k.1760: SÓ ABRE SE HOUVER O QUE CONFERIR.
-    // BUG DE 17/08, duplicando da Shopee pro TikTok: o produto ainda não tem
-    // categoria do TikTok (ela é resolvida na hora da exportação, pelo
-    // adaptador), então a ficha volta bloqueada e SEM CAMPO NENHUM. A tabela
-    // abria vazia, com um aviso e dois botões, e não dava nada pra pessoa
-    // fazer. Modal que não pede nada é pior que modal nenhum: interrompe o
-    // fluxo, confunde, e ainda faz parecer que quebrou.
-    const temCampo = fichas.some(f => f && (
-      (Array.isArray(f.campos) && f.campos.length) ||
-      (Array.isArray(f.variacoes) && f.variacoes.some(v => v && Array.isArray(v.campos) && v.campos.length))
-    ));
-    if (!temCampo) {
-      const motivos = fichas.filter(f => f && f.bloqueio).map(f => f.bloqueio);
-      if (motivos.length) console.info('[pré-voo tabela] nada a conferir: ' + motivos[0]);
-      return true;
+    // ★ v33k.1806: LAÇO, porque trocar a categoria muda os campos.
+    // Escolher outra categoria significa outra lista de obrigatórios: os
+    // campos da anterior deixam de existir. Em vez de remendar a tabela na
+    // tela, refazemos a ficha e reabrimos — o que a pessoa já digitou volta
+    // aplicado no produto antes do recarregamento, então nada se perde.
+    // O teto de 6 existe pra um erro meu não virar laço infinito na cara do
+    // usuário.
+    for (let volta = 0; volta < 6; volta++) {
+      const fichas = await preVooBuscarFichas(lojaIdBanco,
+        produtos.map((p, i) => preVooProdutoParaFicha(p, 'p' + i)));
+      if (fichas == null) return true;
+      if (!fichas.length) return true;
+
+      // ══════════════════════════════════════════════════════════════════
+      // QUANDO A TABELA ABRE (v33k.1806)
+      // ──────────────────────────────────────────────────────────────────
+      // A v33k.1760 mandava PULAR quando não havia campo nenhum, e estava
+      // certa naquele momento: sem categoria não há obrigatório pra mostrar,
+      // e um modal com um aviso e dois botões não dá nada pra pessoa fazer.
+      //
+      // MEDIDO em 18/08, com dois prints de produção, é a regra que passou a
+      // ser o problema:
+      //   Shopee   duplicação falhou com "category_id é obrigatório" e a
+      //            tabela nunca abriu
+      //   TikTok   exportou EM SILÊNCIO, com a IA ajustando fotos (45→9),
+      //            peso (0,5kg) e guia de tamanhos, sem ninguém conferir
+      //
+      // O que mudou desde a v1760: agora a tabela SABE pedir categoria
+      // (v33k.1805). Então ficha bloqueada deixou de ser "nada a fazer" e
+      // virou "tem uma coisa pra fazer, e é a mais importante".
+      const temCampo = fichas.some(f => f && (
+        (Array.isArray(f.campos) && f.campos.length) ||
+        (Array.isArray(f.variacoes) && f.variacoes.some(v => v && Array.isArray(v.campos) && v.campos.length))
+      ));
+      const temBloqueio = fichas.some(f => f && f.bloqueio);
+      if (!temCampo && !temBloqueio) return true;
+
+      const r = await preVooAbrirTabela(fichas, produtos, idsIA, lojaIdBanco);
+      if (r !== 'recarregar') return r;
     }
-
-    return await preVooAbrirTabela(fichas, produtos, idsIA);
+    return true;
   }
   window.preVooTabelaLiberado = preVooTabelaLiberado;
 
@@ -66180,7 +66337,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1804-portao-unico';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1806-tabela-pede-categoria';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
