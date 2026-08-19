@@ -18944,6 +18944,68 @@ window.LC_SVG = {
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════════════════════
+     EDITOR EM MASSA ANTES DE EXPORTAR (v33k.1809)
+     ───────────────────────────────────────────────────────────────────────
+     PEDIDO DE 18/08, com os prints do Editar em Massa da Shopee:
+       "quero poder alterar todos os dados antes da exportação do anúncio,
+        dele e vários outros que vão junto em massa"
+
+     O modal estreito das ondas 8 a 11 resolvia outra coisa (preencher o que
+     falta). Aqui é a tela inteira: título, descrição, fotos, categoria,
+     atributos, preço, quantidade, peso, dimensões e envio, em massa, com
+     edição por coluna.
+
+     ★ PÁGINA PRÓPRIA, decidido em 18/08: com 200 anúncios e 80 variações,
+       modal não cabe. E página sobrevive a F5.
+
+     ★ NÃO NASCE ACOPLADA À EXPORTAÇÃO. O próximo uso desta tela é editar
+       anúncios que JÁ EXISTEM. Por isso a origem dos dados é plugável: a tela
+       consome `linhas`, e quem monta as linhas é quem chamou. Amarrar no
+       fluxo de exportação agora custaria reescrever depois.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="screen" id="editorMassaScreen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"></div>
+        <div class="sidebar-header-text">
+          <div class="sidebar-title">Lider 10</div>
+          <div class="sidebar-subtitle">Painel do Gestor</div>
+        </div>
+        <button class="lc-side-toggle" onclick="lcToggleSidebar()" title="Recolher menu" aria-label="Recolher menu"><span class="lc-ic" data-lucide="chevron-left"></span></button>
+      </div>
+      <nav class="sidebar-menu" id="sidebarMenuEditorMassa"></nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-avatar">A</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name">Usuário</div>
+          <div class="sidebar-user-role">CEO</div>
+        </div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <div class="top-bar">
+        <div class="page-title-bar">
+          <button class="back-btn" onclick="emCancelar()">←</button>
+          <div class="page-title-text" id="emTitulo">Conferir antes de exportar</div>
+        </div>
+        <div class="top-actions">
+          <span id="emContador" style="font-size:12.5px;font-weight:700;margin-right:12px"></span>
+          <button class="lc-btn" onclick="emCancelar()" style="background:var(--lc-surface);color:var(--lc-text)">Cancelar</button>
+          <button class="lc-btn lc-btn--primary" id="emBtnConfirmar" onclick="emConfirmar()">Confirmar e exportar</button>
+        </div>
+      </div>
+      <div class="content">
+        <div id="emAbas" style="margin-bottom:12px"></div>
+        <div id="emSeletorColunas" style="margin-bottom:12px"></div>
+        <div id="emAvisos"></div>
+        <div id="emTabela"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
 <div class="screen" id="notasFiscaisScreen">
   <div class="app-layout">
     <aside class="sidebar">
@@ -43679,6 +43741,1479 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   // Ponto único que a duplicação chama. Devolve true quando pode seguir.
   // Falha aberta: sem resposta do backend, a duplicação segue como antes.
+  // ══════════════════════════════════════════════════════════════════════
+  // EDITOR EM MASSA — MODELO E DESENHO (v33k.1809)
+  // ──────────────────────────────────────────────────────────────────────
+  // Espelha o Editar em Massa da Shopee: grupos de coluna no topo, seletor do
+  // que mostrar, tabela larga com linha por anúncio e sub-linha por variação.
+  //
+  // ★ O MODELO NÃO SABE O QUE É EXPORTAÇÃO. Ele recebe `linhas` e devolve
+  //   `linhas` editadas. Hoje quem monta é o fluxo de exportação; amanhã será
+  //   a edição de anúncio existente, sem tocar nesta parte.
+  //
+  // ★ COLUNA É DECLARADA, NÃO DESENHADA À MÃO. Cada coluna diz onde lê, onde
+  //   grava, se é do anúncio ou da variação, e de quais marketplaces ela é.
+  //   A aba troca só o filtro `mkts` — a tabela é uma só, como decidido em
+  //   18/08. Desenhar cada coluna à mão foi o que fez a tabela antiga virar
+  //   um bolo de string difícil de mudar.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // `mkts: null` = vale pra todos. `escopo: 'variacao'` = sub-linha.
+  const EM_GRUPOS = [
+    { id: 'basica', nome: 'Informação Básica', colunas: [
+      { id: 'imagem',    nome: 'Imagem',          tipo: 'fotos',  escopo: 'anuncio', campo: 'fotos',     obrig: true,  semMassa: true },
+      { id: 'titulo',    nome: 'Nome do Anúncio', tipo: 'texto',  escopo: 'anuncio', campo: 'nome',      obrig: true,  maxLen: 120 },
+      { id: 'descricao', nome: 'Descrição',       tipo: 'longo',  escopo: 'anuncio', campo: 'descricao', obrig: true },
+      // ★ porCanal: o valor é POR MARKETPLACE, ainda que a tabela seja uma só.
+      // Categoria da Shopee não é a do ML, e atributo de categoria muito
+      // menos. Guardar num campo só faria a aba trocar e o valor vazar de um
+      // canal pro outro — pior que não ter aba.
+      { id: 'categoria', nome: 'Categoria',       tipo: 'categoria', escopo: 'anuncio', campo: 'categoria', obrig: true, semMassa: true, porCanal: true },
+      { id: 'atributos', nome: 'Atributos',       tipo: 'atributos', escopo: 'anuncio', campo: 'atributos', obrig: false, semMassa: true, porCanal: true },
+      { id: 'skuPai',    nome: 'SKU Principal',   tipo: 'texto',  escopo: 'anuncio', campo: 'skuPai',    obrig: false, oculta: true },
+    ] },
+    { id: 'venda', nome: 'Informações de Venda', colunas: [
+      // ★ v33k.1812: AS COLUNAS DE VARIAÇÃO NÃO SÃO FIXAS.
+      // Cor e tamanho servem calçado e roupa. Não servem o resto do mercado:
+      // o próprio censo de 18/08 achou, no catálogo do dono 20, dimensões
+      // `Estampa`, `Sabor`, `Embalagem`, `CORES` e `Tamanco`. Eletrônico usa
+      // Voltagem; perfumaria usa Volume; alimento usa Sabor e Peso.
+      //
+      // Então a lista de colunas de variação é DERIVADA da categoria escolhida
+      // naquela aba (os campos `deVariacao` da ficha) mais as dimensões que o
+      // produto já tem. Ver `emColunasVariacaoDinamicas`.
+      //
+      // Cor e tamanho continuam existindo aqui só como FALLBACK, pra a tabela
+      // não abrir vazia enquanto a categoria não foi escolhida.
+      { id: 'sku',       nome: 'SKU',        tipo: 'texto',   escopo: 'variacao', campo: 'sku',       obrig: false, oculta: true },
+      { id: 'preco',     nome: 'Preço (R$)', tipo: 'numero',  escopo: 'variacao', campo: 'preco',     obrig: true },
+      { id: 'estoque',   nome: 'Quantidade', tipo: 'inteiro', escopo: 'variacao', campo: 'estoque',   obrig: true },
+      { id: 'ean',       nome: 'GTIN',       tipo: 'texto',   escopo: 'variacao', campo: 'ean',       obrig: false, oculta: true },
+    ] },
+    { id: 'envio', nome: 'Informação de Envio', colunas: [
+      { id: 'peso',      nome: 'Peso do Pacote (kg)',      tipo: 'numero', escopo: 'anuncio', campo: 'peso',   obrig: true },
+      { id: 'dimensoes', nome: 'Tamanho da Embalagem (cm)', tipo: 'dims',  escopo: 'anuncio', campo: 'dims',   obrig: true },
+    ] },
+    { id: 'taxa', nome: 'Informação da Taxação', colunas: [
+      { id: 'ncm',    nome: 'NCM',    tipo: 'texto', escopo: 'anuncio', campo: 'ncm',    obrig: false, oculta: true },
+      { id: 'origem', nome: 'Origem', tipo: 'texto', escopo: 'anuncio', campo: 'origem', obrig: false, oculta: true },
+    ] },
+    // colunas que só existem em alguns marketplaces: a ABA troca isto
+    { id: 'especifico', nome: 'Específico do canal', colunas: [
+      { id: 'guiaTamanhos', nome: 'Guia de tamanhos', tipo: 'imagem', escopo: 'anuncio',
+        campo: 'guiaTamanhos', obrig: true, semMassa: true, mkts: ['tiktok'], porCanal: true },
+      { id: 'corShein', nome: 'Cor (tabela Shein)', tipo: 'texto', escopo: 'variacao',
+        campo: 'corShein', obrig: true, mkts: ['shein'] },
+    ] },
+  ];
+
+  var _emEstado = null;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // COLUNAS DE VARIAÇÃO, DERIVADAS DA CATEGORIA (v33k.1812)
+  // ──────────────────────────────────────────────────────────────────────
+  // Quem define o que diferencia uma variação é a CATEGORIA, não nós. Tênis
+  // tem cor e tamanho; liquidificador tem voltagem; suplemento tem sabor.
+  //
+  // Duas fontes, nesta ordem:
+  //   1. os campos `deVariacao` da ficha do canal aberto — é o que o
+  //      marketplace vai cobrar, então é o que a tela tem que pedir
+  //   2. as dimensões que o produto JÁ TEM em `variacao.valores`, pra nada
+  //      que existe ficar escondido (o censo achou 156 variações assim)
+  //
+  // ★ ONDE CADA UMA GRAVA, e isso não é escolha estética:
+  //     papel 'cor'      → variacao.cor       (o payload lê daqui)
+  //     papel 'tamanho'  → variacao.tamanho   (idem)
+  //     qualquer outra   → variacao.atributos (o pré-voo lê daqui)
+  //   O `papel` vem do backend, que conhece o formato de cada marketplace
+  //   (v33k.1803). Gravar cor em `atributos` faria a tela mostrar preenchido
+  //   e o `montarAttrCombinations` sair sem COLOR.
+  function emColunasVariacaoDinamicas() {
+    const st = _emEstado;
+    if (!st) return [];
+    const mkt = st.abaAtual;
+    const vistas = {};
+    const out = [];
+
+    (st.linhas || []).forEach(linha => {
+      const f = (linha.fichas || {})[mkt];
+      (f && f.variacoes ? f.variacoes : []).forEach(v => {
+        (v.campos || []).forEach(c => {
+          if (!c || !c.id || vistas[c.id]) return;
+          vistas[c.id] = true;
+          out.push({
+            id: 'dv_' + c.id, campoId: c.id, nome: c.nome || c.id,
+            tipo: (c.valores && c.valores.length) ? 'lista' : 'texto',
+            valores: c.valores || [], papel: c.papel || null,
+            escopo: 'variacao', dinamica: true, obrig: !!c.obrigatorio,
+          });
+        });
+      });
+      // dimensões que o produto já usa e a categoria não declarou
+      (linha.variacoes || []).forEach(v => {
+        Object.keys((v && v.valores) || {}).forEach(k => {
+          const id = 'dim:' + k;
+          if (vistas[id]) return;
+          vistas[id] = true;
+          out.push({
+            id: 'dv_' + id, campoId: id, nome: k, tipo: 'texto', valores: [],
+            papel: null, escopo: 'variacao', dinamica: true, obrig: false, doProduto: true,
+          });
+        });
+      });
+    });
+
+    // ★ v33k.1813: DIMENSÕES QUE A PESSOA CRIOU.
+    // Categoria declara o que o marketplace exige; o produto traz o que já
+    // tinha. Falta o terceiro caso, que é o mais importante pra anúncio NOVO:
+    // a pessoa sabe o que diferencia o produto dela antes de qualquer
+    // categoria existir. "Aroma", "Comprimento do fio", "Sabor da recarga" —
+    // nenhuma lista nossa vai adivinhar isso, e tentar adivinhar seria
+    // engessar de novo, só que com uma lista maior.
+    (st.dimensoesExtras || []).forEach(nome => {
+      const id = 'dim:' + nome;
+      if (vistas[id]) return;
+      vistas[id] = true;
+      out.push({
+        id: 'dv_' + id, campoId: id, nome: nome, tipo: 'texto', valores: [],
+        papel: null, escopo: 'variacao', dinamica: true, obrig: false,
+        doProduto: true, criada: true,
+      });
+    });
+
+    // fallback: sem categoria escolhida e sem nada criado, a tabela abriria
+    // sem coluna de variação nenhuma. Cor e tamanho são o mínimo universal —
+    // e some assim que a pessoa criar a dimensão dela.
+    if (!out.length) {
+      out.push({ id: 'dv_COLOR', campoId: 'COLOR', nome: 'Cor', tipo: 'texto', valores: [],
+        papel: 'cor', escopo: 'variacao', dinamica: true, obrig: false, fallback: true });
+      out.push({ id: 'dv_SIZE', campoId: 'SIZE', nome: 'Tamanho', tipo: 'texto', valores: [],
+        papel: 'tamanho', escopo: 'variacao', dinamica: true, obrig: false, fallback: true });
+    }
+    return out;
+  }
+
+  function emColunasVisiveis() {
+    const st = _emEstado;
+    if (!st) return [];
+    const mkt = st.abaAtual;
+    const out = [];
+    EM_GRUPOS.forEach(g => {
+      g.colunas.forEach(c => {
+        if (Array.isArray(c.mkts) && c.mkts.indexOf(mkt) < 0) return;   // não é deste canal
+        if (st.ocultas[c.id]) return;
+        out.push(Object.assign({ grupo: g.id, grupoNome: g.nome }, c));
+        // as dinâmicas entram logo depois do SKU, no grupo de venda, que é
+        // onde o print da Shopee coloca "Variantes"
+        if (c.id === 'sku') {
+          emColunasVariacaoDinamicas().forEach(d => {
+            if (st.ocultas[d.id]) return;
+            out.push(Object.assign({ grupo: g.id, grupoNome: g.nome }, d));
+          });
+        }
+      });
+    });
+    return out;
+  }
+
+  function _emCanal() {
+    const st = _emEstado;
+    return (st && st.abaAtual) || '';
+  }
+
+  // A categoria é quem decide se cor/tamanho são obrigatórios. Fixar isso na
+  // coluna faria a tabela pedir tamanho de arranhador de gato e não pedir de
+  // tênis quando a categoria mudasse — e a categoria muda dentro desta tela.
+  function _emObrigatorio(linha, col) {
+    // v33k.1812: a coluna dinâmica já nasce com a obrigatoriedade que a
+    // categoria declarou — não há mais regra fixa por nome de campo.
+    return !!col.obrig;
+  }
+
+  // Onde uma dimensão de variação mora. Um lugar só, usado pela leitura e
+  // pela gravação — se divergirem, a tela mostra um valor e grava outro.
+  function _emCampoDinamico(v, col, valor, gravar) {
+    if (!v) return '';
+    if (col.papel === 'cor') {
+      if (gravar) { v.cor = valor; return valor; }
+      return v.cor == null ? '' : v.cor;
+    }
+    if (col.papel === 'tamanho') {
+      if (gravar) { v.tamanho = valor; return valor; }
+      return v.tamanho == null ? '' : v.tamanho;
+    }
+    // dimensão que o produto já usava, fora da lista da categoria
+    if (col.doProduto) {
+      const chave = String(col.campoId).slice(4);     // tira o "dim:"
+      if (gravar) {
+        if (!v.valores || typeof v.valores !== 'object') v.valores = {};
+        v.valores[chave] = valor;
+        return valor;
+      }
+      return ((v.valores || {})[chave]) || '';
+    }
+    // ★ o resto vai pra `variacao.atributos`, que é de onde o pré-voo lê
+    // (`ml-categoria-atributos.listasDoProduto`). Guardar em `valores` seria
+    // gravar num campo que NENHUM payload lê — medido em 18/08.
+    if (!Array.isArray(v.atributos)) v.atributos = [];
+    const achado = v.atributos.find(a => a && String(a.id) === String(col.campoId));
+    if (gravar) {
+      if (achado) achado.valor = valor;
+      else if (valor) v.atributos.push({ id: col.campoId, valor: valor });
+      return valor;
+    }
+    return achado ? (achado.valor == null ? '' : achado.valor) : '';
+  }
+
+  function _emValor(linha, col, vi) {
+    if (col.escopo === 'variacao') {
+      const v = (linha.variacoes || [])[vi];
+      if (!v) return '';
+      if (col.dinamica) return _emCampoDinamico(v, col, null, false);
+      if (col.porCanal) return ((v[col.campo] || {})[_emCanal()]) || '';
+      return v[col.campo] == null ? '' : v[col.campo];
+    }
+    if (col.porCanal) return ((linha[col.campo] || {})[_emCanal()]) || '';
+    return linha[col.campo] == null ? '' : linha[col.campo];
+  }
+
+  function _emGravar(linha, col, vi, valor) {
+    const alvo = col.escopo === 'variacao' ? (linha.variacoes || [])[vi] : linha;
+    if (!alvo) return;
+    if (col.dinamica && col.escopo === 'variacao') { _emCampoDinamico(alvo, col, valor, true); return; }
+    if (col.porCanal) {
+      if (!alvo[col.campo] || typeof alvo[col.campo] !== 'object') alvo[col.campo] = {};
+      alvo[col.campo][_emCanal()] = valor;
+      return;
+    }
+    alvo[col.campo] = valor;
+  }
+
+  // ─── seletor de colunas, igual ao topo do print ───────────────────────
+  function emDesenharSeletor() {
+    const st = _emEstado;
+    const el = document.getElementById('emSeletorColunas');
+    if (!st || !el) return;
+    const mkt = st.abaAtual;
+    let h = '<div style="border:1px solid var(--lc-border);border-radius:11px;overflow:hidden">' +
+      '<div style="padding:9px 12px;background:var(--lc-surface-2, #f8fafc);border-bottom:1px solid var(--lc-border);' +
+        'font-size:12.5px;color:#64748b">Escolha o campo para editar</div>' +
+      '<div style="padding:12px;display:flex;gap:26px;flex-wrap:wrap">';
+    EM_GRUPOS.forEach(g => {
+      const cols = g.colunas.filter(c => !Array.isArray(c.mkts) || c.mkts.indexOf(mkt) >= 0);
+      if (!cols.length) return;
+      const todas = cols.every(c => !st.ocultas[c.id]);
+      h += '<div style="min-width:150px">' +
+        '<label style="display:flex;gap:7px;align-items:center;font-size:12.5px;font-weight:700;color:#1e293b;cursor:pointer">' +
+          '<input type="checkbox" ' + (todas ? 'checked' : '') +
+            ' onchange="emAlternarGrupo(\'' + g.id + '\', this.checked)"> ' + escapeHtml(g.nome) +
+        '</label><div style="margin-top:6px;display:flex;flex-direction:column;gap:4px">' +
+        cols.map(c =>
+          '<label style="display:flex;gap:7px;align-items:center;font-size:12px;color:#475569;cursor:pointer">' +
+            '<input type="checkbox" ' + (st.ocultas[c.id] ? '' : 'checked') +
+              ' onchange="emAlternarColuna(\'' + c.id + '\', this.checked)"> ' + escapeHtml(c.nome) +
+            (c.obrig ? ' <span style="color:#dc2626">*</span>' : '') +
+          '</label>').join('') +
+        '</div></div>';
+    });
+    h += '</div>';
+    h += '<div style="padding:0 12px 12px"><button class="lc-btn" onclick="emCriarDimensao()" ' +
+      'style="background:var(--lc-surface);color:var(--lc-text);font-size:12px;padding:6px 12px">' +
+      '+ criar dimensão de variação</button>' +
+      '<span style="font-size:11.5px;color:#94a3b8;margin-left:9px">' +
+      'para o que a categoria não prevê: voltagem, sabor, aroma, comprimento…</span></div>';
+    h += '</div>';
+    el.innerHTML = h;
+  }
+
+  function emAlternarColuna(colId, mostrar) {
+    const st = _emEstado; if (!st) return;
+    if (mostrar) delete st.ocultas[colId]; else st.ocultas[colId] = true;
+    emDesenharTabela(); emDesenharSeletor();
+  }
+  window.emAlternarColuna = emAlternarColuna;
+
+  function emAlternarGrupo(grupoId, mostrar) {
+    const st = _emEstado; if (!st) return;
+    const g = EM_GRUPOS.find(x => x.id === grupoId); if (!g) return;
+    g.colunas.forEach(c => { if (mostrar) delete st.ocultas[c.id]; else st.ocultas[c.id] = true; });
+    emDesenharTabela(); emDesenharSeletor();
+  }
+  window.emAlternarGrupo = emAlternarGrupo;
+
+  // ─── abas por loja de destino ─────────────────────────────────────────
+  // Decidido em 18/08: UMA tabela só. A aba troca apenas as colunas
+  // específicas daquele marketplace — o resto dos dados é compartilhado.
+  function emDesenharAbas() {
+    const st = _emEstado;
+    const el = document.getElementById('emAbas');
+    if (!st || !el) return;
+    if (!st.destinos || st.destinos.length < 2) { el.innerHTML = ''; return; }
+    el.innerHTML = '<div style="display:flex;gap:4px;border-bottom:1px solid var(--lc-border)">' +
+      st.destinos.map((d, i) =>
+        '<button onclick="emTrocarAba(' + i + ')" style="padding:9px 16px;border:0;background:none;cursor:pointer;' +
+          'font-size:13px;font-weight:' + (i === st.abaIdx ? '800' : '500') + ';' +
+          'color:' + (i === st.abaIdx ? '#2563eb' : '#64748b') + ';' +
+          'border-bottom:2px solid ' + (i === st.abaIdx ? '#2563eb' : 'transparent') + '">' +
+          escapeHtml(d.nome || d.marketplace) + '</button>').join('') +
+      '</div>';
+  }
+
+  function emTrocarAba(i) {
+    const st = _emEstado; if (!st || !st.destinos[i]) return;
+    emColetarTela();                       // não perde o que está digitado
+    st.abaIdx = i;
+    st.abaAtual = String(st.destinos[i].marketplace || '').toLowerCase();
+    emDesenharAbas(); emDesenharSeletor(); emDesenharTabela();
+  }
+  window.emTrocarAba = emTrocarAba;
+
+  // ─── a tabela ─────────────────────────────────────────────────────────
+  // Linha por anúncio; sub-linha por variação quando há coluna de variação
+  // visível. É o desenho do print: o dado do anúncio ocupa a primeira linha e
+  // as variações penduram embaixo.
+  function _emCelula(linha, col, li, vi) {
+    const id = 'em_' + col.id + '_' + li + (vi == null ? '' : ('_' + vi));
+    const valor = _emValor(linha, col, vi);
+    const vazio = valor == null || String(valor).trim() === '';
+    const exige = _emObrigatorio(linha, col);
+    const base = 'width:100%;padding:6px 8px;border-radius:6px;font-size:12.5px;box-sizing:border-box;border:1px solid ' +
+      (exige && vazio ? '#f87171' : 'var(--lc-border)') + ';background:' + (exige && vazio ? '#fef2f2' : '#fff');
+    const marca = ' data-emcol="' + col.id + '" data-emli="' + li + '"' +
+      (vi == null ? '' : ' data-emvi="' + vi + '"') + ' oninput="emRecontar()" onchange="emRecontar()"';
+
+    if (col.tipo === 'fotos') {
+      const fotos = Array.isArray(valor) ? valor : [];
+      const capa = fotos[0] ? (typeof fotos[0] === 'string' ? fotos[0] : (fotos[0].url || fotos[0].src)) : null;
+      return '<div onclick="emAbrirFotos(' + li + ')" style="cursor:pointer;position:relative;width:46px;height:46px">' +
+        (capa ? '<img src="' + escapeHtml(capa) + '" style="width:46px;height:46px;object-fit:cover;border-radius:7px">'
+              : '<div style="width:46px;height:46px;border:1px dashed #f87171;border-radius:7px"></div>') +
+        '<span style="position:absolute;right:-4px;bottom:-4px;background:#0f172a;color:#fff;border-radius:9px;' +
+          'font-size:10px;padding:1px 5px">' + fotos.length + '</span></div>';
+    }
+    if (col.tipo === 'categoria') {
+      const cat = valor || null;
+      return '<div onclick="emAbrirCategoria(' + li + ')" style="cursor:pointer;font-size:12.5px;' +
+        'color:' + (cat ? '#1e293b' : '#dc2626') + '">' +
+        escapeHtml(cat ? (cat.caminho || cat.nome || cat.id) : 'escolher categoria') + '</div>';
+    }
+    if (col.tipo === 'atributos') {
+      const n = linha.atributosPendentes || 0;
+      return '<div onclick="emAbrirAtributos(' + li + ')" style="cursor:pointer;font-size:12.5px;color:#2563eb">' +
+        (n ? (n + ' pendente(s)') : 'Detalhes') + '</div>';
+    }
+    if (col.tipo === 'imagem') {
+      return '<div onclick="emAbrirGuia(' + li + ')" style="cursor:pointer;font-size:12.5px;' +
+        'color:' + (valor ? '#1e293b' : '#dc2626') + '">' + (valor ? 'ver guia' : 'gerar ou subir') + '</div>';
+    }
+    if (col.tipo === 'dims') {
+      const d = valor || {};
+      return '<div style="display:flex;gap:4px">' +
+        ['comprimento', 'largura', 'altura'].map(k =>
+          '<input id="' + id + '_' + k + '"' + marca + ' data-emsub="' + k + '" style="' + base + ';width:52px" ' +
+            'value="' + escapeHtml(String(d[k] == null ? '' : d[k])) + '" placeholder="' + k[0].toUpperCase() + '">').join('') +
+        '</div>';
+    }
+    if (col.tipo === 'longo') {
+      return '<textarea id="' + id + '"' + marca + ' rows="2" style="' + base + ';resize:vertical">' +
+        escapeHtml(String(valor || '')) + '</textarea>';
+    }
+    const tipoInput = (col.tipo === 'numero' || col.tipo === 'inteiro') ? 'number' : 'text';
+    return '<input id="' + id + '" type="' + tipoInput + '"' + marca + ' style="' + base + '"' +
+      (col.maxLen ? ' maxlength="' + col.maxLen + '"' : '') +
+      (col.tipo === 'numero' ? ' step="0.01"' : '') +
+      ' value="' + escapeHtml(String(valor == null ? '' : valor)) + '">';
+  }
+
+  function _emCabecalho(col) {
+    // lápis = aplicar em todas · voltar = desfazer · borracha = limpar
+    // (o print da Shopee tem exatamente esses três por coluna)
+    // coluna livre ganha renomear e remover; a da categoria, não — o nome e o
+    // id são do marketplace e mexer neles quebra o casamento na exportação
+    const acoesLivre = col.doProduto ?
+      '<a title="renomear" onclick="emRenomearDimensao(\'' + col.id + '\')" ' +
+        'style="cursor:pointer;color:#94a3b8;display:inline-flex"><i data-lucide="pen-line" style="width:13px;height:13px"></i></a>' +
+      '<a title="remover a coluna" onclick="emRemoverDimensao(\'' + col.id + '\')" ' +
+        'style="cursor:pointer;color:#94a3b8;display:inline-flex"><i data-lucide="trash-2" style="width:13px;height:13px"></i></a>' : '';
+    const acoes = col.semMassa ? '' :
+      '<div style="margin-top:3px;display:flex;gap:8px">' +
+        '<a title="editar esta coluna em todas as linhas" onclick="emAbrirMassa(\'' + col.id + '\')" ' +
+          'style="cursor:pointer;color:#2563eb;display:inline-flex"><i data-lucide="pencil" style="width:13px;height:13px"></i></a>' +
+        '<a title="desfazer a última aplicação" onclick="emDesfazerColuna(\'' + col.id + '\')" ' +
+          'style="cursor:pointer;color:#94a3b8;display:inline-flex"><i data-lucide="undo-2" style="width:13px;height:13px"></i></a>' +
+        '<a title="limpar a coluna" onclick="emLimparColuna(\'' + col.id + '\')" ' +
+          'style="cursor:pointer;color:#94a3b8;display:inline-flex"><i data-lucide="eraser" style="width:13px;height:13px"></i></a>' +
+        acoesLivre +
+      '</div>';
+    return '<th style="text-align:left;padding:8px 10px;font-size:11.5px;font-weight:700;color:#64748b;' +
+      'min-width:' + (col.tipo === 'longo' ? '240' : (col.tipo === 'dims' ? '180' : '150')) + 'px;white-space:nowrap;' +
+      'background:#fff;border-bottom:1px solid var(--lc-border)">' +
+      escapeHtml(col.nome) + (col.obrig ? ' <span style="color:#dc2626">*</span>' : '') + acoes + '</th>';
+  }
+
+  function emDesenharTabela() {
+    const st = _emEstado;
+    const el = document.getElementById('emTabela');
+    if (!st || !el) return;
+    const cols = emColunasVisiveis();
+    const colsAnuncio = cols.filter(c => c.escopo === 'anuncio');
+    const colsVar = cols.filter(c => c.escopo === 'variacao');
+
+    if (!cols.length) {
+      el.innerHTML = '<div style="padding:24px;text-align:center;color:#64748b;font-size:13px">' +
+        'Nenhuma coluna selecionada. Marque ao menos uma acima.</div>';
+      return;
+    }
+
+    // cabeçalho em dois andares: grupo em cima, coluna embaixo (igual ao print)
+    const grupos = [];
+    cols.forEach(c => {
+      const ult = grupos[grupos.length - 1];
+      if (ult && ult.id === c.grupo) ult.n++;
+      else grupos.push({ id: c.grupo, nome: c.grupoNome, n: 1 });
+    });
+
+    let h = '<div style="border:1px solid var(--lc-border);border-radius:11px;overflow:auto;max-height:64vh">' +
+      '<table style="width:100%;border-collapse:collapse">' +
+      '<thead><tr>' +
+        '<th style="position:sticky;left:0;top:0;z-index:3;background:#f8fafc;border-bottom:1px solid var(--lc-border);' +
+          'padding:8px 10px;text-align:left;font-size:11.5px;color:#64748b;min-width:230px">Anúncio</th>' +
+        grupos.map(g => '<th colspan="' + g.n + '" style="position:sticky;top:0;z-index:2;background:#f8fafc;' +
+          'padding:8px 10px;text-align:left;font-size:12px;font-weight:800;color:#1e293b;' +
+          'border-bottom:1px solid var(--lc-border);border-left:1px solid var(--lc-border)">' +
+          escapeHtml(g.nome) + '</th>').join('') +
+      '</tr><tr>' +
+        '<th style="position:sticky;left:0;background:#fff;border-bottom:1px solid var(--lc-border)"></th>' +
+        cols.map(c => _emCabecalho(c)).join('') +
+      '</tr></thead><tbody>';
+
+    (st.linhas || []).forEach((linha, li) => {
+      const capa = (linha.fotos || [])[0];
+      const capaUrl = capa ? (typeof capa === 'string' ? capa : (capa.url || capa.src)) : null;
+      const nVars = (linha.variacoes || []).length;
+      h += '<tr style="border-top:1px solid var(--lc-border)">' +
+        '<td rowspan="' + (colsVar.length && nVars ? nVars + 1 : 1) + '" ' +
+          'style="padding:9px 10px;position:sticky;left:0;background:#fff;vertical-align:top">' +
+          '<div style="display:flex;gap:9px;align-items:flex-start">' +
+          (capaUrl ? '<img src="' + escapeHtml(capaUrl) + '" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex:0 0 auto">' : '') +
+          '<div style="min-width:0"><div style="font-size:12.5px;font-weight:600;color:#1e293b">' +
+            escapeHtml((linha.nome || '').slice(0, 46)) + '</div>' +
+            '<div style="font-size:11px;color:#94a3b8">' + escapeHtml(linha.skuPai || '') +
+              (nVars ? (' · ' + nVars + ' variação(ões)') : '') + '</div></div></div></td>';
+      colsAnuncio.forEach(c => { h += '<td style="padding:7px 10px;vertical-align:top">' + _emCelula(linha, c, li, null) + '</td>'; });
+      // as colunas de variação ficam vazias na linha do anúncio
+      colsVar.forEach(() => { h += '<td style="padding:7px 10px;color:#cbd5e1">—</td>'; });
+      h += '</tr>';
+
+      if (colsVar.length) {
+        (linha.variacoes || []).forEach((v, vi) => {
+          // o rótulo usa as dimensões que ESTE produto tem, não cor e tamanho
+          // fixos: liquidificador se identifica pela voltagem
+          const dims = colsVar.filter(c => c.dinamica)
+            .map(c => _emValor(linha, c, vi)).filter(x => String(x || '').trim());
+          const rotulo = dims.join(' · ') || v.nome || ('variação ' + (vi + 1));
+          h += '<tr style="border-top:1px solid #f1f5f9;background:#fcfdff">';
+          colsAnuncio.forEach((c, ci) => {
+            h += ci === 0
+              ? '<td style="padding:6px 10px;font-size:12px;color:#64748b">' + escapeHtml(rotulo) + '</td>'
+              : '<td></td>';
+          });
+          colsVar.forEach(c => { h += '<td style="padding:6px 10px">' + _emCelula(linha, c, li, vi) + '</td>'; });
+          h += '</tr>';
+        });
+      }
+    });
+
+    h += '</tbody></table></div>';
+    el.innerHTML = h;
+    if (window._hidratarIcones) window._hidratarIcones(el);
+    else if (window.lcHydrateIcons) window.lcHydrateIcons(el);
+    emRecontar();
+  }
+
+  // ─── coletar da tela pro modelo ───────────────────────────────────────
+  // Roda antes de qualquer coisa que redesenhe (trocar aba, ocultar coluna,
+  // aplicar em massa). Sem isso, redesenhar apagaria o que foi digitado — foi
+  // o que quase aconteceu na tabela antiga quando ela ganhou o recarregamento.
+  function emColetarTela() {
+    const st = _emEstado;
+    if (!st) return;
+    document.querySelectorAll('[data-emcol]').forEach(el => {
+      const colId = el.getAttribute('data-emcol');
+      const li = Number(el.getAttribute('data-emli'));
+      const viAttr = el.getAttribute('data-emvi');
+      const vi = viAttr == null ? null : Number(viAttr);
+      const sub = el.getAttribute('data-emsub');
+      const linha = (st.linhas || [])[li];
+      if (!linha) return;
+      const col = emColunasVisiveis().find(c => c.id === colId);
+      if (!col) return;
+      if (sub) {
+        const atual = _emValor(linha, col, vi) || {};
+        const novo = Object.assign({}, atual);
+        novo[sub] = el.value;
+        _emGravar(linha, col, vi, novo);
+        return;
+      }
+      _emGravar(linha, col, vi, el.value);
+    });
+  }
+  window.emColetarTela = emColetarTela;
+
+  // ─── edição em massa por coluna ───────────────────────────────────────
+  function emAplicarColuna(colId) {
+    const st = _emEstado; if (!st) return;
+    const campos = [...document.querySelectorAll('[data-emcol="' + colId + '"]')];
+    const origem = campos.find(c => String(c.value || '').trim());
+    if (!origem) { showToast('Preencha uma linha primeiro, depois use o lápis.', true); return; }
+    // ★ guarda o estado ANTES pra o desfazer existir de verdade. Aplicar em
+    // 200 linhas sem volta é o tipo de botão que ninguém clica duas vezes.
+    st.desfazer = st.desfazer || {};
+    st.desfazer[colId] = campos.map(c => c.value);
+    let n = 0;
+    campos.forEach(c => { if (c !== origem && !String(c.value || '').trim()) { c.value = origem.value; n++; } });
+    emColetarTela(); emRecontar();
+    showToast(n ? ('Valor repetido em ' + n + ' linha(s). Dá pra desfazer.') : 'Nada vazio nesta coluna.');
+  }
+  window.emAplicarColuna = emAplicarColuna;
+
+  function emDesfazerColuna(colId) {
+    const st = _emEstado; if (!st || !st.desfazer || !st.desfazer[colId]) {
+      showToast('Não há o que desfazer nesta coluna.', true); return;
+    }
+    const campos = [...document.querySelectorAll('[data-emcol="' + colId + '"]')];
+    const antes = st.desfazer[colId];
+    campos.forEach((c, i) => { if (i < antes.length) c.value = antes[i]; });
+    delete st.desfazer[colId];
+    emColetarTela(); emRecontar();
+    showToast('Desfeito.');
+  }
+  window.emDesfazerColuna = emDesfazerColuna;
+
+  function emLimparColuna(colId) {
+    const st = _emEstado; if (!st) return;
+    const campos = [...document.querySelectorAll('[data-emcol="' + colId + '"]')];
+    st.desfazer = st.desfazer || {};
+    st.desfazer[colId] = campos.map(c => c.value);
+    campos.forEach(c => { c.value = ''; });
+    emColetarTela(); emRecontar();
+  }
+  window.emLimparColuna = emLimparColuna;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // MODAL DE EDIÇÃO EM MASSA POR COLUNA (v33k.1811)
+  // ──────────────────────────────────────────────────────────────────────
+  // O print da Shopee mostra, no lápis da coluna Quantidade, um modal com
+  // "Nova Quantidade" e "Estoque Atual [+/-] [valor]". Não é repetir o
+  // primeiro valor: é escolher COMO aplicar.
+  //
+  // Repetir o primeiro (o que o lápis fazia até a v33k.1810) só serve quando
+  // todas as linhas devem ficar iguais. Reajustar preço em 10%, somar 50 no
+  // estoque, ou trocar uma palavra em 200 títulos são o uso real — e nenhum
+  // deles cabe em "repete o primeiro".
+  //
+  // ★ TUDO PASSA PELO DESFAZER. Aplicar em 200 linhas sem volta é botão que
+  //   ninguém clica duas vezes, e aí a tela não serve pra nada.
+  var _emMassaCol = null;
+
+  function emAbrirMassa(colId) {
+    const st = _emEstado; if (!st) return;
+    const col = emColunasVisiveis().find(c => c.id === colId);
+    if (!col) return;
+    _emMassaCol = col;
+    const numerico = col.tipo === 'numero' || col.tipo === 'inteiro';
+    const passo = col.tipo === 'inteiro' ? '1' : '0.01';
+
+    let h = '<div style="font-size:12.5px;color:#475569;margin-bottom:12px">' +
+      'Vale para <strong>todas as linhas visíveis</strong> desta coluna. Dá pra desfazer depois.</div>';
+
+    h += '<label style="display:flex;gap:9px;align-items:center;margin-bottom:10px;cursor:pointer">' +
+      '<input type="radio" name="emMassaModo" value="valor" checked onchange="emMassaTrocarModo()">' +
+      '<span style="font-size:13px;font-weight:600">' + (numerico ? 'Novo valor' : 'Novo texto') + '</span></label>' +
+      '<input id="emMassaValor" type="' + (numerico ? 'number' : 'text') + '"' + (numerico ? ' step="' + passo + '"' : '') +
+        ' placeholder="ex.: ' + (numerico ? '10' : 'texto') + '" ' +
+        'style="width:100%;padding:8px 10px;border:1px solid var(--lc-border);border-radius:7px;font-size:13px;margin-bottom:14px">';
+
+    if (numerico) {
+      h += '<label style="display:flex;gap:9px;align-items:center;margin-bottom:10px;cursor:pointer">' +
+        '<input type="radio" name="emMassaModo" value="ajuste" onchange="emMassaTrocarModo()">' +
+        '<span style="font-size:13px;font-weight:600">Ajustar o valor atual</span></label>' +
+        '<div style="display:flex;gap:8px;margin-bottom:14px">' +
+          '<select id="emMassaOp" style="padding:8px;border:1px solid var(--lc-border);border-radius:7px;font-size:13px">' +
+            '<option value="+">+</option><option value="-">−</option>' +
+            '<option value="%+">+ %</option><option value="%-">− %</option></select>' +
+          '<input id="emMassaDelta" type="number" step="' + passo + '" placeholder="ex.: 10" ' +
+            'style="flex:1;padding:8px 10px;border:1px solid var(--lc-border);border-radius:7px;font-size:13px">' +
+        '</div>';
+    } else {
+      h += '<label style="display:flex;gap:9px;align-items:center;margin-bottom:10px;cursor:pointer">' +
+        '<input type="radio" name="emMassaModo" value="substituir" onchange="emMassaTrocarModo()">' +
+        '<span style="font-size:13px;font-weight:600">Localizar e substituir</span></label>' +
+        '<div style="display:flex;gap:8px;margin-bottom:14px">' +
+          '<input id="emMassaDe" placeholder="localizar" style="flex:1;padding:8px 10px;border:1px solid var(--lc-border);border-radius:7px;font-size:13px">' +
+          '<input id="emMassaPara" placeholder="substituir por" style="flex:1;padding:8px 10px;border:1px solid var(--lc-border);border-radius:7px;font-size:13px">' +
+        '</div>';
+    }
+
+    h += '<label style="display:flex;gap:9px;align-items:center;font-size:12.5px;color:#475569;cursor:pointer">' +
+      '<input type="checkbox" id="emMassaSoVazio" checked> Só preencher onde está vazio</label>' +
+      '<div style="font-size:11.5px;color:#94a3b8;margin-top:5px">Desmarque para sobrescrever o que já está preenchido.</div>';
+
+    lcAlert(h, {
+      tipo: 'info', titulo: 'Editar ' + col.nome, largura: 460, html: true,
+      botoes: [
+        { texto: 'Cancelar', onclick: 'lcModalFechar()' },
+        { texto: 'Confirmar', primario: true, onclick: 'emMassaAplicar()' },
+      ],
+    });
+  }
+  window.emAbrirMassa = emAbrirMassa;
+
+  function emMassaTrocarModo() { /* os campos ficam todos visíveis; o modo escolhido é lido no confirmar */ }
+  window.emMassaTrocarModo = emMassaTrocarModo;
+
+  function emMassaAplicar() {
+    const st = _emEstado, col = _emMassaCol;
+    if (!st || !col) return;
+    const modoEl = document.querySelector('input[name="emMassaModo"]:checked');
+    const modo = modoEl ? modoEl.value : 'valor';
+    const soVazio = !!(document.getElementById('emMassaSoVazio') || {}).checked;
+    const campos = [...document.querySelectorAll('[data-emcol="' + col.id + '"]')];
+    if (!campos.length) { showToast('Nenhuma linha visível nesta coluna.', true); return; }
+
+    // ★ o antes, sempre, antes de qualquer escrita
+    st.desfazer = st.desfazer || {};
+    st.desfazer[col.id] = campos.map(c => c.value);
+
+    let n = 0;
+    campos.forEach(c => {
+      const atual = String(c.value || '');
+      if (soVazio && atual.trim() && modo !== 'substituir') return;
+      if (modo === 'valor') {
+        const v = (document.getElementById('emMassaValor') || {}).value;
+        if (v == null || v === '') return;
+        c.value = v; n++;
+      } else if (modo === 'ajuste') {
+        const op = (document.getElementById('emMassaOp') || {}).value;
+        const delta = Number((document.getElementById('emMassaDelta') || {}).value);
+        if (!Number.isFinite(delta)) return;
+        const base = Number(String(atual).replace(',', '.'));
+        if (!Number.isFinite(base)) return;
+        let novo = base;
+        if (op === '+') novo = base + delta;
+        else if (op === '-') novo = base - delta;
+        else if (op === '%+') novo = base * (1 + delta / 100);
+        else if (op === '%-') novo = base * (1 - delta / 100);
+        // ★ estoque é inteiro e não pode ficar negativo: −50 num estoque de 10
+        // viraria −40, e o marketplace recusa o anúncio inteiro por causa disso
+        if (col.tipo === 'inteiro') novo = Math.max(0, Math.round(novo));
+        else novo = Math.max(0, Math.round(novo * 100) / 100);
+        c.value = String(novo); n++;
+      } else if (modo === 'substituir') {
+        const de = (document.getElementById('emMassaDe') || {}).value || '';
+        const para = (document.getElementById('emMassaPara') || {}).value || '';
+        if (!de) return;
+        if (atual.indexOf(de) < 0) return;
+        c.value = atual.split(de).join(para); n++;
+      }
+    });
+    emColetarTela(); emRecontar();
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    showToast(n ? (n + ' linha(s) alterada(s). Dá pra desfazer no ícone ao lado.') : 'Nada foi alterado.');
+  }
+  window.emMassaAplicar = emMassaAplicar;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // MODAL DE CATEGORIA (v33k.1811)
+  // ──────────────────────────────────────────────────────────────────────
+  // Usa a rota única da v33k.1805: só folha, com caminho montado, e a
+  // sugestão do próprio marketplace primeiro quando não há termo.
+  // Trocar a categoria REFAZ a ficha daquele canal — outra categoria é outra
+  // lista de obrigatórios, e manter a antiga faria a tela cobrar campo que
+  // não existe mais.
+  function _emLojaDaAba() {
+    const st = _emEstado;
+    return (st && st.destinos && st.destinos[st.abaIdx]) || null;
+  }
+
+  async function emAbrirCategoria(li) {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[li]; if (!linha) return;
+    const loja = _emLojaDaAba();
+    if (!loja || !loja.lojaIdBanco) { showToast('Escolha a loja de destino primeiro.', true); return; }
+    _emCatAlvo = li;
+    lcAlert('<div id="emCatCorpo" style="min-height:120px;font-size:12.5px;color:#64748b">Buscando sugestão…</div>', {
+      tipo: 'info', titulo: 'Categoria · ' + (loja.nome || loja.marketplace), largura: 620, html: true,
+      botoes: [{ texto: 'Fechar', onclick: 'lcModalFechar()' }],
+    });
+    setTimeout(() => emCatBuscar(''), 40);
+  }
+  window.emAbrirCategoria = emAbrirCategoria;
+  var _emCatAlvo = null;
+
+  async function emCatBuscar(termo) {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[_emCatAlvo]; if (!linha) return;
+    const loja = _emLojaDaAba(); if (!loja) return;
+    const box = document.getElementById('emCatCorpo'); if (!box) return;
+    const atual = (linha.categoria || {})[_emCanal()];
+    box.innerHTML = '<div style="font-size:12.5px;color:#64748b">Buscando…</div>';
+    let r = { categorias: [], motivo: null };
+    try {
+      const qs = '?q=' + encodeURIComponent(termo || '') + '&titulo=' + encodeURIComponent(linha.nome || '');
+      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.lojaIdBanco + '/categorias/buscar' + qs, {
+        headers: { 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      if (resp && resp.ok) r = { categorias: resp.categorias || [], motivo: resp.motivo || null };
+      else r.motivo = (resp && resp.erro) || 'Não consegui buscar agora.';
+    } catch (e) { r.motivo = e.message; }
+
+    let h = '<div style="display:flex;gap:7px;margin-bottom:10px">' +
+      '<input id="emCatTermo" value="' + escapeHtml(termo || '') + '" placeholder="buscar categoria pelo nome" ' +
+        'onkeydown="if(event.key===\'Enter\'){event.preventDefault();emCatBuscar(this.value);}" ' +
+        'style="flex:1;padding:8px 10px;border:1px solid var(--lc-border);border-radius:7px;font-size:13px">' +
+      '<button class="lc-btn" onclick="emCatBuscar(document.getElementById(\'emCatTermo\').value)" ' +
+        'style="background:var(--lc-surface);color:var(--lc-text)">Buscar</button></div>' +
+      '<div style="font-size:12px;color:#64748b;margin-bottom:8px">Atual: ' +
+        (atual ? escapeHtml(atual.caminho || atual.nome || atual.id) : '<span style="color:#dc2626">nenhuma</span>') + '</div>';
+
+    if (!r.categorias.length) {
+      h += '<div style="font-size:12.5px;color:#b45309">' +
+        escapeHtml(r.motivo || 'Nada encontrado. Tente outra palavra.') + '</div>';
+    } else {
+      h += '<div style="max-height:280px;overflow:auto;border:1px solid var(--lc-border);border-radius:8px">' +
+        r.categorias.map(c =>
+          '<div onclick="emCatEscolher(\'' + escapeHtml(String(c.id)) + '\',\'' +
+              escapeHtml(String(c.caminho || c.nome).replace(/'/g, '')) + '\')" ' +
+            'style="padding:8px 11px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12.5px">' +
+            (c.origem === 'sugestao' ? '<span style="font-size:10.5px;color:#7c3aed;font-weight:700">SUGESTÃO · </span>' : '') +
+            escapeHtml(c.caminho || c.nome) + '</div>').join('') + '</div>';
+    }
+    box.innerHTML = h;
+  }
+  window.emCatBuscar = emCatBuscar;
+
+  async function emCatEscolher(id, caminho) {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[_emCatAlvo]; if (!linha) return;
+    const mkt = _emCanal();
+    emColetarTela();                       // não perde o que está digitado
+    if (!linha.categoria) linha.categoria = {};
+    linha.categoria[mkt] = { id: id, nome: caminho, caminho: caminho };
+    // ★ a ficha antiga não vale mais: outra categoria, outros obrigatórios
+    if (linha.fichas) delete linha.fichas[mkt];
+    if (linha.atributos) linha.atributos[mkt] = {};
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    showToast('Categoria definida. Recarregando os campos…');
+    await emRecarregarFicha(linha, mkt);
+    emDesenharTabela();
+  }
+  window.emCatEscolher = emCatEscolher;
+
+  // Refaz a ficha de UMA linha num canal. Falha aberta: sem resposta, a linha
+  // fica com a categoria nova e sem campo — a tela mostra pendente em vez de
+  // travar.
+  async function emRecarregarFicha(linha, mkt) {
+    const loja = _emLojaDaAba();
+    if (!loja || !loja.lojaIdBanco || !linha || !linha._produto) return;
+    try {
+      // grava a categoria no produto ANTES de pedir a ficha: é dele que a
+      // rota lê pra saber quais atributos existem
+      emAplicarNoProduto(linha);
+      const fichas = await preVooBuscarFichas(loja.lojaIdBanco, [preVooProdutoParaFicha(linha._produto, linha.ref)]);
+      const f = Array.isArray(fichas) ? fichas[0] : null;
+      if (!f) return;
+      linha.fichas = linha.fichas || {};
+      linha.fichas[mkt] = f;
+      const mapa = {};
+      let pendentes = 0;
+      (f.campos || []).forEach(c => { if (c.valor) mapa[c.id] = c.valor; if (c.pendente) pendentes++; });
+      linha.atributos[mkt] = mapa;
+      linha.atributosPendentes = pendentes;
+    } catch (e) {
+      console.warn('[editor] não consegui recarregar a ficha:', e.message);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // MODAL DE ATRIBUTOS (v33k.1811)
+  // ──────────────────────────────────────────────────────────────────────
+  // O print da Shopee agrupa por categoria e lista os atributos daquela
+  // categoria, com obrigatório marcado. É o mesmo desenho aqui, com uma
+  // diferença que importa: os campos vêm da FICHA do canal aberto, que é a
+  // mesma fonte que a exportação vai cobrar (contrato de `prevoo-fichas`).
+  //
+  // ★ SE A TELA PEDISSE COISA DIFERENTE DO QUE A EXPORTAÇÃO COBRA, a pessoa
+  //   preencheria tudo e a exportação falharia mesmo assim — que é
+  //   literalmente o problema que abriu esta sequência de ondas.
+  var _emAtrAlvo = null;
+
+  function emAbrirAtributos(li) {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[li]; if (!linha) return;
+    const mkt = _emCanal();
+    const f = (linha.fichas || {})[mkt];
+    if (!f) {
+      showToast('Escolha a categoria primeiro: é ela que define os atributos.', true);
+      return;
+    }
+    _emAtrAlvo = li;
+    const cat = (linha.categoria || {})[mkt];
+    const campos = (f.campos || []);
+    const valores = (linha.atributos || {})[mkt] || {};
+
+    let h = '<div style="font-size:12.5px;color:#475569;margin-bottom:12px">' +
+      escapeHtml(cat ? (cat.caminho || cat.nome || cat.id) : 'sem categoria') +
+      ' · <strong>' + campos.length + '</strong> atributo(s)</div>';
+
+    if (!campos.length) {
+      h += '<div style="font-size:12.5px;color:#64748b">Esta categoria não exige atributo nenhum.</div>';
+    } else {
+      h += '<div style="max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:9px">' +
+        campos.map((c, ci) => {
+          const v = valores[c.id] != null ? String(valores[c.id]) : '';
+          const exige = !!c.obrigatorio;
+          const campoHtml = (c.valores && c.valores.length)
+            ? '<select id="emAtr_' + ci + '" data-emattr="' + escapeHtml(c.id) + '" style="width:100%;padding:7px 9px;' +
+                'border:1px solid ' + (exige && !v ? '#f87171' : 'var(--lc-border)') + ';border-radius:7px;font-size:12.5px">' +
+                '<option value="">—</option>' +
+                c.valores.map(o => '<option value="' + escapeHtml(o.nome) + '"' +
+                  (v === o.nome ? ' selected' : '') + '>' + escapeHtml(o.nome) + '</option>').join('') +
+              '</select>'
+            : '<input id="emAtr_' + ci + '" data-emattr="' + escapeHtml(c.id) + '" value="' + escapeHtml(v) + '" ' +
+                (c.maxLen ? 'maxlength="' + Number(c.maxLen) + '" ' : '') +
+                'style="width:100%;padding:7px 9px;border:1px solid ' +
+                (exige && !v ? '#f87171' : 'var(--lc-border)') + ';border-radius:7px;font-size:12.5px">';
+          return '<div style="display:flex;gap:10px;align-items:center">' +
+            '<div style="width:190px;flex:0 0 auto;font-size:12.5px;color:#1e293b">' +
+              escapeHtml(c.nome) + (exige ? ' <span style="color:#dc2626">*</span>' : '') +
+              (c.deVariacao ? '<div style="font-size:10.5px;color:#94a3b8">por variação</div>' : '') +
+            '</div><div style="flex:1">' + campoHtml + '</div></div>';
+        }).join('') + '</div>';
+    }
+
+    lcAlert(h, {
+      tipo: 'info', titulo: 'Atributos · ' + escapeHtml(linha.nome || ''), largura: 680, html: true,
+      botoes: [
+        { texto: 'Cancelar', onclick: 'lcModalFechar()' },
+        { texto: 'Confirmar', primario: true, onclick: 'emAtrConfirmar()' },
+      ],
+    });
+  }
+  window.emAbrirAtributos = emAbrirAtributos;
+
+  function emAtrConfirmar() {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[_emAtrAlvo]; if (!linha) return;
+    const mkt = _emCanal();
+    const f = (linha.fichas || {})[mkt] || {};
+    if (!linha.atributos) linha.atributos = {};
+    const mapa = Object.assign({}, linha.atributos[mkt] || {});
+    document.querySelectorAll('[data-emattr]').forEach(el => {
+      const id = el.getAttribute('data-emattr');
+      const v = String(el.value || '').trim();
+      if (v) mapa[id] = v; else delete mapa[id];
+    });
+    linha.atributos[mkt] = mapa;
+    // recontar o que ainda falta, pela MESMA lista que a exportação cobra
+    linha.atributosPendentes = (f.campos || [])
+      .filter(c => c.obrigatorio && !mapa[c.id]).length;
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    emDesenharTabela();
+  }
+  window.emAtrConfirmar = emAtrConfirmar;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // CRIAR, RENOMEAR E REMOVER DIMENSÃO (v33k.1813)
+  // ──────────────────────────────────────────────────────────────────────
+  // A dimensão que a CATEGORIA declara não se mexe: o nome e o id são do
+  // marketplace, e renomear ali só quebraria o casamento na exportação.
+  // A dimensão LIVRE é da pessoa, e ela manda no nome.
+  //
+  // ★ Renomear é migração de dado, não troca de rótulo: o valor mora sob a
+  //   chave em `variacao.valores`. Trocar só o cabeçalho deixaria a coluna
+  //   nova vazia e o dado antigo órfão, invisível na tela e ainda no banco.
+  function _emNomesDeColunaEmUso(exceto) {
+    return emColunasVisiveis()
+      .filter(c => c.id !== exceto)
+      .map(c => String(c.nome || '').trim().toLowerCase());
+  }
+
+  async function emCriarDimensao() {
+    const st = _emEstado; if (!st) return;
+    const nome = await lcPrompt('Como se chama essa característica?', '', {
+      titulo: 'Nova dimensão de variação',
+      placeholder: 'ex.: Voltagem, Sabor, Aroma, Comprimento',
+    });
+    const limpo = String(nome || '').trim();
+    if (!limpo) return;
+    if (_emNomesDeColunaEmUso(null).indexOf(limpo.toLowerCase()) >= 0) {
+      showToast('Já existe uma coluna com esse nome.', true); return;
+    }
+    st.dimensoesExtras = st.dimensoesExtras || [];
+    st.dimensoesExtras.push(limpo);
+    emColetarTela();
+    emDesenharTabela(); emDesenharSeletor();
+    showToast('Coluna "' + limpo + '" criada. Preencha por linha ou use o lápis.');
+  }
+  window.emCriarDimensao = emCriarDimensao;
+
+  async function emRenomearDimensao(colId) {
+    const st = _emEstado; if (!st) return;
+    const col = emColunasVisiveis().find(c => c.id === colId);
+    if (!col || !col.doProduto) { showToast('Esta coluna é definida pela categoria e não pode ser renomeada.', true); return; }
+    const antigo = col.nome;
+    const nome = await lcPrompt('Novo nome para "' + antigo + '":', antigo, { titulo: 'Renomear dimensão' });
+    const limpo = String(nome || '').trim();
+    if (!limpo || limpo === antigo) return;
+    if (_emNomesDeColunaEmUso(colId).indexOf(limpo.toLowerCase()) >= 0) {
+      showToast('Já existe uma coluna com esse nome.', true); return;
+    }
+    emColetarTela();
+    // ★ migra o valor de verdade, variação por variação
+    let migrados = 0;
+    (st.linhas || []).forEach(linha => {
+      (linha.variacoes || []).forEach(v => {
+        if (!v.valores || !(antigo in v.valores)) return;
+        v.valores[limpo] = v.valores[antigo];
+        delete v.valores[antigo];
+        migrados++;
+      });
+    });
+    st.dimensoesExtras = (st.dimensoesExtras || []).map(n => (n === antigo ? limpo : n));
+    if (st.dimensoesExtras.indexOf(limpo) < 0) st.dimensoesExtras.push(limpo);
+    emDesenharTabela(); emDesenharSeletor();
+    showToast('Renomeada. ' + migrados + ' valor(es) migrado(s).');
+  }
+  window.emRenomearDimensao = emRenomearDimensao;
+
+  async function emRemoverDimensao(colId) {
+    const st = _emEstado; if (!st) return;
+    const col = emColunasVisiveis().find(c => c.id === colId);
+    if (!col || !col.doProduto) { showToast('Esta coluna é definida pela categoria e não pode ser removida.', true); return; }
+    // conta antes de perguntar: "remover 40 valores" é uma pergunta diferente
+    // de "remover uma coluna vazia"
+    let comValor = 0;
+    (st.linhas || []).forEach(linha => (linha.variacoes || []).forEach(v => {
+      if (v.valores && String(v.valores[col.nome] || '').trim()) comValor++;
+    }));
+    const ok = await lcConfirm(comValor
+      ? ('Remover a coluna "' + col.nome + '"? ' + comValor + ' variação(ões) têm valor preenchido nela, e esse valor será apagado.')
+      : ('Remover a coluna "' + col.nome + '"?'), { perigo: comValor > 0 });
+    if (!ok) return;
+    emColetarTela();
+    (st.linhas || []).forEach(linha => (linha.variacoes || []).forEach(v => {
+      if (v.valores) delete v.valores[col.nome];
+    }));
+    st.dimensoesExtras = (st.dimensoesExtras || []).filter(n => n !== col.nome);
+    emDesenharTabela(); emDesenharSeletor();
+  }
+  window.emRemoverDimensao = emRemoverDimensao;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // O PORTÃO, AGORA PELA TELA NOVA (v33k.1814)
+  // ──────────────────────────────────────────────────────────────────────
+  // Substitui o `preVooTabelaLiberado` (modal estreito, só o que falta) pela
+  // página inteira. Uma chamada, N destinos: as abas nascem daqui.
+  //
+  // ★ ABRE UMA VEZ SÓ, ainda que a exportação rode loja por loja depois. Abrir
+  //   por loja faria a pessoa conferir o mesmo produto três vezes seguidas — e
+  //   quem exporta pra três lojas quer decidir uma vez.
+  //
+  // ★ FALHA ABERTA: erro montando as linhas não pode impedir uma exportação
+  //   que funcionaria. O pré-voo do backend segue como rede de trás.
+  async function emPortaoLiberado(destinos, produtos) {
+    if (!Array.isArray(destinos) || !destinos.length) return true;
+    if (!Array.isArray(produtos) || !produtos.length) return true;
+    let linhas = null;
+    try {
+      linhas = await emMontarLinhas(produtos, destinos);
+    } catch (e) {
+      console.warn('[portão] seguindo sem conferir:', e.message);
+      return true;
+    }
+    if (!linhas || !linhas.length) return true;
+
+    const confirmadas = await emAbrir({
+      titulo: 'Confira antes de exportar',
+      linhas: linhas,
+      destinos: destinos,
+      voltarPara: 'estoqueScreen',
+    });
+    if (!confirmadas) return false;              // cancelou: nada sai
+    // ★ o que foi editado só existe no modelo: devolve pro produto antes de
+    // qualquer exportação, senão o backend lê a versão antiga
+    confirmadas.forEach(l => { try { emAplicarNoProduto(l); } catch (e) {} });
+    return true;
+  }
+  window.emPortaoLiberado = emPortaoLiberado;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // MODAL DE IMAGENS (v33k.1815)
+  // ──────────────────────────────────────────────────────────────────────
+  // O print da Shopee mostra "(9/9)", e esse número não é decoração: cada
+  // marketplace tem teto próprio, e passar do teto faz a exportação recusar
+  // ou cortar em silêncio. A duplicação de 18/08 registrou exatamente isso —
+  // "ajuste automático: fotos do anúncio: 45 -> 9 (limite do tiktok)" — e
+  // você só descobriu depois de publicado.
+  //
+  // Aqui o teto aparece ANTES, com a ordem visível, porque a primeira foto é
+  // a capa em todos eles.
+  const EM_TETO_FOTOS = { shopee: 9, tiktok: 9, mercadolivre: 12, shein: 10 };
+  var _emFotoAlvo = null;
+
+  function _emFotoUrl(f) {
+    if (!f) return null;
+    return typeof f === 'string' ? f : (f.url || f.src || null);
+  }
+
+  function emAbrirFotos(li) {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[li]; if (!linha) return;
+    _emFotoAlvo = li;
+    emColetarTela();
+    emFotosDesenhar();
+  }
+  window.emAbrirFotos = emAbrirFotos;
+
+  function emFotosDesenhar() {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[_emFotoAlvo]; if (!linha) return;
+    const mkt = _emCanal();
+    const teto = EM_TETO_FOTOS[mkt] || 9;
+    const fotos = Array.isArray(linha.fotos) ? linha.fotos : [];
+    const excedeu = fotos.length > teto;
+
+    let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
+      '<div style="font-size:12.5px;color:' + (excedeu ? '#b45309' : '#475569') + '">' +
+        '<strong>' + fotos.length + '/' + teto + '</strong> no ' + escapeHtml(mkt || '') +
+        (excedeu ? ' · as ' + (fotos.length - teto) + ' últimas serão cortadas na exportação' : '') +
+      '</div>' +
+      '<button class="lc-btn" onclick="emFotoAdicionar()" style="background:var(--lc-surface);color:var(--lc-text);font-size:12px;padding:6px 12px">+ adicionar por link</button>' +
+      '</div>';
+
+    if (!fotos.length) {
+      h += '<div style="padding:20px;text-align:center;color:#dc2626;font-size:12.5px">Sem foto nenhuma. O anúncio não sai assim.</div>';
+    } else {
+      h += '<div style="display:flex;flex-wrap:wrap;gap:10px">' + fotos.map((f, i) => {
+        const url = _emFotoUrl(f);
+        const cortada = i >= teto;
+        return '<div style="position:relative;width:96px">' +
+          (url ? '<img src="' + escapeHtml(url) + '" style="width:96px;height:96px;object-fit:cover;border-radius:8px;' +
+            'opacity:' + (cortada ? '0.35' : '1') + ';border:2px solid ' + (i === 0 ? '#2563eb' : 'transparent') + '">' : '') +
+          (i === 0 ? '<span style="position:absolute;top:3px;left:3px;background:#2563eb;color:#fff;font-size:9.5px;' +
+            'padding:1px 5px;border-radius:6px;font-weight:700">CAPA</span>' : '') +
+          (cortada ? '<span style="position:absolute;top:3px;left:3px;background:#b45309;color:#fff;font-size:9.5px;' +
+            'padding:1px 5px;border-radius:6px">CORTADA</span>' : '') +
+          '<div style="display:flex;gap:3px;margin-top:4px;justify-content:center">' +
+            '<a onclick="emFotoMover(' + i + ',-1)" title="mover pra esquerda" style="cursor:pointer;color:#64748b;font-size:14px">◀</a>' +
+            '<a onclick="emFotoCapa(' + i + ')" title="usar como capa" style="cursor:pointer;color:#2563eb;font-size:11px">capa</a>' +
+            '<a onclick="emFotoRemover(' + i + ')" title="remover" style="cursor:pointer;color:#dc2626;font-size:11px">remover</a>' +
+            '<a onclick="emFotoMover(' + i + ',1)" title="mover pra direita" style="cursor:pointer;color:#64748b;font-size:14px">▶</a>' +
+          '</div></div>';
+      }).join('') + '</div>';
+    }
+
+    lcAlert(h, {
+      tipo: 'info', titulo: 'Imagens · ' + escapeHtml((linha.nome || '').slice(0, 40)),
+      largura: 640, html: true,
+      botoes: [{ texto: 'Fechar', primario: true, onclick: 'emFotoFechar()' }],
+    });
+  }
+
+  function _emFotosDaLinha() {
+    const st = _emEstado; if (!st) return null;
+    const linha = (st.linhas || [])[_emFotoAlvo];
+    if (!linha) return null;
+    if (!Array.isArray(linha.fotos)) linha.fotos = [];
+    return linha;
+  }
+
+  function emFotoMover(i, dir) {
+    const linha = _emFotosDaLinha(); if (!linha) return;
+    const j = i + dir;
+    if (j < 0 || j >= linha.fotos.length) return;
+    const tmp = linha.fotos[i]; linha.fotos[i] = linha.fotos[j]; linha.fotos[j] = tmp;
+    emFotosDesenhar();
+  }
+  window.emFotoMover = emFotoMover;
+
+  function emFotoCapa(i) {
+    const linha = _emFotosDaLinha(); if (!linha || i === 0) return;
+    const [f] = linha.fotos.splice(i, 1);
+    linha.fotos.unshift(f);
+    emFotosDesenhar();
+  }
+  window.emFotoCapa = emFotoCapa;
+
+  function emFotoRemover(i) {
+    const linha = _emFotosDaLinha(); if (!linha) return;
+    linha.fotos.splice(i, 1);
+    emFotosDesenhar();
+  }
+  window.emFotoRemover = emFotoRemover;
+
+  async function emFotoAdicionar() {
+    const linha = _emFotosDaLinha(); if (!linha) return;
+    const url = await lcPrompt('Link da imagem:', '', { titulo: 'Adicionar imagem',
+      placeholder: 'https://…' });
+    const limpo = String(url || '').trim();
+    if (!limpo) return;
+    if (!/^https?:\/\//i.test(limpo)) { showToast('O link precisa começar com http:// ou https://', true); return; }
+    linha.fotos.push(limpo);
+    emFotosDesenhar();
+  }
+  window.emFotoAdicionar = emFotoAdicionar;
+
+  function emFotoFechar() {
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    emDesenharTabela();
+  }
+  window.emFotoFechar = emFotoFechar;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // MODAL DO GUIA DE TAMANHOS (v33k.1815)
+  // ──────────────────────────────────────────────────────────────────────
+  // Coluna só do TikTok, que exige a imagem do guia. A duplicação de 18/08
+  // registrou "ajuste automático: guia de tamanhos padrão (a partir das
+  // variações)" — ou seja, ele já era gerado sozinho, e você não via o que
+  // saiu. Aqui dá pra ver, gerar de novo ou subir o seu.
+  var _emGuiaAlvo = null;
+
+  function emAbrirGuia(li) {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[li]; if (!linha) return;
+    _emGuiaAlvo = li;
+    emColetarTela();
+    const mkt = _emCanal();
+    const atual = (linha.guiaTamanhos || {})[mkt] || '';
+    const tamanhos = [...new Set((linha.variacoes || [])
+      .map(v => String(v.tamanho || '').trim()).filter(Boolean))];
+
+    let h = '<div style="font-size:12.5px;color:#475569;margin-bottom:12px">' +
+      'O TikTok exige a imagem do guia de medidas. Sem ela o anúncio é recusado.</div>';
+    h += atual
+      ? '<div style="margin-bottom:12px"><img src="' + escapeHtml(atual) + '" style="max-width:100%;max-height:260px;border-radius:8px;border:1px solid var(--lc-border)"></div>'
+      : '<div style="padding:16px;text-align:center;color:#dc2626;font-size:12.5px;border:1px dashed #f87171;border-radius:8px;margin-bottom:12px">Nenhum guia definido.</div>';
+    h += '<div style="font-size:12px;color:#64748b;margin-bottom:10px">' +
+      (tamanhos.length
+        ? ('Tamanhos desta grade: <strong>' + escapeHtml(tamanhos.join(', ')) + '</strong>')
+        : 'Este produto não tem tamanho preenchido nas variações — preencha a coluna Tamanho antes de gerar.') +
+      '</div>';
+    h += '<div style="display:flex;gap:8px">' +
+      '<button class="lc-btn" onclick="emGuiaGerar()" ' + (tamanhos.length ? '' : 'disabled ') +
+        'style="background:#2563eb;color:#fff;font-size:12.5px' + (tamanhos.length ? '' : ';opacity:.5;cursor:not-allowed') + '">Gerar a partir dos tamanhos</button>' +
+      '<button class="lc-btn" onclick="emGuiaSubir()" style="background:var(--lc-surface);color:var(--lc-text);font-size:12.5px">Usar link da minha imagem</button>' +
+      (atual ? '<button class="lc-btn" onclick="emGuiaRemover()" style="background:var(--lc-surface);color:#dc2626;font-size:12.5px">Remover</button>' : '') +
+      '</div>';
+
+    lcAlert(h, {
+      tipo: 'info', titulo: 'Guia de tamanhos', largura: 560, html: true,
+      botoes: [{ texto: 'Fechar', primario: true, onclick: 'emGuiaFechar()' }],
+    });
+  }
+  window.emAbrirGuia = emAbrirGuia;
+
+  async function emGuiaGerar() {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[_emGuiaAlvo]; if (!linha) return;
+    const loja = _emLojaDaAba();
+    if (!loja || !loja.lojaIdBanco) { showToast('Loja de destino não identificada.', true); return; }
+    showToast('Gerando o guia…');
+    try {
+      const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.lojaIdBanco + '/guia-tamanhos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({
+          tamanhos: [...new Set((linha.variacoes || []).map(v => String(v.tamanho || '').trim()).filter(Boolean))],
+          titulo: linha.nome || '',
+        }),
+      }).then(x => x.json());
+      if (r && r.ok && r.url) {
+        if (!linha.guiaTamanhos) linha.guiaTamanhos = {};
+        linha.guiaTamanhos[_emCanal()] = r.url;
+        emAbrirGuia(_emGuiaAlvo);
+        return;
+      }
+      showToast((r && r.erro) || 'Não consegui gerar agora. Use o link da sua imagem.', true);
+    } catch (e) {
+      showToast('Não consegui gerar agora: ' + e.message, true);
+    }
+  }
+  window.emGuiaGerar = emGuiaGerar;
+
+  async function emGuiaSubir() {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[_emGuiaAlvo]; if (!linha) return;
+    const url = await lcPrompt('Link da imagem do guia:', (linha.guiaTamanhos || {})[_emCanal()] || '',
+      { titulo: 'Guia de tamanhos', placeholder: 'https://…' });
+    const limpo = String(url || '').trim();
+    if (!limpo) return;
+    if (!/^https?:\/\//i.test(limpo)) { showToast('O link precisa começar com http:// ou https://', true); return; }
+    if (!linha.guiaTamanhos) linha.guiaTamanhos = {};
+    linha.guiaTamanhos[_emCanal()] = limpo;
+    emAbrirGuia(_emGuiaAlvo);
+  }
+  window.emGuiaSubir = emGuiaSubir;
+
+  function emGuiaRemover() {
+    const st = _emEstado; if (!st) return;
+    const linha = (st.linhas || [])[_emGuiaAlvo]; if (!linha) return;
+    if (linha.guiaTamanhos) delete linha.guiaTamanhos[_emCanal()];
+    emAbrirGuia(_emGuiaAlvo);
+  }
+  window.emGuiaRemover = emGuiaRemover;
+
+  function emGuiaFechar() {
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    emDesenharTabela();
+  }
+  window.emGuiaFechar = emGuiaFechar;
+
+  // ─── contador de pendências ───────────────────────────────────────────
+  // O mesmo papel do contador da tabela antiga: separa "achei que estava
+  // pronto" de "está pronto". Ele mede o que a exportação vai cobrar.
+  function emRecontar() {
+    const st = _emEstado; if (!st) return 0;
+    // v33k.1812: a coluna dinâmica já traz a obrigatoriedade que a categoria
+    // declarou, então não há mais dois caminhos pra decidir isso.
+    const cols = emColunasVisiveis().filter(c => c.obrig);
+    let faltam = 0;
+    document.querySelectorAll('[data-emcol]').forEach(el => {
+      const col = cols.find(c => c.id === el.getAttribute('data-emcol'));
+      if (!col) return;
+      const linhaEl = (st.linhas || [])[Number(el.getAttribute('data-emli'))];
+      if (!_emObrigatorio(linhaEl, col)) return;
+      const vazio = !String(el.value || '').trim();
+      el.style.borderColor = vazio ? '#f87171' : 'var(--lc-border)';
+      el.style.background = vazio ? '#fef2f2' : '#fff';
+      if (vazio) faltam++;
+    });
+    // colunas sem input (categoria, fotos, atributos, guia) contam pelo modelo
+    (st.linhas || []).forEach(linha => {
+      cols.forEach(c => {
+        if (!c.semMassa) return;
+        const v = _emValor(linha, c, null);
+        const vazio = c.tipo === 'fotos' ? !(Array.isArray(v) && v.length) : !v;
+        if (vazio) faltam++;
+      });
+    });
+    const cont = document.getElementById('emContador');
+    if (cont) {
+      cont.textContent = faltam ? (faltam + ' campo(s) obrigatório(s) em branco') : 'Tudo preenchido';
+      cont.style.color = faltam ? '#dc2626' : '#15803d';
+    }
+    const btn = document.getElementById('emBtnConfirmar');
+    if (btn) {
+      btn.disabled = faltam > 0;
+      btn.style.opacity = faltam > 0 ? '0.5' : '1';
+      btn.style.cursor = faltam > 0 ? 'not-allowed' : 'pointer';
+    }
+    return faltam;
+  }
+  window.emRecontar = emRecontar;
+
+  // ─── abrir e fechar ───────────────────────────────────────────────────
+  // `linhas` é o modelo genérico; `destinos` são as abas. Quem chama monta os
+  // dois. A tela não sabe se veio de exportação ou de edição de anúncio.
+  function emAbrir({ titulo, linhas, destinos, voltarPara }) {
+    return new Promise((resolve) => {
+      _emEstado = {
+        linhas: linhas || [],
+        destinos: destinos || [],
+        abaIdx: 0,
+        abaAtual: String((destinos && destinos[0] && destinos[0].marketplace) || '').toLowerCase(),
+        ocultas: {},
+        desfazer: {},
+        voltarPara: voltarPara || 'estoqueScreen',
+        resolve: resolve,
+      };
+      // colunas marcadas como `oculta` começam desmarcadas: a tela abre com o
+      // essencial à vista, e quem quiser mais liga no seletor
+      EM_GRUPOS.forEach(g => g.colunas.forEach(c => { if (c.oculta) _emEstado.ocultas[c.id] = true; }));
+      const tit = document.getElementById('emTitulo');
+      if (tit) tit.textContent = titulo || 'Conferir antes de exportar';
+      goTo('editorMassaScreen');
+      setTimeout(() => { emDesenharAbas(); emDesenharSeletor(); emDesenharTabela(); }, 60);
+    });
+  }
+  window.emAbrir = emAbrir;
+
+  function emCancelar() {
+    const st = _emEstado; _emEstado = null;
+    goTo((st && st.voltarPara) || 'estoqueScreen');
+    if (st && st.resolve) st.resolve(null);
+  }
+  window.emCancelar = emCancelar;
+
+  function emConfirmar() {
+    const st = _emEstado; if (!st) return;
+    emColetarTela();
+    if (emRecontar() > 0) { showToast('Ainda faltam campos obrigatórios.', true); return; }
+    _emEstado = null;
+    goTo(st.voltarPara || 'estoqueScreen');
+    if (st.resolve) st.resolve(st.linhas);
+  }
+  window.emConfirmar = emConfirmar;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // A PONTE: PRODUTO DO PAINEL ↔ LINHAS DO EDITOR (v33k.1810)
+  // ──────────────────────────────────────────────────────────────────────
+  // A tela trabalha com `linhas`, um modelo que não sabe o que é produto,
+  // loja ou exportação — foi assim de propósito (v33k.1809), pra ela servir
+  // depois pra editar anúncio existente.
+  //
+  // Estas duas funções são a ÚNICA parte que conhece os dois lados. Quando a
+  // edição de anúncio chegar, ela escreve a ponte dela e reusa a tela inteira.
+  //
+  // ★ IDA E VOLTA TÊM QUE FECHAR. Se `montar` lê de um campo e `aplicar`
+  //   grava em outro, a pessoa edita, a tela mostra certo, e o produto sai
+  //   sem a alteração — a mesma família de bug do `atributosMl` recebendo
+  //   dado da Shopee (v33k.1803). A suíte testa o ciclo, não cada metade.
+
+  function _emNum(v) {
+    if (v == null || v === '') return '';
+    const n = Number(String(v).replace(',', '.'));
+    return Number.isFinite(n) ? n : '';
+  }
+
+  // Produto do painel → linha do editor.
+  function emLinhaDeProduto(p, i) {
+    return {
+      ref: 'p' + i,
+      _produto: p,                       // referência viva, pra o aplicar achar
+      nome: p.nome || '',
+      descricao: p.descricao || '',
+      fotos: Array.isArray(p.fotos) ? p.fotos.slice() : [],
+      skuPai: p.skuPai || '',
+      peso: p.peso != null ? p.peso : '',
+      dims: {
+        comprimento: p.comprimento != null ? p.comprimento : '',
+        largura: p.largura != null ? p.largura : '',
+        altura: p.altura != null ? p.altura : '',
+      },
+      ncm: p.ncm || '',
+      origem: p.origem || '',
+      // por canal: preenchidos pelas fichas, um por marketplace de destino
+      categoria: {},
+      atributos: {},
+      guiaTamanhos: {},
+      variacoes: (p.variacoes || []).map((v, vi) => ({
+        ref: 'v' + vi,
+        cor: v.cor || '',
+        tamanho: v.tamanho != null ? String(v.tamanho) : '',
+        nome: v.nome || '',
+        sku: v.sku || '',
+        preco: v.preco != null ? v.preco : '',
+        estoque: v.estoque != null ? v.estoque : '',
+        ean: v.ean || '',
+        corShein: {},
+        // dimensões livres do cadastro e atributos de variação viajam junto:
+        // sem eles a coluna dinâmica abriria vazia e a gravação apagaria o
+        // que já existia
+        valores: Object.assign({}, v.valores || {}),
+        atributos: Array.isArray(v.atributos) ? v.atributos.map(a => Object.assign({}, a)) : [],
+      })),
+    };
+  }
+
+  // Linha editada → de volta no produto do painel.
+  // ★ Só escreve o que a tela realmente edita. Copiar a linha inteira por
+  //   cima do produto apagaria campos que a tela nem mostra (vínculos, ids,
+  //   marketplaces), e vínculo apagado é o estrago mais caro deste sistema.
+  function emAplicarNoProduto(linha) {
+    const p = linha && linha._produto;
+    if (!p) return false;
+    p.nome = linha.nome || '';
+    p.descricao = linha.descricao || '';
+    if (Array.isArray(linha.fotos)) p.fotos = linha.fotos.slice();
+    p.skuPai = linha.skuPai || '';
+    const peso = _emNum(linha.peso);
+    if (peso !== '') p.peso = peso;
+    const d = linha.dims || {};
+    ['comprimento', 'largura', 'altura'].forEach(k => {
+      const n = _emNum(d[k]);
+      if (n !== '') p[k] = n;
+    });
+    if (linha.ncm) p.ncm = linha.ncm;
+    if (linha.origem) p.origem = linha.origem;
+
+    // categoria e atributos, cada um no campo que o marketplace lê.
+    // Os nomes vêm da v33k.1803 e da v33k.1806, medidos nos adaptadores.
+    Object.entries(linha.categoria || {}).forEach(([mkt, cat]) => {
+      if (!cat) return;
+      const id = typeof cat === 'object' ? cat.id : cat;
+      if (!id) return;
+      if (mkt === 'mercadolivre') p.categoryIdMl = id;
+      else if (mkt === 'shopee') { p.category_id = id; p.categoryIdShopee = id; }
+      else if (mkt === 'tiktok') p.categoryIdTiktok = id;
+      else if (mkt === 'shein') p.productTypeIdShein = id;
+    });
+    const DESTINO_ATRIB = { mercadolivre: 'atributosMl', shopee: 'atributosShopee', tiktok: 'atributosTikTok' };
+    Object.entries(linha.atributos || {}).forEach(([mkt, mapa]) => {
+      const campo = DESTINO_ATRIB[mkt];
+      if (!campo || !mapa) return;
+      p[campo] = Object.assign({}, p[campo] || {}, mapa);
+    });
+    if (linha.guiaTamanhos && linha.guiaTamanhos.tiktok) p.guiaTamanhosTiktok = linha.guiaTamanhos.tiktok;
+
+    (linha.variacoes || []).forEach((lv, vi) => {
+      const v = (p.variacoes || [])[vi];
+      if (!v) return;
+      v.cor = lv.cor || '';
+      v.tamanho = lv.tamanho || '';
+      if (lv.sku) v.sku = lv.sku;
+      const pr = _emNum(lv.preco); if (pr !== '') v.preco = pr;
+      const es = _emNum(lv.estoque); if (es !== '') v.estoque = es;
+      if (lv.ean) v.ean = lv.ean;
+      if (lv.valores && Object.keys(lv.valores).length) {
+        v.valores = Object.assign({}, v.valores || {}, lv.valores);
+      }
+      if (Array.isArray(lv.atributos) && lv.atributos.length) v.atributos = lv.atributos;
+    });
+    return true;
+  }
+
+  // Monta as linhas e enriquece com as fichas de CADA destino.
+  // Falha aberta: destino que não responde entra sem campo, e a tela mostra a
+  // categoria como pendente em vez de travar tudo.
+  async function emMontarLinhas(produtos, destinos) {
+    const linhas = (produtos || []).map(emLinhaDeProduto);
+    for (const d of (destinos || [])) {
+      const mkt = String(d.marketplace || '').toLowerCase();
+      if (!d.lojaIdBanco) continue;
+      let fichas = null;
+      try {
+        fichas = await preVooBuscarFichas(d.lojaIdBanco,
+          produtos.map((p, i) => preVooProdutoParaFicha(p, 'p' + i)));
+      } catch (e) { fichas = null; }
+      if (!Array.isArray(fichas)) continue;
+      fichas.forEach((f, i) => {
+        const linha = linhas[i];
+        if (!linha || !f) return;
+        if (f.categoria && f.categoria.id) {
+          linha.categoria[mkt] = { id: String(f.categoria.id), nome: f.categoria.nome || null, caminho: f.categoria.nome || null };
+        }
+        const mapa = {};
+        let pendentes = 0;
+        (f.campos || []).forEach(c => {
+          if (c.valor) mapa[c.id] = c.valor;
+          if (c.pendente) pendentes++;
+        });
+        linha.atributos[mkt] = mapa;
+        linha.fichas = linha.fichas || {};
+        linha.fichas[mkt] = f;
+        linha.atributosPendentes = pendentes;
+      });
+    }
+    return linhas;
+  }
+  window.emMontarLinhas = emMontarLinhas;
+  window.emAplicarNoProduto = emAplicarNoProduto;
+  window.emLinhaDeProduto = emLinhaDeProduto;
+
   async function preVooTabelaLiberado(lojaIdBanco, produtos, idsIA) {
     if (!lojaIdBanco || !produtos || !produtos.length) return true;
 
@@ -45347,6 +46882,10 @@ REGRAS DURAS:
     // sempre o mesmo título → 9 (ou 18) cópias com título idêntico. Passando os já
     // usados como "proibidos", forçamos cada título a ser distinto.
     const _titulosUsadosDup = [];
+    // v33k.1816: buffer da fase 1. As cópias ficam aqui até a conferência.
+    const _dupPreparadas = [];
+    // o que a IA deduziu em qualquer cópia, pra a tela marcar "confira"
+    const _dupIdsIA = {};
     for (let k = 1; k <= qtd; k++) {
       if (_dupCancelar) break;
       
@@ -45533,21 +47072,23 @@ REGRAS DURAS:
           }
         }
         
+
         // ═══════════════════════════════════════════════════════════════
-        // ★ PRÉ-VOO ANTES DO SAVE (v33k.1753)
+        // ★ FASE 1 TERMINA AQUI (v33k.1816)
         // ───────────────────────────────────────────────────────────────
-        // MEDIDO em 17/08: `mlPreVooLiberado` só existe dentro do
-        // `exportarProdutoMarketplace`, e a duplicação NUNCA passa por lá —
-        // ela chama a rota de exportação direto. Por isso o modal nunca
-        // chegava aqui, que é justamente o fluxo que mais precisa dele.
+        // Até a v33k.1815 a conferência abria DENTRO deste laço, uma vez por
+        // cópia. Duplicar 100 anúncios em 2 lojas significava 200 aberturas
+        // de tela — e na terceira ninguém lê mais, que é pior do que não ter
+        // conferência nenhuma.
         //
-        // A ordem passa a ser: completar (categoria e IA) → CONFERIR →
-        // salvar → exportar. Antes era salvar → exportar → o marketplace
-        // recusa → rollback. Cancelando aqui, nada foi criado.
+        // Agora o laço só PREPARA: clona, gera título e descrição, rotaciona
+        // fotos, ajusta preço. Nada é salvo nem exportado aqui. As cópias vão
+        // pro buffer, a conferência abre UMA vez com todas, e só depois a
+        // fase 2 grava.
         //
-        // `dupCompletarCamposObjeto` roda ANTES da tabela pra ela abrir
-        // preenchida. Conferido que dá: ela só usa `idBanco` da LOJA, nunca
-        // do produto, então não depende do save.
+        // ★ O ROLLBACK NÃO MUDOU DE LUGAR: ele continua na fase 2, colado no
+        //   save e no export. Mexer nele junto com esta divisão seria trocar
+        //   duas coisas de uma vez no caminho mais caro do sistema.
         if (!opts.silencioso && !opts._coletarParaAgendar) {
           try {
             const _antesIA = Object.keys((novo.atributosMl) || {});
@@ -45556,26 +47097,56 @@ REGRAS DURAS:
             } catch (eF) { dupLogStep('  ⚠ Falha hospedando fotos: ' + eF.message, 'err'); }
             await dupCompletarCamposObjeto(novo, lojaDestino);
             novo._lcCompletado = true;
-            // o que a IA acabou de deduzir, pra tabela marcar "confira"
-            const _idsIA = {};
             Object.keys((novo.atributosMl) || {}).forEach(k2 => {
-              if (_antesIA.indexOf(k2) < 0) _idsIA[k2] = true;
+              if (_antesIA.indexOf(k2) < 0) _dupIdsIA[k2] = true;
             });
-            const _lojaIdPv = await garantirLojaNoBanco(lojaDestino);
-            if (_lojaIdPv && typeof preVooTabelaLiberado === 'function') {
-              const _ok = await preVooTabelaLiberado(_lojaIdPv, [novo], _idsIA);
-              if (!_ok) {
-                dupLogStep('  ↶ Cancelado na conferência. Nada foi criado.', 'err');
-                canceladasCopias++;
-                continue;
-              }
-            }
           } catch (ePv) {
-            // falha aberta: a conferência não pode impedir duplicação que
-            // funcionaria. O pré-voo do backend segue como rede de trás.
-            console.warn('[pré-voo tabela] seguindo sem conferir:', ePv.message);
+            // falha aberta: completar não pode impedir duplicação que funcionaria
+            console.warn('[duplicação] seguindo sem completar:', ePv.message);
           }
         }
+
+        _dupPreparadas.push({ novo: novo, k: k });
+
+      } catch (eGeral) {
+        dupLogStep(`✗ Cópia ${k} falhou ao preparar: ${eGeral.message}`, 'err');
+        errCopias++;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CONFERÊNCIA: UMA VEZ, COM TODAS AS CÓPIAS (v33k.1816)
+    // ───────────────────────────────────────────────────────────────────
+    // É aqui que a tela nova entra na duplicação. Uma linha por cópia, com
+    // tudo editável antes de qualquer escrita — cancelar não deixa sujeira
+    // porque nada foi criado ainda.
+    if (!opts.silencioso && !opts._coletarParaAgendar && _dupPreparadas.length) {
+      try {
+        const _lojaIdPv = await garantirLojaNoBanco(lojaDestino);
+        if (_lojaIdPv && typeof emPortaoLiberado === 'function') {
+          const _ok = await emPortaoLiberado(
+            [{ lojaIdBanco: _lojaIdPv, marketplace: lojaDestino.marketplace, nome: lojaDestino.nome }],
+            _dupPreparadas.map(x => x.novo));
+          if (!_ok) {
+            dupLogStep(`↶ Cancelado na conferência. Nenhuma das ${_dupPreparadas.length} cópias foi criada.`, 'err');
+            canceladasCopias += _dupPreparadas.length;
+            _dupPreparadas.length = 0;
+          }
+        }
+      } catch (ePv) {
+        // falha aberta: a conferência não pode impedir duplicação que funcionaria
+        console.warn('[duplicação] seguindo sem conferir:', ePv.message);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // FASE 2: SALVA E EXPORTA O QUE FOI CONFERIDO
+    // ═══════════════════════════════════════════════════════════════════
+    for (const _prep of _dupPreparadas) {
+      if (_dupCancelar) break;
+      const novo = _prep.novo;
+      const k = _prep.k;
+      try {
 
         // 6. Salva no backend (retorna o produto com id do banco)
         passoAtual++;
@@ -49279,6 +50850,26 @@ REGRAS DURAS:
     const marcadas = Array.from(document.querySelectorAll('.ceLoja:checked'));
     if (!marcadas.length) { showToast('Escolha ao menos uma loja', true); return; }
 
+    // ★ v33k.1814: CONFERE UMA VEZ, COM UMA ABA POR LOJA.
+    // Este é o caminho "publicar em várias lojas": um produto, N destinos. É
+    // exatamente o caso que as abas existem pra resolver — e abrir a tela
+    // dentro do laço faria a pessoa conferir o mesmo produto uma vez por loja.
+    const _ceProduto = produtosErp.find(x => String(x.id) === String(produtoId));
+    if (_ceProduto && typeof emPortaoLiberado === 'function') {
+      const destinos = marcadas.map(cb => ({
+        lojaIdBanco: cb.value,
+        marketplace: cb.dataset.mk,
+        nome: (cb.parentNode.textContent || '').trim() || cb.dataset.mk,
+      }));
+      try {
+        _ceFechar();
+        const liberado = await emPortaoLiberado(destinos, [_ceProduto]);
+        if (!liberado) { showToast('Exportação cancelada.'); return; }
+      } catch (e) {
+        console.warn('[publicar] seguindo sem conferir:', e.message);
+      }
+    }
+
     const btn = document.getElementById('ceBtnExportar');
     if (btn) { btn.disabled = true; btn.textContent = 'Publicando…'; }
 
@@ -49290,7 +50881,9 @@ REGRAS DURAS:
       try {
         // uma loja por vez: publicar em paralelo dispara várias chamadas
         // simultâneas ao mesmo marketplace e esbarra no limite de taxa
-        const r = await exportarProdutoMarketplace(produtoId, mk, { lojaIdBanco: cb.value, lojaId: cb.dataset.local });
+        // `jaConferido`: a tela já abriu uma vez, com todas as abas
+        const r = await exportarProdutoMarketplace(produtoId, mk,
+          { lojaIdBanco: cb.value, lojaId: cb.dataset.local, jaConferido: true, nomeLoja: nomeLoja });
         if (r && r.ok) ok.push(nomeLoja); else falhas.push(nomeLoja + ': ' + ((r && r.erro) || 'falhou'));
       } catch (e) {
         falhas.push(nomeLoja + ': ' + e.message);
@@ -49847,10 +51440,15 @@ REGRAS DURAS:
     // Silencioso não abre modal: exportação automática não tem quem preencha.
     // Segue e o pré-voo do backend devolve o erro explicado, sem criar nada.
     // (a fila de "pendente de conferência" que você aprovou é onda própria)
-    if (!opts.silencioso && produtoParaExportar.idBanco && lojaIdBanco
-        && typeof preVooTabelaLiberado === 'function') {
+    // v33k.1814: `jaConferido` existe porque quem exporta pra VÁRIAS lojas já
+    // conferiu uma vez, na tela, com todas as abas. Sem isso a página abriria
+    // de novo a cada loja do laço.
+    if (!opts.silencioso && !opts.jaConferido && produtoParaExportar.idBanco && lojaIdBanco
+        && typeof emPortaoLiberado === 'function') {
       try {
-        const liberado = await preVooTabelaLiberado(lojaIdBanco, [produtoParaExportar]);
+        const liberado = await emPortaoLiberado(
+          [{ lojaIdBanco: lojaIdBanco, marketplace: marketplace, nome: opts.nomeLoja || marketplace }],
+          [produtoParaExportar]);
         if (!liberado) {
           return { ok: false, erro: 'Exportação cancelada na conferência.', cancelado: true };
         }
@@ -66337,7 +67935,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1807-lcalert-repassa-html';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1816-duplicacao-em-duas-fases';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -67120,6 +68718,10 @@ Responda APENAS com JSON válido (sem markdown), formato:
     calendarioScreen:       'financialScreen',   // Financeiro › Calendário
     catalogoProdutosScreen: 'produtosScreen',    // Produtos › Catálogo
     reconciliacaoScreen:    'estoqueScreen',     // Estoque › Reconciliação
+    // v33k.1809: o editor em massa é sub-tela de Anúncios. Sem esta linha o
+    // colaborador que pode exportar seria jogado de volta pra home no meio do
+    // fluxo, sem aviso nenhum (a guarda de papel redireciona em silêncio).
+    editorMassaScreen:      'estoqueScreen',     // Anúncios › Editar em massa
     // Dropshipping: todas as telas do módulo herdam a permissão da página-mãe
     dropMarketplaceScreen:  'dropInicioScreen',
     dropAnunciosScreen:     'dropInicioScreen',
