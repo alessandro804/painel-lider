@@ -43187,6 +43187,13 @@ Retorne JSON: {"ID": "valor", ...}`;
         _lc_extras: {
           categoryIdTiktok: p.categoryIdTiktok || null,
           atributosTikTok: p.atributosTikTok || {},
+          // v33k.1786 (Onda 1): sem estes dois, a Shopee entrava no contrato no
+          // backend e continuava chegando vazia pela tela. O nome no painel e
+          // `category_id` (o mapper converte), mas o que a rota le e o nome do
+          // BANCO — mandar com o nome errado seria pedir de novo o que o
+          // produto ja tem.
+          categoryIdShopee: p.category_id || p.categoryIdShopee || null,
+          atributosShopee: p.atributosShopee || {},
         },
       },
     };
@@ -52149,6 +52156,116 @@ São o mesmo produto?`;
   //  - Re-sync de vínculo existente: atualiza timestamp/skuExterno sem duplicar
   // ============================================================
   
+  // ══════════════════════════════════════════════════════════════════════
+  // CASAMENTO DA VARIAÇÃO NA IMPORTAÇÃO (v33k.1794)
+  // ──────────────────────────────────────────────────────────────────────
+  // MEDIDO em 18/08 (`diag-variacao-crua`, dono 20, 4290 produtos):
+  //
+  //   1813 produtos com TODAS as variações gerando a MESMA combinação
+  //   1813 de 1813 apontando pro MESMO anúncio
+  //
+  // Não era importação multiplicando anúncio, como eu supus: era o MESMO
+  // anúncio reimportado várias vezes, criando variação nova a cada rodada.
+  //
+  // A prova está no número do placeholder. Produto que funciona (Bebedouro,
+  // id 5720) tem sem-sku-1246,1247,1248,1249,1250 — SEQUENCIAIS, uma
+  // importação só, cinco variações de verdade. Produto quebrado (Casa Para
+  // Gatos, id 5717) tem 1299, 4055, 4058, 6752, 12135 — ESPALHADOS, cinco
+  // importações do mesmo anúncio em datas diferentes.
+  //
+  // A cadeia que produz isso, toda ela intencional:
+  //   1. anúncio sem SKU na variação      -> gera placeholder `sem-sku-NNNN`
+  //   2. placeholder NUNCA casa            -> proteção da v32b, e ela está
+  //      certa: placeholder casando fazia anúncios diferentes colarem no
+  //      mesmo produto
+  //   3. fallback cor+tamanho só roda se cor OU tamanho existir -> e não existe
+  //   4. fallback "única variação default" exige exatamente 1 variação sem
+  //      vínculo -> a partir da SEGUNDA importação já não vale
+  //   5. cria variação nova. Toda importação. Pra sempre.
+  //
+  // ★ A CHAVE QUE JÁ ESTAVA NA MÃO: `variacaoExternaId`. Ela é o id da
+  //   variação NO MARKETPLACE, já vem no `varExt` e já era gravada no vínculo
+  //   — só nunca foi usada pra casar. É estável entre importações, que é
+  //   exatamente o que falta ao placeholder, e é o dado mais confiável que
+  //   existe aqui: veio do próprio marketplace.
+  //
+  // A ordem importa e é do mais forte pro mais fraco. O casamento por id
+  // externo vem PRIMEIRO e é restrito ao MESMO anúncio e MESMA loja: dois
+  // anúncios diferentes podem ter variação com o mesmo id, e casar entre eles
+  // recriaria o vazamento que a proteção da v32b existe pra impedir.
+  function _acharVariacaoInternaParaImport(produtoInterno, varExt, skuExterno, infoVinculo) {
+    const vars = (produtoInterno && produtoInterno.variacoes) || [];
+    if (!vars.length) return null;
+
+    // 1) id da variação NO MARKETPLACE, dentro do mesmo anúncio e mesma loja
+    //
+    // ★ v33k.1799: O MESMO CONCEITO TEM DOIS NOMES NO BANCO.
+    // O censo de `vinculos[]` de 18/08 mostrou, em 14797 variações:
+    //     vinculos[].variacaoExternaId    328 preenchidos
+    //     vinculos[].modelIdExterno       827 preenchidos
+    // Os dois dizem QUAL VARIAÇÃO DO ANÚNCIO é esta. `variacaoExternaId` é o
+    // que a importação grava; `modelIdExterno` é o que o fluxo de vínculo
+    // manual grava (`util/vinculos-produto.js`). Ler só o primeiro deixava de
+    // fora 827 variações — mais que o dobro — e elas voltariam a duplicar na
+    // importação seguinte, que é exatamente o bug que esta função existe pra
+    // matar.
+    //
+    // Não unifiquei os dois campos num só: isso é migração de dado em cima de
+    // vínculo, o registro mais sensível do produto. Aqui só LEIO os dois.
+    const idExt = (varExt && (varExt.id || varExt.variation_id)) || null;
+    const anuncioId = infoVinculo && infoVinculo.anuncioId;
+    const mkt = infoVinculo && infoVinculo.marketplace;
+    const idDoVinculo = (vi) => {
+      if (!vi) return null;
+      if (vi.variacaoExternaId != null && String(vi.variacaoExternaId).trim() !== '') return String(vi.variacaoExternaId);
+      if (vi.modelIdExterno != null && String(vi.modelIdExterno).trim() !== '') return String(vi.modelIdExterno);
+      return null;
+    };
+    if (idExt != null && String(idExt).trim() !== '' && anuncioId) {
+      const achada = vars.find(v => (v.vinculos || []).some(vi =>
+        vi && String(vi.anuncioId) === String(anuncioId)
+          && (!mkt || !vi.marketplace || vi.marketplace === mkt)
+          && idDoVinculo(vi) === String(idExt)));
+      if (achada) return achada;
+    }
+
+    // 2) SKU normalizado (placeholders seguem sem casar, de propósito)
+    const skuNorm = normalizarSku(skuExterno);
+    let varInterna = vars.find(v => v.sku && normalizarSku(v.sku) === skuNorm);
+    if (varInterna) return varInterna;
+
+    // 3) cor+tamanho: evita variação duplicada com SKU diferente (causa raiz do
+    //    "Model tier_index error" na exportação Shopee)
+    const corExt = String((varExt && varExt.cor) || '').trim().toLowerCase();
+    const tamExt = String((varExt && varExt.tamanho) || '').trim().toLowerCase();
+    if (corExt || tamExt) {
+      varInterna = vars.find(v =>
+        String(v.cor || '').trim().toLowerCase() === corExt &&
+        String(v.tamanho || '').trim().toLowerCase() === tamExt);
+      if (varInterna) return varInterna;
+    }
+
+    // 4) ★ ÚLTIMO RECURSO, e o que impede o crescimento sem fim: anúncio cujas
+    //    variações não têm SKU, nem cor, nem tamanho, nem id externo. Sem
+    //    nenhum sinal, criar variação nova a cada importação é garantia de
+    //    duplicata. Reaproveita uma variação DESTE MESMO anúncio que também
+    //    não tem sinal nenhum e ainda não foi reaproveitada nesta rodada.
+    if (!corExt && !tamExt && anuncioId && (idExt == null || String(idExt).trim() === '')) {
+      const semSinal = vars.find(v =>
+        !String(v.cor || '').trim() && !String(v.tamanho || '').trim()
+        && /^sem-sku-/i.test(String(v.sku || ''))
+        && !v._usadaNestaImportacao
+        // v33k.1799: e que TAMBÉM não tenha id externo. Variação que já carrega
+        // um id identifica uma variação específica do anúncio; reaproveitá-la
+        // pra uma entrada sem sinal colaria coisas distintas.
+        && (v.vinculos || []).some(vi => vi && String(vi.anuncioId) === String(anuncioId) && idDoVinculo(vi) == null));
+      if (semSinal) { semSinal._usadaNestaImportacao = true; return semSinal; }
+    }
+
+    return null;
+  }
+  window._acharVariacaoInternaParaImport = _acharVariacaoInternaParaImport;
+
   // Contador pra placeholders "sem-sku-XXX"
   let _semSkuCounter = parseInt(localStorage.getItem('lider_sem_sku_counter') || '1');
   function proximoSemSku() {
@@ -52502,6 +52619,11 @@ São o mesmo produto?`;
       // PASSO 2: PRA CADA VARIAÇÃO DO ANÚNCIO, VINCULA OU CRIA
       // (sempre dentro do MESMO produtoInterno escolhido acima)
       // ==========================================================
+      // v33k.1794: a marca `_usadaNestaImportacao` impede que DUAS variações
+      // sem sinal nenhum do mesmo anúncio colem na mesma variação interna.
+      // Ela vale só por esta rodada — limpa antes e depois, pra não vazar pro
+      // banco nem pra próxima importação.
+      (produtoInterno.variacoes || []).forEach(v => { delete v._usadaNestaImportacao; });
       variacoesExt.forEach(varExt => {
         let skuExterno = varExt.sku;
         if (!skuExterno || String(skuExterno).trim() === '') {
@@ -52526,22 +52648,7 @@ São o mesmo produto?`;
         };
         
         // Procura variação INTERNA correspondente (DENTRO do produto escolhido)
-        const skuNorm = normalizarSku(skuExterno);
-        let varInterna = (produtoInterno.variacoes || []).find(v => 
-          v.sku && normalizarSku(v.sku) === skuNorm);
-        
-        // FALLBACK por cor+tamanho: se o SKU não bateu, tenta casar pela combinação
-        // cor+tamanho. Evita criar variação DUPLICADA (mesma cor+tamanho, SKU diferente)
-        // - causa raiz do "Model tier_index error" na exportação Shopee.
-        if (!varInterna) {
-          const corExt = String(varExt.cor || '').trim().toLowerCase();
-          const tamExt = String(varExt.tamanho || '').trim().toLowerCase();
-          if (corExt || tamExt) {
-            varInterna = (produtoInterno.variacoes || []).find(v =>
-              String(v.cor || '').trim().toLowerCase() === corExt &&
-              String(v.tamanho || '').trim().toLowerCase() === tamExt);
-          }
-        }
+        let varInterna = _acharVariacaoInternaParaImport(produtoInterno, varExt, skuExterno, infoVinculo);
         
         // Se não achou no produto, mas o produto tem só 1 variação "default", usa ela
         if (!varInterna && produtoInterno.variacoes && produtoInterno.variacoes.length === 1
@@ -52606,6 +52713,8 @@ São o mesmo produto?`;
           if (!isProdutoNovo) stats.variacoesAdicionadas++;
         }
       });
+      // marca de rodada: nunca deve chegar no banco
+      (produtoInterno.variacoes || []).forEach(v => { delete v._usadaNestaImportacao; });
       
       // ==========================================================
       // PASSO 3: marca marketplace e atualiza timestamp
@@ -66007,7 +66116,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1775-mapa-anuncios';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1802-retomada-que-anda';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -82494,7 +82603,7 @@ ${JSON.stringify(metricas, null, 2)}`
     nf_automatica:        { n: 1, icone: 'file-check-2',   titulo: 'Emitir a NF',              quando: 'assim que o pedido é pago' },
     programar_automatico: { n: 2, icone: 'truck',          titulo: 'Programar o pedido',       quando: 'assim que a NF é autorizada' },
     devolucao_automatica: { n: 3, icone: 'undo-2',         titulo: 'Cancelar / devolver',      quando: 'quando o pedido é cancelado ou volta' },
-    etiqueta_whatsapp:    { n: 4, icone: 'message-circle', titulo: 'Etiqueta no WhatsApp',     quando: 'nos horários de corte (07:00 e 13:00)' },
+    etiqueta_whatsapp:    { n: 4, icone: 'message-circle', titulo: 'Etiqueta no WhatsApp',     quando: 'seg a sex 07:00 e 13:00; sábado só 07:00; domingo e feriado não' },
     // ── Automação de Promoções (mestre: motor_relampago_auto), v33k.594 ──
     // O mestre é o motor (decide O QUE promover); as etapas são a execução em
     // cada marketplace. `manter_campanha_ml_auto` veio do Marketing pra cá: é
@@ -83022,7 +83131,7 @@ ${JSON.stringify(metricas, null, 2)}`
         },
         etiqueta_whatsapp: {
           icone: 'message-circle', titulo: 'Envio de etiqueta por cliente',
-          sub: 'Ligue os clientes (lojas) que devem <strong>receber as etiquetas no WhatsApp</strong> nos horários de corte (07:00 e 13:00). O disparo junta todas as etiquetas prontas da loja num PDF só, agrupadas por SKU. Clientes <strong>desligados</strong> não recebem nada.',
+          sub: 'Ligue os clientes (lojas) que devem <strong>receber as etiquetas no WhatsApp</strong> nos horários de corte: <strong>segunda a sexta às 07:00 e 13:00</strong>, <strong>sábado só às 07:00</strong>, e <strong>domingo e feriado nacional não têm corte</strong> (o que ficar pronto espera o corte seguinte). O disparo junta todas as etiquetas prontas da loja num PDF só, agrupadas por SKU. Clientes <strong>desligados</strong> não recebem nada.',
           extra: { icone: 'users', titulo: 'Só para contas de agência',
             sub: 'Esta automação usa o vínculo loja → cliente e o telefone salvo no Comercial, o mesmo dos demais disparos de WhatsApp do sistema.' },
         },
