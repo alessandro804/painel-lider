@@ -43373,7 +43373,8 @@ Retorne JSON: {"ID": "valor", ...}`;
             if (!campo) { h += '<td style="padding:8px 10px;color:#cbd5e1">—</td>'; return; }
             const idCel = 'pvt_i_' + fi + '_' + col.id;
             if (campo.obrigatorio) obrigatorios.push(idCel);
-            aplicar.push({ idCel: idCel, ficha: fi, campoId: col.id, variacao: null });
+            aplicar.push({ idCel: idCel, ficha: fi, campoId: col.id, variacao: null,
+              papel: campo.papel || null, marketplace: f.marketplace || null });
             const daIA = marcados[col.id] && campo.valor;
             h += '<td style="padding:8px 10px">' + _pvtCelula(campo, idCel, campo.pendente) +
               (daIA ? '<div style="font-size:10.5px;color:#7c3aed;margin-top:2px;display:flex;gap:3px;align-items:center">' +
@@ -43410,7 +43411,8 @@ Retorne JSON: {"ID": "valor", ...}`;
             if (!campo) { h += '<td style="padding:8px 10px;color:#cbd5e1">—</td>'; return; }
             const idCel = 'pvt_v_' + ln.fi + '_' + ln.vi + '_' + col.id;
             if (campo.obrigatorio) obrigatorios.push(idCel);
-            aplicar.push({ idCel: idCel, ficha: ln.fi, campoId: col.id, variacao: ln.vi });
+            aplicar.push({ idCel: idCel, ficha: ln.fi, campoId: col.id, variacao: ln.vi,
+              papel: campo.papel || null, marketplace: ln.f.marketplace || null });
             h += '<td style="padding:8px 10px">' + _pvtCelula(campo, idCel, campo.pendente) + '</td>';
           });
           h += '</tr>';
@@ -43479,26 +43481,53 @@ Retorne JSON: {"ID": "valor", ...}`;
       showToast('Ainda faltam campos obrigatórios.', true);
       return;
     }
+    // ══════════════════════════════════════════════════════════════════
+    // ONDE CADA VALOR É GRAVADO (v33k.1803)
+    // ──────────────────────────────────────────────────────────────────
+    // Até a v33k.1802 tudo caía em `atributosMl`, porque a tabela nasceu no
+    // fluxo de duplicação, que era só do Mercado Livre. Abrir esta mesma
+    // tabela pra Shopee e TikTok sem corrigir isto faria a pessoa preencher
+    // tudo e a exportação falhar igual — a tela mostraria preenchido e o
+    // payload sairia sem.
+    //
+    // MEDIDO nos adaptadores, não suposto:
+    //   ML       `produto.atributosMl`        e `v.cor`/`v.tamanho`
+    //   Shopee   `produto.atributosShopee`    (variação vem do tier_variation)
+    //   TikTok   `produto.atributosTikTok`    e `v.cor`/`v.tamanho`
+    //            (tiktok-produtos.js:202 monta sales_attributes dos dois campos)
+    const DESTINO_ITEM = {
+      mercadolivre: 'atributosMl',
+      shopee: 'atributosShopee',
+      tiktok: 'atributosTikTok',
+    };
     st.aplicar.forEach(a => {
       const el = document.getElementById(a.idCel);
       if (!el) return;
       const valor = String(el.value || '').trim();
       const p = st.produtos[a.ficha];
       if (!p) return;
+
       if (a.variacao == null) {
-        if (!p.atributosMl) p.atributosMl = {};
-        if (valor) p.atributosMl[a.campoId] = valor;
-        else delete p.atributosMl[a.campoId];
+        const destino = DESTINO_ITEM[a.marketplace];
+        if (!destino) {
+          // marketplace sem lugar conhecido pra guardar: não inventa campo.
+          console.warn('[pré-voo] sem destino pro atributo ' + a.campoId + ' de ' + a.marketplace);
+          return;
+        }
+        if (!p[destino]) p[destino] = {};
+        if (valor) p[destino][a.campoId] = valor;
+        else delete p[destino][a.campoId];
         return;
       }
+
       const v = (p.variacoes || [])[a.variacao];
       if (!v) return;
-      // ★ COLOR e SIZE voltam pros campos ESTRUTURADOS, não pra lista de
-      // atributos: é de `variacao.cor` e `variacao.tamanho` que o
-      // `montarAttrCombinations` monta o attribute_combinations. Gravar na
-      // lista faria a tela mostrar preenchido e o payload sair sem.
-      if (a.campoId === 'COLOR') { v.cor = valor; return; }
-      if (a.campoId === 'SIZE') { v.tamanho = valor; return; }
+      // ★ cor e tamanho voltam pros campos ESTRUTURADOS, não pra lista de
+      // atributos. O `papel` vem do backend, que conhece o formato de cada
+      // marketplace: no ML o id é 'COLOR', no TikTok é um número. Gravar por
+      // id literal funcionava só no ML.
+      if (a.papel === 'cor') { v.cor = valor; return; }
+      if (a.papel === 'tamanho') { v.tamanho = valor; return; }
       if (!Array.isArray(v.atributos)) v.atributos = [];
       const ja = v.atributos.find(x => x && x.id === a.campoId);
       if (ja) ja.valor = valor;
@@ -66116,7 +66145,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1802-retomada-que-anda';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1803-grava-no-lugar-certo';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
