@@ -56965,14 +56965,34 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // inativos). Fora isso, um produto entra em TODA aba cujo status ele tenha ao
   // menos um anúncio (misto ativo+inativo aparece nas duas). Sem anúncio nenhum,
   // classifica pelo status do próprio produto (catálogo/rascunho).
-  function _anTabsDoProduto(p) {
+  // ★ v33k.1829: A CLASSIFICAÇÃO RESPEITA O FILTRO DE LOJA.
+  // RELATADO em 19/08, com print: filtrando pela loja TRENDE, a aba Ativos
+  // listava 15 produtos — e nos badges deles aparecia "14 sem status" e nenhum
+  // ativo. Só existia UM anúncio ativo naquela loja.
+  //
+  // A causa: `passaSemLoja` classificava o produto com TODOS os vínculos, de
+  // todas as lojas, e o filtro de loja era aplicado num segundo passo. Um
+  // produto ativo na Shopee e "sem status" na TRENDE passava nos dois testes,
+  // e aparecia como ativo de uma loja onde ele não está ativo.
+  //
+  // A pergunta que a tela responde muda quando há filtro: sem filtro é "este
+  // produto está ativo em algum lugar?"; com a loja escolhida é "este produto
+  // está ativo NESTA loja?". São perguntas diferentes e precisavam de
+  // respostas diferentes.
+  //
+  // `lojasRecorte` vazio ou nulo = sem filtro = comportamento de antes.
+  function _anTabsDoProduto(p, lojasRecorte) {
     const tabs = new Set();
     if (p.status === 'excluido' || p.excluidoDoML || p.banidoDoML) { tabs.add('excluido'); return tabs; }
     if (p.status === 'rascunho') tabs.add('rascunho');
     let temAtivo = false, temInativo = false, temRevisao = false, total = 0;
+    const alvo = (lojasRecorte && lojasRecorte.length)
+      ? new Set(lojasRecorte.map(String)) : null;
     const porAnuncio = {};
     (p.variacoes || []).forEach(v => (v.vinculos || []).forEach(vi => {
       if (!vi.anuncioId) return;
+      // com filtro de loja, vínculo de outra loja não conta pra classificar
+      if (alvo && !alvo.has(String(vi.lojaIdBanco || vi.lojaId))) return;
       const aid = String(vi.anuncioId);
       if (!(aid in porAnuncio)) porAnuncio[aid] = (typeof v32d_statusVinculo === 'function') ? v32d_statusVinculo(vi) : 'desconhecido';
     }));
@@ -56985,9 +57005,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (temAtivo) tabs.add('ativo');
     if (temInativo) tabs.add('inativo');
     if (temRevisao) tabs.add('revisao');
-    // só anúncios 'desconhecido' (vínculo legado sem status do sync) → trata como
-    // ativo, é o mesmo critério do _statusPermiteReplicar (no ar até saber o contrário).
-    if (total > 0 && !temAtivo && !temInativo && !temRevisao) tabs.add('ativo');
+    // ★ v33k.1827: SÓ 'desconhecido' → INATIVO, não ativo.
+    // A regra anterior era "no ar até saber o contrário". Na prática ela fez o
+    // filtro Ativos mentir: em 19/08 a aba mostrava 1191 ativos e, ao abrir,
+    // vinham produtos cujos anúncios estavam todos "sem status" — inclusive
+    // uma bota que já tinha vendido e estava fora do ar, e anúncios de uma
+    // loja que nem existe mais no sistema.
+    //
+    // 'desconhecido' quer dizer que o sync nunca confirmou o estado daquele
+    // anúncio. Chamar isso de ativo é afirmar o que não se sabe, e o custo dos
+    // dois erros não é igual: contar como ativo esconde produto morto no meio
+    // dos vivos e infla o número que a pessoa usa pra decidir; contar como
+    // inativo, no máximo, faz um produto vivo aparecer numa aba a menos até o
+    // próximo sync — que é visível e se corrige sozinho.
+    if (total > 0 && !temAtivo && !temInativo && !temRevisao) tabs.add('inativo');
     // sem anúncio nenhum → classifica pelo status do produto interno.
     if (total === 0 && !tabs.size) {
       if (p.status === 'inativo') tabs.add('inativo');
@@ -59445,7 +59476,8 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       return set;
     };
     const passaSemLoja = (p) => {
-      const tabs = _anTabsDoProduto(p);
+      // v33k.1829: a aba passa a ser avaliada DENTRO do recorte de lojas.
+      const tabs = _anTabsDoProduto(p, lojasSel);
       if (abaSel === 'excluido') { if (!tabs.has('excluido')) return false; }
       else {
         if (tabs.has('excluido')) return false;         // excluídos só na aba deles
@@ -67935,7 +67967,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1825-corte-universal-do-schema';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1829-aba-respeita-a-loja';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
