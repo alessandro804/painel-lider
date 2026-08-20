@@ -20536,6 +20536,11 @@ window.LC_SVG = {
       <div class="dup-progress-fill" id="dupProgressFill"></div>
     </div>
     <div class="dup-progress-text" id="dupProgressText">Iniciando...</div>
+    <!-- v33k.1835: a frase em português do que está acontecendo AGORA. A linha
+         de cima é contagem ("3/8 · cópia 2: salvando"), que diz o passo mas não
+         diz a etapa — e numa duplicação de vários anúncios a pessoa fica sem
+         saber se ainda está preparando ou se já está publicando. -->
+    <div class="dup-progress-fase" id="dupProgressFase" style="font-size:12px;color:#475569;margin-top:4px"></div>
     <div class="dup-step-log" id="dupStepLog"></div>
     <div style="display:flex;gap:8px;margin-top:14px">
       <button type="button" id="dupBtnCancelar" onclick="cancelarDuplicacao()" style="flex:1;padding:8px 16px;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:8px;font-weight:700;cursor:pointer">⏸ Cancelar próximas</button>
@@ -36140,7 +36145,11 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.carregarProdutoPorId = carregarProdutoPorId;
   
   
-  // saveProdutos: grava no cache local (rápido) e envia pro backend.
+  // saveProdutos: grava SÓ no cache local (localStorage). NÃO envia nada pro
+  // backend — quem persiste é `salvarProdutoNoBackend` ou a rota que fez a
+  // ação. O comentário antigo dizia "e envia pro backend" e era falso desde
+  // que a versão completa foi desativada; foi essa frase que sustentou o
+  // defeito da v33k.1832 (pausar 48 anúncios e o banco não saber de nada).
   // v32i.3 Camada 3: saveProdutos sanitário
   //   - Limita o localStorage a 50 produtos (cache leve = página atual)
   //   - Poda automaticamente campos pesados redundantes dos vínculos
@@ -39102,11 +39111,24 @@ Retorne JSON: {"ID": "valor", ...}`;
         return;
       }
       
+      // v33k.1832: mesma correção da ação em massa. `saveProdutos()` NÃO envia
+      // nada pro backend (grava só o localStorage, apesar do comentário lá em
+      // cima dizer o contrário) — quem persiste é a rota. Sem `persistido`, a
+      // tela não pode afirmar que pausou.
+      if (!Number(data.persistido || 0)) {
+        showToast('⚠ ' + (data.aviso
+          || 'O canal pausou, mas o painel não gravou o novo status. Use "Sincronizar anúncios".'), true);
+        return;
+      }
+      
       // Atualiza TODOS os vínculos do mesmo anúncio (pode ter várias variações apontando)
+      // O token vem do backend: cada canal tem o seu ('paused' no ML, 'UNLIST'
+      // na Shopee/TikTok/Shein), e o palpite daqui errava em TikTok e Shein.
+      const _novoStatus = data.statusMl || (vinc.marketplace === 'mercadolivre' ? 'paused' : 'UNLIST');
       (p.variacoes || []).forEach(vv => {
         (vv.vinculos || []).forEach(viv => {
           if (String(viv.anuncioId) === String(vinc.anuncioId)) {
-            viv.statusMl = vinc.marketplace === 'shopee' ? 'UNLIST' : 'paused';
+            viv.statusMl = _novoStatus;
           }
         });
       });
@@ -39149,10 +39171,19 @@ Retorne JSON: {"ID": "valor", ...}`;
         return;
       }
       
+      // v33k.1832: idem pausar — só afirma que ativou depois de o backend
+      // dizer quantos vínculos gravou.
+      if (!Number(data.persistido || 0)) {
+        showToast('⚠ ' + (data.aviso
+          || 'O canal reativou, mas o painel não gravou o novo status. Use "Sincronizar anúncios".'), true);
+        return;
+      }
+      
+      const _novoStatus = data.statusMl || (vinc.marketplace === 'mercadolivre' ? 'active' : 'NORMAL');
       (p.variacoes || []).forEach(vv => {
         (vv.vinculos || []).forEach(viv => {
           if (String(viv.anuncioId) === String(vinc.anuncioId)) {
-            viv.statusMl = vinc.marketplace === 'shopee' ? 'NORMAL' : 'active';
+            viv.statusMl = _novoStatus;
           }
         });
       });
@@ -44086,6 +44117,21 @@ Retorne JSON: {"ID": "valor", ...}`;
   // ─── abas por loja de destino ─────────────────────────────────────────
   // Decidido em 18/08: UMA tabela só. A aba troca apenas as colunas
   // específicas daquele marketplace — o resto dos dados é compartilhado.
+  // v33k.1834: a faixa que diz o que ESTA rodada vai criar. Sem ela, a tela
+  // mostra N linhas e deixa a pessoa deduzir quantos anúncios vão nascer — e
+  // deduzir errado (achar que o original também é recriado) só se descobre
+  // depois de publicado.
+  function emDesenharAviso() {
+    const st = _emEstado;
+    const el = document.getElementById('emAvisos');
+    if (!st || !el) return;
+    if (!st.aviso) { el.innerHTML = ''; return; }
+    el.innerHTML = '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;' +
+      'padding:10px 13px;margin-bottom:12px;font-size:12.5px;color:#1e3a8a">' +
+      escapeHtml(st.aviso) + '</div>';
+  }
+  window.emDesenharAviso = emDesenharAviso;
+
   function emDesenharAbas() {
     const st = _emEstado;
     const el = document.getElementById('emAbas');
@@ -44106,7 +44152,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     emColetarTela();                       // não perde o que está digitado
     st.abaIdx = i;
     st.abaAtual = String(st.destinos[i].marketplace || '').toLowerCase();
-    emDesenharAbas(); emDesenharSeletor(); emDesenharTabela();
+    emDesenharAbas(); emDesenharAviso(); emDesenharSeletor(); emDesenharTabela();
   }
   window.emTrocarAba = emTrocarAba;
 
@@ -44229,22 +44275,66 @@ Retorne JSON: {"ID": "valor", ...}`;
         cols.map(c => _emCabecalho(c)).join('') +
       '</tr></thead><tbody>';
 
+    // ═══════════════════════════════════════════════════════════════════
+    // v33k.1833: O CORPO SEGUE A ORDEM DO CABEÇALHO. UMA ORDEM SÓ.
+    // ───────────────────────────────────────────────────────────────────
+    // MEDIDO no print de 19/08 (FLY058): a coluna "Preço (R$)" mostrava 0 e
+    // a "Quantidade" mostrava as três caixinhas C/L/A. Não era valor errado
+    // — era coluna errada.
+    //
+    // O cabeçalho desenhava `cols` na ordem dos grupos:
+    //   Imagem · Nome · Descrição · Categoria · Atributos | Preço · Quantidade | Peso · Tamanho
+    //                        (anúncio)                      (variação)          (anúncio)
+    //
+    // e o corpo desenhava TODAS as de anúncio primeiro e depois todas as de
+    // variação. Como os escopos se intercalam (Envio é de anúncio e vem
+    // DEPOIS de Venda, que é de variação), tudo escorregava: `peso` caía sob
+    // "Preço", `dims` sob "Quantidade", e os valores de variação apareciam
+    // duas colunas à direita do lugar.
+    //
+    // ★ A regra agora é uma só: percorrer `cols`, na ordem, decidindo por
+    //   coluna o que aquela célula é. Duas listas paralelas com ordens
+    //   diferentes é a mesma família do `_statusPorAnuncio` triplicado da
+    //   v1830 — enquanto existirem duas, uma vai divergir.
+    //
+    // ★ E o rótulo da variação saiu do `rowspan` para a PRIMEIRA COLUNA, a
+    //   fixa. Antes ele era escrito na primeira coluna de anúncio (ou seja,
+    //   dentro de "Imagem") e sumia se a pessoa desmarcasse Informação
+    //   Básica. Agora toda linha tem 1 + cols.length células, sempre, e o
+    //   rótulo acompanha a rolagem horizontal junto do produto.
+    const _tdVazio = '<td style="padding:7px 10px;color:#cbd5e1">—</td>';
     (st.linhas || []).forEach((linha, li) => {
       const capa = (linha.fotos || [])[0];
       const capaUrl = capa ? (typeof capa === 'string' ? capa : (capa.url || capa.src)) : null;
       const nVars = (linha.variacoes || []).length;
+      // v33k.1834: selo do papel (Original / Cópia 1…), com a nota do que
+      // acontece com aquela linha nesta rodada
+      const pap = (st.papeis || [])[li] || null;
+      const TONS = {
+        cinza: { bg: '#f1f5f9', fg: '#475569', bd: '#e2e8f0' },
+        roxo:  { bg: '#f5f3ff', fg: '#6d28d9', bd: '#ddd6fe' },
+        verde: { bg: '#dcfce7', fg: '#166534', bd: '#bbf7d0' },
+      };
+      const tom = TONS[(pap && pap.tom) || 'roxo'] || TONS.roxo;
+      const selo = pap ? '<div style="margin-bottom:5px"><span style="display:inline-block;font-size:9.5px;font-weight:800;' +
+          'padding:1px 7px;border-radius:20px;background:' + tom.bg + ';color:' + tom.fg + ';border:1px solid ' + tom.bd + '">' +
+          escapeHtml(pap.texto || '') + '</span>' +
+          (pap.nota ? '<div style="font-size:10.5px;color:#94a3b8;margin-top:2px">' + escapeHtml(pap.nota) + '</div>' : '') +
+        '</div>' : '';
       h += '<tr style="border-top:1px solid var(--lc-border)">' +
-        '<td rowspan="' + (colsVar.length && nVars ? nVars + 1 : 1) + '" ' +
-          'style="padding:9px 10px;position:sticky;left:0;background:#fff;vertical-align:top">' +
+        '<td style="padding:9px 10px;position:sticky;left:0;background:#fff;vertical-align:top">' +
+          selo +
           '<div style="display:flex;gap:9px;align-items:flex-start">' +
           (capaUrl ? '<img src="' + escapeHtml(capaUrl) + '" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex:0 0 auto">' : '') +
           '<div style="min-width:0"><div style="font-size:12.5px;font-weight:600;color:#1e293b">' +
             escapeHtml((linha.nome || '').slice(0, 46)) + '</div>' +
             '<div style="font-size:11px;color:#94a3b8">' + escapeHtml(linha.skuPai || '') +
               (nVars ? (' · ' + nVars + ' variação(ões)') : '') + '</div></div></div></td>';
-      colsAnuncio.forEach(c => { h += '<td style="padding:7px 10px;vertical-align:top">' + _emCelula(linha, c, li, null) + '</td>'; });
-      // as colunas de variação ficam vazias na linha do anúncio
-      colsVar.forEach(() => { h += '<td style="padding:7px 10px;color:#cbd5e1">—</td>'; });
+      cols.forEach(c => {
+        h += (c.escopo === 'variacao')
+          ? _tdVazio
+          : '<td style="padding:7px 10px;vertical-align:top">' + _emCelula(linha, c, li, null) + '</td>';
+      });
       h += '</tr>';
 
       if (colsVar.length) {
@@ -44254,13 +44344,14 @@ Retorne JSON: {"ID": "valor", ...}`;
           const dims = colsVar.filter(c => c.dinamica)
             .map(c => _emValor(linha, c, vi)).filter(x => String(x || '').trim());
           const rotulo = dims.join(' · ') || v.nome || ('variação ' + (vi + 1));
-          h += '<tr style="border-top:1px solid #f1f5f9;background:#fcfdff">';
-          colsAnuncio.forEach((c, ci) => {
-            h += ci === 0
-              ? '<td style="padding:6px 10px;font-size:12px;color:#64748b">' + escapeHtml(rotulo) + '</td>'
+          h += '<tr style="border-top:1px solid #f1f5f9;background:#fcfdff">' +
+            '<td style="padding:6px 10px 6px 22px;position:sticky;left:0;background:#fcfdff;' +
+              'font-size:12px;color:#64748b;white-space:nowrap">' + escapeHtml(rotulo) + '</td>';
+          cols.forEach(c => {
+            h += (c.escopo === 'variacao')
+              ? '<td style="padding:6px 10px">' + _emCelula(linha, c, li, vi) + '</td>'
               : '<td></td>';
           });
-          colsVar.forEach(c => { h += '<td style="padding:6px 10px">' + _emCelula(linha, c, li, vi) + '</td>'; });
           h += '</tr>';
         });
       }
@@ -44765,9 +44856,10 @@ Retorne JSON: {"ID": "valor", ...}`;
   //
   // ★ FALHA ABERTA: erro montando as linhas não pode impedir uma exportação
   //   que funcionaria. O pré-voo do backend segue como rede de trás.
-  async function emPortaoLiberado(destinos, produtos) {
+  async function emPortaoLiberado(destinos, produtos, opcoes) {
     if (!Array.isArray(destinos) || !destinos.length) return true;
     if (!Array.isArray(produtos) || !produtos.length) return true;
+    opcoes = opcoes || {};
     let linhas = null;
     try {
       linhas = await emMontarLinhas(produtos, destinos);
@@ -44778,9 +44870,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!linhas || !linhas.length) return true;
 
     const confirmadas = await emAbrir({
-      titulo: 'Confira antes de exportar',
+      titulo: opcoes.titulo || 'Confira antes de exportar',
       linhas: linhas,
       destinos: destinos,
+      papeis: opcoes.papeis || null,
+      aviso: opcoes.aviso || null,
       voltarPara: 'estoqueScreen',
     });
     if (!confirmadas) return false;              // cancelou: nada sai
@@ -45060,11 +45154,25 @@ Retorne JSON: {"ID": "valor", ...}`;
   // ─── abrir e fechar ───────────────────────────────────────────────────
   // `linhas` é o modelo genérico; `destinos` são as abas. Quem chama monta os
   // dois. A tela não sabe se veio de exportação ou de edição de anúncio.
-  function emAbrir({ titulo, linhas, destinos, voltarPara }) {
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1834: PAPEL DA LINHA.
+  // ───────────────────────────────────────────────────────────────────────
+  // Na duplicação, a conferência recebia SÓ as cópias. Quem pediu 2 cópias
+  // via 2 linhas e não tinha com o que comparar: o título que a IA refez, a
+  // descrição reescrita e as fotos rotacionadas só fazem sentido ao lado do
+  // anúncio de onde saíram.
+  //
+  // `papeis[i]` é o que aquela linha É nesta rodada, e a tela DIZ isso — se
+  // uma linha não vai ser publicada agora, quem confere precisa saber antes
+  // de gastar tempo editando ela.
+  //   { texto: 'Original', tom: 'cinza', nota: 'não é recriado nesta duplicação' }
+  function emAbrir({ titulo, linhas, destinos, voltarPara, papeis, aviso }) {
     return new Promise((resolve) => {
       _emEstado = {
         linhas: linhas || [],
         destinos: destinos || [],
+        papeis: Array.isArray(papeis) ? papeis : null,
+        aviso: aviso || null,
         abaIdx: 0,
         abaAtual: String((destinos && destinos[0] && destinos[0].marketplace) || '').toLowerCase(),
         ocultas: {},
@@ -45075,17 +45183,45 @@ Retorne JSON: {"ID": "valor", ...}`;
       // colunas marcadas como `oculta` começam desmarcadas: a tela abre com o
       // essencial à vista, e quem quiser mais liga no seletor
       EM_GRUPOS.forEach(g => g.colunas.forEach(c => { if (c.oculta) _emEstado.ocultas[c.id] = true; }));
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1833: A CONFERÊNCIA É UMA TELA, NÃO UM MODAL.
+      // ───────────────────────────────────────────────────────────────────
+      // `editorMassaScreen` é página inteira; os overlays de progresso são
+      // `position:fixed` com z-index 9999. Quem chega depois não fica por
+      // cima: a tela nasce embaixo do que já estava fixo. No print de 19/08 a
+      // conferência abriu atrás do "Duplicando anúncios…", e a pessoa não
+      // tinha como usar a tela que o próprio fluxo mandou ela usar.
+      //
+      // Some com eles enquanto a conferência está aberta e devolve depois —
+      // a fase 2 (salvar e exportar) ainda vai escrever no mesmo log, então
+      // fechar de vez tiraria a única visão do que está acontecendo.
+      _emEstado._overlaysEscondidos = [];
+      document.querySelectorAll('.dup-overlay.active').forEach(ov => {
+        ov.classList.remove('active');
+        _emEstado._overlaysEscondidos.push(ov.id);
+      });
       const tit = document.getElementById('emTitulo');
       if (tit) tit.textContent = titulo || 'Conferir antes de exportar';
       goTo('editorMassaScreen');
-      setTimeout(() => { emDesenharAbas(); emDesenharSeletor(); emDesenharTabela(); }, 60);
+      setTimeout(() => { emDesenharAbas(); emDesenharAviso(); emDesenharSeletor(); emDesenharTabela(); }, 60);
     });
   }
   window.emAbrir = emAbrir;
 
+  // devolve os overlays que a conferência escondeu (v33k.1833). Sai pelos
+  // dois caminhos — confirmar segue pra fase 2, cancelar precisa mostrar o
+  // "cancelado na conferência" que o fluxo escreve no mesmo log.
+  function _emRestaurarOverlays(st) {
+    ((st && st._overlaysEscondidos) || []).forEach(id => {
+      const ov = document.getElementById(id);
+      if (ov) ov.classList.add('active');
+    });
+  }
+
   function emCancelar() {
     const st = _emEstado; _emEstado = null;
     goTo((st && st.voltarPara) || 'estoqueScreen');
+    _emRestaurarOverlays(st);
     if (st && st.resolve) st.resolve(null);
   }
   window.emCancelar = emCancelar;
@@ -45096,6 +45232,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (emRecontar() > 0) { showToast('Ainda faltam campos obrigatórios.', true); return; }
     _emEstado = null;
     goTo(st.voltarPara || 'estoqueScreen');
+    _emRestaurarOverlays(st);
     if (st.resolve) st.resolve(st.linhas);
   }
   window.emConfirmar = emConfirmar;
@@ -45710,6 +45847,33 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (fill) fill.style.width = pct + '%';
     if (txt) txt.textContent = `${atual}/${total} · ${textoLinha || ''} (${pct}%)`;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1835: ETAPA POR EXTENSO, E FECHAMENTO SOZINHO NO FIM.
+  // ───────────────────────────────────────────────────────────────────────
+  // Dois pedidos do Alessandro em 19/08: "deverão explicar melhor o processo
+  // atual" e "ao finalizar deverá fechar automaticamente".
+  //
+  // ★ FECHA SOZINHO SÓ QUANDO DEU TUDO CERTO. Fechar em cima de um erro
+  //   esconderia a única explicação que existe do que falhou — a pessoa
+  //   voltaria pra lista sem saber que faltou anúncio. Com falha, o modal
+  //   fica, o botão vira "Fechar" e o resumo aponta o que rever.
+  function dupDefinirFase(texto) {
+    const el = document.getElementById('dupProgressFase');
+    if (el) el.textContent = texto || '';
+  }
+  function dupEncerrarProgress(resumo, houveProblema) {
+    dupDefinirFase(resumo || '');
+    const btnC = document.getElementById('dupBtnCancelar');
+    if (btnC) { btnC.disabled = true; btnC.textContent = '✓ Concluído'; }
+    if (houveProblema) return;                       // fica aberto pra ler o erro
+    setTimeout(() => {
+      // não fecha por cima de outra rodada que já começou
+      const el = document.getElementById('dupProgressFase');
+      if (el && el.textContent === (resumo || '')) fecharDupProgress();
+    }, 1600);
+  }
+  window.dupDefinirFase = dupDefinirFase;
   
   // ROTAÇÃO DE FOTOS: rotaciona array deixando foto N como capa
   // Ex: [A,B,C,D,E,F], copia=1 → [B, A, C, D, E, F]
@@ -46902,7 +47066,14 @@ REGRAS DURAS:
       lojaDestino,
     };
     
-    if (!usarParams) fecharDupConfig();
+    // ★ v33k.1833: fecha SEMPRE. Antes só o caminho sem params fechava, e o
+    //   caminho com params é justamente o normal desde a v33k.597 (multi-loja
+    //   passa tudo explícito). Resultado no print de 19/08: o modal de
+    //   configuração ficou aberto atrás do progresso e depois atrás da tela de
+    //   conferência, empilhado. Ele já cumpriu a função quando a duplicação
+    //   começou. Esconder não apaga o DOM, então quem ainda lê os campos
+    //   (régua, agendamento) continua lendo.
+    fecharDupConfig();
     document.getElementById('dupProgressOverlay').classList.add('active');
     document.getElementById('dupStepLog').innerHTML = '';
     const btnCancelar = document.getElementById('dupBtnCancelar');
@@ -46915,6 +47086,8 @@ REGRAS DURAS:
     let passoAtual = 0;
     
     dupLogStep(`▶ Iniciando ${qtd} cópia(s) → ${lojaDestino.nome} [${lojaDestino.marketplace}]`);
+    // v33k.1835: etapa 1 de 3, por extenso
+    dupDefinirFase(`Etapa 1 de 3 · preparando ${qtd} cópia(s) (nada foi criado ainda)`);
     
     const isShopee = lojaDestino.marketplace === 'shopee';
     let okCopias = 0, errCopias = 0, canceladasCopias = 0;
@@ -47078,11 +47251,33 @@ REGRAS DURAS:
               fotos: rotacionarFotos(c.fotos || [], k)
             }));
             novo.cores = novasCores;
-            // Mantém p.fotos (capa) sincronizado como união pra compat
-            const set = new Set();
-            novasCores.forEach(c => (c.fotos || []).forEach(url => set.add(url)));
-            novo.fotos = Array.from(set);
-            dupLogStep(`  ✓ Fotos rotacionadas (ML, ${novasCores.length} cor(es) com ${novo.fotos.length} foto(s) total)`, 'ok');
+            // ═══════════════════════════════════════════════════════════
+            // ★ v33k.1835: A GALERIA GERAL NÃO É A UNIÃO DAS CORES.
+            // ───────────────────────────────────────────────────────────
+            // Era: `novo.fotos = união de TODAS as fotos de TODAS as cores`,
+            // com o comentário "pra compat". Só que no ML a galeria geral
+            // não é decoração: `fotosDaVariação` (v32j.8) monta as fotos de
+            // cada variação como
+            //
+            //     fotos da COR dela  +  TODAS as fotos gerais
+            //
+            // Então transformar a geral na união fazia cada variação da
+            // cópia sair com as fotos de todas as outras cores. É o relato
+            // do Alessandro em 19/08: "está misturando as fotos dos
+            // produtos entre as variações". Com 4 cores de 3 fotos, o
+            // `slice(0, 10)` do payload ainda cortava as 2 últimas — a
+            // variação perdia foto própria pra caber foto alheia.
+            //
+            // O item do anúncio NÃO depende disto: o `pictures` do payload
+            // ML já monta a união a partir de `cores`, no lugar certo, e só
+            // cai em `p.fotos` quando não há cor nenhuma.
+            //
+            // A cópia herda a galeria geral que o original tinha, rotacionada
+            // como o resto — nem mais foto, nem menos.
+            novo.fotos = rotacionarFotos(p.fotos || [], k);
+            const _totalCor = novasCores.reduce((acc, c) => acc + (c.fotos || []).length, 0);
+            dupLogStep(`  ✓ Fotos rotacionadas (ML, ${_totalCor} foto(s) em ${novasCores.length} cor(es)` +
+              (novo.fotos.length ? `, + ${novo.fotos.length} da galeria geral em todas as variações` : '') + ')', 'ok');
           }
         }
         
@@ -47157,22 +47352,52 @@ REGRAS DURAS:
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CONFERÊNCIA: UMA VEZ, COM TODAS AS CÓPIAS (v33k.1816)
+    // CONFERÊNCIA: UMA VEZ, COM O ORIGINAL E TODAS AS CÓPIAS (v33k.1834)
     // ───────────────────────────────────────────────────────────────────
     // É aqui que a tela nova entra na duplicação. Uma linha por cópia, com
     // tudo editável antes de qualquer escrita — cancelar não deixa sujeira
     // porque nada foi criado ainda.
+    //
+    // ★ v33k.1834: O ORIGINAL ENTRA NA LISTA. Só as cópias apareciam, e o
+    //   pedido do Alessandro em 19/08 foi exatamente esse: "preciso ver os
+    //   3 pra revisar". Faz sentido — título refeito pela IA, descrição
+    //   reescrita e capa rotacionada só se avaliam ao lado do anúncio de
+    //   onde saíram. Sem a referência, conferir cópia é adivinhar.
+    //
+    // ★ E CADA LINHA DIZ O QUE É. O original vai como referência editável:
+    //   o que for corrigido nele é salvo no catálogo, mas ele NÃO é
+    //   republicado por esta rodada — quem publica é a lista de cópias, e
+    //   dizer o contrário faria a tela prometer um anúncio que não nasce.
     if (!opts.silencioso && !opts._coletarParaAgendar && _dupPreparadas.length) {
       try {
         const _lojaIdPv = await garantirLojaNoBanco(lojaDestino);
         if (_lojaIdPv && typeof emPortaoLiberado === 'function') {
+          dupDefinirFase('Etapa 2 de 3 · conferência na tela, esperando você confirmar');
+          const _nCopias = _dupPreparadas.length;
+          const _papeis = [{ texto: 'ORIGINAL', tom: 'cinza', nota: 'referência · não é recriado aqui' }]
+            .concat(_dupPreparadas.map((_, i) => ({
+              texto: 'CÓPIA ' + (i + 1) + '/' + _nCopias, tom: 'roxo', nota: 'será criada em ' + (lojaDestino.nome || ''),
+            })));
           const _ok = await emPortaoLiberado(
             [{ lojaIdBanco: _lojaIdPv, marketplace: lojaDestino.marketplace, nome: lojaDestino.nome }],
-            _dupPreparadas.map(x => x.novo));
+            [p].concat(_dupPreparadas.map(x => x.novo)),
+            {
+              papeis: _papeis,
+              aviso: 'Esta duplicação vai criar ' + _nCopias + ' anúncio(s) em ' + (lojaDestino.nome || '') +
+                '. O original está na lista para comparação: o que você corrigir nele é salvo no catálogo, ' +
+                'mas ele não é publicado de novo por aqui.',
+            });
           if (!_ok) {
             dupLogStep(`↶ Cancelado na conferência. Nenhuma das ${_dupPreparadas.length} cópias foi criada.`, 'err');
             canceladasCopias += _dupPreparadas.length;
             _dupPreparadas.length = 0;
+          } else {
+            // ★ o original foi editável: o que mudou nele já está no objeto do
+            //   catálogo (o portão aplica), mas ninguém grava — a fase 2 só
+            //   escreve as cópias. Sem isto, a correção sumiria no F5.
+            try { await salvarProdutoNoBackend(p); } catch (eSalvo) {
+              dupLogStep('  ⚠ não consegui salvar as correções do original: ' + eSalvo.message, 'err');
+            }
           }
         }
       } catch (ePv) {
@@ -47184,6 +47409,9 @@ REGRAS DURAS:
     // ═══════════════════════════════════════════════════════════════════
     // FASE 2: SALVA E EXPORTA O QUE FOI CONFERIDO
     // ═══════════════════════════════════════════════════════════════════
+    if (_dupPreparadas.length) {
+      dupDefinirFase(`Etapa 3 de 3 · salvando e publicando ${_dupPreparadas.length} cópia(s) em ${lojaDestino.nome}`);
+    }
     for (const _prep of _dupPreparadas) {
       if (_dupCancelar) break;
       const novo = _prep.novo;
@@ -47527,8 +47755,15 @@ REGRAS DURAS:
     dupLogStep(`\n━━━━━━━━━━━━━━━━━━━━`);
     dupLogStep(`✅ ${okCopias} cópia(s) exportada(s) · ${errCopias} falha(s)` +
       (canceladasCopias ? ` · ${canceladasCopias} cancelada(s) na conferência` : ''), okCopias > 0 ? 'ok' : 'err');
-    const btnC = document.getElementById('dupBtnCancelar');
-    if (btnC) { btnC.disabled = true; btnC.textContent = '✓ Concluído'; }
+    // v33k.1835: fecha sozinho quando não houve falha nem cancelamento; com
+    // problema, fica aberto — o log é a única explicação que existe.
+    const _houveProblema = errCopias > 0 || canceladasCopias > 0 || _dupCancelar;
+    dupEncerrarProgress(
+      _houveProblema
+        ? `Terminou com pendência: ${okCopias} publicada(s), ${errCopias} falha(s)` +
+          (canceladasCopias ? `, ${canceladasCopias} cancelada(s)` : '') + '. Leia o log acima.'
+        : `Pronto: ${okCopias} anúncio(s) publicado(s) em ${lojaDestino.nome}. Fechando…`,
+      _houveProblema);
     showToast(`Duplicação concluída: ${okCopias} OK · ${errCopias} erro(s)` +
       (canceladasCopias ? ` · ${canceladasCopias} cancelada(s)` : ''));
   }
@@ -50915,21 +51150,66 @@ REGRAS DURAS:
     const btn = document.getElementById('ceBtnExportar');
     if (btn) { btn.disabled = true; btn.textContent = 'Publicando…'; }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // v33k.1835: ESTE LAÇO PUBLICAVA NO ESCURO.
+    // ───────────────────────────────────────────────────────────────────
+    // O relato do Alessandro em 19/08: confirmou na conferência e "não
+    // apareceu nada confirmando se a exportação deu certo ou não". Era
+    // isto: a conferência é uma TELA, e ao confirmar ela navega de volta —
+    // o botão "Publicando…" fica no modal que já tinha sido fechado, e o
+    // laço roda sem nada visível. Cada loja podia levar segundos.
+    //
+    // Agora o progresso é o mesmo componente das ações em massa: uma linha
+    // por loja, com o resultado real de cada uma, e fechamento automático
+    // quando todas deram certo.
+    const _ceTotal = marcadas.length;
+    if (typeof abrirMassaProgress === 'function') {
+      abrirMassaProgress('Publicando em ' + _ceTotal + ' loja(s)', _ceTotal);
+      const _cancel = document.getElementById('massaProgressCancelar');
+      if (_cancel) _cancel.style.display = 'none';   // o laço não é interrompível
+    }
+
     const ok = [];
     const falhas = [];
+    let _feitas = 0;
     for (const cb of marcadas) {
       const mk = cb.dataset.mk;
       const nomeLoja = cb.parentNode.textContent.trim();
+      if (typeof atualizarMassaProgress === 'function') {
+        const el = document.getElementById('massaProgressText');
+        if (el) el.textContent = 'Publicando em ' + nomeLoja + '… (' + (_feitas + 1) + ' de ' + _ceTotal + ')';
+      }
       try {
         // uma loja por vez: publicar em paralelo dispara várias chamadas
         // simultâneas ao mesmo marketplace e esbarra no limite de taxa
         // `jaConferido`: a tela já abriu uma vez, com todas as abas
+        // `silencioso`: o resultado de cada loja aparece no progresso, não em
+        // um modal por loja empilhado em cima do outro
         const r = await exportarProdutoMarketplace(produtoId, mk,
-          { lojaIdBanco: cb.value, lojaId: cb.dataset.local, jaConferido: true, nomeLoja: nomeLoja });
-        if (r && r.ok) ok.push(nomeLoja); else falhas.push(nomeLoja + ': ' + ((r && r.erro) || 'falhou'));
+          { lojaIdBanco: cb.value, lojaId: cb.dataset.local, jaConferido: true, silencioso: true, nomeLoja: nomeLoja });
+        if (r && r.ok) { ok.push(nomeLoja); }
+        else { falhas.push(nomeLoja + ': ' + ((r && r.erro) || 'falhou')); }
+        _feitas++;
+        if (typeof atualizarMassaProgress === 'function') {
+          atualizarMassaProgress(_feitas, _ceTotal,
+            nomeLoja + (r && r.ok ? ' · publicado' : ' · ' + ((r && r.erro) || 'falhou')), !(r && r.ok));
+        }
       } catch (e) {
         falhas.push(nomeLoja + ': ' + e.message);
+        _feitas++;
+        if (typeof atualizarMassaProgress === 'function') {
+          atualizarMassaProgress(_feitas, _ceTotal, nomeLoja + ' · ' + e.message, true);
+        }
       }
+    }
+
+    if (typeof finalizarMassaProgress === 'function') {
+      finalizarMassaProgress(falhas.length
+        ? (ok.length + ' publicado(s) · ' + falhas.length + ' com erro. Leia a lista acima.')
+        : ('Pronto: publicado em ' + ok.length + ' loja(s). Fechando…'));
+      // ★ fecha sozinho só quando não houve falha: fechar em cima de erro
+      //   apagaria a única explicação do que não subiu
+      if (!falhas.length) setTimeout(() => { try { fecharMassaProgress(); } catch (_) {} }, 1600);
     }
 
     if (btn) { btn.disabled = false; btn.textContent = 'Publicar'; }
@@ -57425,13 +57705,35 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           avisos.push(_amNomeLoja(vinc) + ': ' + (data.aviso || 'o canal não excluiu, apenas despublicou.'));
           continue;
         }
+        // ═══════════════════════════════════════════════════════════════
+        // v33k.1832: PAUSA SEM GRAVAÇÃO NÃO É PAUSA.
+        // ───────────────────────────────────────────────────────────────
+        // MEDIDO em 19/08: 48 anúncios pausados por aqui, toast de sucesso,
+        // e no banco continuavam 39 `active` (ML) + 9 `NORMAL` (Shopee) —
+        // os 48 do badge. A rota não gravava e este bloco mudava só a
+        // memória. No F5 a tela relia o banco e a pausa evaporava.
+        //
+        // Agora a rota devolve `persistido` (vínculos gravados de verdade).
+        // Zero vira PARCIAL, com o motivo: o canal pausou, o painel não
+        // conseguiu registrar. Mentir aqui é o que fez a pessoa perder a
+        // tarde achando que o marketplace tinha ignorado o comando.
+        if (acao !== 'excluir' && !Number(data.persistido || 0)) {
+          parciais++;
+          avisos.push(_amNomeLoja(vinc) + ': ' + (data.aviso
+            || 'o canal aplicou, mas o painel não gravou o novo status. Use "Sincronizar anúncios".'));
+          continue;
+        }
         ok++;
         if (acao === 'excluir') {
           (p.variacoes || []).forEach(vv => {
             vv.vinculos = (vv.vinculos || []).filter(x => String(x.anuncioId) !== String(vinc.anuncioId));
           });
         } else {
-          const novo = acao === 'pausar' ? 'UNLIST' : 'NORMAL';
+          // ★ o token vem do BACKEND, que gravou. Antes era 'UNLIST' pra todo
+          //   canal: no ML isso divergia do que o importador escreve
+          //   ('paused'), e o próximo sync trocaria — a tela mostrava um
+          //   estado que o banco nunca teve.
+          const novo = data.statusMl || (acao === 'pausar' ? 'UNLIST' : 'NORMAL');
           (p.variacoes || []).forEach(vv => {
             (vv.vinculos || []).forEach(x => {
               if (String(x.anuncioId) === String(vinc.anuncioId)) x.statusMl = novo;
@@ -57448,7 +57750,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
 
     const verbo = { pausar: 'pausado(s)', ativar: 'reativado(s)', excluir: 'excluído(s)' }[acao];
     let msg = '✓ ' + ok + ' anúncio(s) ' + verbo;
-    if (parciais) msg += ' · ' + parciais + ' não concluído(s) pelo canal';
+    // v33k.1832: "parcial" agora cobre dois casos diferentes — o canal que não
+    // concluiu (exclusão) e a gravação que não pegou (pausar/ativar). O rótulo
+    // genérico manda a pessoa ler os motivos, que vêm um por linha logo abaixo.
+    if (parciais) msg += ' · ' + parciais + ' não concluído(s) — veja o motivo';
     if (falhou) msg += ' · ' + falhou + ' com erro';
     showToast(msg, (falhou > 0 || parciais > 0));
     // os motivos, um por linha, pra a pessoa saber o que fazer com cada um
@@ -68000,7 +68305,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1831-promover-filhos-orfaos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1835-fotos-e-progresso';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -87647,7 +87952,26 @@ ${JSON.stringify(metricas, null, 2)}`
   // Enfileira/exibe um modal e devolve a Promise do resultado.
   function _lcModalAbrir(cfg) {
     return new Promise((resolve) => {
-      if (_lcModalAtivo) { _lcModalFila.push({ cfg, resolve }); return; }
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1835: FILA TRAVADA = TELA MUDA.
+      // ───────────────────────────────────────────────────────────────────
+      // `_lcModalAtivo` só volta a false pelo `_lcModalFechar`. Se um modal
+      // sair do ar por qualquer outro caminho — e até a v33k.1833 o Cancelar
+      // dos modais do editor era um `lcModalFechar` que não existia — a flag
+      // fica presa em true, e TODO `lcAlert`/`lcConfirm` seguinte entra na
+      // fila e nunca aparece. O sintoma é exatamente "cliquei e não apareceu
+      // nada": a mensagem existe, ninguém a vê.
+      //
+      // Antes de enfileirar, confere se ainda há modal NA TELA. Se não há, a
+      // flag está mentindo: destrava e exibe.
+      if (_lcModalAtivo) {
+        const ov = document.getElementById('lcModalOverlay');
+        const naTela = ov && ov.classList.contains('aberto');
+        if (naTela) { _lcModalFila.push({ cfg, resolve }); return; }
+        console.warn('[lcModal] fila estava travada sem modal na tela; destravando.');
+        _lcModalAtivo = false;
+        _lcModalResolverAtual = null;
+      }
       _lcModalExibir(cfg, resolve);
     });
   }
@@ -87733,6 +88057,32 @@ ${JSON.stringify(metricas, null, 2)}`
   window.lcConfirm = lcConfirm;
   window.lcAlert = lcAlert;
   window.lcPrompt = lcPrompt;
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1833: `lcModalFechar` NUNCA EXISTIU.
+  // ───────────────────────────────────────────────────────────────────────
+  // A função real sempre se chamou `_lcModalFechar`, com underline, e nunca
+  // foi exposta. Oito lugares chamam a versão sem underline:
+  //
+  //   botão inline  onclick="lcModalFechar()"        → ReferenceError, o
+  //                 (Cancelar dos modais do editor)     botão não faz NADA
+  //   guarda        if (typeof lcModalFechar === 'function')  → false, e o
+  //                 (Confirmar de categoria, atributos,        modal fica
+  //                  massa, fotos, guia)                      aberto em
+  //                                                           silêncio
+  //
+  // O relato do Alessandro em 19/08 foi "o botão de cancelar não está
+  // funcionando" no modal de Atributos. É este, e vale para os cinco modais
+  // do editor de uma vez.
+  //
+  // ★ A guarda `typeof ... === 'function'` é o que fez isso durar: ela
+  //   transformou "a função não existe" em "não faço nada", sem erro no
+  //   console. Defesa que engole o próprio defeito não é defesa.
+  //
+  // Sem argumento, fecha com o valor de cancelamento do modal aberto — é o
+  // que um Cancelar significa.
+  window.lcModalFechar = function (valor) {
+    _lcModalFechar(valor === undefined ? _lcModalCancelValue : valor);
+  };
 
   // ── MENU DO USUÁRIO (dropdown no rodapé da sidebar) ──
   function montarMenuUsuario() {
