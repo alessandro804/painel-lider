@@ -45,7 +45,12 @@
      Com `position:fixed` no body, nada mais fica por cima. */
   .lc-foto-preview {
     position: fixed;
-    z-index: 99999;
+    /* ★ v33k.1841: acima dos modais. Em 99999 a prévia nascia ATRÁS do
+       `lcModalOverlay` (z-index 100002 e acima) — no print de 19/08 dá pra
+       ver o zoom da chuteira espiando por trás da janela de imagens. Prévia
+       de passar o mouse é a camada mais efêmera que existe; ou está por
+       cima, ou não serve. */
+    z-index: 100200;
     pointer-events: none;
     background: #fff;
     border-radius: 12px;
@@ -10528,9 +10533,22 @@
     const r = img.getBoundingClientRect();
     const L = 332, A = 332;                    // 320 da imagem + a borda
     const folga = 12;
+    // ★ v33k.1841: a borda esquerda respeita o menu.
+    // A prévia é `position:fixed`, então "abrir pra esquerda" podia jogá-la
+    // por cima do menu lateral — foi o segundo print do Alessandro. O limite
+    // esquerdo passa a ser o fim do menu, quando ele existe e está visível.
+    let limiteEsq = 8;
+    try {
+      const menu = document.querySelector('aside.sidebar');
+      if (menu && menu.offsetParent !== null) {
+        const rm = menu.getBoundingClientRect();
+        if (rm.width > 0 && rm.left <= 0 + 1) limiteEsq = Math.max(limiteEsq, rm.right + 8);
+      }
+    } catch (_) { /* sem menu: segue com a margem padrão */ }
     // Abre pra direita; se nao couber, abre pra esquerda.
     let x = r.right + folga;
-    if (x + L > window.innerWidth - 8) x = Math.max(8, r.left - L - folga);
+    if (x + L > window.innerWidth - 8) x = Math.max(limiteEsq, r.left - L - folga);
+    if (x < limiteEsq) x = limiteEsq;
     // Centraliza na linha, sem sair pra fora da tela.
     let y = r.top + (r.height / 2) - (A / 2);
     y = Math.max(8, Math.min(y, window.innerHeight - A - 8));
@@ -36571,6 +36589,11 @@ Retorne JSON: {"ID": "valor", ...}`;
         }
         const reg = mapa.get(aid);
         if (vi.criadoEm && (!reg.criadoEm || new Date(vi.criadoEm) < new Date(reg.criadoEm))) reg.criadoEm = vi.criadoEm;
+        // v33k.1839: variação presa por vínculo de abrangência indefinida não
+        // conta como variação DO anúncio — é âncora do importador, não
+        // afirmação. Contá-la fazia o seletor prometer 272 variações que o
+        // anúncio do ML não tem.
+        if (vi.abrangencia === 'indefinida') { reg.indefinido = true; return; }
         if (!reg._vset.has(v.id)) {
           reg._vset.set(v.id, {
             id: v.id, cor: v.cor || '', tamanho: v.tamanho || '', sku: v.sku || '', fotos: fotosDaCor(v),
@@ -36582,6 +36605,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     const lista = Array.from(mapa.values()).map(a => ({
       anuncioId: a.anuncioId, titulo: a.titulo, marketplace: a.marketplace,
       lojaNome: a.lojaNome, criadoEm: a.criadoEm,
+      indefinido: !!a.indefinido && !a._vset.size,
       variacoes: Array.from(a._vset.values()),
     }));
     lista.sort((x, y) => {
@@ -36593,15 +36617,72 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.listarAnunciosDoProduto = listarAnunciosDoProduto;
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // v33k.1840: LER O ANÚNCIO PUBLICADO (categoria, peso, caixa)
+  // ───────────────────────────────────────────────────────────────────────
+  // Duas funções pequenas e uma memória de rodada. A leitura custa uma
+  // chamada por anúncio no canal; numa duplicação de 5 cópias do mesmo
+  // produto seriam 5 chamadas idênticas, então o resultado fica guardado
+  // por anúncio enquanto a página vive.
+  const _cacheAnuncioPublicado = new Map();
+
+  function _acharVinculoDoAnuncio(p, anuncioId) {
+    if (!anuncioId) return null;
+    const alvo = String(anuncioId);
+    for (const v of (p.variacoes || [])) {
+      for (const vi of (v.vinculos || [])) {
+        if (String(vi.anuncioId) === alvo) return vi;
+      }
+    }
+    return null;
+  }
+  window._acharVinculoDoAnuncio = _acharVinculoDoAnuncio;
+
+  async function lerAnuncioPublicado(p, vinc) {
+    if (!vinc || !vinc.anuncioId || !vinc.lojaIdBanco) return null;
+    const chave = vinc.lojaIdBanco + ':' + vinc.anuncioId;
+    if (_cacheAnuncioPublicado.has(chave)) return _cacheAnuncioPublicado.get(chave);
+    let dados = null;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/produtos/' + p.id + '/anuncio-real?lojaId=' +
+          encodeURIComponent(vinc.lojaIdBanco) + '&anuncioId=' + encodeURIComponent(vinc.anuncioId), {
+        headers: { 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      // `suportado: false` é resposta legítima de canal sem leitura completa
+      if (r && r.ok && r.suportado !== false && r.anuncio) dados = r.anuncio;
+    } catch (e) {
+      console.warn('[duplicação] não li o anúncio de referência:', e.message);
+    }
+    _cacheAnuncioPublicado.set(chave, dados);
+    return dados;
+  }
+  window.lerAnuncioPublicado = lerAnuncioPublicado;
+
   // Filtra variações+cores de um produto mantendo só as do anuncioId ESCOLHIDO.
   // (versão "manual" do filtrarReferenciaAnuncioOriginal, recebe o anuncioId.)
   function filtrarPorAnuncioEscolhido(p, anuncioId) {
     if (!anuncioId) return null; // sem escolha → caller decide
     const variacoes = Array.isArray(p.variacoes) ? p.variacoes : [];
     const alvo = String(anuncioId);
-    const variacoesFiltradas = variacoes.filter(v =>
-      (v.vinculos || []).some(vi => String(vi.anuncioId) === alvo)
-    );
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.1839: VÍNCULO INDEFINIDO NÃO DIZ DE QUEM É A VARIAÇÃO.
+    // ───────────────────────────────────────────────────────────────────
+    // MEDIDO em 19/08 no FUTSAL BRA-69: 25 anúncios do ML, cada um com
+    // vínculo em TODAS as 272 variações, todos gravados pelo
+    // `importador-auto` em 25 segundos. O importador não conseguia casar
+    // SKU (o ML não devolve o da variação) e caía no ramo "vincula todas".
+    //
+    // Aqui isso virava referência: escolher um desses anúncios trazia as
+    // 272 variações pra cópia, com cor e tamanho que não existem nele.
+    //
+    // Agora o vínculo dessa natureza vem carimbado (`abrangencia:
+    // 'indefinida'`, v33k.1839, no backend) e é IGNORADO na hora de dizer
+    // quais variações são do anúncio. Ignorar faz o filtro devolver null,
+    // e quem chama mantém o produto inteiro — que é a verdade disponível:
+    // "não sei quais são", e não "são todas".
+    const ehAfirmacao = (vi) => String(vi.anuncioId) === alvo && vi.abrangencia !== 'indefinida';
+    const variacoesFiltradas = variacoes.filter(v => (v.vinculos || []).some(ehAfirmacao));
     if (!variacoesFiltradas.length) return null; // não casou → caller mantém tudo
     const coresUsadas = new Set();
     variacoesFiltradas.forEach(v => {
@@ -36660,7 +36741,15 @@ Retorne JSON: {"ID": "valor", ...}`;
     const anuncioId = _dupAnuncioRefEscolhido[pid];
     const anuncios = listarAnunciosDoProduto(p);
     const a = anuncios.find(x => String(x.anuncioId) === String(anuncioId));
-    if (!a || !a.variacoes.length) { box.innerHTML = '<div style="font-size:11px;color:#9ca3af">Sem variações neste anúncio.</div>'; return; }
+    if (!a || !a.variacoes.length) {
+      // v33k.1839: a diferença entre "não tem" e "não sei" é o que decide se a
+      // pessoa escolhe este anúncio como referência
+      box.innerHTML = (a && a.indefinido)
+        ? '<div style="font-size:11px;color:#b45309;line-height:1.5">O painel não sabe quais variações são deste anúncio — '
+          + 'o importador não conseguiu casar os SKUs. Escolhendo este, a cópia sai com <strong>todas</strong> as variações do produto.</div>'
+        : '<div style="font-size:11px;color:#9ca3af">Sem variações neste anúncio.</div>';
+      return;
+    }
     const linhas = a.variacoes.map(v => {
       const partes = [];
       if (v.cor) partes.push('<strong>' + escapeHtml(v.cor) + '</strong>');
@@ -45087,21 +45176,36 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!fotos.length) {
       h += '<div style="padding:20px;text-align:center;color:#dc2626;font-size:12.5px">Sem foto nenhuma. O anúncio não sai assim.</div>';
     } else {
-      h += '<div style="display:flex;flex-wrap:wrap;gap:10px">' + fotos.map((f, i) => {
+      // ═══════════════════════════════════════════════════════════════════
+      // v33k.1841: AS AÇÕES CABEM NA LARGURA DA MINIATURA.
+      // ───────────────────────────────────────────────────────────────────
+      // Eram quatro links de texto (◀ capa remover ▶) embaixo de um quadro
+      // de 96px. "capa" e "remover" não cabiam e quebravam em duas linhas,
+      // cada palavra partida ao meio — é o que o print de 19/08 mostra.
+      //
+      // Viraram quatro botões de ícone, com título ao passar o mouse, numa
+      // linha que não quebra. E o quadro subiu pra 104px, que é o que a
+      // grade de 640 comporta em cinco colunas.
+      const _acao = (fn, ic, cor, dica) =>
+        '<button type="button" onclick="' + fn + '" title="' + escapeHtml(dica) + '" ' +
+          'style="border:1px solid var(--lc-border);background:#fff;border-radius:6px;width:26px;height:24px;' +
+          'display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:' + cor + '">' +
+          '<span class="lc-ic" data-lucide="' + ic + '" style="width:13px;height:13px"></span></button>';
+      h += '<div style="display:flex;flex-wrap:wrap;gap:12px">' + fotos.map((f, i) => {
         const url = _emFotoUrl(f);
         const cortada = i >= teto;
-        return '<div style="position:relative;width:96px">' +
-          (url ? '<img src="' + escapeHtml(url) + '" style="width:96px;height:96px;object-fit:cover;border-radius:8px;' +
+        return '<div style="position:relative;width:104px">' +
+          (url ? '<img src="' + escapeHtml(url) + '" style="width:104px;height:104px;object-fit:cover;border-radius:8px;' +
             'opacity:' + (cortada ? '0.35' : '1') + ';border:2px solid ' + (i === 0 ? '#2563eb' : 'transparent') + '">' : '') +
           (i === 0 ? '<span style="position:absolute;top:3px;left:3px;background:#2563eb;color:#fff;font-size:9.5px;' +
             'padding:1px 5px;border-radius:6px;font-weight:700">CAPA</span>' : '') +
           (cortada ? '<span style="position:absolute;top:3px;left:3px;background:#b45309;color:#fff;font-size:9.5px;' +
             'padding:1px 5px;border-radius:6px">CORTADA</span>' : '') +
-          '<div style="display:flex;gap:3px;margin-top:4px;justify-content:center">' +
-            '<a onclick="emFotoMover(' + i + ',-1)" title="mover pra esquerda" style="cursor:pointer;color:#64748b;font-size:14px">◀</a>' +
-            '<a onclick="emFotoCapa(' + i + ')" title="usar como capa" style="cursor:pointer;color:#2563eb;font-size:11px">capa</a>' +
-            '<a onclick="emFotoRemover(' + i + ')" title="remover" style="cursor:pointer;color:#dc2626;font-size:11px">remover</a>' +
-            '<a onclick="emFotoMover(' + i + ',1)" title="mover pra direita" style="cursor:pointer;color:#64748b;font-size:14px">▶</a>' +
+          '<div style="display:flex;gap:3px;margin-top:5px;justify-content:center;flex-wrap:nowrap">' +
+            _acao('emFotoMover(' + i + ',-1)', 'chevron-left', '#64748b', 'mover para a esquerda') +
+            _acao('emFotoCapa(' + i + ')', 'star', i === 0 ? '#cbd5e1' : '#2563eb', i === 0 ? 'já é a capa' : 'usar como capa') +
+            _acao('emFotoRemover(' + i + ')', 'trash-2', '#dc2626', 'remover esta foto') +
+            _acao('emFotoMover(' + i + ',1)', 'chevron-right', '#64748b', 'mover para a direita') +
           '</div></div>';
       }).join('') + '</div>';
     }
@@ -47492,6 +47596,52 @@ REGRAS DURAS:
             dupLogStep(`  ✓ Referência: anúncio ${escolhido || '(mais antigo)'}, ${ref.variacoes.length} variação(ões), ${ref.cores.length} cor(es) (descartadas as de outros anúncios)`, 'ok');
           }
         } catch (eRef) { dupLogStep('  ⚠ filtro de referência falhou (mantendo tudo): ' + eRef.message, 'err'); }
+
+        // ═══════════════════════════════════════════════════════════════
+        // v33k.1840: O QUE O ANÚNCIO PUBLICADO SABE E O CADASTRO NÃO.
+        // ───────────────────────────────────────────────────────────────
+        // A conferência abria pedindo categoria ("Atual: nenhuma") e com as
+        // medidas da caixa em branco, num produto que já está publicado no
+        // canal com as duas coisas preenchidas. Pedir de novo o que está
+        // ali do lado é o tipo de trabalho repetido que o Alessandro
+        // apontou na tela.
+        //
+        // ★ SÓ PREENCHE O QUE ESTÁ VAZIO. O cadastro manda: se o produto
+        //   tem peso, o do anúncio não o substitui.
+        // ★ CATEGORIA SÓ ENTRE CANAIS IGUAIS. Categoria da Shopee não vale
+        //   no ML — as taxonomias não têm nada a ver uma com a outra, e
+        //   copiar o número criaria anúncio na categoria errada.
+        // ★ FALHA ABERTA: se a leitura não responde, a cópia segue como
+        //   antes. Metadado não pode impedir duplicação que funcionaria.
+        try {
+          const _vincRef = _acharVinculoDoAnuncio(p, (window._dupAnuncioRefEscolhido || {})[String(p.id)]);
+          if (_vincRef && _vincRef.lojaIdBanco) {
+            const _an = await lerAnuncioPublicado(p, _vincRef);
+            if (_an) {
+              const herdou = [];
+              if (_an.peso > 0 && !(Number(novo.peso) > 0)) { novo.peso = _an.peso; herdou.push('peso ' + _an.peso + 'kg'); }
+              const emb = _an.embalagem || {};
+              const medidas = [['comprimento', 'C'], ['largura', 'L'], ['altura', 'A']];
+              const pegou = [];
+              medidas.forEach(([k, sig]) => {
+                if (emb[k] > 0 && !(Number(novo[k]) > 0)) { novo[k] = emb[k]; pegou.push(sig + ' ' + emb[k]); }
+              });
+              if (pegou.length) herdou.push('caixa ' + pegou.join('×') + ' cm');
+              const mesmoCanal = String(_vincRef.marketplace || '').toLowerCase() ===
+                String(lojaDestino.marketplace || '').toLowerCase();
+              if (mesmoCanal && _an.categoriaId) {
+                if (_vincRef.marketplace === 'shopee' && !novo.categoryIdShopee) {
+                  novo.categoryIdShopee = String(_an.categoriaId); herdou.push('categoria Shopee ' + _an.categoriaId);
+                } else if (_vincRef.marketplace === 'mercadolivre' && !novo.categoryIdMl) {
+                  novo.categoryIdMl = String(_an.categoriaId); herdou.push('categoria ML ' + _an.categoriaId);
+                }
+              }
+              if (herdou.length) dupLogStep('  ✓ Herdado do anúncio de referência: ' + herdou.join(', '), 'ok');
+            }
+          }
+        } catch (eHer) {
+          dupLogStep('  ⚠ não consegui ler o anúncio de referência: ' + eHer.message, 'err');
+        }
 
         // Limpa vínculos pra forçar nova exportação
         (novo.variacoes || []).forEach(v => { 
@@ -68669,7 +68819,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1838-progresso-e-recusa';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1842-faxina';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -88305,6 +88455,30 @@ ${JSON.stringify(metricas, null, 2)}`
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _lcModalFechar(cfg.cancelValue); }
       else if (e.key === 'Enter') {
         if (cfg.multiline && e.target === inputEl && !e.ctrlKey && !e.metaKey) return; // Enter = nova linha
+        // ═══════════════════════════════════════════════════════════════
+        // ★ v33k.1841: ENTER DENTRO DE UM CAMPO É DO CAMPO.
+        // ───────────────────────────────────────────────────────────────
+        // Este ouvinte roda na fase de CAPTURA, no document. Ou seja, ele
+        // corre ANTES do `onkeydown` do próprio campo — e fechava o modal
+        // sem que o campo chegasse a ser consultado.
+        //
+        // Relato do Alessandro em 19/08: "pesquisei chuteira e quando dou o
+        // enter o modal fecha, deveria funcionar igual a clicar no botão
+        // buscar". O input da busca de categoria TEM o handler certo desde
+        // sempre; ele nunca era chamado.
+        //
+        // ★ E o estrago era maior que a busca: nos modais de edição em
+        //   massa, Enter fechava a janela chamando `_lcModalFechar(true)`,
+        //   que NÃO executa o onclick do botão Confirmar. Ou seja, quem
+        //   digitava um valor e apertava Enter via o modal sumir e nada
+        //   ser aplicado — sem erro, sem aviso.
+        //
+        // Campo do corpo (busca, filtro, valor) devolve o Enter pra ele. O
+        // input do próprio prompt continua confirmando, que é o que se
+        // espera de um modal de uma pergunta só.
+        const alvo = e.target;
+        if (alvo && alvo !== inputEl && ov.contains(alvo) &&
+            /^(INPUT|TEXTAREA|SELECT)$/.test(alvo.tagName || '')) return;
         e.preventDefault(); e.stopPropagation();
         if (cfg.modo === 'prompt') _lcModalFechar(inputEl ? inputEl.value : '');
         else _lcModalFechar(true);
