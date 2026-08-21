@@ -16873,6 +16873,34 @@ window.LC_SVG = {
     animation: lcModalPop .18s cubic-bezier(.2,.8,.25,1);
   }
   .lc-modal-body { padding: 22px 24px 20px; }
+  /* ═══════════════════════════════════════════════════════════════════════
+     ★ v33k.1872: MODO PAINEL — modal que é EDITOR, não recado.
+     ─────────────────────────────────────────────────────────────────────
+     PRINT DE 20/08 (modal de fotos): sem título, sem botão Fechar, conteúdo
+     cortado em cima e embaixo, ladrilhos em duas colunas com faixa branca
+     à direita.
+     A causa é estrutural e vale pra TODOS os modais ricos, não só o de
+     fotos: `.lc-modal-card` tem `overflow:hidden` e NENHUM teto de altura.
+     Conteúdo alto faz o cartão crescer além da janela e o que sobra é
+     cortado — cabeçalho e rodapé inclusive. E o HTML entra dentro de
+     `.lc-modal-texto`, depois de uma coluna de ícone de 42px + 14 de gap,
+     que numa grade de fotos vira largura perdida.
+     No modo painel: teto de 88vh, o CORPO rola, cabeçalho e rodapé ficam
+     grudados, e a coluna do ícone sai. ═══════════════════════════════════ */
+  .lc-modal-card.lc-painel { display: flex; flex-direction: column; max-height: 88vh; }
+  .lc-modal-card.lc-painel .lc-modal-body {
+    overflow: auto; flex: 1 1 auto; min-height: 0; padding: 16px 20px 18px;
+  }
+  .lc-modal-card.lc-painel .lc-modal-ico { display: none; }
+  .lc-modal-card.lc-painel .lc-modal-head { gap: 0; }
+  .lc-modal-card.lc-painel .lc-modal-msg { margin-top: 12px; }
+  .lc-modal-card.lc-painel .lc-modal-titulo {
+    position: sticky; top: -16px; background: #fff; padding: 4px 0 10px; z-index: 2;
+    border-bottom: 1px solid #eef0f3;
+  }
+  .lc-modal-card.lc-painel .lc-modal-acoes {
+    flex: 0 0 auto; border-top: 1px solid #eef0f3; padding: 12px 20px 16px; background: #fff;
+  }
   .lc-modal-head { display: flex; align-items: flex-start; gap: 14px; }
   .lc-modal-ico {
     flex-shrink: 0; width: 42px; height: 42px; border-radius: 12px;
@@ -36692,6 +36720,41 @@ Retorne JSON: {"ID": "valor", ...}`;
   // pertencem a ele (cor + tamanho + sku + nº de fotos). Usado nos
   // seletores de "anúncio de referência" da duplicação (individual e massa).
   // ============================================================
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★ v33k.1872: O VÍNCULO PRECISA DE PROVA PRA AFIRMAR.
+  // ───────────────────────────────────────────────────────────────────────
+  // RELATO DE 20/08, com dois prints: escolher o anúncio Shopee
+  // #19697607251 e o do ML #MLB6698148670 mostrava AS MESMAS 123 variações
+  // nos dois. "Chegamos a corrigir isso hoje mais cedo e agora já está
+  // quebrado de novo, precisamos resolver diretamente na raiz."
+  //
+  // Ele está certo, e a raiz não é a tela. A v33k.1839 fez a coisa certa —
+  // ignorar vínculo de abrangência indefinida — mas amarrou isso a um
+  // CARIMBO (`abrangencia: 'indefinida'`) que só os vínculos NOVOS têm. Os
+  // 123 × N vínculos que já estão no banco foram escritos antes do carimbo,
+  // então passam como afirmação. A correção existia e não alcançava o dado.
+  //
+  // ★ A RAIZ: parar de perguntar "veio carimbado?" e passar a perguntar
+  //   "tem prova?". Um vínculo afirma que a variação é daquele anúncio
+  //   quando traz o model do canal, ou um SKU externo que casa com o da
+  //   variação, ou um mapeamento. O ramo "vincula todas" do importador não
+  //   produz nenhum dos três — ele grava só o anuncioId em cima de todas.
+  //   Isso identifica a âncora pelo que ela É, sem migração e sem depender
+  //   de quem escreveu.
+  //
+  // Devolve true (afirma), false (nega) ou null (não sei).
+  function _provaDoVinculo(v, vi) {
+    if (!vi) return null;
+    if (vi.abrangencia === 'indefinida') return false;
+    if (vi.modelIdExterno) return true;
+    if (Array.isArray(vi.mapeamento) && vi.mapeamento.length) return true;
+    const ext = String(vi.skuExterno || '').trim().toLowerCase();
+    const meu = String((v && v.sku) || '').trim().toLowerCase();
+    if (ext && meu && ext === meu) return true;
+    return null;
+  }
+  window._provaDoVinculo = _provaDoVinculo;
+
   function listarAnunciosDoProduto(p) {
     const variacoes = Array.isArray(p.variacoes) ? p.variacoes : [];
     const cores = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
@@ -36711,32 +36774,45 @@ Retorne JSON: {"ID": "valor", ...}`;
             anuncioId: aid,
             titulo: vi.titulo || p.nome || '',
             marketplace: vi.marketplace || '',
+            lojaIdBanco: lojaId || null,
             lojaNome: loja ? loja.nome : (lojaId ? ('loja ' + lojaId) : ''),
             criadoEm: vi.criadoEm || null,
-            _vset: new Map(), // chave var.id -> dados da variação (evita repetir)
+            _vset: new Map(),   // variações PROVADAS deste anúncio
+            _sset: new Map(),   // variações sem prova (guardadas, não afirmadas)
           });
         }
         const reg = mapa.get(aid);
         if (vi.criadoEm && (!reg.criadoEm || new Date(vi.criadoEm) < new Date(reg.criadoEm))) reg.criadoEm = vi.criadoEm;
-        // v33k.1839: variação presa por vínculo de abrangência indefinida não
-        // conta como variação DO anúncio — é âncora do importador, não
-        // afirmação. Contá-la fazia o seletor prometer 272 variações que o
-        // anúncio do ML não tem.
-        if (vi.abrangencia === 'indefinida') { reg.indefinido = true; return; }
-        if (!reg._vset.has(v.id)) {
-          reg._vset.set(v.id, {
-            id: v.id, cor: v.cor || '', tamanho: v.tamanho || '', sku: v.sku || '', fotos: fotosDaCor(v),
-          });
-        }
+        const dados = {
+          id: v.id, cor: v.cor || '', tamanho: v.tamanho || '', sku: v.sku || '', fotos: fotosDaCor(v),
+        };
+        const prova = _provaDoVinculo(v, vi);
+        if (prova === true) { if (!reg._vset.has(v.id)) reg._vset.set(v.id, dados); return; }
+        if (prova === false) { reg.indefinido = true; return; }
+        // sem prova: fica guardada. Se NENHUMA variação deste anúncio tiver
+        // prova, o anúncio inteiro é indefinido — e aí a lista sem prova é o
+        // melhor palpite que existe, marcado como palpite.
+        if (!reg._sset.has(v.id)) reg._sset.set(v.id, dados);
       });
     });
-    // converte e ordena: mais antigo primeiro
-    const lista = Array.from(mapa.values()).map(a => ({
-      anuncioId: a.anuncioId, titulo: a.titulo, marketplace: a.marketplace,
-      lojaNome: a.lojaNome, criadoEm: a.criadoEm,
-      indefinido: !!a.indefinido && !a._vset.size,
-      variacoes: Array.from(a._vset.values()),
-    }));
+    const varias = mapa.size > 1;
+    const lista = Array.from(mapa.values()).map(a => {
+      const provadas = Array.from(a._vset.values());
+      const supostas = Array.from(a._sset.values());
+      // ★ COM UM ANÚNCIO SÓ NÃO HÁ O QUE DESAMBIGUAR: todas as variações do
+      //   produto são dele, e exigir prova só criaria alarme falso. A dúvida
+      //   nasce quando há mais de um anúncio disputando as mesmas variações.
+      const semProva = !provadas.length;
+      const indefinido = semProva && (varias || !!a.indefinido);
+      return {
+        anuncioId: a.anuncioId, titulo: a.titulo, marketplace: a.marketplace,
+        lojaIdBanco: a.lojaIdBanco, lojaNome: a.lojaNome, criadoEm: a.criadoEm,
+        indefinido,
+        // quando não há prova e há um anúncio só, as sem-prova valem
+        variacoes: provadas.length ? provadas : (indefinido ? [] : supostas),
+        supostas,
+      };
+    });
     lista.sort((x, y) => {
       const tx = x.criadoEm ? new Date(x.criadoEm).getTime() : Infinity;
       const ty = y.criadoEm ? new Date(y.criadoEm).getTime() : Infinity;
@@ -36745,6 +36821,75 @@ Retorne JSON: {"ID": "valor", ...}`;
     return lista;
   }
   window.listarAnunciosDoProduto = listarAnunciosDoProduto;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★ v33k.1872: QUANDO NÃO SEI, EU PERGUNTO AO CANAL.
+  // ───────────────────────────────────────────────────────────────────────
+  // A tabela de vínculos é derivada e está poluída — é o que produziu as 123
+  // variações repetidas nos dois anúncios. A lista de variações de um
+  // anúncio, porém, não é opinião nossa: ela está publicada. Shopee e ML
+  // respondem `obterAnuncioCompleto` com os models reais, e a rota
+  // `/anuncio-real` já existe e já tem cache de rodada.
+  //
+  // Então a ordem de verdade passa a ser: CANAL primeiro, prova do vínculo
+  // depois, e "não sei" fica sendo "não sei" — nunca "são todas".
+  //
+  // Casamento: model do canal → SKU → cor+tamanho. Um-pra-um quando os dois
+  // lados têm uma variação só. É a mesma escada da herança da v33k.1871.
+  const _cacheVarsReais = new Map();
+
+  async function variacoesReaisDoAnuncio(p, anuncioId) {
+    if (!p || !anuncioId) return { ok: false, motivo: 'sem anúncio' };
+    const chave = String(p.id) + '|' + String(anuncioId);
+    if (_cacheVarsReais.has(chave)) return _cacheVarsReais.get(chave);
+
+    const vinc = (typeof _acharVinculoDoAnuncio === 'function')
+      ? _acharVinculoDoAnuncio(p, anuncioId) : null;
+    let saida;
+    if (!vinc || !vinc.lojaIdBanco) {
+      saida = { ok: false, motivo: 'Não achei a loja deste anúncio para poder lê-lo no canal.' };
+    } else {
+      const an = await lerAnuncioPublicado(p, vinc);
+      const varsAn = (an && Array.isArray(an.variacoes)) ? an.variacoes : null;
+      if (!an) {
+        saida = { ok: false, motivo: 'Não consegui ler este anúncio no canal agora.' };
+      } else if (!varsAn || !varsAn.length) {
+        // anúncio publicado SEM variações é resposta legítima (item simples)
+        saida = { ok: true, fonte: 'canal', variacoes: [], semVariacoes: true, naoCasaram: [] };
+      } else {
+        const norm = s => String(s == null ? '' : s).trim().toLowerCase();
+        const internas = Array.isArray(p.variacoes) ? p.variacoes : [];
+        const porModel = {}, porSku = {}, porCorTam = {};
+        internas.forEach(v => {
+          (v.vinculos || []).forEach(vi => {
+            if (String(vi.anuncioId) === String(anuncioId) && vi.modelIdExterno) {
+              porModel[String(vi.modelIdExterno)] = v;
+            }
+          });
+          if (norm(v.sku)) porSku[norm(v.sku)] = v;
+          const ct = norm(v.cor) + '|' + norm(v.tamanho);
+          if (ct !== '|') porCorTam[ct] = v;
+        });
+        const casadas = [], naoCasaram = [];
+        const jaUsada = new Set();
+        varsAn.forEach(va => {
+          let alvo = (va.modelId && porModel[String(va.modelId)]) || null;
+          if (!alvo && norm(va.sku)) alvo = porSku[norm(va.sku)] || null;
+          if (!alvo) {
+            const ct = norm(va.cor) + '|' + norm(va.tamanho);
+            if (ct !== '|') alvo = porCorTam[ct] || null;
+          }
+          if (!alvo && varsAn.length === 1 && internas.length === 1) alvo = internas[0];
+          if (alvo && !jaUsada.has(alvo.id)) { jaUsada.add(alvo.id); casadas.push(alvo); }
+          else if (!alvo) naoCasaram.push(va.nome || va.sku || String(va.modelId || '?'));
+        });
+        saida = { ok: true, fonte: 'canal', variacoes: casadas, naoCasaram, totalNoCanal: varsAn.length };
+      }
+    }
+    _cacheVarsReais.set(chave, saida);
+    return saida;
+  }
+  window.variacoesReaisDoAnuncio = variacoesReaisDoAnuncio;
 
   // ═══════════════════════════════════════════════════════════════════════
   // v33k.1840: LER O ANÚNCIO PUBLICADO (categoria, peso, caixa)
@@ -36804,23 +36949,25 @@ Retorne JSON: {"ID": "valor", ...}`;
     const variacoes = Array.isArray(p.variacoes) ? p.variacoes : [];
     const alvo = String(anuncioId);
     // ═══════════════════════════════════════════════════════════════════
-    // ★ v33k.1839: VÍNCULO INDEFINIDO NÃO DIZ DE QUEM É A VARIAÇÃO.
+    // ★ v33k.1839 / v33k.1872: VÍNCULO SEM PROVA NÃO DIZ DE QUEM É.
     // ───────────────────────────────────────────────────────────────────
     // MEDIDO em 19/08 no FUTSAL BRA-69: 25 anúncios do ML, cada um com
     // vínculo em TODAS as 272 variações, todos gravados pelo
     // `importador-auto` em 25 segundos. O importador não conseguia casar
     // SKU (o ML não devolve o da variação) e caía no ramo "vincula todas".
     //
-    // Aqui isso virava referência: escolher um desses anúncios trazia as
-    // 272 variações pra cópia, com cor e tamanho que não existem nele.
+    // A v33k.1839 passou a ignorar o vínculo CARIMBADO como indefinido. Só
+    // que o carimbo só existe nos vínculos novos: os que já estavam no
+    // banco passavam como afirmação, e em 20/08 o Alessandro viu de novo as
+    // mesmas 123 variações nos dois anúncios.
     //
-    // Agora o vínculo dessa natureza vem carimbado (`abrangencia:
-    // 'indefinida'`, v33k.1839, no backend) e é IGNORADO na hora de dizer
-    // quais variações são do anúncio. Ignorar faz o filtro devolver null,
-    // e quem chama mantém o produto inteiro — que é a verdade disponível:
-    // "não sei quais são", e não "são todas".
-    const ehAfirmacao = (vi) => String(vi.anuncioId) === alvo && vi.abrangencia !== 'indefinida';
-    const variacoesFiltradas = variacoes.filter(v => (v.vinculos || []).some(ehAfirmacao));
+    // Agora a pergunta é "tem prova?" e não "veio carimbado?" — o mesmo
+    // `_provaDoVinculo` que o seletor usa. Isso alcança o dado antigo sem
+    // migração nenhuma.
+    const ehAfirmacao = (v, vi) => String(vi.anuncioId) === alvo &&
+      ((typeof _provaDoVinculo === 'function') ? _provaDoVinculo(v, vi) === true
+                                               : vi.abrangencia !== 'indefinida');
+    const variacoesFiltradas = variacoes.filter(v => (v.vinculos || []).some(vi => ehAfirmacao(v, vi)));
     if (!variacoesFiltradas.length) return null; // não casou → caller mantém tudo
     const coresUsadas = new Set();
     variacoesFiltradas.forEach(v => {
@@ -36877,31 +37024,78 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.montarSeletorAnuncioRef = montarSeletorAnuncioRef;
 
   // Renderiza a lista de variações do anúncio escolhido (cor + tam + sku + nº fotos).
-  function dupRenderVariacoesDoAnuncio(pid) {
+  // ★ v33k.1872: agora ASSÍNCRONA, porque a verdade vem do canal. A lista dos
+  //   vínculos entra só como palpite enquanto a leitura não volta, e sempre
+  //   rotulada como palpite. Foi mostrar palpite com cara de fato que produziu
+  //   as 123 variações iguais nos dois anúncios do print de 20/08.
+  async function dupRenderVariacoesDoAnuncio(pid) {
     const p = produtosErp.find(x => String(x.id) === String(pid));
     const box = document.querySelector(`.dup-anuncio-ref-vars[data-pid="${pid}"]`);
     if (!p || !box) return;
     const anuncioId = _dupAnuncioRefEscolhido[pid];
     const anuncios = listarAnunciosDoProduto(p);
     const a = anuncios.find(x => String(x.anuncioId) === String(anuncioId));
-    if (!a || !a.variacoes.length) {
-      // v33k.1839: a diferença entre "não tem" e "não sei" é o que decide se a
-      // pessoa escolhe este anúncio como referência
-      box.innerHTML = (a && a.indefinido)
-        ? '<div style="font-size:11px;color:#b45309;line-height:1.5">O painel não sabe quais variações são deste anúncio — '
-          + 'o importador não conseguiu casar os SKUs. Escolhendo este, a cópia sai com <strong>todas</strong> as variações do produto.</div>'
-        : '<div style="font-size:11px;color:#9ca3af">Sem variações neste anúncio.</div>';
-      return;
-    }
-    const linhas = a.variacoes.map(v => {
+    if (!a) { box.innerHTML = ''; return; }
+
+    const linhasDe = (lista) => lista.map(v => {
       const partes = [];
       if (v.cor) partes.push('<strong>' + escapeHtml(v.cor) + '</strong>');
       if (v.tamanho) partes.push('Tam ' + escapeHtml(v.tamanho));
       if (v.sku) partes.push('<span style="color:#6b7280">SKU ' + escapeHtml(v.sku) + '</span>');
-      partes.push('<span style="color:#9ca3af">' + (v.fotos || 0) + ' foto(s)</span>');
+      if (v.fotos != null) partes.push('<span style="color:#9ca3af">' + (v.fotos || 0) + ' foto(s)</span>');
       return '<div style="font-size:11px;padding:3px 0;border-bottom:1px solid #eef2ff">' + partes.join(' · ') + '</div>';
     }).join('');
-    box.innerHTML = `<div style="font-size:10px;color:#6b7280;margin-bottom:2px">${a.variacoes.length} variação(ões) neste anúncio:</div>${linhas}`;
+
+    // 1) enquanto o canal não responde, diz que está lendo
+    box.dataset.lendo = String(anuncioId);
+    box.innerHTML = '<div style="font-size:11px;color:#64748b;display:flex;align-items:center;gap:6px">' +
+      '<span class="lc-ic" data-lucide="loader" style="width:12px;height:12px"></span>' +
+      'Lendo as variações deste anúncio no canal…</div>';
+    if (window.lcHydrateIcons) window.lcHydrateIcons(box);
+
+    let real = null;
+    try { real = await variacoesReaisDoAnuncio(p, anuncioId); } catch (e) { real = null; }
+
+    // a pessoa pode ter trocado o anúncio enquanto a leitura vinha
+    if (box.dataset.lendo !== String(anuncioId)) return;
+
+    // 2) o canal respondeu: essa é a verdade
+    if (real && real.ok) {
+      if (real.semVariacoes) {
+        box.innerHTML = '<div style="font-size:11px;color:#64748b">' +
+          'Este anúncio não tem variações no canal — a cópia sai como anúncio simples.</div>';
+        return;
+      }
+      const naoCasou = (real.naoCasaram || []).length;
+      box.innerHTML =
+        '<div style="font-size:10px;color:#166534;margin-bottom:2px;display:flex;align-items:center;gap:4px">' +
+          '<span class="lc-ic" data-lucide="check" style="width:11px;height:11px"></span>' +
+          real.variacoes.length + ' variação(ões) neste anúncio <span style="color:#6b7280">· lido do canal</span></div>' +
+        linhasDe(real.variacoes) +
+        (naoCasou ? '<div style="font-size:10.5px;color:#b45309;margin-top:5px">' + naoCasou +
+          ' variação(ões) do anúncio não têm correspondente no cadastro e ficam de fora da cópia.</div>' : '');
+      if (window.lcHydrateIcons) window.lcHydrateIcons(box);
+      return;
+    }
+
+    // 3) o canal não respondeu. NÃO caímos em "são todas".
+    if (a.indefinido) {
+      box.innerHTML = '<div style="font-size:11px;color:#b45309;line-height:1.5">' +
+        escapeHtml((real && real.motivo) || 'Não consegui ler este anúncio no canal.') +
+        ' E os vínculos do painel não dizem quais variações são dele — o importador não conseguiu casar os SKUs. ' +
+        '<strong>Sem uma das duas respostas a cópia não sai</strong>, para não publicar um anúncio com ' +
+        ((p.variacoes || []).length) + ' variações que a origem não tem.' +
+        (a.supostas && a.supostas.length
+          ? '<div style="margin-top:6px;font-size:10.5px;color:#6b7280">Palpite (não usado): ' +
+            a.supostas.length + ' variação(ões).</div>' : '') +
+        '</div>';
+      return;
+    }
+    box.innerHTML =
+      '<div style="font-size:10px;color:#b45309;margin-bottom:2px">' + a.variacoes.length +
+        ' variação(ões) — pelos vínculos do painel, sem confirmar no canal' +
+        ((real && real.motivo) ? (': ' + escapeHtml(real.motivo)) : '') + '</div>' +
+      linhasDe(a.variacoes);
   }
   window.dupRenderVariacoesDoAnuncio = dupRenderVariacoesDoAnuncio;
 
@@ -44513,9 +44707,15 @@ Retorne JSON: {"ID": "valor", ...}`;
       //   vazio a pessoa resolve, número ela aceita achando que conferiu.
       const _txtCat = cat ? String(cat.caminho || cat.nome || '') : '';
       const _soId = cat && (!_txtCat || _txtCat === String(cat.id));
+      // ★ v33k.1872: RESOLVER O ID, EM VEZ DE PEDIR PRA PESSOA ADIVINHAR.
+      //   A v33k.1866 trocou o número pelado por "id 100593 — abra para ver
+      //   o nome". Abrir mostrava "Atual: 100593" e uma busca por NOME que
+      //   não acha nada, porque o nome é justamente o que ela foi descobrir.
+      //   `emResolverNomesCategoria` pergunta ao canal e redesenha; enquanto
+      //   não volta, a célula diz que está lendo — não que a pessoa resolva.
       return '<div onclick="emAbrirCategoria(' + li + ',false)" style="cursor:pointer;font-size:12.5px;' +
-        'color:' + (cat ? (_soId ? '#b45309' : '#1e293b') : '#dc2626') + '">' +
-        escapeHtml(cat ? (_soId ? ('id ' + cat.id + ' — abra para ver o nome') : _txtCat) : 'escolher categoria') +
+        'color:' + (cat ? (_soId ? '#64748b' : '#1e293b') : '#dc2626') + '">' +
+        escapeHtml(cat ? (_soId ? ('lendo o nome da categoria ' + cat.id + '…') : _txtCat) : 'escolher categoria') +
         (ehSugerida ? '<div style="font-size:10.5px;color:#b45309;margin-top:2px;display:flex;align-items:center;gap:4px">' +
           '<span class="lc-ic" data-lucide="sparkles" style="width:11px;height:11px"></span>' +
           'sugerida pelo canal · confira</div>' : '') +
@@ -45029,6 +45229,62 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.emAbrirCategoria = emAbrirCategoria;
   var _emCatAlvo = null;
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★ v33k.1872: OS IDs DE CATEGORIA VIRAM NOME ASSIM QUE A TELA ABRE.
+  // ───────────────────────────────────────────────────────────────────────
+  // Uma chamada por LOJA, com todos os ids daquele canal juntos. A conferência
+  // abre com N anúncios; resolver um a um carregaria a mesma árvore N vezes.
+  //
+  // Falha aberta: id que não resolve fica como estava. Categoria não pode
+  // derrubar a tela — e a pessoa ainda tem o modal pra escolher na mão.
+  const _emCacheNomeCat = new Map();   // 'mkt|id' -> { nome, caminho }
+
+  async function emResolverNomesCategoria() {
+    const st = _emEstado; if (!st) return;
+    const porLoja = new Map();         // lojaIdBanco -> { mkt, ids:Set }
+    (st.destinos || []).forEach(d => {
+      const mkt = String(d.marketplace || '').toLowerCase();
+      if (!d.lojaIdBanco) return;
+      (st.linhas || []).forEach(l => {
+        const cat = (l.categoria || {})[mkt];
+        if (!cat || !cat.id) return;
+        const txt = String(cat.caminho || cat.nome || '');
+        if (txt && txt !== String(cat.id)) return;      // já tem nome
+        const guardado = _emCacheNomeCat.get(mkt + '|' + cat.id);
+        if (guardado) { cat.nome = guardado.nome; cat.caminho = guardado.caminho; return; }
+        if (!porLoja.has(d.lojaIdBanco)) porLoja.set(d.lojaIdBanco, { mkt, ids: new Set() });
+        porLoja.get(d.lojaIdBanco).ids.add(String(cat.id));
+      });
+    });
+    if (!porLoja.size) { emDesenharTabela(); return; }
+
+    let mudou = false;
+    for (const [lojaIdBanco, info] of porLoja) {
+      try {
+        const url = BACKEND_URL + '/api/marketplaces/loja/' + lojaIdBanco +
+          '/categorias/nomes?ids=' + encodeURIComponent(Array.from(info.ids).join(','));
+        const r = await fetch(url, {
+          headers: { 'x-api-token': getApiToken(),
+            'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        }).then(x => x.json());
+        const nomes = (r && r.ok && r.nomes) ? r.nomes : {};
+        Object.keys(nomes).forEach(id => {
+          _emCacheNomeCat.set(info.mkt + '|' + id, nomes[id]);
+          (st.linhas || []).forEach(l => {
+            const cat = (l.categoria || {})[info.mkt];
+            if (cat && String(cat.id) === String(id)) {
+              cat.nome = nomes[id].nome; cat.caminho = nomes[id].caminho || nomes[id].nome;
+              mudou = true;
+            }
+          });
+        });
+      } catch (e) { console.warn('[conferência] nomes de categoria:', e.message); }
+    }
+    if (mudou) emDesenharTabela();
+    else emDesenharTabela();   // tira o "lendo…" mesmo quando nada resolveu
+  }
+  window.emResolverNomesCategoria = emResolverNomesCategoria;
+
   async function emCatBuscar(termo) {
     const st = _emEstado; if (!st) return;
     const linha = (st.linhas || [])[_emCatAlvo]; if (!linha) return;
@@ -45054,7 +45310,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       '<button class="lc-btn" onclick="emCatBuscar(document.getElementById(\'emCatTermo\').value)" ' +
         'style="background:var(--lc-surface);color:var(--lc-text)">Buscar</button></div>' +
       '<div style="font-size:12px;color:#64748b;margin-bottom:8px">Atual: ' +
-        (atual ? escapeHtml(atual.caminho || atual.nome || atual.id) : '<span style="color:#dc2626">nenhuma</span>') + '</div>';
+        (atual ? _emTextoCategoriaAtual(atual) : '<span style="color:#dc2626">nenhuma</span>') + '</div>';
 
     if (!r.categorias.length) {
       h += '<div style="font-size:12.5px;color:#b45309">' +
@@ -45070,6 +45326,19 @@ Retorne JSON: {"ID": "valor", ...}`;
     }
     box.innerHTML = h;
   }
+  // ★ v33k.1872: "Atual: 100593" não diz nada a ninguém. Quando o nome já foi
+  //   resolvido, mostra o caminho; quando não, diz que é um id e que a busca
+  //   abaixo é por nome — a diferença entre "não sei" e "o painel está mudo".
+  function _emTextoCategoriaAtual(cat) {
+    const txt = String(cat.caminho || cat.nome || '');
+    if (txt && txt !== String(cat.id)) {
+      return escapeHtml(txt) + ' <span style="color:#94a3b8">· id ' + escapeHtml(String(cat.id)) + '</span>';
+    }
+    return '<span style="color:#b45309">id ' + escapeHtml(String(cat.id)) +
+      ' — o canal não devolveu o nome deste id (categoria antiga ou desativada). ' +
+      'Escolha uma abaixo para substituir.</span>';
+  }
+
   window.emCatBuscar = emCatBuscar;
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -45533,13 +45802,34 @@ Retorne JSON: {"ID": "valor", ...}`;
         '</div></div>';
     };
 
-    const maisLadrilho = (chave, destino, texto) =>
-      '<div onclick="emFotoAdicionar(\'' + chave + '\')" ondragover="event.preventDefault()" ' +
-        'ondrop="emFotoSoltar(' + destino + ',\'' + chave + '\')" title="adicionar foto por link" ' +
-        'style="width:104px;height:104px;border:2px dashed #cbd5e1;border-radius:8px;cursor:pointer;' +
-        'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:#64748b">' +
-      '<span class="lc-ic" data-lucide="plus" style="width:22px;height:22px"></span>' +
-      '<span style="font-size:10.5px">' + escapeHtml(texto || 'adicionar') + '</span></div>';
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.1872: O "+" NÃO SOME MAIS NO TETO.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 20/08: "ainda não está com o + para poder adicionar mais
+    // fotos". O ladrilho EXISTE desde a v33k.1847 — mas só aparecia com
+    // `gerais.length < teto`. Com 9 de 9 na Shopee, `9 < 9` é falso e ele
+    // sumia. Ou seja: ele desaparecia exatamente no estado NORMAL de um
+    // anúncio pronto, que é quando a pessoa abre o modal.
+    //
+    // O aviso que explicava isso ficava no fim do bloco — e como o cartão
+    // não tinha rolagem (o outro defeito desta versão), estava fora da tela.
+    // Some o botão e some a explicação: parece que o recurso não existe.
+    //
+    // Agora ele fica SEMPRE. No teto vira um ladrilho que diz o porquê e
+    // troca: escolher a nova foto remove a última pra abrir vaga, em vez de
+    // obrigar a remover primeiro e adicionar depois.
+    const maisLadrilho = (chave, destino, texto, cheio) =>
+      '<div onclick="emFotoAdicionar(\'' + chave + '\',' + (cheio ? 'true' : 'false') + ')" ' +
+        'ondragover="event.preventDefault()" ' +
+        'ondrop="emFotoSoltar(' + destino + ',\'' + chave + '\')" ' +
+        'title="' + (cheio ? 'no limite: a nova entra no lugar da última' : 'adicionar foto por link') + '" ' +
+        'style="width:104px;height:104px;border:2px dashed ' + (cheio ? '#fcd34d' : '#cbd5e1') + ';' +
+        'border-radius:8px;cursor:pointer;background:' + (cheio ? '#fffbeb' : 'transparent') + ';' +
+        'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;' +
+        'padding:6px;text-align:center;color:' + (cheio ? '#b45309' : '#64748b') + '">' +
+      '<span class="lc-ic" data-lucide="' + (cheio ? 'replace' : 'plus') + '" style="width:22px;height:22px"></span>' +
+      '<span style="font-size:10.5px;line-height:1.25">' +
+        escapeHtml(cheio ? 'trocar a última' : (texto || 'adicionar')) + '</span></div>';
 
     const gerais = Array.isArray(linha.fotos) ? linha.fotos : [];
     // ★ v33k.1864: grade de verdade, não flex-wrap.
@@ -45577,7 +45867,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         '</div>' +
         '<div style="' + GRADE + '">' +
           gerais.map((f, i) => ladrilho(f, i, 'g', gerais.length, null, '1ª')).join('') +
-          (gerais.length < porVariacao ? maisLadrilho('g', gerais.length, 'geral') : '') +
+          maisLadrilho('g', gerais.length, 'geral', gerais.length >= porVariacao) +
         '</div></div>';
 
       if (!cores.length) {
@@ -45598,7 +45888,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           '<div style="' + GRADE + '">' +
             lista.map((f, i) => ladrilho(f, i, 'c' + k, lista.length,
               Math.max(0, porVariacao - gerais.length), 'CAPA')).join('') +
-            (total < porVariacao ? maisLadrilho('c' + k, lista.length, 'nesta cor') : '') +
+            maisLadrilho('c' + k, lista.length, 'nesta cor', total >= porVariacao) +
           '</div></div>';
       });
     } else {
@@ -45621,7 +45911,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
       h += '<div style="' + GRADE + '">' +
         gerais.slice(0, teto).map((f, i) => ladrilho(f, i, 'g', gerais.length, teto)).join('') +
-        (gerais.length < teto ? maisLadrilho('g', Math.min(gerais.length, teto)) : '') +
+        maisLadrilho('g', Math.min(gerais.length, teto), 'adicionar', gerais.length >= teto) +
         '</div>';
 
       if (excedeu) {
@@ -45633,13 +45923,17 @@ Retorne JSON: {"ID": "valor", ...}`;
           gerais.slice(teto).map((f, k) => ladrilho(f, teto + k, 'g', gerais.length, teto)).join('') + '</div></div>';
       } else if (gerais.length >= teto) {
         h += '<div style="margin-top:12px;font-size:11.5px;color:#64748b">' +
-          'Limite do ' + escapeHtml(mkt || '') + ' atingido. Remova uma foto para poder adicionar outra.</div>';
+          'Limite do ' + escapeHtml(mkt || '') + ' atingido. O ladrilho amarelo troca a última foto pela nova.</div>';
       }
     }
 
+    // ★ v33k.1872: `painel: true` — cabeçalho e Fechar grudados, corpo
+    //   rolável, sem a coluna do ícone comendo 56px da grade. E 920px: com
+    //   a largura finalmente sendo aplicada (o seletor estava errado), cabem
+    //   6 ladrilhos por linha em vez de 2.
     lcAlert(h, {
       tipo: 'info', titulo: 'Imagens · ' + escapeHtml((linha.nome || '').slice(0, 40)),
-      largura: 660, html: true,
+      largura: 920, html: true, painel: true,
       botoes: [{ texto: 'Fechar', primario: true, onclick: 'emFotoFechar()' }],
     });
   }
@@ -45697,13 +45991,20 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.emFotoRemover = emFotoRemover;
 
-  async function emFotoAdicionar(chave) {
+  // ★ v33k.1872: `cheio` = a lista já bateu o teto do canal. Em vez de
+  //   recusar ("remova uma foto antes"), a nova entra NO LUGAR da última —
+  //   que é a que ia ser cortada de qualquer jeito na exportação. Duas ações
+  //   viram uma, e a que sai é a que o canal já ia descartar.
+  async function emFotoAdicionar(chave, cheio) {
     const lista = _emListaFotos(chave); if (!lista) return;
-    const url = await lcPrompt('Link da imagem:', '', { titulo: 'Adicionar imagem',
+    const url = await lcPrompt('Link da imagem:', '', {
+      titulo: cheio ? 'Trocar a última imagem' : 'Adicionar imagem',
+      msg: cheio ? 'O limite do canal já foi atingido. A imagem nova entra no lugar da última da fila.' : '',
       placeholder: 'https://…' });
     const limpo = String(url || '').trim();
     if (!limpo) return;
     if (!/^https?:\/\//i.test(limpo)) { showToast('O link precisa começar com http:// ou https://', true); return; }
+    if (cheio && lista.length) lista.pop();
     lista.push(limpo);
     emFotosDesenhar();
   }
@@ -45941,7 +46242,15 @@ Retorne JSON: {"ID": "valor", ...}`;
       const tit = document.getElementById('emTitulo');
       if (tit) tit.textContent = titulo || 'Conferir antes de exportar';
       goTo('editorMassaScreen');
-      setTimeout(() => { emDesenharAbas(); emDesenharAviso(); emDesenharSeletor(); emDesenharTabela(); }, 60);
+      setTimeout(() => {
+        emDesenharAbas(); emDesenharAviso(); emDesenharSeletor(); emDesenharTabela();
+        // ★ v33k.1872: os ids de categoria viram nome sem a pessoa pedir.
+        //   Roda depois do primeiro desenho pra a tela aparecer na hora; o
+        //   redesenho vem quando os nomes chegam.
+        if (typeof emResolverNomesCategoria === 'function') {
+          Promise.resolve().then(emResolverNomesCategoria).catch(() => {});
+        }
+      }, 60);
     });
   }
   window.emAbrir = emAbrir;
@@ -48449,22 +48758,98 @@ REGRAS DURAS:
         // produto pai acumulou vínculos de vários anúncios (ex: "Rosa" de um,
         // "Rose" de outro), a cópia sai só com as variações/cores do anúncio
         // escolhido. Fallback: anúncio mais antigo. Não altera o pai.
+        //
+        // ═══════════════════════════════════════════════════════════════
+        // ★ v33k.1872: O CANAL DECIDE, E "NÃO SEI" NÃO VIRA "SÃO TODAS".
+        // ───────────────────────────────────────────────────────────────
+        // RELATO DE 20/08: escolher o anúncio Shopee ou o do ML dava as
+        // MESMAS 123 variações. A escada antiga terminava assim:
+        //
+        //   ref = filtrarPorAnuncioEscolhido(...)   // null quando não casa
+        //   if (ref) { ... }                         // e quando é null?
+        //                                            // ↑ mantinha TUDO
+        //
+        // Esse `if` silencioso é o bug. "Não sei quais variações são deste
+        // anúncio" foi tratado como "então são todas" — e todas, aqui,
+        // significa publicar na Shopee um anúncio com 123 variações que a
+        // origem não tem. Desfazer isso no canal custa dinheiro e tempo.
+        //
+        // Agora a ordem é: 1) o que o canal publicou, 2) vínculo COM PROVA,
+        // 3) parar. Parar é reversível; publicar errado não é.
+        let _refResolvida = false;
         try {
           const escolhido = (window._dupAnuncioRefEscolhido || {})[String(p.id)] || null;
-          let ref = null;
-          if (escolhido && typeof filtrarPorAnuncioEscolhido === 'function') {
-            ref = filtrarPorAnuncioEscolhido(p, escolhido);
+          const _anunciosDoP = (typeof listarAnunciosDoProduto === 'function')
+            ? listarAnunciosDoProduto(p) : [];
+          const _alvoId = escolhido || (_anunciosDoP[0] && _anunciosDoP[0].anuncioId) || null;
+
+          // 1) CANAL — a lista de variações do anúncio está publicada, não é
+          //    opinião nossa. Shopee e ML respondem; a leitura já tem cache.
+          let ref = null, fonte = null;
+          if (_alvoId && typeof variacoesReaisDoAnuncio === 'function') {
+            const real = await variacoesReaisDoAnuncio(p, _alvoId);
+            if (real && real.ok && !real.semVariacoes && real.variacoes.length) {
+              const ids = new Set(real.variacoes.map(v => String(v.id)));
+              const vars = (p.variacoes || []).filter(v => ids.has(String(v.id)));
+              const usadas = new Set();
+              vars.forEach(v => {
+                if (v.corId) usadas.add(String(v.corId));
+                if (v.cor) usadas.add(String(v.cor).toLowerCase().trim());
+              });
+              const todas = (typeof obterCoresDoProduto === 'function') ? obterCoresDoProduto(p) : (p.cores || []);
+              let cores = todas.filter(c => usadas.has(String(c.id)) ||
+                usadas.has(String(c.nome).toLowerCase().trim()));
+              if (!cores.length) cores = todas;
+              ref = { variacoes: vars, cores };
+              fonte = 'canal';
+              if ((real.naoCasaram || []).length) {
+                dupLogStep('  ⓘ ' + real.naoCasaram.length + ' variação(ões) do anúncio publicado não têm ' +
+                  'correspondente no cadastro e ficam de fora da cópia.', 'err');
+              }
+            } else if (real && real.ok && real.semVariacoes) {
+              fonte = 'canal-simples';
+            }
           }
-          if (!ref && typeof filtrarReferenciaAnuncioOriginal === 'function') {
+
+          // 2) VÍNCULO COM PROVA (model do canal / SKU externo que casa)
+          if (!ref && escolhido && typeof filtrarPorAnuncioEscolhido === 'function') {
+            const porVinculo = filtrarPorAnuncioEscolhido(p, escolhido);
+            if (porVinculo) { ref = porVinculo; fonte = 'vinculo'; }
+          }
+          if (!ref && !escolhido && typeof filtrarReferenciaAnuncioOriginal === 'function') {
             const auto = filtrarReferenciaAnuncioOriginal(p);
-            if (auto.filtrou) ref = { variacoes: auto.variacoes, cores: auto.cores };
+            if (auto.filtrou) { ref = { variacoes: auto.variacoes, cores: auto.cores }; fonte = 'vinculo'; }
           }
+
           if (ref) {
             novo.variacoes = JSON.parse(JSON.stringify(ref.variacoes));
             novo.cores = JSON.parse(JSON.stringify(ref.cores));
-            dupLogStep(`  ✓ Referência: anúncio ${escolhido || '(mais antigo)'}, ${ref.variacoes.length} variação(ões), ${ref.cores.length} cor(es) (descartadas as de outros anúncios)`, 'ok');
+            _refResolvida = true;
+            dupLogStep('  ✓ Referência: anúncio ' + (_alvoId || '(mais antigo)') + ', ' +
+              ref.variacoes.length + ' variação(ões), ' + ref.cores.length + ' cor(es)' +
+              (fonte === 'canal' ? ' — lido do anúncio publicado' : ' — pelos vínculos com prova'), 'ok');
+          } else if (fonte === 'canal-simples') {
+            _refResolvida = true;
+            dupLogStep('  ✓ Referência: anúncio ' + _alvoId + ' não tem variações no canal, ' +
+              'a cópia sai como anúncio simples.', 'ok');
+          } else {
+            // 3) PARAR. Só é seguro seguir com tudo quando não há ambiguidade:
+            //    um anúncio só disputando as variações.
+            const ambiguo = _anunciosDoP.length > 1;
+            if (ambiguo) {
+              throw new Error('Não consegui determinar quais variações são do anúncio ' +
+                (_alvoId || '(referência)') + '. Este produto tem ' + _anunciosDoP.length +
+                ' anúncios vinculados e ' + ((p.variacoes || []).length) + ' variações no cadastro; ' +
+                'seguir sem saber publicaria todas elas na cópia. Abra o seletor de anúncio de ' +
+                'referência: se ele conseguir ler do canal, a duplicação passa a funcionar. ' +
+                'Se a loja estiver desconectada, reconecte-a em Lojas & Conexões.');
+            }
+            dupLogStep('  ⓘ Um anúncio vinculado só: a cópia usa as variações do produto como estão.', 'ok');
           }
-        } catch (eRef) { dupLogStep('  ⚠ filtro de referência falhou (mantendo tudo): ' + eRef.message, 'err'); }
+        } catch (eRef) {
+          if (!_refResolvida && /Não consegui determinar/.test(eRef.message)) throw eRef;
+          dupLogStep('  ⚠ filtro de referência falhou (mantendo tudo): ' + eRef.message, 'err');
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // v33k.1840: O QUE O ANÚNCIO PUBLICADO SABE E O CADASTRO NÃO.
@@ -69915,7 +70300,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1871-preco-nome-deduzidos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1872-referencia-do-canal';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -89478,8 +89863,29 @@ ${JSON.stringify(metricas, null, 2)}`
     msgEl.style.display = cfg.msg ? '' : 'none';
 
     // largura sob medida: a tabela precisa de espaço, o alerta comum não
-    const caixaEl = ov.querySelector('.lc-modal');
+    // ═══════════════════════════════════════════════════════════════════════
+    // ★ v33k.1872: A v33k.1868 MIROU NUMA CLASSE QUE NÃO EXISTE.
+    // ─────────────────────────────────────────────────────────────────────
+    // `querySelector('.lc-modal')` não casa com `class="lc-modal-card"` —
+    // são duas classes diferentes. `caixaEl` vinha NULL, o `if` inteiro era
+    // pulado e a largura pedida NUNCA foi aplicada. O `setProperty` com
+    // `!important` da v33k.1868 estava certo; ele só nunca rodou.
+    //
+    // É por isso que no print de 20/08 o modal de fotos saiu com 440px (o
+    // `max-width` da classe) em vez dos 660 que ele pede: a grade coube em
+    // duas colunas e o resto virou faixa branca. O relato do Alessandro em
+    // 19/08 — "janela de 1648px e o modal saiu com 440" — era a MEDIÇÃO
+    // CERTA de um defeito que a correção não alcançou.
+    //
+    // ★ A LIÇÃO: a suíte de largura (`qa_largura_do_modal`) mede o CSS num
+    //   DOM montado à mão. Ela nunca executou este `querySelector` contra o
+    //   DOM que `_lcModalGarantirDom` realmente cria — e por isso ficou
+    //   verde num caminho morto. Mesma família do furo da v33k.1867.
+    const caixaEl = ov.querySelector('.lc-modal-card') || ov.querySelector('.lc-modal');
     if (caixaEl) {
+      // modo painel: modal que é EDITOR (fotos, atributos, conferência) e
+      // precisa de cabeçalho/rodapé fixos, corpo rolável e a largura inteira
+      caixaEl.classList.toggle('lc-painel', !!cfg.painel);
       // ═══════════════════════════════════════════════════════════════════
       // ★ v33k.1868: A LARGURA PEDIDA TEM QUE VENCER O PADRÃO.
       // ───────────────────────────────────────────────────────────────────
@@ -89687,6 +90093,9 @@ ${JSON.stringify(metricas, null, 2)}`
       // diferença é que aqui as duas pontas são nossas.
       html: !!opts.html,
       largura: opts.largura || null,
+      // v33k.1872: mesmo motivo do `html`/`largura` acima — quem manda tem
+      // que ser lido. Um campo novo que o lcAlert não copia morre no caminho.
+      painel: !!opts.painel,
       botoes: Array.isArray(opts.botoes) ? opts.botoes : null,
     });
   }
