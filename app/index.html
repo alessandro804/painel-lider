@@ -36795,6 +36795,51 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (!reg._sset.has(v.id)) reg._sset.set(v.id, dados);
       });
     });
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.1873: A FAMÍLIA DO CATÁLOGO VIRA UMA OPÇÃO SÓ.
+    // ───────────────────────────────────────────────────────────────────
+    // Numa conta em modo Catálogo, um produto de 123 cores/tamanhos produz
+    // 123 MLBs — e o seletor listava os 123. Escolher "um" nunca foi a
+    // pergunta certa: o vendedor tem UM anúncio, que por acaso o ML guarda
+    // em 123 pedaços.
+    //
+    // A tela só sabe disso DEPOIS de ler o primeiro anúncio da loja no
+    // canal (`_familiaMLPorLoja`, preenchido por `variacoesReaisDoAnuncio`).
+    // Antes disso lista tudo, e colapsa no redesenho — que é honesto: não
+    // dá pra afirmar que é Catálogo sem ter perguntado.
+    const _fam = (typeof _familiaMLPorLoja !== 'undefined') ? _familiaMLPorLoja : new Map();
+    const ehFamilia = (reg) => _fam.has(String(reg.lojaIdBanco)) &&
+      /mercado/i.test(String(reg.marketplace || ''));
+    if (_fam.size) {
+      const porLoja = new Map();
+      Array.from(mapa.entries()).forEach(([aid, reg]) => {
+        if (!ehFamilia(reg)) return;
+        const k = String(reg.lojaIdBanco);
+        if (!porLoja.has(k)) porLoja.set(k, []);
+        porLoja.get(k).push(aid);
+      });
+      porLoja.forEach((ids, k) => {
+        if (ids.length < 2) return;
+        // o representante é o mais antigo; os outros somem da lista e viram
+        // "membros" dele. A união das variações é feita na leitura.
+        ids.sort((x, y) => {
+          const a = mapa.get(x), b = mapa.get(y);
+          const tx = a.criadoEm ? new Date(a.criadoEm).getTime() : Infinity;
+          const ty = b.criadoEm ? new Date(b.criadoEm).getTime() : Infinity;
+          return tx - ty;
+        });
+        const chefe = mapa.get(ids[0]);
+        chefe.familiaML = _fam.get(k) || {};
+        chefe.membros = ids.slice();
+        ids.slice(1).forEach(id => {
+          const outro = mapa.get(id);
+          outro._vset.forEach((dados, vid) => { if (!chefe._vset.has(vid)) chefe._vset.set(vid, dados); });
+          outro._sset.forEach((dados, vid) => { if (!chefe._sset.has(vid)) chefe._sset.set(vid, dados); });
+          mapa.delete(id);
+        });
+      });
+    }
+
     const varias = mapa.size > 1;
     const lista = Array.from(mapa.values()).map(a => {
       const provadas = Array.from(a._vset.values());
@@ -36807,9 +36852,12 @@ Retorne JSON: {"ID": "valor", ...}`;
       return {
         anuncioId: a.anuncioId, titulo: a.titulo, marketplace: a.marketplace,
         lojaIdBanco: a.lojaIdBanco, lojaNome: a.lojaNome, criadoEm: a.criadoEm,
-        indefinido,
+        familiaML: a.familiaML || null, membros: a.membros || null,
+        // ★ família do Catálogo NUNCA é indefinida: o conjunto é o produto
+        indefinido: a.membros ? false : indefinido,
         // quando não há prova e há um anúncio só, as sem-prova valem
-        variacoes: provadas.length ? provadas : (indefinido ? [] : supostas),
+        variacoes: a.membros ? (provadas.length ? provadas : supostas)
+                             : (provadas.length ? provadas : (indefinido ? [] : supostas)),
         supostas,
       };
     });
@@ -36837,6 +36885,39 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Casamento: model do canal → SKU → cor+tamanho. Um-pra-um quando os dois
   // lados têm uma variação só. É a mesma escada da herança da v33k.1871.
   const _cacheVarsReais = new Map();
+  // ★ v33k.1873: lojas em que já descobrimos que o ML publica em Catálogo.
+  //   lojaIdBanco -> { nome, id, total }
+  const _familiaMLPorLoja = new Map();
+  window._familiaMLPorLoja = _familiaMLPorLoja;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★ v33k.1873: NO CATÁLOGO DO ML, O ANÚNCIO É A FAMÍLIA.
+  // ───────────────────────────────────────────────────────────────────────
+  // Conta com `user_product_seller` publica cada cor+tamanho como um MLB
+  // separado, todos com o mesmo `family_name`. O que o vendedor chama de
+  // "anúncio" são os 123 MLBs juntos.
+  //
+  // A união NÃO pode vir da API da família: `user_products[]` devolve o
+  // user_product_id e os atributos, e NÃO o id do anúncio — não dá pra
+  // mapear família → MLBs por ali. Ela vem dos nossos vínculos, que já
+  // apontam cada variação para o MLB dela naquela loja. Custo zero de rede.
+  //
+  // A API da família entra como CONFERÊNCIA: ela diz quantos user_products
+  // existem, e o painel compara com quantos juntou. Quando os números
+  // divergem, a tela fala — juntar 118 de 123 calado seria publicar uma
+  // grade incompleta sem ninguém ver.
+  function _unirFamiliaML(p, lojaIdBanco) {
+    const alvo = String(lojaIdBanco);
+    const vars = (p.variacoes || []).filter(v =>
+      (v.vinculos || []).some(vi => String(vi.lojaIdBanco || vi.lojaId) === alvo &&
+        /mercado/i.test(String(vi.marketplace || ''))));
+    const anuncios = new Set();
+    vars.forEach(v => (v.vinculos || []).forEach(vi => {
+      if (String(vi.lojaIdBanco || vi.lojaId) === alvo && vi.anuncioId) anuncios.add(String(vi.anuncioId));
+    }));
+    return { variacoes: vars, anuncios: Array.from(anuncios) };
+  }
+  window._unirFamiliaML = _unirFamiliaML;
 
   async function variacoesReaisDoAnuncio(p, anuncioId) {
     if (!p || !anuncioId) return { ok: false, motivo: 'sem anúncio' };
@@ -36853,6 +36934,22 @@ Retorne JSON: {"ID": "valor", ...}`;
       const varsAn = (an && Array.isArray(an.variacoes)) ? an.variacoes : null;
       if (!an) {
         saida = { ok: false, motivo: 'Não consegui ler este anúncio no canal agora.' };
+      } else if (an.catalogo) {
+        // ── CATÁLOGO DO ML: a referência é o conjunto, não a peça ─────────
+        const fam = an.familia || {};
+        _familiaMLPorLoja.set(String(vinc.lojaIdBanco),
+          { nome: fam.nome || an.familyName || null, id: fam.id || an.familyId || null,
+            total: fam.totalUserProducts != null ? fam.totalUserProducts : null });
+        const uniao = _unirFamiliaML(p, vinc.lojaIdBanco);
+        saida = {
+          ok: true, fonte: 'familia-ml', catalogo: true,
+          familia: { nome: fam.nome || an.familyName || null,
+                     id: fam.id || an.familyId || null,
+                     totalNoCanal: fam.totalUserProducts != null ? fam.totalUserProducts : null },
+          variacoes: uniao.variacoes,
+          anunciosJuntados: uniao.anuncios.length,
+          naoCasaram: [],
+        };
       } else if (!varsAn || !varsAn.length) {
         // anúncio publicado SEM variações é resposta legítima (item simples)
         saida = { ok: true, fonte: 'canal', variacoes: [], semVariacoes: true, naoCasaram: [] };
@@ -37005,7 +37102,12 @@ Retorne JSON: {"ID": "valor", ...}`;
     const options = anuncios.map((a, i) => {
       const sel = String(a.anuncioId) === String(escolhido) ? 'selected' : '';
       const tag = i === 0 ? ' (mais antigo)' : '';
-      const lbl = mkLabel(a.marketplace) + ' · ' + (a.lojaNome || '') + ' · #' + a.anuncioId + tag;
+      // ★ v33k.1873: a família não se apresenta pelo MLB de um dos pedaços
+      const lbl = a.membros
+        ? (mkLabel(a.marketplace) + ' · ' + (a.lojaNome || '') + ' · Catálogo' +
+           ((a.familiaML && a.familiaML.nome) ? (' · ' + a.familiaML.nome) : '') +
+           ' · ' + a.membros.length + ' anúncios')
+        : (mkLabel(a.marketplace) + ' · ' + (a.lojaNome || '') + ' · #' + a.anuncioId + tag);
       return `<option value="${escapeHtml(a.anuncioId)}" ${sel}>${escapeHtml(lbl)}</option>`;
     }).join('');
     const tituloProd = opts.comprimido ? `<div style="font-weight:700;font-size:12px;color:#1e2a47;margin-bottom:4px">${escapeHtml(p.nome)}</div>` : '';
@@ -37061,6 +37163,60 @@ Retorne JSON: {"ID": "valor", ...}`;
 
     // 2) o canal respondeu: essa é a verdade
     if (real && real.ok) {
+      // ── CATÁLOGO DO ML: mostra o CONJUNTO, não a peça ──────────────────
+      if (real.catalogo) {
+        // ★ v33k.1873: agora que sabemos que a loja é Catálogo, o seletor
+        //   pode colapsar os N MLBs numa opção só. Redesenha UMA vez — o
+        //   guarda evita o laço redesenhar→ler→redesenhar.
+        const _cx = document.querySelector('[data-dup-ref-pid="' + pid + '"]');
+        if (_cx && !_cx.dataset.familiaColapsada &&
+            typeof montarSeletorAnuncioRef === 'function') {
+          _cx.dataset.familiaColapsada = '1';
+          const antes = _cx.querySelectorAll('option').length;
+          const pai = _cx.parentNode;
+          const novoHtml = montarSeletorAnuncioRef(p, { comprimido: _cx.dataset.comprimido === '1' });
+          const tmp = document.createElement('div');
+          tmp.innerHTML = novoHtml;
+          const novoEl = tmp.firstElementChild;
+          if (novoEl && pai) {
+            novoEl.dataset.familiaColapsada = '1';
+            const depois = novoEl.querySelectorAll('option').length;
+            if (depois !== antes) {
+              pai.replaceChild(novoEl, _cx);
+              if (window.lcHydrateIcons) window.lcHydrateIcons(novoEl);
+              return dupRenderVariacoesDoAnuncio(pid);
+            }
+          }
+        }
+        const f = real.familia || {};
+        const divergiu = f.totalNoCanal != null && f.totalNoCanal !== real.variacoes.length;
+        box.innerHTML =
+          '<div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:9px;margin-bottom:6px">' +
+            '<div style="font-size:11px;font-weight:700;color:#065f46;display:flex;align-items:center;gap:5px">' +
+              '<span class="lc-ic" data-lucide="layers" style="width:12px;height:12px"></span>' +
+              'Catálogo do Mercado Livre' + (f.nome ? (' · ' + escapeHtml(f.nome)) : '') + '</div>' +
+            '<div style="font-size:11px;color:#047857;line-height:1.5;margin-top:3px">' +
+              'Nesta conta cada cor/tamanho é um anúncio separado. A referência é a <strong>família inteira</strong>: ' +
+              '<strong>' + real.variacoes.length + ' variação(ões)</strong> de <strong>' +
+              real.anunciosJuntados + ' anúncio(s)</strong> juntadas numa cópia só.' +
+            '</div>' +
+            (divergiu
+              ? '<div style="font-size:10.5px;color:#b45309;margin-top:5px">O ML diz que a família tem ' +
+                f.totalNoCanal + ' item(ns) e eu juntei ' + real.variacoes.length +
+                '. A diferença são anúncios da família que ainda não foram importados — ' +
+                'rode a importação desta loja antes de duplicar, senão a cópia sai com a grade incompleta.</div>'
+              : (f.totalNoCanal != null
+                ? '<div style="font-size:10.5px;color:#047857;margin-top:5px">Confere com os ' +
+                  f.totalNoCanal + ' item(ns) que o ML informa na família.</div>' : '')) +
+          '</div>' +
+          linhasDe(real.variacoes.slice(0, 40).map(v => ({
+            cor: v.cor, tamanho: v.tamanho, sku: v.sku, fotos: null }))) +
+          (real.variacoes.length > 40
+            ? '<div style="font-size:10.5px;color:#6b7280;margin-top:4px">… e mais ' +
+              (real.variacoes.length - 40) + ' variação(ões).</div>' : '');
+        if (window.lcHydrateIcons) window.lcHydrateIcons(box);
+        return;
+      }
       if (real.semVariacoes) {
         box.innerHTML = '<div style="font-size:11px;color:#64748b">' +
           'Este anúncio não tem variações no canal — a cópia sai como anúncio simples.</div>';
@@ -45387,8 +45543,21 @@ Retorne JSON: {"ID": "valor", ...}`;
       : 'Categoria definida. Recarregando os campos…');
     // uma ficha por linha, em série: a rota do canal tem limite de taxa e
     // disparar quinze de uma vez volta com recusa em metade delas
-    for (const linha of alvos) await emRecarregarFicha(linha, mkt);
+    // ★ v33k.1874: e logo depois da ficha, o PREENCHIMENTO. Trocar a
+    //   categoria troca a lista de atributos exigidos; recarregar a ficha
+    //   sem preencher devolvia os campos certos e vazios — foi o relato de
+    //   21/08 no TikTok ("corrigi a categoria pra tênis e os atributos não
+    //   foram preenchidos automaticamente"). Vale pros quatro canais.
+    let _nPreenchidos = 0;
+    for (const linha of alvos) {
+      await emRecarregarFicha(linha, mkt);
+      try { _nPreenchidos += await emPreencherAtributosDaFicha(linha, mkt); }
+      catch (e) { console.warn('[conferência] preenchimento automático falhou:', e.message); }
+    }
     emDesenharTabela();
+    if (_nPreenchidos > 0) {
+      showToast(_nPreenchidos + ' atributo(s) preenchido(s) pela categoria nova. Confira antes de exportar.');
+    }
   }
   window.emCatEscolher = emCatEscolher;
 
@@ -45408,6 +45577,116 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Refaz a ficha de UMA linha num canal. Falha aberta: sem resposta, a linha
   // fica com a categoria nova e sem campo — a tela mostra pendente em vez de
   // travar.
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★ v33k.1874: TROCOU A CATEGORIA, OS ATRIBUTOS SE PREENCHEM.
+  // ───────────────────────────────────────────────────────────────────────
+  // RELATO DE 21/08: "ao duplicar um anúncio no TikTok, produto como tênis
+  // masculino estava saindo com categorias muito aleatórias. Precisei
+  // corrigir e colocar tênis. Mas notei que os atributos não foram
+  // preenchidos automaticamente após mudar a categoria."
+  //
+  // Duas causas, e a segunda é a que importa:
+  //
+  // ★ (a) `dupCompletarCamposObjeto` só tinha braço de ML e de Shopee. O
+  //       TikTok NUNCA teve preenchimento automático de atributos — nem na
+  //       duplicação. Escrever um terceiro braço seria a mesma regra em três
+  //       lugares, que é o custo que esta base já pagou várias vezes.
+  //
+  // ★ (b) `emCatEscolher` recarrega a FICHA depois de trocar a categoria,
+  //       mas ficha é a lista de campos que a categoria exige — não os
+  //       valores. Ela voltava com os campos certos e vazios, e ninguém
+  //       preenchia. Valia pros quatro canais, não só pro TikTok.
+  //
+  // A saída é uma só: preencher A PARTIR DA FICHA. `util/prevoo-fichas.js`
+  // já normaliza ML, Shopee, TikTok e Shein no mesmo contrato
+  // (`{id, nome, valores:[{id,nome}], obrigatorio, deVariacao}`) — e é a
+  // MESMA fonte que a exportação cobra. Preencher de outra fonte seria
+  // preencher um formulário diferente do que vai ser conferido.
+  //
+  // ★ NUNCA INVENTA VALOR DE LISTA. Atributo com lista fechada só aceita um
+  //   dos valores oferecidos; o que não casa é descartado. Valor inventado
+  //   é recusa na publicação, e a recusa chega depois, longe daqui.
+  async function emPreencherAtributosDaFicha(linha, mkt, opts) {
+    opts = opts || {};
+    const f = (linha && linha.fichas && linha.fichas[mkt]) || null;
+    if (!f || !Array.isArray(f.campos)) return 0;
+    if (typeof chamarIA !== 'function') return 0;
+
+    linha.atributos = linha.atributos || {};
+    const jaTem = Object.assign({}, linha.atributos[mkt] || {});
+
+    // só campos DO ITEM: o que é de variação vem da grade, não da IA
+    const alvos = f.campos.filter(c => !c.deVariacao &&
+      !String(jaTem[c.id] == null ? '' : jaTem[c.id]).trim() &&
+      !String(c.valor == null ? '' : c.valor).trim());
+    if (!alvos.length) return 0;
+
+    // obrigatórios primeiro; teto pra não estourar o contexto num TikTok com
+    // 60 atributos, e porque a lista longa piora a resposta
+    alvos.sort((a, b) => (b.obrigatorio ? 1 : 0) - (a.obrigatorio ? 1 : 0));
+    const lote = alvos.slice(0, 28);
+
+    const linhasPrompt = lote.map(c => {
+      const vals = Array.isArray(c.valores) ? c.valores : [];
+      const amostra = vals.slice(0, 40).map(v => v.nome).filter(Boolean);
+      return '- ' + c.id + ' (' + (c.nome || c.id) + ')' +
+        (c.obrigatorio ? ' [OBRIGATORIO]' : '') +
+        (amostra.length ? ('  valores possiveis: ' + amostra.join(' | ')) : '  texto livre');
+    }).join('\n');
+
+    const p = linha._produto || {};
+    const prompt =
+      'Produto: ' + String(linha.nome || p.nome || '') + '\n' +
+      (p.marca ? ('Marca: ' + p.marca + '\n') : '') +
+      (p.material ? ('Material: ' + p.material + '\n') : '') +
+      'Descrição: ' + String(linha.descricao || p.descricao || '').slice(0, 700) + '\n\n' +
+      'Preencha os atributos do marketplace ' + mkt + ':\n' + linhasPrompt + '\n\n' +
+      'Responda APENAS um JSON { "ID": "valor", ... } com os IDs EXATAMENTE como acima. ' +
+      'Quando houver "valores possiveis", use UM deles copiado literalmente — não invente sinônimo. ' +
+      'Se não souber ou não se aplicar ao produto, OMITA o ID. Sem markdown nem texto fora do JSON.';
+
+    let dados = {};
+    try {
+      const resp = await chamarIA({ prompt, system: 'Você responde só com JSON válido.', maxTokens: 1500 });
+      const raw = String(resp || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      dados = (typeof parseJsonTolerante === 'function') ? parseJsonTolerante(raw) : JSON.parse(raw);
+    } catch (e) {
+      console.warn('[conferência] atributos por IA falharam:', e.message);
+      return 0;
+    }
+    if (!dados || typeof dados !== 'object') return 0;
+
+    const norm = s => String(s == null ? '' : s).normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    let n = 0, recusados = 0;
+    lote.forEach(c => {
+      const bruto = dados[c.id];
+      if (bruto == null || String(bruto).trim() === '') return;
+      const vals = Array.isArray(c.valores) ? c.valores : [];
+      if (vals.length) {
+        const alvo = norm(bruto);
+        const achou = vals.find(v => norm(v.nome) === alvo) ||
+          vals.find(v => { const vn = norm(v.nome); return vn && alvo && (vn.includes(alvo) || alvo.includes(vn)); });
+        if (!achou) { recusados++; return; }   // lista fechada: não inventa
+        jaTem[c.id] = achou.nome;
+      } else {
+        jaTem[c.id] = String(bruto).trim().slice(0, c.maxLen || 255);
+      }
+      n++;
+    });
+
+    linha.atributos[mkt] = jaTem;
+    // recalcula a pendência a partir da ficha, que é o que a tela mostra
+    linha.atributosPendentes = f.campos.filter(c => !c.deVariacao && c.obrigatorio &&
+      !String(jaTem[c.id] == null ? '' : jaTem[c.id]).trim() &&
+      !String(c.valor == null ? '' : c.valor).trim()).length;
+    if (recusados && !opts.silencioso) {
+      console.info('[conferência] ' + recusados + ' valor(es) sugeridos não existiam na lista da categoria e foram descartados.');
+    }
+    return n;
+  }
+  window.emPreencherAtributosDaFicha = emPreencherAtributosDaFicha;
+
   async function emRecarregarFicha(linha, mkt) {
     const loja = _emLojaDaAba();
     if (!loja || !loja.lojaIdBanco || !linha || !linha._produto) return;
@@ -46133,6 +46412,204 @@ Retorne JSON: {"ID": "valor", ...}`;
   // ─── contador de pendências ───────────────────────────────────────────
   // O mesmo papel do contador da tabela antiga: separa "achei que estava
   // pronto" de "está pronto". Ele mede o que a exportação vai cobrar.
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★ v33k.1874: ACHAR A PENDÊNCIA, EM VEZ DE CAÇAR A CÉLULA VERMELHA.
+  // ───────────────────────────────────────────────────────────────────────
+  // RELATO DE 21/08: "quando se está exportando muito anúncio é difícil de
+  // achar qual é o campo em específico que não está preenchido. Precisamos
+  // fazer um tratamento pra descer e mostrar diretamente na tela."
+  //
+  // O contador dizia "12 campo(s) obrigatório(s) em branco" e parava aí. Com
+  // 40 anúncios × 12 colunas × N variações são milhares de células, e a
+  // pintura vermelha só ajuda quem já está olhando pro lugar certo. O número
+  // era um diagnóstico sem endereço.
+  //
+  // `emListarPendencias` dá o endereço: anúncio, campo, variação e ABA.
+  //
+  // ★ INCLUI COLUNA OCULTA. Quem esconde uma coluna no seletor não deixa de
+  //   dever o campo — e a pendência ficava invisível E fora da contagem, o
+  //   que liberava o botão de uma exportação que o canal ia recusar. Agora
+  //   ela aparece na lista, marcada, e pular pra ela reexibe a coluna.
+  //
+  // ★ OLHA TODAS AS ABAS. A contagem antiga lia o DOM, e o DOM só tem a aba
+  //   aberta. Esta lê o MODELO, então enxerga o TikTok enquanto a Shopee
+  //   está na tela.
+  function _emColunasDoCanal(mkt, incluirOcultas) {
+    const st = _emEstado;
+    if (!st) return [];
+    const out = [];
+    EM_GRUPOS.forEach(g => {
+      g.colunas.forEach(c => {
+        if (Array.isArray(c.mkts) && c.mkts.indexOf(mkt) < 0) return;
+        if (!incluirOcultas && st.ocultas[c.id]) return;
+        out.push(Object.assign({ grupo: g.id, grupoNome: g.nome }, c));
+        if (c.id === 'sku' && st.abaAtual === mkt) {
+          emColunasVariacaoDinamicas().forEach(d => {
+            if (!incluirOcultas && st.ocultas[d.id]) return;
+            out.push(Object.assign({ grupo: g.id, grupoNome: g.nome }, d));
+          });
+        }
+      });
+    });
+    return out;
+  }
+
+  // ★ v33k.1874: `mkt` EXPLÍCITO, e não o da aba aberta.
+  //   `_emValor` resolve coluna `porCanal` com `_emCanal()` — a aba que está
+  //   na tela. Varrer as outras abas com ele leria o valor do canal errado:
+  //   a linha que tem categoria na Shopee apareceria como preenchida no
+  //   TikTok, e a pendência sumiria da lista bem no caso que esta versão
+  //   existe pra resolver. Achado pela própria suíte, na 1ª execução.
+  function _emCelulaVazia(linha, col, vi, mkt) {
+    const doCanal = () => {
+      const alvo = col.escopo === 'variacao' ? (linha.variacoes || [])[vi] : linha;
+      if (!alvo) return '';
+      return ((alvo[col.campo] || {})[mkt]) || '';
+    };
+    const v = (col.porCanal && mkt) ? doCanal() : _emValor(linha, col, vi);
+    if (col.tipo === 'fotos') return !(Array.isArray(v) && v.length);
+    if (col.tipo === 'imagem') {
+      // v33k.1869: guia que a exportação gera sozinha não é pendência
+      if (col.campo === 'guiaTamanhos' && _emPodeGerarGuia(linha)) return false;
+      return !v;
+    }
+    if (col.tipo === 'categoria' || col.tipo === 'atributos') return !v;
+    return !String(v == null ? '' : v).trim();
+  }
+
+  function emListarPendencias(opts) {
+    opts = opts || {};
+    const st = _emEstado; if (!st) return [];
+    if (opts.coletar !== false) emColetarTela();   // não perde o que está digitado
+    const fora = [];
+    (st.destinos || []).forEach((d, abaIdx) => {
+      const mkt = String(d.marketplace || '').toLowerCase();
+      const cols = _emColunasDoCanal(mkt, true).filter(c => c.obrig);
+      (st.linhas || []).forEach((linha, li) => {
+        if (typeof _emLinhaDoCanal === 'function' && !_emLinhaDoCanal(linha, mkt)) return;
+        cols.forEach(col => {
+          const oculta = !!st.ocultas[col.id];
+          if (col.escopo === 'variacao') {
+            (linha.variacoes || []).forEach((v, vi) => {
+              if (!_emCelulaVazia(linha, col, vi, mkt)) return;
+              fora.push({ abaIdx, mkt, li, vi, colId: col.id, tipo: col.tipo,
+                rotulo: col.nome || col.id, oculta,
+                nomeLinha: (linha.nome || linha.skuPai || ('anúncio ' + (li + 1))),
+                nomeVar: (v && (v.nome || [v.cor, v.tamanho].filter(Boolean).join(' / '))) || ('variação ' + (vi + 1)) });
+            });
+            return;
+          }
+          if (!_emCelulaVazia(linha, col, null, mkt)) return;
+          fora.push({ abaIdx, mkt, li, vi: null, colId: col.id, tipo: col.tipo,
+            rotulo: col.nome || col.id, oculta,
+            nomeLinha: (linha.nome || linha.skuPai || ('anúncio ' + (li + 1))), nomeVar: null });
+        });
+      });
+    });
+    return fora;
+  }
+  window.emListarPendencias = emListarPendencias;
+
+  // Leva a tela até a pendência: troca de aba, reexibe a coluna escondida,
+  // rola até a célula e pisca. Nos campos sem digitação (categoria, fotos,
+  // atributos, guia) abre o modal do campo — que é onde se resolve.
+  async function emIrParaPendencia(p) {
+    const st = _emEstado; if (!st || !p) return;
+    if (p.abaIdx !== st.abaIdx && typeof emTrocarAba === 'function') emTrocarAba(p.abaIdx);
+    if (p.oculta) { st.ocultas[p.colId] = false; emDesenharSeletor(); emDesenharTabela(); }
+    await new Promise(r => setTimeout(r, 60));
+
+    const SEM_CAMPO = { categoria: 'emAbrirCategoria', atributos: 'emAbrirAtributos',
+                        fotos: 'emAbrirFotos', imagem: 'emAbrirGuia' };
+    const abridor = SEM_CAMPO[p.tipo];
+    if (abridor && typeof window[abridor] === 'function') {
+      const sel = '[data-emcol="' + p.colId + '"][data-emli="' + p.li + '"]';
+      const alvo = document.querySelector(sel);
+      if (alvo && alvo.scrollIntoView) alvo.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      window[abridor](p.li, false);
+      return;
+    }
+    const sel = '[data-emcol="' + p.colId + '"][data-emli="' + p.li + '"]' +
+      (p.vi == null ? ':not([data-emvi])' : '[data-emvi="' + p.vi + '"]');
+    const el = document.querySelector(sel);
+    if (!el) { showToast('Não achei o campo na tela. Ele pode estar em outra aba.', true); return; }
+    if (el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    try { el.focus({ preventScroll: true }); } catch (_) { try { el.focus(); } catch (__) {} }
+    const antes = el.style.boxShadow;
+    el.style.boxShadow = '0 0 0 3px rgba(220,38,38,.45)';
+    setTimeout(() => { el.style.boxShadow = antes; }, 1400);
+  }
+  window.emIrParaPendencia = emIrParaPendencia;
+
+  // ⏎ do cabeçalho: pula pra próxima pendência, ciclando.
+  var _emPendIdx = -1;
+  async function emProximaPendencia() {
+    const lista = emListarPendencias();
+    if (!lista.length) { showToast('Nenhuma pendência. Pode exportar.'); return; }
+    _emPendIdx = (_emPendIdx + 1) % lista.length;
+    const p = lista[_emPendIdx];
+    showToast((_emPendIdx + 1) + ' de ' + lista.length + ' · ' + p.rotulo + ' · ' +
+      String(p.nomeLinha).slice(0, 40) + (p.nomeVar ? (' · ' + p.nomeVar) : ''));
+    await emIrParaPendencia(p);
+  }
+  window.emProximaPendencia = emProximaPendencia;
+
+  // Painel com todas elas, agrupadas por anúncio. É o que resolve o caso do
+  // lote grande: em vez de procurar a célula vermelha, lê-se a lista.
+  function emAbrirPendencias() {
+    const st = _emEstado; if (!st) return;
+    const lista = emListarPendencias();
+    if (!lista.length) {
+      lcAlert('Nenhum campo obrigatório em branco. Pode confirmar a exportação.',
+        { tipo: 'sucesso', titulo: 'Tudo preenchido' });
+      return;
+    }
+    const porLinha = new Map();
+    lista.forEach((p, i) => {
+      const k = p.abaIdx + '|' + p.li;
+      if (!porLinha.has(k)) porLinha.set(k, { nome: p.nomeLinha, mkt: p.mkt, itens: [] });
+      porLinha.get(k).itens.push(Object.assign({ _i: i }, p));
+    });
+    const abaNome = (i) => {
+      const d = (st.destinos || [])[i] || {};
+      return (d.nome || d.marketplace || ('aba ' + (i + 1)));
+    };
+    let h = '<div style="font-size:12.5px;color:#475569;margin-bottom:10px">' +
+      '<strong>' + lista.length + ' campo(s)</strong> em ' + porLinha.size +
+      ' anúncio(s). Clique num item para ir direto até ele.</div>';
+    porLinha.forEach((g, k) => {
+      const abaIdx = Number(String(k).split('|')[0]);
+      h += '<div style="border:1px solid var(--lc-border);border-radius:9px;padding:10px;margin-bottom:8px">' +
+        '<div style="font-size:12.5px;font-weight:700;color:#1e293b;margin-bottom:2px">' +
+          escapeHtml(String(g.nome).slice(0, 70)) + '</div>' +
+        '<div style="font-size:11px;color:#94a3b8;margin-bottom:7px">' +
+          escapeHtml(abaNome(abaIdx)) + ' · ' + g.itens.length + ' pendência(s)</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
+        g.itens.map(it =>
+          '<button type="button" onclick="emPendenciaClique(' + it._i + ')" ' +
+            'style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:7px;' +
+            'padding:5px 9px;font-size:11.5px;cursor:pointer;text-align:left">' +
+            escapeHtml(it.rotulo) +
+            (it.nomeVar ? ('<span style="color:#94a3b8"> · ' + escapeHtml(String(it.nomeVar).slice(0, 24)) + '</span>') : '') +
+            (it.oculta ? '<span style="color:#b45309"> · coluna oculta</span>' : '') +
+          '</button>').join('') +
+        '</div></div>';
+    });
+    _emPendCache = lista;
+    lcAlert(h, { tipo: 'aviso', titulo: 'Campos que faltam preencher',
+      largura: 760, html: true, painel: true,
+      botoes: [{ texto: 'Fechar', primario: true, onclick: 'lcModalFechar()' }] });
+  }
+  window.emAbrirPendencias = emAbrirPendencias;
+
+  var _emPendCache = [];
+  function emPendenciaClique(i) {
+    const p = _emPendCache[i];
+    if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
+    if (p) setTimeout(() => emIrParaPendencia(p), 80);
+  }
+  window.emPendenciaClique = emPendenciaClique;
+
   function emRecontar() {
     const st = _emEstado; if (!st) return 0;
     // v33k.1812: a coluna dinâmica já traz a obrigatoriedade que a categoria
@@ -46175,18 +46652,49 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (vazio) faltam++;
       });
     });
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.1874: O CONTADOR VIROU ENDEREÇO.
+    // ───────────────────────────────────────────────────────────────────
+    // Este laço acima lê o DOM, e o DOM só tem a ABA ABERTA. Com destino em
+    // dois canais, a pendência do TikTok não entrava na conta enquanto a
+    // Shopee estava na tela — o botão liberava e a exportação falhava lá.
+    // Agora as outras abas entram pelo MODELO, e o número vira um botão que
+    // leva até o campo.
+    let _outras = 0;
+    try {
+      _outras = emListarPendencias({ coletar: false })
+        .filter(x => x.abaIdx !== st.abaIdx).length;
+    } catch (e) { _outras = 0; }
+    const total = faltam + _outras;
+
     const cont = document.getElementById('emContador');
     if (cont) {
-      cont.textContent = faltam ? (faltam + ' campo(s) obrigatório(s) em branco') : 'Tudo preenchido';
-      cont.style.color = faltam ? '#dc2626' : '#15803d';
+      if (total) {
+        cont.innerHTML = '<button type="button" onclick="emAbrirPendencias()" ' +
+          'style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:8px;' +
+          'padding:5px 11px;font-size:12.5px;font-weight:700;cursor:pointer;display:inline-flex;' +
+          'align-items:center;gap:6px">' +
+          '<span class="lc-ic" data-lucide="list-checks" style="width:13px;height:13px"></span>' +
+          total + ' campo(s) a preencher' +
+          (_outras ? ('<span style="font-weight:600;opacity:.8"> · ' + _outras + ' em outra aba</span>') : '') +
+          '<span style="font-weight:600;opacity:.75">· ver quais</span></button>' +
+          '<button type="button" onclick="emProximaPendencia()" title="ir para a próxima" ' +
+          'style="margin-left:6px;border:1px solid var(--lc-border);background:#fff;border-radius:8px;' +
+          'padding:5px 9px;font-size:12.5px;cursor:pointer;color:#475569">' +
+          '<span class="lc-ic" data-lucide="corner-down-right" style="width:13px;height:13px"></span></button>';
+        if (window.lcHydrateIcons) window.lcHydrateIcons(cont);
+      } else {
+        cont.textContent = 'Tudo preenchido';
+        cont.style.color = '#15803d';
+      }
     }
     const btn = document.getElementById('emBtnConfirmar');
     if (btn) {
-      btn.disabled = faltam > 0;
-      btn.style.opacity = faltam > 0 ? '0.5' : '1';
-      btn.style.cursor = faltam > 0 ? 'not-allowed' : 'pointer';
+      btn.disabled = total > 0;
+      btn.style.opacity = total > 0 ? '0.5' : '1';
+      btn.style.cursor = total > 0 ? 'not-allowed' : 'pointer';
     }
-    return faltam;
+    return total;
   }
   window.emRecontar = emRecontar;
 
@@ -46276,7 +46784,12 @@ Retorne JSON: {"ID": "valor", ...}`;
   function emConfirmar() {
     const st = _emEstado; if (!st) return;
     emColetarTela();
-    if (emRecontar() > 0) { showToast('Ainda faltam campos obrigatórios.', true); return; }
+    if (emRecontar() > 0) {
+      // ★ v33k.1874: recusar sem dizer ONDE é o defeito que abriu esta onda
+      showToast('Ainda faltam campos obrigatórios — abrindo a lista.', true);
+      setTimeout(emAbrirPendencias, 120);
+      return;
+    }
     _emEstado = null;
     goTo(st.voltarPara || 'estoqueScreen');
     _emRestaurarOverlays(st);
@@ -48788,6 +49301,23 @@ REGRAS DURAS:
           let ref = null, fonte = null;
           if (_alvoId && typeof variacoesReaisDoAnuncio === 'function') {
             const real = await variacoesReaisDoAnuncio(p, _alvoId);
+            // ★ v33k.1873: Catálogo do ML — a referência é a FAMÍLIA.
+            //   Sem isto, a v33k.1872 fazia o certo pelo motivo certo e dava
+            //   o resultado errado aqui: cada MLB do Catálogo tem UMA
+            //   variação, então duplicar ML→Shopee saía com um anúncio de
+            //   uma cor só. "Não tem como ser variação por variação,
+            //   preciso ser todo o conjunto" (21/08).
+            if (real && real.ok && real.catalogo && real.variacoes.length) {
+              const f = real.familia || {};
+              if (f.totalNoCanal != null && f.totalNoCanal !== real.variacoes.length) {
+                dupLogStep('  ⚠ A família "' + (f.nome || f.id || '?') + '" tem ' + f.totalNoCanal +
+                  ' item(ns) no ML e o cadastro só tem ' + real.variacoes.length +
+                  '. A cópia sai com a grade incompleta — importe esta loja antes de duplicar.', 'err');
+              }
+              dupLogStep('  ✓ Catálogo do ML: juntei ' + real.variacoes.length + ' variação(ões) de ' +
+                real.anunciosJuntados + ' anúncio(s) da família' +
+                (f.nome ? ' "' + f.nome + '"' : '') + ' numa cópia só.', 'ok');
+            }
             if (real && real.ok && !real.semVariacoes && real.variacoes.length) {
               const ids = new Set(real.variacoes.map(v => String(v.id)));
               const vars = (p.variacoes || []).filter(v => ids.has(String(v.id)));
@@ -48801,7 +49331,7 @@ REGRAS DURAS:
                 usadas.has(String(c.nome).toLowerCase().trim()));
               if (!cores.length) cores = todas;
               ref = { variacoes: vars, cores };
-              fonte = 'canal';
+              fonte = real.catalogo ? 'familia-ml' : 'canal';
               if ((real.naoCasaram || []).length) {
                 dupLogStep('  ⓘ ' + real.naoCasaram.length + ' variação(ões) do anúncio publicado não têm ' +
                   'correspondente no cadastro e ficam de fora da cópia.', 'err');
@@ -48827,7 +49357,8 @@ REGRAS DURAS:
             _refResolvida = true;
             dupLogStep('  ✓ Referência: anúncio ' + (_alvoId || '(mais antigo)') + ', ' +
               ref.variacoes.length + ' variação(ões), ' + ref.cores.length + ' cor(es)' +
-              (fonte === 'canal' ? ' — lido do anúncio publicado' : ' — pelos vínculos com prova'), 'ok');
+              (fonte === 'familia-ml' ? ' — família do Catálogo do ML'
+                : (fonte === 'canal' ? ' — lido do anúncio publicado' : ' — pelos vínculos com prova')), 'ok');
           } else if (fonte === 'canal-simples') {
             _refResolvida = true;
             dupLogStep('  ✓ Referência: anúncio ' + _alvoId + ' não tem variações no canal, ' +
@@ -50115,6 +50646,39 @@ REGRAS DURAS:
           }
         }
       } catch (e) { log('  ⚠ preenchimento de atributos Shopee falhou: ' + e.message, 'err'); }
+    }
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.1874: O TIKTOK NUNCA TEVE PREENCHIMENTO DE ATRIBUTOS.
+    // ───────────────────────────────────────────────────────────────────
+    // Os braços de ML e Shopee acima existem desde cedo; o do TikTok, não.
+    // A duplicação publicava com a ficha vazia e o canal recusava — ou pior,
+    // aceitava um anúncio sem os atributos que fazem ele aparecer na busca.
+    //
+    // Este braço NÃO repete a regra dos outros dois: chama o mesmo
+    // `emPreencherAtributosDaFicha` da conferência, que trabalha sobre a
+    // ficha normalizada de `prevoo-fichas` — a MESMA fonte que a exportação
+    // cobra. Uma implementação, quatro canais.
+    if (mkt === 'tiktok') {
+      try {
+        const catTk = novo.categoryIdTiktok || novo.categoriaTiktok;
+        if (catTk && typeof preVooBuscarFichas === 'function' &&
+            typeof emPreencherAtributosDaFicha === 'function') {
+          const lojaIdBanco = lojaDestino.idBanco || (await garantirLojaNoBanco(lojaDestino).catch(() => null));
+          if (lojaIdBanco) {
+            const fichas = await preVooBuscarFichas(lojaIdBanco, [preVooProdutoParaFicha(novo, null)]);
+            const f = Array.isArray(fichas) ? fichas[0] : null;
+            if (f) {
+              const pseudo = { nome: novo.nome, descricao: novo.descricao, _produto: novo,
+                               fichas: { tiktok: f }, atributos: { tiktok: novo.atributosTikTok || {} } };
+              const n = await emPreencherAtributosDaFicha(pseudo, 'tiktok', { silencioso: true });
+              if (n > 0) {
+                novo.atributosTikTok = pseudo.atributos.tiktok;
+                log(`  ✓ ${n} atributo(s) TikTok preenchido(s) p/ a categoria`, 'ok');
+              }
+            }
+          }
+        }
+      } catch (e) { log('  ⚠ preenchimento de atributos TikTok falhou: ' + e.message, 'err'); }
     }
   }
   window.dupCompletarCamposObjeto = dupCompletarCamposObjeto;
@@ -70300,7 +70864,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1872-referencia-do-canal';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1877-fila-do-corte';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
