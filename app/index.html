@@ -45441,6 +45441,71 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.emResolverNomesCategoria = emResolverNomesCategoria;
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★ v33k.1882: FALHA DE INFRAESTRUTURA FALA COM O LOJISTA, NÃO COM O DEV.
+  // ───────────────────────────────────────────────────────────────────────
+  // PEDIDO DE 22/08: "quando der esse tipo de problema igual deu de não
+  // carregar as categorias, precisamos falar para o usuário entrar em
+  // contato."
+  //
+  // O print mostrava "Rota nao encontrada." dentro do modal de categoria.
+  // Isso é a mensagem do 404 do Express — texto de programador numa tela de
+  // lojista. Quem lê conclui a coisa errada duas vezes: acha que errou o
+  // cadastro, e fica tentando de novo o que nunca vai funcionar.
+  //
+  // A diferença que importa: erro DE DADO ("nada encontrado, tente outra
+  // palavra") o usuário resolve sozinho; erro DE INFRAESTRUTURA (rota
+  // ausente, servidor fora, rede caída) só nós resolvemos. O segundo tem que
+  // dizer isso na cara e dar um código pro suporte.
+  //
+  // Devolve `null` quando NÃO é falha técnica — aí a tela segue com a
+  // mensagem normal dela, que continua sendo a certa na maioria dos casos.
+  function lcFalhaTecnica(resp, excecao, contexto) {
+    let codigo = null, detalhe = '';
+    const txt = String((resp && (resp.erro || resp.error)) || '');
+
+    if (excecao) {
+      // fetch só rejeita por rede/CORS; erro de aplicação vem com corpo
+      codigo = 'REDE';
+      detalhe = String(excecao.message || excecao);
+    } else if (resp && (resp.caminho || /Rota nao encontrada/i.test(txt))) {
+      codigo = 'ROTA-404';
+      detalhe = resp.caminho || txt;
+    } else if (resp && Number(resp._status) >= 500) {
+      codigo = 'SRV-' + resp._status;
+      detalhe = txt || 'servidor não respondeu';
+    } else if (/<!DOCTYPE|<html/i.test(txt)) {
+      // v33k.1486: quando o banco cai, o Cloudflare devolve HTML no lugar do
+      // JSON e isso chegava cru na tela
+      codigo = 'HTML';
+      detalhe = 'o servidor devolveu uma página em vez de dados';
+    }
+    if (!codigo) return null;
+
+    const quando = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    return {
+      tecnica: true, codigo, detalhe,
+      texto: 'Esta parte do sistema está com uma falha técnica. ' +
+        '<strong>Não é problema do seu cadastro</strong> — tentar de novo não resolve.' +
+        '<div style="margin-top:7px;font-size:11.5px;color:#7c2d12">' +
+        'Entre em contato com o suporte e informe: <strong>' + codigo +
+        (contexto ? (' · ' + escapeHtml(contexto)) : '') + '</strong>' +
+        '<div style="margin-top:3px;color:#9a3412;opacity:.85">' + escapeHtml(quando) +
+        (detalhe ? (' · ' + escapeHtml(String(detalhe).slice(0, 120))) : '') + '</div></div>',
+    };
+  }
+  window.lcFalhaTecnica = lcFalhaTecnica;
+
+  // Caixa padrão do aviso. Mesma cara em qualquer tela que use.
+  function lcCaixaFalhaTecnica(f) {
+    return '<div style="border:1px solid #fed7aa;background:#fff7ed;border-radius:9px;' +
+      'padding:11px;font-size:12.5px;color:#9a3412;line-height:1.55">' +
+      '<div style="display:flex;align-items:center;gap:6px;font-weight:700;margin-bottom:4px">' +
+      '<span class="lc-ic" data-lucide="plug-zap" style="width:14px;height:14px"></span>' +
+      'Falha técnica no sistema</div>' + f.texto + '</div>';
+  }
+  window.lcCaixaFalhaTecnica = lcCaixaFalhaTecnica;
+
   async function emCatBuscar(termo) {
     const st = _emEstado; if (!st) return;
     const linha = (st.linhas || [])[_emCatAlvo]; if (!linha) return;
@@ -45448,16 +45513,39 @@ Retorne JSON: {"ID": "valor", ...}`;
     const box = document.getElementById('emCatCorpo'); if (!box) return;
     const atual = (linha.categoria || {})[_emCanal()];
     box.innerHTML = '<div style="font-size:12.5px;color:#64748b">Buscando…</div>';
-    let r = { categorias: [], motivo: null };
+    let r = { categorias: [], motivo: null, falha: null };
     try {
       const qs = '?q=' + encodeURIComponent(termo || '') + '&titulo=' + encodeURIComponent(linha.nome || '');
-      const resp = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.lojaIdBanco + '/categorias/buscar' + qs, {
+      // ★ v33k.1882: o id da loja entra na URL depois de conferido. Vazio
+      //   produz `/loja//categorias/buscar`, que não casa com `:lojaId` e
+      //   volta 404 — um erro nosso disfarçado de rota inexistente.
+      if (!loja.lojaIdBanco) {
+        box.innerHTML = lcCaixaFalhaTecnica({
+          codigo: 'LOJA-SEM-ID',
+          texto: 'A loja de destino não tem identificador no sistema, então não dá pra ' +
+            'consultar as categorias dela. <strong>Não é problema do seu cadastro.</strong>' +
+            '<div style="margin-top:7px;font-size:11.5px">Entre em contato com o suporte e informe: ' +
+            '<strong>LOJA-SEM-ID · ' + escapeHtml(String(loja.nome || loja.marketplace || '?')) + '</strong></div>',
+        });
+        if (window.lcHydrateIcons) window.lcHydrateIcons(box);
+        return;
+      }
+      const bruta = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + loja.lojaIdBanco + '/categorias/buscar' + qs, {
         headers: { 'x-api-token': getApiToken(),
           'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
-      }).then(x => x.json());
+      });
+      let resp = null;
+      try { resp = await bruta.json(); } catch (_) { resp = { erro: await bruta.text() }; }
+      if (resp) resp._status = bruta.status;
       if (resp && resp.ok) r = { categorias: resp.categorias || [], motivo: resp.motivo || null };
-      else r.motivo = (resp && resp.erro) || 'Não consegui buscar agora.';
-    } catch (e) { r.motivo = e.message; }
+      else {
+        r.falha = lcFalhaTecnica(resp, null, 'categorias · ' + (loja.marketplace || ''));
+        r.motivo = (resp && resp.erro) || 'Não consegui buscar agora.';
+      }
+    } catch (e) {
+      r.falha = lcFalhaTecnica(null, e, 'categorias · ' + (loja.marketplace || ''));
+      r.motivo = e.message;
+    }
 
     let h = '<div style="display:flex;gap:7px;margin-bottom:10px">' +
       '<input id="emCatTermo" value="' + escapeHtml(termo || '') + '" placeholder="buscar categoria pelo nome" ' +
@@ -45468,7 +45556,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       '<div style="font-size:12px;color:#64748b;margin-bottom:8px">Atual: ' +
         (atual ? _emTextoCategoriaAtual(atual) : '<span style="color:#dc2626">nenhuma</span>') + '</div>';
 
-    if (!r.categorias.length) {
+    if (r.falha) {
+      // ★ falha de infraestrutura: o lojista não tem o que tentar aqui
+      h += lcCaixaFalhaTecnica(r.falha);
+    } else if (!r.categorias.length) {
       h += '<div style="font-size:12.5px;color:#b45309">' +
         escapeHtml(r.motivo || 'Nada encontrado. Tente outra palavra.') + '</div>';
     } else {
@@ -45481,6 +45572,7 @@ Retorne JSON: {"ID": "valor", ...}`;
             escapeHtml(c.caminho || c.nome) + '</div>').join('') + '</div>';
     }
     box.innerHTML = h;
+    if (window.lcHydrateIcons) window.lcHydrateIcons(box);
   }
   // ★ v33k.1872: "Atual: 100593" não diz nada a ninguém. Quando o nome já foi
   //   resolvido, mostra o caminho; quando não, diz que é um id e que a busca
@@ -70864,7 +70956,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1877-fila-do-corte';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1882-falha-tecnica-fala';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
