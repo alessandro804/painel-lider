@@ -14332,7 +14332,11 @@
     padding: 8px 10px; margin: 5px 0; font-family: inherit;
   }
   .dup-erro-bloco b { display: block; color: #991b1b; font-size: 11.5px; margin-bottom: 2px; }
-  .dup-erro-bloco .acao { display: block; color: #7f1d1d; font-size: 11px; line-height: 1.45; }
+  /* ★ v33k.1888: `pre-line` faz as quebras da instrução aparecerem. O bloco
+     escapa o texto (e deve mesmo — recusa de canal é texto de terceiro), então
+     sem isto uma instrução de três parágrafos vira um paredão de uma linha só,
+     e ninguém lê até o passo que resolve. */
+  .dup-erro-bloco .acao { display: block; color: #7f1d1d; font-size: 11px; line-height: 1.45; white-space: pre-line; }
   .dup-erro-bloco .cru { display: block; color: #b91c1c; opacity: .75; font-size: 10px; margin-top: 4px; word-break: break-word; }
   .prod-card-v2 .prod-card-nome {
     font-size: 14px;
@@ -36884,6 +36888,11 @@ Retorne JSON: {"ID": "valor", ...}`;
   //
   // Casamento: model do canal → SKU → cor+tamanho. Um-pra-um quando os dois
   // lados têm uma variação só. É a mesma escada da herança da v33k.1871.
+  // ★ v33k.1887: quais referências fomos NÓS que escolhemos. Chute a gente
+  //   pode melhorar; decisão da pessoa, não.
+  const _dupAnuncioRefAuto = {};
+  window._dupAnuncioRefAuto = _dupAnuncioRefAuto;
+
   const _cacheVarsReais = new Map();
   // ★ v33k.1873: lojas em que já descobrimos que o ML publica em Catálogo.
   //   lojaIdBanco -> { nome, id, total }
@@ -36956,6 +36965,43 @@ Retorne JSON: {"ID": "valor", ...}`;
       } else {
         const norm = s => String(s == null ? '' : s).trim().toLowerCase();
         const internas = Array.isArray(p.variacoes) ? p.variacoes : [];
+
+        // ═══════════════════════════════════════════════════════════════
+        // ★ v33k.1885: PRODUTO SEM VARIAÇÃO NÃO É CASAMENTO QUE FALHOU.
+        // ───────────────────────────────────────────────────────────────
+        // PRINT DE 22/08 (Lojão da Ivanir, "Tapete de Porta Meia Lua"):
+        //
+        //   ✓ 0 variação(ões) neste anúncio · lido do canal
+        //   5 variação(ões) do anúncio não têm correspondente no cadastro
+        //     e ficam de fora da cópia.
+        //
+        // As duas linhas se contradizem — "0 variações" e "5 variações do
+        // anúncio" no mesmo bloco — e a segunda alarma sem motivo. O
+        // Alessandro está certo: "pode ser que o anúncio simplesmente não
+        // tenha variação e pronto, seja um produto único."
+        //
+        // O QUE ACONTECIA: o laço abaixo tenta casar cada model do canal
+        // com uma variação NOSSA. Com o cadastro sem variação nenhuma, os
+        // três índices nascem vazios, TODOS os models caem em `naoCasaram`,
+        // e a tela relata como perda. Mas não há perda: um produto simples
+        // gera um anúncio simples. Isso é o resultado esperado, não uma
+        // falha de casamento.
+        //
+        // ★ AS DUAS SITUAÇÕES SÃO DIFERENTES E PRECISAM DE TEXTOS DIFERENTES:
+        //   • cadastro SEM variação  → cópia simples. Normal, sem alarme.
+        //   • cadastro COM variação e nenhuma casou → aí sim é problema:
+        //     a cópia sairia vazia ou seria bloqueada, e alguém precisa ver.
+        //   Tratar as duas com a mesma frase treina a pessoa a ignorar o
+        //   aviso — e aí ele deixa de servir justamente quando é verdadeiro.
+        if (!internas.length) {
+          saida = {
+            ok: true, fonte: 'canal', variacoes: [], semVariacoes: true,
+            cadastroSimples: true, totalNoCanal: varsAn.length, naoCasaram: [],
+          };
+          _cacheVarsReais.set(chave, saida);
+          return saida;
+        }
+
         const porModel = {}, porSku = {}, porCorTam = {};
         internas.forEach(v => {
           (v.vinculos || []).forEach(vi => {
@@ -37096,8 +37142,43 @@ Retorne JSON: {"ID": "valor", ...}`;
         ${opts.comprimido ? '<strong>' + escapeHtml(p.nome) + '</strong>, ' : ''}Sem anúncios vinculados, a cópia usará as variações do produto como estão.</div>`;
     }
     // default: o mais antigo (1º da lista, já ordenada). respeita escolha anterior.
-    const escolhido = _dupAnuncioRefEscolhido[pid] || anuncios[0].anuncioId;
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.1887: O PRÉ-SELECIONADO NÃO É ESCOLHA DA PESSOA.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 22/08: duplicação entre canais falhou com "não consegui
+    // determinar quais variações são do anúncio 1736740491073520643" —
+    // 19 dígitos, id de TikTok, num produto com 7 anúncios em 3 canais.
+    //
+    // A linha era `_dupAnuncioRefEscolhido[pid] || anuncios[0].anuncioId`:
+    // o seletor pré-marcava o MAIS ANTIGO e gravava no mesmo lugar onde a
+    // escolha manual mora. Daí pra frente ninguém mais distinguia "a pessoa
+    // escolheu isto" de "nós chutamos isto" — e a duplicação, com razão,
+    // respeitava o chute como se fosse decisão.
+    //
+    // ★ POR QUE O MAIS ANTIGO É UM CHUTE RUIM: a ordem de criação não diz
+    //   nada sobre completude. O anúncio mais velho pode ser de um canal que
+    //   nem é o da operação, ou um teste com uma variação só.
+    //
+    // ★ E A REGRA NOVA É CEGA À DIREÇÃO, de propósito. Não sei se o caso do
+    //   relato era ML→TikTok ou TikTok→ML, e não deve importar: o anúncio de
+    //   referência responde "quais variações a cópia leva", não "para onde
+    //   ela vai". O melhor palpite é o anúncio de ESCOPO MAIS COMPLETO que a
+    //   gente consegue determinar — copiar de menos é a perda que se vê.
+    //   Empate desempata pelo mais antigo, que ao menos é estável.
+    const _ordenados = anuncios.slice().sort((a, b) => {
+      const na = (a.variacoes || []).length, nb = (b.variacoes || []).length;
+      if (na !== nb) return nb - na;                       // mais completo primeiro
+      const ia = a.indefinido ? 1 : 0, ib = b.indefinido ? 1 : 0;
+      if (ia !== ib) return ia - ib;                       // escopo conhecido antes
+      const ta = a.criadoEm ? new Date(a.criadoEm).getTime() : Infinity;
+      const tb = b.criadoEm ? new Date(b.criadoEm).getTime() : Infinity;
+      return ta - tb;                                      // empate: mais antigo
+    });
+    const jaEscolhido = _dupAnuncioRefEscolhido[pid];
+    const escolhido = jaEscolhido || (_ordenados[0] && _ordenados[0].anuncioId) || anuncios[0].anuncioId;
     _dupAnuncioRefEscolhido[pid] = escolhido;
+    // marca a procedência: sem isto, chute e decisão viram a mesma coisa
+    if (!jaEscolhido) _dupAnuncioRefAuto[pid] = true;
     const mkLabel = (mk) => mk === 'shopee' ? '🛒 Shopee' : (mk && /mercado/i.test(mk) ? '💛 ML' : (mk || ''));
     const options = anuncios.map((a, i) => {
       const sel = String(a.anuncioId) === String(escolhido) ? 'selected' : '';
@@ -37218,11 +37299,36 @@ Retorne JSON: {"ID": "valor", ...}`;
         return;
       }
       if (real.semVariacoes) {
-        box.innerHTML = '<div style="font-size:11px;color:#64748b">' +
-          'Este anúncio não tem variações no canal — a cópia sai como anúncio simples.</div>';
+        // ★ v33k.1885: dois caminhos chegam aqui, e eles não são a mesma coisa
+        const txt = real.cadastroSimples
+          ? ('Este produto não tem variações no cadastro — a cópia sai como anúncio simples.' +
+             (real.totalNoCanal
+               ? ('<div style="margin-top:4px;color:#94a3b8">O anúncio de origem tem ' +
+                  real.totalNoCanal + ' variação(ões) na Shopee. Para copiá-las, ' +
+                  'importe o anúncio primeiro: as variações entram no cadastro e passam a sair na cópia.</div>')
+               : ''))
+          : 'Este anúncio não tem variações no canal — a cópia sai como anúncio simples.';
+        box.innerHTML = '<div style="font-size:11px;color:#64748b;line-height:1.5">' + txt + '</div>';
         return;
       }
       const naoCasou = (real.naoCasaram || []).length;
+      // ★ v33k.1885: NENHUMA CASOU é outra história, e a antiga se contradizia
+      //   ("0 variação(ões) neste anúncio" logo acima de "5 variação(ões) do
+      //   anúncio"). Aqui o cadastro TEM variações e nenhuma bateu com o
+      //   canal — a cópia sairia vazia. Isso não é aviso de rodapé.
+      if (!real.variacoes.length && naoCasou) {
+        box.innerHTML =
+          '<div style="border:1px solid #fed7aa;background:#fff7ed;border-radius:8px;padding:9px;' +
+            'font-size:11.5px;color:#9a3412;line-height:1.55">' +
+          '<div style="font-weight:700;margin-bottom:3px">As variações não batem com o anúncio</div>' +
+          'O anúncio tem <strong>' + naoCasou + '</strong> variação(ões) na Shopee e o cadastro tem ' +
+          '<strong>' + ((p.variacoes || []).length) + '</strong>, mas nenhuma corresponde — nem por ' +
+          'código do canal, nem por SKU, nem por cor/tamanho. ' +
+          '<strong>A cópia não sai assim</strong>, sairia sem variação nenhuma.' +
+          '<div style="margin-top:6px;color:#b45309">Reimporte este anúncio para o cadastro ' +
+          'reconhecer as variações dele, ou escolha outro anúncio de referência.</div></div>';
+        return;
+      }
       box.innerHTML =
         '<div style="font-size:10px;color:#166534;margin-bottom:2px;display:flex;align-items:center;gap:4px">' +
           '<span class="lc-ic" data-lucide="check" style="width:11px;height:11px"></span>' +
@@ -37258,6 +37364,8 @@ Retorne JSON: {"ID": "valor", ...}`;
   // onChange do select: guarda a escolha e atualiza a lista de variações.
   function dupOnEscolherAnuncio(pid, anuncioId) {
     _dupAnuncioRefEscolhido[pid] = anuncioId;
+    // ★ v33k.1887: a partir daqui é decisão da pessoa, e não se mexe mais
+    delete _dupAnuncioRefAuto[pid];
     dupRenderVariacoesDoAnuncio(pid);
   }
   window.dupOnEscolherAnuncio = dupOnEscolherAnuncio;
@@ -47624,6 +47732,44 @@ Retorne JSON: {"ID": "valor", ...}`;
     //
     // ★ ISSO PRECISA VIR ANTES do caso genérico de "unlist falhou": a
     //   mensagem específica é a que diz o que fazer.
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.1888: CONTA SEM VERIFICAÇÃO DE DOCUMENTOS (KYC).
+    // ───────────────────────────────────────────────────────────────────
+    // PRINT DE 22/08, exportando pro Lojão da Ivanir 2:
+    //   ✗ Erro exportar: add_item falhou: The shop cannot create product
+    //     because the shop is BR local shop and KYC not pass.
+    //
+    // "KYC" é jargão de compliance (Know Your Customer) e não significa nada
+    // pro lojista. Pior: a frase não é sobre o PRODUTO, é sobre a CONTA — e
+    // quem lê no meio de um log de exportação procura defeito no anúncio,
+    // mexe em foto, título, categoria, e tenta de novo. Nada disso resolve.
+    //
+    // ★ ISTO NÃO SE CONSERTA NO PAINEL, e é a informação mais importante da
+    //   mensagem. Nenhum ajuste no cadastro faz a Shopee aceitar: ela só
+    //   libera publicação depois que a verificação de identidade da conta
+    //   for aprovada, e isso acontece na Central do Vendedor, com documento.
+    //
+    // ★ E NÃO É PRA RETENTAR. A aprovação leva de horas a dias; repetir a
+    //   exportação só produz a mesma recusa e mais ruído no log. O tipo
+    //   'conta' diz a quem chama que a saída é humana e é fora daqui.
+    //
+    // Vale pra loja inteira, não pro produto: se um anúncio bateu nisso,
+    // TODOS os daquela loja vão bater. Dizer isso evita a pessoa ficar
+    // testando um a um.
+    if (/kyc/i.test(t) || /identity verification|verifica[çc][ãa]o de identidade/i.test(t)) {
+      return Object.assign(R('A conta desta loja ainda não passou na verificação de documentos',
+        'A Shopee não deixa publicar nenhum anúncio enquanto a verificação de identidade da conta '
+        + '(que ela chama de KYC) não for aprovada. Isso é da CONTA, não deste produto — mexer no '
+        + 'anúncio não resolve, e todos os outros desta loja vão dar o mesmo erro.\n\n'
+        + 'Como resolver: entre na Central do Vendedor da Shopee com a conta desta loja e vá em '
+        + 'Perfil da Loja → Configurações da Conta → Verificação de Identidade '
+        + '(seller.shopee.com.br → Menu do Vendedor → Minha Conta). Envie os documentos pedidos '
+        + '(CPF ou CNPJ, documento com foto e comprovante) e aguarde a aprovação — costuma levar '
+        + 'de algumas horas a alguns dias.\n\n'
+        + 'Quando a Shopee aprovar, repita a exportação aqui: nada do que você preencheu se perdeu.'),
+        { tipo: 'conta', semRetentar: true, loja: true });
+    }
+
     const ehPromo = /has promotion|em promo|ongoing promotion|promotion/i.test(t);
     if (ehPromo && /delist|unlist|despub/i.test(t))
       return Object.assign(R('A Shopee não despublica anúncio em oferta relâmpago',
@@ -49386,13 +49532,93 @@ REGRAS DURAS:
           const escolhido = (window._dupAnuncioRefEscolhido || {})[String(p.id)] || null;
           const _anunciosDoP = (typeof listarAnunciosDoProduto === 'function')
             ? listarAnunciosDoProduto(p) : [];
-          const _alvoId = escolhido || (_anunciosDoP[0] && _anunciosDoP[0].anuncioId) || null;
+          // ═══════════════════════════════════════════════════════════
+          // ★ v33k.1886: A REFERÊNCIA AUTOMÁTICA É DO CANAL DE DESTINO.
+          // ───────────────────────────────────────────────────────────
+          // PRINT DE 22/08, duplicando ML → ML (BETINHA SHOES ML):
+          //   "Não consegui determinar quais variações são do anúncio
+          //    1736740491073520643. Este produto tem 7 anúncios vinculados
+          //    e 5 variações no cadastro."
+          //
+          // Aquele id tem 19 dígitos: é do TikTok. ML é `MLB…`, Shopee tem
+          // ~14. Ou seja, o destino era ML e a referência automática pegou
+          // `_anunciosDoP[0]` — o MAIS ANTIGO DE TODOS OS CANAIS. A leitura
+          // foi tentada no canal errado, falhou, e a trava da v33k.1872
+          // barrou a cópia.
+          //
+          // A trava está certa: sem saber o escopo, publicar as 5 variações
+          // seria pior. O que estava errado era o PALPITE de referência.
+          // Duplicando pra ML, a referência natural é o anúncio de ML —
+          // e melhor ainda, o da MESMA LOJA quando existe, porque é o que
+          // tem os mesmos SKUs e o mesmo histórico de vínculo.
+          //
+          // Escolha DELIBERADA fica intocada: se a pessoa escolheu no
+          // seletor, é aquele e ponto. Isto só melhora o automático.
+          // ═══════════════════════════════════════════════════════════
+          // ★ v33k.1887: A ORDEM DOS CANDIDATOS É CEGA À DIREÇÃO.
+          // ───────────────────────────────────────────────────────────
+          // A v33k.1886 preferia o canal de DESTINO, com base na minha
+          // leitura de que o print era ML→ML. O Alessandro não pôde
+          // confirmar a direção (o relato veio de um usuário), e ele está
+          // certo em querer que funcione nos dois sentidos.
+          //
+          // Preferir o destino conserta ML→ML e ESTRAGA ML→TikTok: lá a
+          // referência cairia num anúncio que já existe no TikTok — o
+          // incompleto que se está justamente tentando refazer.
+          //
+          // O anúncio de referência responde "quais variações a cópia
+          // leva", não "para onde ela vai". Então a ordem é a mesma do
+          // seletor: escopo mais completo, escopo conhecido antes de
+          // indefinido, e o mais antigo só pra desempatar.
+          const _candidatos = _anunciosDoP.slice().sort((a, b) => {
+            const na = (a.variacoes || []).length, nb = (b.variacoes || []).length;
+            if (na !== nb) return nb - na;
+            const ia = a.indefinido ? 1 : 0, ib = b.indefinido ? 1 : 0;
+            if (ia !== ib) return ia - ib;
+            const ta = a.criadoEm ? new Date(a.criadoEm).getTime() : Infinity;
+            const tb = b.criadoEm ? new Date(b.criadoEm).getTime() : Infinity;
+            return ta - tb;
+          });
+          const _mkDestino = String(lojaDestino.marketplace || '').toLowerCase();
+          const _alvoId = escolhido || (_candidatos[0] && _candidatos[0].anuncioId) || null;
 
-          // 1) CANAL — a lista de variações do anúncio está publicada, não é
-          //    opinião nossa. Shopee e ML respondem; a leitura já tem cache.
           let ref = null, fonte = null;
+          // ★ v33k.1886: com 7 anúncios vinculados, UM ilegível não pode matar
+          //   a cópia. Se a referência automática não responder, tenta os
+          //   irmãos do mesmo canal antes de desistir — a escolha manual
+          //   continua sendo respeitada sozinha, sem substituto.
+          // ★ v33k.1887: `escolhido` vinha SEMPRE preenchido, porque o seletor
+          //   pré-marcava e gravava no mesmo lugar da escolha manual. Agora a
+          //   procedência é conhecida: o que foi chute nosso pode ser trocado
+          //   quando o canal não responde; o que a pessoa marcou, não.
+          const _foiChuteNosso = !!(window._dupAnuncioRefAuto || {})[String(p.id)];
+          let _tentar = [_alvoId].filter(Boolean);
+          if (!escolhido || _foiChuteNosso) {
+            _candidatos.slice(0, 4).forEach(a => {
+              if (a.anuncioId && !_tentar.includes(a.anuncioId)) _tentar.push(a.anuncioId);
+            });
+          }
+          let _alvoUsado = _alvoId, _motivoCanal = null;
           if (_alvoId && typeof variacoesReaisDoAnuncio === 'function') {
-            const real = await variacoesReaisDoAnuncio(p, _alvoId);
+            // ★ v33k.1887: entre as que responderem, fica a de ESCOPO MAIOR —
+            //   não a primeira. Copiar de menos é a perda que a pessoa vê, e
+            //   essa regra vale igual em qualquer direção de canal.
+            //   Escolha manual tem lista de um, então isso não a afeta.
+            let real = null, melhor = null, melhorId = null;
+            for (const cand of _tentar) {
+              const r = await variacoesReaisDoAnuncio(p, cand);
+              if (r && r.ok && (r.variacoes.length || r.semVariacoes)) {
+                const n = (r.variacoes || []).length;
+                if (!melhor || n > (melhor.variacoes || []).length) { melhor = r; melhorId = cand; }
+                if (_tentar.length === 1) break;
+              } else if (r && r.motivo) { _motivoCanal = r.motivo; }
+            }
+            real = melhor; _alvoUsado = melhorId || _alvoId;
+            if (_alvoUsado && String(_alvoUsado) !== String(_alvoId)) {
+              dupLogStep('  ⓘ Referência trocada: o anúncio ' + _alvoId +
+                ' não respondeu ou tinha escopo menor; usei o ' + _alvoUsado +
+                ' (' + ((real && real.variacoes) || []).length + ' variação(ões)).', 'ok');
+            }
             // ★ v33k.1873: Catálogo do ML — a referência é a FAMÍLIA.
             //   Sem isto, a v33k.1872 fazia o certo pelo motivo certo e dava
             //   o resultado errado aqui: cada MLB do Catálogo tem UMA
@@ -49430,6 +49656,14 @@ REGRAS DURAS:
               }
             } else if (real && real.ok && real.semVariacoes) {
               fonte = 'canal-simples';
+              // ★ v33k.1885: cadastro sem variação NÃO é casamento falhado.
+              //   Antes isso caía adiante e podia parar a cópia; agora segue
+              //   como anúncio simples, que é o resultado correto.
+              if (real.cadastroSimples && real.totalNoCanal) {
+                dupLogStep('  ⓘ O cadastro deste produto não tem variações; o anúncio de origem tem ' +
+                  real.totalNoCanal + '. A cópia sai simples. Para levar as variações, ' +
+                  'importe o anúncio antes de duplicar.', 'ok');
+              }
             }
           }
 
@@ -49447,25 +49681,32 @@ REGRAS DURAS:
             novo.variacoes = JSON.parse(JSON.stringify(ref.variacoes));
             novo.cores = JSON.parse(JSON.stringify(ref.cores));
             _refResolvida = true;
-            dupLogStep('  ✓ Referência: anúncio ' + (_alvoId || '(mais antigo)') + ', ' +
+            dupLogStep('  ✓ Referência: anúncio ' + (_alvoUsado || '(mais antigo)') + ', ' +
               ref.variacoes.length + ' variação(ões), ' + ref.cores.length + ' cor(es)' +
               (fonte === 'familia-ml' ? ' — família do Catálogo do ML'
                 : (fonte === 'canal' ? ' — lido do anúncio publicado' : ' — pelos vínculos com prova')), 'ok');
           } else if (fonte === 'canal-simples') {
             _refResolvida = true;
-            dupLogStep('  ✓ Referência: anúncio ' + _alvoId + ' não tem variações no canal, ' +
+            dupLogStep('  ✓ Referência: anúncio ' + _alvoUsado + ' não tem variações no canal, ' +
               'a cópia sai como anúncio simples.', 'ok');
           } else {
             // 3) PARAR. Só é seguro seguir com tudo quando não há ambiguidade:
             //    um anúncio só disputando as variações.
             const ambiguo = _anunciosDoP.length > 1;
             if (ambiguo) {
+              // ★ v33k.1886: a mensagem antiga chutava a causa ("se a loja
+              //   estiver desconectada"). `variacoesReaisDoAnuncio` devolve o
+              //   motivo real — dizer o motivo em vez de listar suspeitas é a
+              //   diferença entre resolver e tentar coisas.
               throw new Error('Não consegui determinar quais variações são do anúncio ' +
-                (_alvoId || '(referência)') + '. Este produto tem ' + _anunciosDoP.length +
-                ' anúncios vinculados e ' + ((p.variacoes || []).length) + ' variações no cadastro; ' +
-                'seguir sem saber publicaria todas elas na cópia. Abra o seletor de anúncio de ' +
-                'referência: se ele conseguir ler do canal, a duplicação passa a funcionar. ' +
-                'Se a loja estiver desconectada, reconecte-a em Lojas & Conexões.');
+                (_alvoUsado || '(referência)') + ' (' + _mkDestino + '). ' +
+                (_motivoCanal ? ('O canal respondeu: ' + _motivoCanal + '. ') : '') +
+                'Este produto tem ' + _anunciosDoP.length + ' anúncios vinculados em ' +
+                (new Set(_anunciosDoP.map(a => a.marketplace)).size) + ' canal(is) e ' +
+                ((p.variacoes || []).length) + ' variações no cadastro; seguir sem saber ' +
+                'publicaria todas elas na cópia. Abra o seletor de anúncio de referência e ' +
+                'escolha um anúncio de ' + _mkDestino + ' — se ele conseguir ler do canal, ' +
+                'a duplicação passa a funcionar.');
             }
             dupLogStep('  ⓘ Um anúncio vinculado só: a cópia usa as variações do produto como estão.', 'ok');
           }
@@ -70956,7 +71197,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1882-falha-tecnica-fala';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1890-tag-amostra';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -81990,14 +82231,39 @@ ${JSON.stringify(metricas, null, 2)}`
       + fundo + ';color:' + cor + ';border:1px solid ' + borda
       + ';display:inline-flex;align-items:center;gap:4px"><span class="lc-ic" data-lucide="' + ic
       + '" style="width:12px;height:12px"></span> ' + rot + '</span>';
-    const origemBadge = (_expEtapaSel !== 4) ? ''
-      : (p.impressoOrigem === 'automatico'
-          ? seloOrigem('Automático', '#166534', '#f0fdf4', '#bbf7d0', 'bot',
-              'A etiqueta saiu sozinha no horário de corte e foi enviada ao WhatsApp do cliente.')
-          : (p.impressoOrigem === 'manual'
-              ? seloOrigem('Manual', '#3730a3', '#eef2ff', '#c7d2fe', 'hand',
-                  'Alguém imprimiu ou marcou este pedido como impresso aqui no painel.')
-              : ''));
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.1890: O SELO MANUAL/AUTOMÁTICO SAIU DA LISTA.
+    // ───────────────────────────────────────────────────────────────────
+    // PEDIDO DE 22/08: "aquele selo de Manual e automático preciso que tire
+    // ele também, dos status impressos."
+    //
+    // Ele nasceu na v33k.1765 pra responder "essa etiqueta saiu no corte ou
+    // alguém clicou?" — pergunta legítima, mas de DIAGNÓSTICO. Na lista de
+    // expedição, onde a pessoa está despachando, ele ocupa espaço em cima de
+    // todo pedido da etapa 4 sem mudar nenhuma decisão dela.
+    //
+    // ★ O DADO NÃO SE PERDE: `impressoOrigem` continua gravado e continua
+    //   aparecendo no DETALHE do pedido ("automático, no corte do WhatsApp" /
+    //   "manual, aqui no painel"), que é onde a pergunta realmente aparece.
+    //   Tirar o selo da lista é tirar ruído, não informação.
+    const origemBadge = '';
+
+    // ★ v33k.1890: TAG DE AMOSTRA, no lugar que o selo desocupou.
+    //   PEDIDO DE 22/08: "preciso também que tenha a tag de amostra no pedido
+    //   que for realmente de amostra, pra poder identificar com facilidade."
+    //   O critério é o mesmo da nota (v33k.1889, dado por ele): valor zero.
+    //   Aqui a tag é VISUAL — quem decide o fiscal é o `nfe-service`; esta
+    //   linha só mostra o que já foi decidido lá, pra não existirem dois
+    //   lugares definindo o que é amostra.
+    const ehAmostra = !!(p.amostra || (p.brinde && p.brinde.amostra)
+      || (p.total != null && Number(p.total) === 0));
+    const amostraBadge = ehAmostra
+      ? '<span title="Pedido sem valor: sai como remessa de amostra grátis (CFOP 5911/6911), '
+        + 'com valor zero na nota." style="font-size:11px;font-weight:700;padding:2px 8px;'
+        + 'border-radius:99px;background:#fefce8;color:#854d0e;border:1px solid #fde68a;'
+        + 'display:inline-flex;align-items:center;gap:4px">'
+        + '<span class="lc-ic" data-lucide="gift" style="width:12px;height:12px"></span> Amostra</span>'
+      : '';
 
     const externoBadge = (p.impressoExterno && !p.impressoEm)
       ? '<span title="A etiqueta foi gerada/impressa fora do Lider 10 (na Shopee ou em outro sistema). O pedido seguiu o fluxo normalmente." style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:#f1f5f9;color:#475569;border:1px dashed #cbd5e1;display:inline-flex;align-items:center;gap:4px"><span class="lc-ic" data-lucide="external-link" style="width:12px;height:12px"></span> Impresso por fora</span>' : '';
@@ -82333,7 +82599,7 @@ ${JSON.stringify(metricas, null, 2)}`
         checkboxHtml +
         fotoHtml +
         '<div style="flex:1;min-width:0">' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-weight:700;color:var(--lc-ink);font-size:14px;letter-spacing:.01em">' + p.orderSn + '</span>' + _subBadge + mktBadge + semNfBadge + nfBadge + cpfBadge + atrasadoBadge + impBadge + origemBadge + externoBadge + fullBadge + _metaVenda + '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-weight:700;color:var(--lc-ink);font-size:14px;letter-spacing:.01em">' + p.orderSn + '</span>' + _subBadge + mktBadge + semNfBadge + nfBadge + cpfBadge + atrasadoBadge + impBadge + origemBadge + amostraBadge + externoBadge + fullBadge + _metaVenda + '</div>' +
           linhaProduto +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;font-size:12px"><span style="color:var(--lc-ink-2);font-weight:600">' + (p.loja || '') + '</span>' +
             (p.transportadora ? '<span style="color:var(--lc-muted-2)">·</span><span style="color:var(--lc-muted)">' + p.transportadora + '</span>' : '') +
