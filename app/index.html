@@ -71205,7 +71205,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1907-cortesia-10-acessos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1908-prever-cortesia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -91392,9 +91392,13 @@ function _cortesiaHtmlTexto() {
       + '</div>';
   }
 
-function mostrarBoasVindasCortesia() {
+  function mostrarBoasVindasCortesia(opts) {
     const u = _usuarioLogado || {};
-    if (!devoMostrarBoasVindasCortesia(u)) return;
+    // `preview` ignora TODAS as travas e não grava nada. Existe porque, sem
+    // ele, a única forma de conferir esta tela era criar uma conta de verdade
+    // e gastar um dos acessos dela — conferir não pode custar isso.
+    const preview = !!(opts && opts.preview);
+    if (!preview && !devoMostrarBoasVindasCortesia(u)) return;
     if (document.getElementById('lcCortesiaOverlay')) return;   // não empilha
 
     const ov = document.createElement('div');
@@ -91431,6 +91435,11 @@ function mostrarBoasVindasCortesia() {
       +      'border:none;border-radius:50%;background:rgba(255,255,255,.92);'
       +      'box-shadow:0 2px 8px rgba(0,0,0,.18);cursor:pointer;padding:0;'
       +      'font-size:20px;line-height:1;color:#334155;font-weight:700">&times;</button>'
+      + (preview
+          ? '<div style="padding:10px 16px;text-align:center;font-size:12px;font-weight:700;'
+            + 'color:#92400e;background:#fef3c7;border-top:1px solid #fde68a">'
+            + 'PRE-VISUALIZACAO. Nada foi gravado e nenhum acesso foi consumido.</div>'
+          : '')
       + '</div>';
     document.body.appendChild(ov);
 
@@ -91450,7 +91459,7 @@ function mostrarBoasVindasCortesia() {
       };
     }
 
-    const fechar = function () { _fecharBoasVindasCortesia(); };
+    const fechar = function () { _fecharBoasVindasCortesia(preview); };
     const btnX = document.getElementById('lcCortesiaFechar');
     if (btnX) btnX.onclick = fechar;
     ov.onclick = function (ev) { if (ev.target === ov) fechar(); };
@@ -91463,9 +91472,77 @@ function mostrarBoasVindasCortesia() {
   }
   window.mostrarBoasVindasCortesia = mostrarBoasVindasCortesia;
 
-  function _fecharBoasVindasCortesia() {
+  // ═══════════════════════════════════════════════════════════════════
+  // FERRAMENTAS PARA CONFERIR O AVISO (v33k.1908)
+  // ═══════════════════════════════════════════════════════════════════
+  // Nasceram de um problema real: em 23/08 o aviso não aparecia e não havia
+  // como saber POR QUÊ. São cinco condições silenciosas (plano, validade,
+  // contador, impersonação, sessão) e nenhuma delas se anunciava — ficava
+  // tudo por conta de adivinhação. Agora o painel responde.
+
+  // Mostra o aviso ignorando todas as travas. NÃO grava nada, NÃO consome
+  // acesso, funciona inclusive durante "Entrar como".
+  //   No console:  lcPreverCortesia()
+  //   Na URL:      ...#prever-cortesia   (e recarregue)
+  function lcPreverCortesia() {
+    mostrarBoasVindasCortesia({ preview: true });
+    return 'Pre-visualizacao aberta. Nada foi gravado.';
+  }
+  window.lcPreverCortesia = lcPreverCortesia;
+
+  // Diz, em português, por que o aviso apareceu ou não. Sem chute.
+  //   No console:  lcDiagCortesia()
+  function lcDiagCortesia() {
+    const u = _usuarioLogado || {};
+    const fim = u.cortesia_ate || u.assinatura_expira_em || null;
+    const vistos = Number(u.cortesia_avisos) || 0;
+    const teto = Number(u.cortesia_avisos_max) || 10;
+    let impersonando = false, sessaoUsada = false;
+    try { impersonando = !!localStorage.getItem('lider_token_admin_real'); } catch (e) {}
+    try { sessaoUsada = sessionStorage.getItem('lc_cortesia_sessao') === '1'; } catch (e) {}
+
+    const motivos = [];
+    if ((u.plano_status || '') !== 'cortesia') {
+      motivos.push('plano_status e "' + (u.plano_status || '(vazio)') + '", precisa ser "cortesia". '
+        + 'Esta conta nao entrou no beneficio.');
+    }
+    if (fim && new Date(fim).getTime() <= Date.now()) {
+      motivos.push('a cortesia venceu em ' + new Date(fim).toLocaleDateString('pt-BR') + '.');
+    }
+    if (vistos >= teto) motivos.push('ja apareceu ' + vistos + ' vez(es), o limite e ' + teto + '.');
+    if (impersonando) motivos.push('voce entrou por "Entrar como". O aviso e da conta do cliente '
+      + 'e nao aparece aqui, senao gastaria um acesso dele. Entre com o login proprio.');
+    if (sessaoUsada) motivos.push('ja apareceu nesta sessao do navegador. Abra uma aba anonima '
+      + 'ou feche e abra o navegador.');
+
+    const linhas = [
+      '--- aviso de cortesia ---',
+      'usuario ........ ' + (u.email || u.nome || '(sem sessao)'),
+      'plano .......... ' + (u.plano || '-') + ' / ' + (u.plano_status || '-'),
+      'cortesia ate ... ' + (fim ? new Date(fim).toLocaleDateString('pt-BR') : '(sem data)'),
+      'ja apareceu .... ' + vistos + ' de ' + teto,
+      'entrar como .... ' + (impersonando ? 'SIM' : 'nao'),
+      'sessao usada ... ' + (sessaoUsada ? 'SIM' : 'nao'),
+      '',
+      motivos.length
+        ? 'NAO aparece porque:\n  - ' + motivos.join('\n  - ')
+        : 'DEVE aparecer no proximo carregamento desta pagina.',
+      '',
+      'Para so ver como ficou, sem gravar nada: lcPreverCortesia()',
+    ];
+    const txt = linhas.join('\n');
+    try { console.log(txt); } catch (e) {}
+    return txt;
+  }
+  window.lcDiagCortesia = lcDiagCortesia;
+
+
+  function _fecharBoasVindasCortesia(preview) {
     const ov = document.getElementById('lcCortesiaOverlay');
     if (ov) ov.remove();
+    // Em pré-visualização não conta acesso, não marca sessão e não chama o
+    // backend. Conferir a tela não pode gastar a chance de ninguém.
+    if (preview) return;
     // Marca ANTES da rede: se a chamada falhar, o aviso não reaparece no meio
     // da sessão. Falhando de vez, ele volta no próximo acesso — bem melhor do
     // que contar como visto algo que a pessoa não viu.
@@ -105307,9 +105384,15 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
             // cortesia vê aqui. `devoMostrarBoasVindasCortesia` já garante que
             // é uma vez só — o /verificar acabou de trazer cortesia_avisada_em.
             try {
+              // Atalho de conferência: abrir com #prever-cortesia na URL mostra
+              // o aviso sem gravar nada. Serve para ver a tela pronta sem
+              // depender de criar conta nova nem gastar acesso de ninguém.
+              const querPrever = (location.hash || '').toLowerCase().indexOf('prever-cortesia') >= 0;
               setTimeout(() => {
-                if (typeof mostrarBoasVindasCortesia === 'function') mostrarBoasVindasCortesia();
-              }, 2200);
+                if (typeof mostrarBoasVindasCortesia !== 'function') return;
+                if (querPrever) mostrarBoasVindasCortesia({ preview: true });
+                else mostrarBoasVindasCortesia();
+              }, querPrever ? 900 : 2200);
             } catch (e) { /* nunca atrapalha o boot */ }
           })();
           return;
