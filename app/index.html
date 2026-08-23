@@ -17555,7 +17555,7 @@ window.LC_SVG = {
         <div id="cadastroFormBox" class="lc-stagger" style="display:none">
           <div class="login-subtitle" style="margin-bottom:6px;color:#6b7280">Crie sua conta</div>
           <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:9px;padding:9px 12px;font-size:12px;color:#065f46;margin-bottom:16px">
-            7 dias grátis com todos os recursos do Prime. Sem cartão de crédito.
+            365 dias de cortesia no plano Pro, sem cartão de crédito. Depois, sua conta continua no plano Start (grátis) — você nunca perde acesso aos seus dados.
           </div>
           <div class="form-group">
             <label class="form-label">Nome</label>
@@ -71197,7 +71197,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1890-tag-amostra';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1904-banner-assets';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -71655,13 +71655,22 @@ Responda APENAS com JSON válido (sem markdown), formato:
   }
 
   // Status do plano do usuário logado: { plano, status, nome, diasRestantes, fimData, expirado }
+  // v33k.1900: CORTESIA. O novo usuário entra no Pro de graça por 365 dias.
+  // Vencida, a conta DESCE para o Start (grátis) — não é bloqueada. O plano
+  // exibido passa a ser o EFETIVO, senão o painel mostraria "Pro" e travaria
+  // os recursos do Pro ao mesmo tempo, que é a pior combinação possível.
+  const CORTESIA_PLANO_AO_EXPIRAR = 'start';
+  function _cortesiaFimISO(u) {
+    return u.cortesia_ate || u.assinatura_expira_em || null;
+  }
   function statusPlano() {
     const u = _usuarioLogado || {};
-    const plano = u.plano || 'gratis';
-    const status = u.plano_status || 'trial';
-    const info = PLANOS_INFO[plano] || PLANOS_INFO.gratis;
-    // data de referência: trial usa trial_fim; pago usa assinatura_expira_em
-    const fimISO = status === 'trial' ? u.trial_fim : u.assinatura_expira_em;
+    const planoContratado = u.plano || 'gratis';
+    const status = u.plano_status || 'gratis';
+    // data de referência: trial legado usa trial_fim; cortesia e pago usam a
+    // data de fim (cortesia_ate cai em assinatura_expira_em quando ausente).
+    const fimISO = status === 'trial' ? u.trial_fim
+      : (status === 'cortesia' ? _cortesiaFimISO(u) : u.assinatura_expira_em);
     let diasRestantes = null, fimData = null, expirado = false;
     if (fimISO) {
       fimData = new Date(fimISO);
@@ -71669,7 +71678,14 @@ Responda APENAS com JSON válido (sem markdown), formato:
       diasRestantes = Math.ceil(ms / 86400000);
       expirado = ms <= 0;
     }
-    return { plano, status, nome: info.nome, info, diasRestantes, fimData, expirado };
+    // cortesia SEM data conhecida vale (migração pendente não rebaixa ninguém)
+    const cortesiaAtiva = (status === 'cortesia') && !expirado;
+    const plano = (status === 'cortesia' && expirado) ? CORTESIA_PLANO_AO_EXPIRAR : planoContratado;
+    const info = PLANOS_INFO[plano] || PLANOS_INFO.gratis;
+    return { plano, planoContratado, status, nome: info.nome, info,
+             diasRestantes, fimData, expirado, cortesiaAtiva,
+             cortesiaNumero: (u.cortesia_numero != null ? u.cortesia_numero : null),
+             cortesiaMarco: (u.cortesia_marco != null ? u.cortesia_marco : 1000) };
   }
 
   function fmtPrecoBR(v) {
@@ -71879,7 +71895,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // só marketplace e agência (admin) podem ser bloqueados. Superadmin nunca.
     if (p !== 'marketplace' && p !== 'admin') return false;
     const u = _usuarioLogado || {};
-    const status = u.plano_status || 'trial';
+    const status = u.plano_status || 'gratis';
+    // v33k.1900: cortesia NUNCA bloqueia, nem vencida. Ela desce para o Start
+    // e o painel passa a convidar à assinatura — perder recurso é uma coisa,
+    // ser trancado do lado de fora dos próprios dados é outra.
+    if (status === 'cortesia') return false;
     if (status === 'inadimplente') return true;
     // assinatura paga (não-grátis, não-trial) com data de expiração no passado
     const plano = u.plano || 'gratis';
@@ -72586,6 +72606,11 @@ Responda APENAS com JSON válido (sem markdown), formato:
         if (typeof aplicarIdentidadeUsuario === 'function') aplicarIdentidadeUsuario();
         if (typeof mostrarOverlayCarregando === 'function') mostrarOverlayCarregando('Preparando sua conta…');
         goTo(papelHomeInicial());
+        // v33k.1900: parabéns pela cortesia. Depois do overlay de carregamento
+        // sair, senão o modal nasce atrás dele e a pessoa vê um clarão roxo.
+        setTimeout(function () {
+          try { if (typeof mostrarBoasVindasCortesia === 'function') mostrarBoasVindasCortesia(); } catch (e) {}
+        }, 1200);
         (async () => {
           try {
             if (window.LiderSync && LiderSync.pullAll) {
@@ -90671,6 +90696,7 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // Cor do badge conforme status do plano
   function _corStatusPlano(st) {
+    if (st.status === 'cortesia') return st.expirado ? '#6b7280' : '#7c3aed';
     if (st.status === 'trial') return st.expirado ? '#dc2626' : '#d97706';
     if (st.status === 'ativo') return '#16a34a';
     if (st.status === 'inadimplente') return '#dc2626';
@@ -90678,6 +90704,10 @@ ${JSON.stringify(metricas, null, 2)}`
     return (st.info && st.info.cor) || '#6b7280';
   }
   function _rotuloStatusPlano(st) {
+    if (st.status === 'cortesia') {
+      if (st.expirado) return 'Cortesia encerrada';
+      return st.diasRestantes != null ? ('Cortesia · ' + st.diasRestantes + 'd') : 'Cortesia';
+    }
     if (st.status === 'trial') {
       if (st.expirado) return 'Trial expirado';
       return st.diasRestantes != null ? ('Trial · ' + st.diasRestantes + 'd') : 'Trial';
@@ -91136,7 +91166,11 @@ ${JSON.stringify(metricas, null, 2)}`
         + '<span class="lc-um-plano-nome">Plano ' + _esc(st.nome) + '</span>'
         + '<span class="lc-um-plano-badge" style="background:' + cor + '">' + _rotuloStatusPlano(st) + '</span>'
         + '</div>';
-      if (st.status === 'trial' && st.diasRestantes != null && !st.expirado) {
+      if (st.status === 'cortesia' && !st.expirado) {
+        html += '<div class="lc-um-plano-info">Cortesia' + (st.diasRestantes != null ? ' · termina em ' + st.diasRestantes + ' dia(s)' : '') + '.</div>';
+      } else if (st.status === 'cortesia' && st.expirado) {
+        html += '<div class="lc-um-plano-info">Sua cortesia terminou. Você está no Start (grátis).</div>';
+      } else if (st.status === 'trial' && st.diasRestantes != null && !st.expirado) {
         html += '<div class="lc-um-plano-info">Seu teste grátis termina em ' + st.diasRestantes + ' dia(s).</div>';
       } else if (st.status === 'ativo' && st.diasRestantes != null) {
         html += '<div class="lc-um-plano-info">Renova em ' + st.diasRestantes + ' dia(s).</div>';
@@ -91207,14 +91241,23 @@ ${JSON.stringify(metricas, null, 2)}`
     const corIco = (st.info && st.info.cor) || '#5f9647';
 
     let alerta = '';
-    if (st.status === 'trial' && !st.expirado && st.diasRestantes != null && st.diasRestantes <= 3) {
+    // v33k.1900: cortesia. Avisa perto do fim e, depois do fim, convida a
+    // assinar — sem trancar nada. O aviso só aparece nos últimos 30 dias:
+    // faixa de urgência ligada o ano inteiro vira ruído e some do radar.
+    if (st.status === 'cortesia' && !st.expirado && st.diasRestantes != null && st.diasRestantes <= 30) {
+      alerta = '<div class="lc-trial-alerta"><span class="lc-ic" data-lucide="clock"></span> Sua cortesia do plano Pro termina em ' + st.diasRestantes + ' dia(s). Assine para manter Ads, SAC, NF-e automática e os 20.000 pedidos/mês.</div>';
+    } else if (st.status === 'cortesia' && st.expirado) {
+      alerta = '<div class="lc-trial-alerta"><span class="lc-ic" data-lucide="alert-triangle"></span> Sua cortesia terminou e sua conta voltou para o plano Start (grátis). Assine para liberar de novo os recursos do Pro.</div>';
+    } else if (st.status === 'trial' && !st.expirado && st.diasRestantes != null && st.diasRestantes <= 3) {
       alerta = '<div class="lc-trial-alerta"><span class="lc-ic" data-lucide="clock"></span> Seu teste grátis termina em ' + st.diasRestantes + ' dia(s). Assine o Prime para não perder o acesso aos recursos.</div>';
     } else if (st.expirado && st.status === 'trial') {
       alerta = '<div class="lc-trial-alerta"><span class="lc-ic" data-lucide="alert-triangle"></span> Seu teste grátis terminou. Faça upgrade para reativar Ads e ofertas relâmpago.</div>';
     }
 
     let sub = '';
-    if (st.status === 'trial' && !st.expirado) sub = 'Teste grátis · ' + (st.diasRestantes != null ? st.diasRestantes + ' dia(s) restantes' : 'ativo');
+    if (st.status === 'cortesia' && !st.expirado) sub = 'Cortesia · ' + (st.diasRestantes != null ? st.diasRestantes + ' dia(s) restantes' : 'ativa');
+    else if (st.status === 'cortesia' && st.expirado) sub = 'Cortesia encerrada · você está no Start';
+    else if (st.status === 'trial' && !st.expirado) sub = 'Teste grátis · ' + (st.diasRestantes != null ? st.diasRestantes + ' dia(s) restantes' : 'ativo');
     else if (st.status === 'ativo') sub = st.diasRestantes != null ? ('Renova em ' + st.diasRestantes + ' dia(s)') : 'Assinatura ativa';
     else if (st.expirado || st.status === 'expirado') sub = 'Recursos limitados, faça upgrade';
     else sub = st.nome;
@@ -91244,6 +91287,198 @@ ${JSON.stringify(metricas, null, 2)}`
     try { if (papelAtual() === 'marketplace') renderContadorPedidos(); } catch(e){}
   }
   window.renderWidgetPlanoHome = renderWidgetPlanoHome;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // BOAS-VINDAS DA CORTESIA (v33k.1900)
+  // ═══════════════════════════════════════════════════════════════════
+  // Aparece UMA vez, logo depois do cadastro. O "já vi" mora no banco
+  // (cortesia_avisada_em), não no localStorage: senão a pessoa trocaria de
+  // navegador e seria parabenizada de novo pela mesma conta.
+  //
+  // Sem emoji, por invariante do painel: os ícones vêm do Lucide.
+  function _dataBR(iso) {
+    try { return new Date(iso).toLocaleDateString('pt-BR'); } catch (e) { return ''; }
+  }
+
+  // Decide SE o modal deve aparecer. Separada do render de propósito: é ela
+  // que a suíte de QA mede, sem precisar montar tela.
+  function devoMostrarBoasVindasCortesia(u) {
+    const usu = u || _usuarioLogado || {};
+    if ((usu.plano_status || '') !== 'cortesia') return false;
+    if (usu.cortesia_avisada_em) return false;      // já foi parabenizado
+    const fim = usu.cortesia_ate || usu.assinatura_expira_em;
+    if (fim && new Date(fim).getTime() <= Date.now()) return false;  // já venceu
+    return true;
+  }
+  window.devoMostrarBoasVindasCortesia = devoMostrarBoasVindasCortesia;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // A ARTE É HOSPEDADA, NÃO EMBUTIDA (v33k.1902)
+  // ═══════════════════════════════════════════════════════════════════
+  // A v1901 trazia o JPEG em base64 dentro deste arquivo. Custava 271 KB
+  // baixados e parseados em TODO boot, por TODO usuário — inclusive por quem
+  // já viu o banner e nunca mais vai ver. Peso permanente por um modal que
+  // aparece uma vez na vida é a pior troca possível.
+  //
+  // Agora os arquivos vivem ao lado do index.html no GitHub Pages: só são
+  // buscados quando o modal realmente abre, vêm da CDN e ficam em cache. O
+  // caminho é relativo à própria página, então funciona igual em subpasta.
+  //
+  // WebP primeiro (126 KB), JPEG como reserva (203 KB). Se NENHUM dos dois
+  // carregar, o modal cai na versão em texto — ver `_cortesiaHtmlTexto`.
+  // Imagem que não chega não pode virar retângulo quebrado na tela.
+  // ★ O CAMINHO SOBE UM NÍVEL, e isso não é descuido.
+  // O painel é servido de `/app/index.html`; a pasta de imagens é `/assets/`,
+  // na RAIZ do repositório (lá também vive o site institucional). De dentro de
+  // /app/, 'banner.jpg' resolveria para /app/banner.jpg — que não existe.
+  //
+  // Relativo com '../' e não absoluto '/assets/': assim funciona igual no
+  // domínio próprio (lider10.com.br/app/) e num endereço com subpasta
+  // (usuario.github.io/painel-lider/app/), onde a barra inicial apontaria
+  // para o lugar errado.
+  const LC_BANNER_CORTESIA_WEBP = '../assets/banner-cortesia.webp';
+  const LC_BANNER_CORTESIA_JPG = '../assets/banner-cortesia.jpg';
+
+  // Reserva em texto: usada quando a arte não carrega. É a mesma informação,
+  // sem depender de rede nenhuma.
+  function _cortesiaHtmlTexto(u) {
+    const primeiroNome = String(u.nome || '').trim().split(/\s+/)[0] || '';
+    const fim = u.cortesia_ate || u.assinatura_expira_em || null;
+    const ate = fim ? _dataBR(fim) : '';
+    const itens = [
+      ['store', '50 lojas conectadas, em 15 CNPJs'],
+      ['receipt', '20.000 pedidos por mês'],
+      ['chart-column', 'Motor de Ads e SAC liberados'],
+      ['file-text', 'NF-e automática e expedição'],
+    ].map(function (it) {
+      return '<li style="display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13.5px;color:#334155">'
+        + '<span class="lc-ic" data-lucide="' + it[0] + '" style="color:#5f9647;flex-shrink:0"></span>'
+        + it[1] + '</li>';
+    }).join('');
+    return '<div style="padding:30px 28px 10px;text-align:center">'
+      + '<div style="width:62px;height:62px;margin:0 auto 16px;border-radius:50%;background:linear-gradient(135deg,#5f9647,#4a7a37);display:flex;align-items:center;justify-content:center">'
+      +   '<span class="lc-ic" data-lucide="crown" style="color:#fff;width:30px;height:30px"></span>'
+      + '</div>'
+      + '<div style="font-size:21px;font-weight:800;color:#1e2a47;margin-bottom:8px">Parabéns'
+      +   (primeiroNome ? ', ' + _esc(primeiroNome) : '') + '!</div>'
+      + '<div style="font-size:15px;font-weight:700;color:#5f9647;line-height:1.5;margin-bottom:16px">'
+      +   'Você ganhou 365 dias de cortesia no plano Pro.</div>'
+      + '<ul style="list-style:none;margin:0;padding:16px 18px;text-align:left;background:#f6faf3;border:1px solid #dbeccf;border-radius:12px">' + itens + '</ul>'
+      + (ate ? '<div style="font-size:12.5px;color:#94a3b8;margin-top:14px">Sua cortesia vale até ' + ate + '.</div>' : '')
+      + '</div>';
+  }
+
+  function mostrarBoasVindasCortesia() {
+    const u = _usuarioLogado || {};
+    if (!devoMostrarBoasVindasCortesia(u)) return;
+    if (document.getElementById('lcCortesiaOverlay')) return;   // não empilha
+
+    const primeiroNome = String(u.nome || '').trim().split(/\s+/)[0] || '';
+    const numero = (u.cortesia_numero != null) ? Number(u.cortesia_numero) : null;
+    const marco = (u.cortesia_marco != null) ? Number(u.cortesia_marco) : 1000;
+    const fim = u.cortesia_ate || u.assinatura_expira_em || null;
+    const ate = fim ? _dataBR(fim) : '';
+
+    // Linha de baixo: é ela que carrega o que a arte não sabe — o nome, a
+    // posição na fila e a data de validade. Passado o marco a cortesia continua
+    // valendo, mas o texto para de dizer \"um dos primeiros mil\": prometer isso
+    // ao usuário 1.500 seria mentira, e mentira em boas-vindas custa caro.
+    const partes = [];
+    if (primeiroNome) partes.push('Boas-vindas, ' + _esc(primeiroNome) + '!');
+    if (numero != null && numero <= marco) {
+      partes.push('Você é o usuário <b>' + numero.toLocaleString('pt-BR') + '</b> dos primeiros '
+        + marco.toLocaleString('pt-BR') + '.');
+    }
+    if (ate) partes.push('Sua cortesia vale até <b>' + ate + '</b>.');
+    const rodape = partes.length
+      ? '<div id="lcCortesiaRodape" style="padding:14px 20px;text-align:center;font-size:13px;color:#475569;line-height:1.6;background:#fff;border-top:1px solid #eef2f7">'
+        + partes.join(' ') + '</div>'
+      : '';
+
+    const ov = document.createElement('div');
+    ov.id = 'lcCortesiaOverlay';
+    ov.className = 'overlay active';
+    ov.innerHTML =
+      '<div class="lc-cortesia-card" style="max-width:900px;width:94%;border-radius:16px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.35);position:relative;background:#fff">'
+      + '<picture>'
+      +   '<source type="image/webp" srcset="' + LC_BANNER_CORTESIA_WEBP + '">'
+      +   '<img id="lcCortesiaBanner" src="' + LC_BANNER_CORTESIA_JPG + '"'
+      +        ' alt="Parabéns! Você ganhou o Plano Pro com acesso liberado por 365 dias."'
+      +        ' decoding="async"'
+      +        ' style="display:block;width:100%;height:auto;background:#f1f5f9;aspect-ratio:1536/1024">'
+      + '</picture>'
+      // v33k.1903: a arte NOVA não tem X desenhado (a anterior tinha, e o botão
+      // daqui ficava transparente por cima dele). Sem X na imagem, botão
+      // invisível é botão que ninguém acha — então agora ele é visível, um
+      // círculo branco sobre o canto claro da arte.
+      + '<button id="lcCortesiaFechar" aria-label="Fechar"'
+      +      ' style="position:absolute;top:12px;right:12px;width:34px;height:34px;'
+      +      'display:flex;align-items:center;justify-content:center;'
+      +      'border:none;border-radius:50%;background:rgba(255,255,255,.92);'
+      +      'box-shadow:0 2px 8px rgba(0,0,0,.18);cursor:pointer;padding:0;'
+      +      'font-size:20px;line-height:1;color:#334155;font-weight:700">&times;</button>'
+      + rodape
+      + '<div style="padding:0 20px 18px;text-align:center;background:#fff">'
+      +   '<button id="lcCortesiaOk" style="width:100%;max-width:320px;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,#5f9647,#4a7a37);color:#fff;font-size:15px;font-weight:800;cursor:pointer">Começar a usar</button>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(ov);
+
+    // Se nem o WebP nem o JPEG chegarem, troca a arte pelo texto. O
+    // `aspect-ratio` acima segura o espaço enquanto a imagem vem, para o
+    // cartão não pular de altura no meio do carregamento.
+    const imgEl = document.getElementById('lcCortesiaBanner');
+    if (imgEl) {
+      imgEl.onerror = function () {
+        const pic = imgEl.parentNode;
+        const reserva = document.createElement('div');
+        reserva.id = 'lcCortesiaReserva';
+        reserva.innerHTML = _cortesiaHtmlTexto(u);
+        if (pic && pic.parentNode) pic.parentNode.replaceChild(reserva, pic);
+        try { window.lucide && window.lucide.createIcons(); } catch (e) {}
+        try { window.lcHydrateIcons && window.lcHydrateIcons(reserva); } catch (e) {}
+      };
+    }
+
+    const fechar = function () { _fecharBoasVindasCortesia(); };
+    const btnOk = document.getElementById('lcCortesiaOk');
+    if (btnOk) btnOk.onclick = fechar;
+    const btnX = document.getElementById('lcCortesiaFechar');
+    if (btnX) btnX.onclick = fechar;
+    // clicar fora do cartão também fecha
+    ov.onclick = function (ev) { if (ev.target === ov) fechar(); };
+    // Esc fecha. O ouvinte se remove sozinho: sem isso ele sobreviveria ao
+    // modal e ficaria pendurado no documento a sessão inteira.
+    const porEsc = function (ev) {
+      if (ev.key === 'Escape') { document.removeEventListener('keydown', porEsc); fechar(); }
+    };
+    document.addEventListener('keydown', porEsc);
+  }
+  window.mostrarBoasVindasCortesia = mostrarBoasVindasCortesia;
+
+  function _fecharBoasVindasCortesia() {
+    const ov = document.getElementById('lcCortesiaOverlay');
+    if (ov) ov.remove();
+    // marca localmente ANTES da rede: se a chamada falhar, o modal não volta
+    // no meio da sessão. Falhou de vez, ele reaparece no próximo login — o que
+    // é bem melhor do que gravar "visto" de algo que a pessoa não viu.
+    try {
+      const marca = new Date().toISOString();
+      if (_usuarioLogado) {
+        _usuarioLogado.cortesia_avisada_em = marca;
+        localStorage.setItem('lider_usuario', JSON.stringify(_usuarioLogado));
+      }
+    } catch (e) {}
+    try {
+      fetch(BACKEND_URL + '/api/auth/cortesia-vista', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'Authorization': 'Bearer ' + getTokenLogin(),
+                   'x-api-token': getApiToken() },
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
 
   // ── CONTADOR DE PEDIDOS DO CICLO (donut) na Home ──
   // Busca /uso-pedidos e desenha um gráfico de rosquinha com usados vs. limite.
@@ -91728,7 +91963,7 @@ ${JSON.stringify(metricas, null, 2)}`
       recursos.push(contasTxt);
       recursos.push(p.ads ? 'Motor de Ads' : 'Sem Ads');
       recursos.push(p.relampago ? 'Ofertas relâmpago' : 'Sem ofertas relâmpago');
-      if (pid === 'gratis') recursos.push('7 dias com tudo do Prime');
+      if (pid === 'gratis') recursos.push('Grátis para sempre, sem prazo');
       if (pid !== 'gratis') recursos.push('Suporte prioritário');
       if (pid === 'agencia') recursos.push('Gestão completa de clientes');
 
@@ -91738,7 +91973,7 @@ ${JSON.stringify(metricas, null, 2)}`
       if (atual) {
         if (st.status === 'inadimplente' || st.expirado) rotulo = 'Renovar assinatura';
         else if (st.status === 'ativo') rotulo = 'Renovar / pagar';
-        else rotulo = 'Assinar agora'; // trial
+        else rotulo = 'Assinar agora'; // cortesia / trial legado
       } else {
         rotulo = 'Escolher ' + p.nome;
       }
@@ -105053,6 +105288,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
               if (typeof verificarConvitesContabilidade === 'function') {
                 setTimeout(() => verificarConvitesContabilidade(), 1800);
               }
+            } catch (e) { /* nunca atrapalha o boot */ }
+            // v33k.1900: quem se cadastrou e ainda não viu as boas-vindas da
+            // cortesia vê aqui. `devoMostrarBoasVindasCortesia` já garante que
+            // é uma vez só — o /verificar acabou de trazer cortesia_avisada_em.
+            try {
+              setTimeout(() => {
+                if (typeof mostrarBoasVindasCortesia === 'function') mostrarBoasVindasCortesia();
+              }, 2200);
             } catch (e) { /* nunca atrapalha o boot */ }
           })();
           return;
