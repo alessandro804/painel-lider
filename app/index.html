@@ -71205,7 +71205,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1906-modal-simples';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1907-cortesia-10-acessos';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -91308,17 +91308,35 @@ ${JSON.stringify(metricas, null, 2)}`
 
   // Decide SE o modal deve aparecer. Separada do render de propósito: é ela
   // que a suíte de QA mede, sem precisar montar tela.
-function devoMostrarBoasVindasCortesia(u) {
+  function devoMostrarBoasVindasCortesia(u) {
     const usu = u || _usuarioLogado || {};
+
+    // ★ Só quem ENTROU no benefício. Conta antiga em 'trial', 'ativo' ou
+    // 'gratis' nunca vê este aviso, nem que o contador venha vazio: a porta
+    // de entrada é o plano_status, não a ausência de contagem.
     if ((usu.plano_status || '') !== 'cortesia') return false;
-    if (usu.cortesia_avisada_em) return false;      // já foi avisado
+
     const fim = usu.cortesia_ate || usu.assinatura_expira_em;
     if (fim && new Date(fim).getTime() <= Date.now()) return false;  // já venceu
-    // ★ NUNCA durante "Entrar como". O aviso é uma vez na vida da CONTA, e
-    // quem abre por impersonação QUEIMA essa única vez de outra pessoa: ao
-    // fechar, grava `cortesia_avisada_em` no cadastro dela, que nunca verá o
-    // aviso. Aconteceu em 23/08, com o admin dentro da conta de um cliente.
+
+    // v33k.1907: aparece nos primeiros N acessos, não uma vez só. Uma vez era
+    // frágil — bastava fechar no reflexo e a pessoa nunca ficava sabendo que
+    // ganhou um ano de Pro. O teto vem do backend (`cortesia_avisos_max`),
+    // que é onde a regra mora; o 10 aqui é só reserva para resposta antiga.
+    const vistos = Number(usu.cortesia_avisos) || 0;
+    const teto = Number(usu.cortesia_avisos_max) || 10;
+    if (vistos >= teto) return false;
+
+    // ★ NUNCA durante "Entrar como". O aviso é da CONTA, e quem abre por
+    // impersonação GASTA os acessos de outra pessoa: cada exibição incrementa
+    // o contador dela, que pode acabar nunca vendo. Aconteceu em 23/08.
     try { if (localStorage.getItem('lider_token_admin_real')) return false; } catch (e) {}
+
+    // Um aviso por sessão do navegador. Sem isto, apertar F5 cinco vezes
+    // queimaria cinco das dez chances — e o objetivo é a pessoa VER em
+    // acessos diferentes, não levar o mesmo aviso cinco vezes seguidas.
+    try { if (sessionStorage.getItem('lc_cortesia_sessao') === '1') return false; } catch (e) {}
+
     return true;
   }
   window.devoMostrarBoasVindasCortesia = devoMostrarBoasVindasCortesia;
@@ -91448,13 +91466,14 @@ function mostrarBoasVindasCortesia() {
   function _fecharBoasVindasCortesia() {
     const ov = document.getElementById('lcCortesiaOverlay');
     if (ov) ov.remove();
-    // marca localmente ANTES da rede: se a chamada falhar, o modal não volta
-    // no meio da sessão. Falhou de vez, ele reaparece no próximo login — o que
-    // é bem melhor do que gravar "visto" de algo que a pessoa não viu.
+    // Marca ANTES da rede: se a chamada falhar, o aviso não reaparece no meio
+    // da sessão. Falhando de vez, ele volta no próximo acesso — bem melhor do
+    // que contar como visto algo que a pessoa não viu.
+    try { sessionStorage.setItem('lc_cortesia_sessao', '1'); } catch (e) {}
     try {
-      const marca = new Date().toISOString();
       if (_usuarioLogado) {
-        _usuarioLogado.cortesia_avisada_em = marca;
+        _usuarioLogado.cortesia_avisos = (Number(_usuarioLogado.cortesia_avisos) || 0) + 1;
+        _usuarioLogado.cortesia_avisada_em = new Date().toISOString();
         localStorage.setItem('lider_usuario', JSON.stringify(_usuarioLogado));
       }
     } catch (e) {}
