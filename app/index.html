@@ -18830,7 +18830,7 @@ window.LC_SVG = {
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;background:var(--lc-surface);border:1px solid var(--lc-border);border-radius:var(--lc-radius);padding:12px 14px;margin-bottom:14px">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <div id="pedLojasSel"></div>
-            <input type="text" id="pedBusca" class="form-input" placeholder="Pedido ou produto" style="width:190px" onkeydown="if(event.key==='Enter')pedAplicar()">
+            <input type="text" id="pedBusca" class="form-input" placeholder="Pedido, produto ou SKU (ex.: buffalo)" style="width:250px" onkeydown="if(event.key==='Enter')pedAplicar()" oninput="pedBuscaAoDigitar()">
             <button class="lc-btn lc-btn--primary lc-btn--sm" onclick="pedAplicar()">Aplicar</button>
             <button class="lc-btn lc-btn--secondary lc-btn--sm" onclick="pedAbrirSincronizar()">Sincronizar vendas</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="abrirPedidosAtrasados()" title="Acompanhe os pedidos com envio atrasado (Shopee + ML) e dispare o aviso aos clientes">Pedidos atrasados</button>
@@ -19305,6 +19305,11 @@ window.LC_SVG = {
           <div id="expProgresso" style="display:none"></div>
           <div id="expErro" style="display:none;background:var(--lc-danger-soft);border:1px solid var(--lc-danger);color:var(--lc-danger);padding:12px;border-radius:8px;margin-bottom:12px"></div>
           <!-- v33k.882: gap maior entre pedidos (era 8px e ficava tudo colado) -->
+          <!-- v33k.1936: faixa da busca. Diz quantos casaram NESTA etapa e
+               quantos casaram em OUTRAS, com atalho pra ver todos. Fica fora
+               de #expLista de proposito: a lista e redesenhada a cada filtro
+               e levaria a faixa junto. -->
+          <div id="expBuscaFaixa" style="display:none;margin-bottom:12px"></div>
           <div id="expLista" style="display:flex;flex-direction:column;gap:14px"></div>
         </div>
       </div>
@@ -21734,8 +21739,8 @@ window.LC_SVG = {
             <button type="button" class="promo-massa-btn" onclick="aplicarPrecoMassaPromo()">Aplicar a selecionados</button>
             <button type="button" class="promo-massa-btn" style="background:#eff6ff;color:#1d4ed8" onclick="sincronizarNovosAnunciosPromo()">🔄 Sincronizar novos</button>
             <span class="promo-massa-sel">
-              <a href="javascript:void(0)" onclick="selecionarTodosAnunciosPromo(true)">Marcar todos</a> ·
-              <a href="javascript:void(0)" onclick="selecionarTodosAnunciosPromo(false)">Nenhum</a>
+              <a href="javascript:void(0)" onclick="selecionarTodosAnunciosPromo(true)" title="Marca só os anúncios que a busca deixou visíveis"><span id="promoMarcarTodosRot">Marcar todos os visíveis</span></a> ·
+              <a href="javascript:void(0)" onclick="selecionarTodosAnunciosPromo(false)" title="Desmarca tudo, inclusive o que o filtro esconde">Nenhum</a>
             </span>
           </div>
 
@@ -31933,6 +31938,14 @@ Retorne JSON: {"ID": "valor", ...}`;
           </button>
           <button class="lc-btn lc-btn--sm" onclick="goTo('pdvScreen')" style="width:100%">
             Preparar no Frente de Caixa
+          </button>
+          <!-- ★ v33k.1936: o card do Frente de Caixa nasceu (v33k.1245) sem
+               botão de excluir. Não era regra: o card tem return próprio e
+               simplesmente não renderizava o botão que todos os outros têm.
+               acaoLojaExcluir sempre foi generica e serve pra este canal.
+               O backend recusa a exclusão se houver turno de caixa aberto. -->
+          <button class="delete-btn" style="width:100%;margin-top:6px;font-size:11px;padding:7px 11px;background:#f3f4f6;color:#94a3b8" onclick="acaoLojaExcluir('${loja.id}')" title="Excluir esta loja física do sistema">
+            <span class="lc-ic" data-size="sm" data-lucide="trash-2"></span> Excluir loja
           </button>
         </div>
       </div>`;
@@ -67784,9 +67797,47 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (el) el.style.display = (el.style.display === 'none' ? 'block' : 'none');
   }
 
-  // Selecionar todos / nenhum
+  // ★ v33k.1936: FONTE ÚNICA DO QUE ESTÁ VISÍVEL NA LISTA DE ANÚNCIOS.
+  // ─────────────────────────────────────────────────────────────────
+  // Casa por título, SKU do pai, SKU de variação e ID do anúncio vinculado,
+  // sempre por `includes` — então começo de palavra já serve: "buffalo"
+  // pega BUFFALO-PRETO-39, BUFFALO-BRANCO-40 e o anúncio "Tênis Buffalo".
+  //
+  // Ela existe porque `renderPromoItens` e `selecionarTodosAnunciosPromo`
+  // PRECISAM concordar. Enquanto eram dois cálculos, eram duas respostas —
+  // ver o defeito que isto conserta, logo abaixo.
+  function _promoProdutosFiltrados() {
+    const todos = _promoProdutosDaLoja();
+    const termo = (document.getElementById('promoItemBusca')?.value || '').trim().toLowerCase();
+    if (!termo) return todos;
+    return todos.filter(prod => {
+      const nome = String(prod.nome || prod.titulo || '').toLowerCase();
+      if (nome.includes(termo)) return true;
+      if (String(prod.skuPai || '').toLowerCase().includes(termo)) return true;
+      // SKU de variação OU ID do anúncio vinculado
+      return (prod.variacoes || []).some(v => {
+        if (String(v.sku || '').toLowerCase().includes(termo)) return true;
+        return (v.vinculos || []).some(vi => String(vi.anuncioId || '').toLowerCase().includes(termo));
+      });
+    });
+  }
+  window._promoProdutosFiltrados = _promoProdutosFiltrados;
+
+  // ★ v33k.1936: "Marcar todos" IGNORAVA A BUSCA.
+  // ─────────────────────────────────────────────────────────────────
+  // Ele varria `_promoProdutosDaLoja()` inteiro. Na prática: filtra
+  // "buffalo", vê seis anúncios na tela, clica em Marcar todos e seleciona
+  // o CATÁLOGO INTEIRO da loja — e o passo seguinte da tela é aplicar preço
+  // em massa aos selecionados. Seleção invisível + preço em massa é edição
+  // de preço no produto errado, sem nada na tela denunciando.
+  //
+  // Agora marca só o que a busca deixou visível, que é o padrão que a
+  // promoção do TikTok já usava (`tkPromoMarcarTudo` pula display:none).
+  // "Nenhum" continua desmarcando TUDO, inclusive o que o filtro esconde:
+  // limpar seleção escondida é seguro, criar seleção escondida não é.
   function selecionarTodosAnunciosPromo(marcar) {
-    _promoProdutosDaLoja().forEach(prod => {
+    const alvo = marcar ? _promoProdutosFiltrados() : _promoProdutosDaLoja();
+    alvo.forEach(prod => {
       const item = _promoEnsureItem(prod);
       item.selecionado = !!marcar;
     });
@@ -67842,18 +67893,18 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     wrap.style.display = 'block';
 
     const produtosTodos = _promoProdutosDaLoja();
-    // filtro de busca: título, ID do anúncio (anuncioId nos vínculos), SKU pai e SKU de variação
     const termoBusca = (document.getElementById('promoItemBusca')?.value || '').trim().toLowerCase();
-    const produtos = !termoBusca ? produtosTodos : produtosTodos.filter(prod => {
-      const nome = String(prod.nome || prod.titulo || '').toLowerCase();
-      if (nome.includes(termoBusca)) return true;
-      if (String(prod.skuPai || '').toLowerCase().includes(termoBusca)) return true;
-      // SKU de variação OU ID do anúncio vinculado
-      return (prod.variacoes || []).some(v => {
-        if (String(v.sku || '').toLowerCase().includes(termoBusca)) return true;
-        return (v.vinculos || []).some(vi => String(vi.anuncioId || '').toLowerCase().includes(termoBusca));
-      });
-    });
+    // ★ v33k.1936: o filtro saiu daqui pra `_promoProdutosFiltrados` porque o
+    // "Marcar todos" precisa da MESMA resposta. Ver o comentário lá.
+    const produtos = _promoProdutosFiltrados();
+    // o rótulo diz QUANTOS o clique vai marcar. Sem o número, "todos os
+    // visíveis" ainda deixa o operador adivinhando o alcance do próprio clique.
+    {
+      const rot = document.getElementById('promoMarcarTodosRot');
+      if (rot) rot.textContent = termoBusca
+        ? ('Marcar todos os visíveis (' + produtos.length + ')')
+        : ('Marcar todos (' + produtos.length + ')');
+    }
     if (produtosTodos.length === 0) {
       lista.innerHTML = '<div style="padding:16px;text-align:center;color:#6b7280;font-size:13px">'
         + 'Nenhum produto nesta loja. Sincronize os anúncios primeiro.</div>';
@@ -71216,7 +71267,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1935-cada-um-na-sua-aba';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1936-busca-que-acha';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -81995,7 +82046,74 @@ ${JSON.stringify(metricas, null, 2)}`
     expRebuscarContadores();
   }
 
-  // busca global: acha o pedido em QUALQUER etapa e mostra onde ele está.
+  // ═══════════════════════════════════════════════════════════════════
+  // ★ v33k.1936: A BUSCA DA EXPEDIÇÃO PASSA A FILTRAR A ETAPA ATUAL
+  // ───────────────────────────────────────────────────────────────────
+  // PEDIDO de 23/08: "vendo um tênis Buffalo, SKU BUFFALO-PRETO-39; se eu
+  // digitar buffalo tem que mostrar todos os anúncios com essa palavra, pra
+  // eu emitir, programar e gerar etiqueta só desse modelo".
+  //
+  // O que estava errado eram DUAS coisas, e consertar só uma não resolvia:
+  //
+  //  1. Digitar mandava pra `expBuscar`, que consulta `/expedicao/buscar` —
+  //     e essa rota olhava SÓ `order_sn`. Corrigido no backend nesta versão.
+  //  2. `expBuscar` ESCONDE a barra de ações (`expAcoes`). Mesmo achando os
+  //     Buffalo, não dava pra emitir, programar nem gerar etiqueta em cima
+  //     do resultado — que é o trabalho inteiro do pedido acima.
+  //
+  // Agora digitar FILTRA A LISTA DA ETAPA ATUAL, pelo caminho `/lista`, que
+  // já sabia casar pedido + SKU + nome do produto e já mandava o `q` (só
+  // nunca era acionado). A lista filtrada mantém chips, paginação, seleção
+  // e a barra de ações: dá pra marcar todos os Buffalo de "Imprimir" e
+  // gerar as etiquetas de uma vez.
+  //
+  // O que casa em OUTRAS etapas não some: vira uma faixa acima da lista, com
+  // atalho pra `expBuscar`, que continua existindo como a visão global.
+  function expAplicarBusca() {
+    _expPagina = 1;          // filtro novo → página 1, igual troca de chip
+    _expSel.clear();
+    expCarregarLista({ forcar: true });
+    expBuscarOutrasEtapas();
+  }
+  window.expAplicarBusca = expAplicarBusca;
+
+  // Conta quantos casam FORA da etapa aberta. Silenciosa: é enfeite da busca,
+  // e derrubar a faixa não pode derrubar a lista, que é o que importa.
+  async function expBuscarOutrasEtapas() {
+    const faixa = document.getElementById('expBuscaFaixa');
+    if (!faixa) return;
+    const buscaEl = document.getElementById('pedBusca');
+    const q = (buscaEl && buscaEl.value || '').trim();
+    if (!q) { faixa.style.display = 'none'; faixa.innerHTML = ''; return; }
+    const lojas = expLojasSelecionadas();
+    if (!lojas.length) { faixa.style.display = 'none'; return; }
+    try {
+      const params = new URLSearchParams({ lojaIds: lojas.join(','), q });
+      const resp = await fetch(BACKEND_URL + '/api/expedicao/buscar?' + params.toString(), { headers: { 'x-api-token': getApiToken() } });
+      if (!resp.ok) { faixa.style.display = 'none'; return; }
+      const data = await resp.json();
+      if (!data.ok) { faixa.style.display = 'none'; return; }
+      const fora = (data.pedidos || []).filter(p => Number(p.etapa) !== Number(_expEtapaSel));
+      if (!fora.length) { faixa.style.display = 'none'; faixa.innerHTML = ''; return; }
+      // agrupa por etapa pra dizer ONDE estão, não só quantos são
+      const porEtapa = {};
+      fora.forEach(p => { const n = p.etapaNome || ('Etapa ' + p.etapa); porEtapa[n] = (porEtapa[n] || 0) + 1; });
+      const detalhe = Object.keys(porEtapa).map(n => porEtapa[n] + ' em ' + n).join(' · ');
+      faixa.style.display = 'block';
+      faixa.innerHTML = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:var(--lc-radius);padding:9px 12px;font-size:12.5px;color:var(--lc-ink-2)">'
+        + '<span class="lc-ic" data-size="sm" data-lucide="search"></span>'
+        + '<span>Também casam com <b>' + escapeHtml(q) + '</b> fora desta etapa: ' + escapeHtml(detalhe) + '.</span>'
+        + '<button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expBuscar()">Ver todas as etapas</button>'
+        + '</div>';
+      try { if (typeof lcHydrateIcons === 'function') lcHydrateIcons(faixa); } catch (_) {}
+    } catch (_) { faixa.style.display = 'none'; }
+  }
+  window.expBuscarOutrasEtapas = expBuscarOutrasEtapas;
+
+  // visão GLOBAL: acha o pedido em QUALQUER etapa e mostra onde ele está.
+  // ★ Aqui as ações ficam escondidas de propósito: o resultado mistura etapas,
+  // e "gerar etiqueta" num lote que tem pedido sem NF não é uma ação válida.
+  // Quem quer agir volta pra etapa e filtra lá.
   async function expBuscar() {
     const lista = document.getElementById('expLista');
     const acoes = document.getElementById('expAcoes');
@@ -83558,9 +83676,21 @@ ${JSON.stringify(metricas, null, 2)}`
 
   function pedAplicar() {
     if (_pedAba === 'conferencia') pedCarregarConferencia();
-    else if (_pedAba === 'expedicao') expBuscar();
+    else if (_pedAba === 'expedicao') expAplicarBusca();
     else pedCarregarLista();
   }
+
+  // ★ v33k.1936: filtra enquanto digita, com folga pra terminar a palavra.
+  // 350ms e o tempo entre teclas de quem digita, nao de quem parou: sem ele
+  // "buffalo" dispararia sete buscas e a de 'b' voltaria por ultimo.
+  let _pedBuscaTimer = null;
+  function pedBuscaAoDigitar() {
+    clearTimeout(_pedBuscaTimer);
+    _pedBuscaTimer = setTimeout(() => {
+      if (_pedAba === 'expedicao') expAplicarBusca();
+    }, 350);
+  }
+  window.pedBuscaAoDigitar = pedBuscaAoDigitar;
 
   function pedLojasSelecionadas() {
     return _pedSelComp ? _pedSelComp.getSelecionados() : [];
