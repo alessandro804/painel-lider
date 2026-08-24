@@ -19295,6 +19295,18 @@ window.LC_SVG = {
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="expRodape" value="variacao" checked onchange="expSetRodape('variacao')"> variação</label>
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="expRodape" value="sku" onchange="expSetRodape('sku')"> SKU</label>
             </div>
+            <!-- ★ v33k.1937: A BARRA DE BUSCA MORA AQUI, na barra que ja existia.
+                 A v33k.1936 fiou a busca no #pedBusca, que vive em `pedidosScreen`
+                 e NAO existe nesta tela: a expedicao virou tela propria
+                 (`notasFiscaisScreen`) e `pedTrocarAba('expedicao')` so redireciona.
+                 Resultado: nao aparecia barra nenhuma. -->
+            <div style="display:flex;align-items:center;gap:6px;border-left:1px solid var(--lc-border);padding-left:10px">
+              <span class="lc-ic" data-size="sm" data-lucide="search" style="color:var(--lc-muted)"></span>
+              <input type="text" id="expBusca" class="form-input" placeholder="Produto, SKU ou pedido (ex.: buffalo)"
+                style="width:230px;padding:6px 9px;font-size:12.5px"
+                oninput="expBuscaAoDigitar()" onkeydown="if(event.key==='Enter')expAplicarBusca()">
+              <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBuscaLimpar" onclick="expLimparBusca()" title="Limpar a busca" style="display:none;padding:4px 8px"><span class="lc-ic" data-size="sm" data-lucide="x"></span></button>
+            </div>
             <div style="flex:1"></div>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBtnOrdem" onclick="expToggleOrdem()" title="Alternar ordem por prazo de envio"><span class="lc-ic" data-lucide="arrow-up-down"></span> Mais recentes</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBtnAtrasados" onclick="expToggleAtrasados()" title="Mostrar só os pedidos com prazo de envio vencido"><span class="lc-ic" data-lucide="alarm-clock"></span> Só atrasados</button>
@@ -71267,7 +71279,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1936-busca-que-acha';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1938-sku-de-verdade';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -82069,6 +82081,28 @@ ${JSON.stringify(metricas, null, 2)}`
   //
   // O que casa em OUTRAS etapas não some: vira uma faixa acima da lista, com
   // atalho pra `expBuscar`, que continua existindo como a visão global.
+  // ★ v33k.1937: filtra enquanto digita, nesta tela. 350ms e o tempo entre
+  // teclas de quem digita, nao de quem parou: sem ele "buffalo" dispara sete
+  // buscas e a de 'b' volta por ultimo.
+  let _expBuscaTimer = null;
+  function expBuscaAoDigitar() {
+    clearTimeout(_expBuscaTimer);
+    const btn = document.getElementById('expBuscaLimpar');
+    const el = document.getElementById('expBusca');
+    if (btn) btn.style.display = (el && el.value.trim()) ? 'inline-flex' : 'none';
+    _expBuscaTimer = setTimeout(expAplicarBusca, 350);
+  }
+  window.expBuscaAoDigitar = expBuscaAoDigitar;
+
+  function expLimparBusca() {
+    const el = document.getElementById('expBusca');
+    if (el) el.value = '';
+    const btn = document.getElementById('expBuscaLimpar');
+    if (btn) btn.style.display = 'none';
+    expAplicarBusca();
+  }
+  window.expLimparBusca = expLimparBusca;
+
   function expAplicarBusca() {
     _expPagina = 1;          // filtro novo → página 1, igual troca de chip
     _expSel.clear();
@@ -82082,7 +82116,7 @@ ${JSON.stringify(metricas, null, 2)}`
   async function expBuscarOutrasEtapas() {
     const faixa = document.getElementById('expBuscaFaixa');
     if (!faixa) return;
-    const buscaEl = document.getElementById('pedBusca');
+    const buscaEl = document.getElementById('expBusca') || document.getElementById('pedBusca');
     const q = (buscaEl && buscaEl.value || '').trim();
     if (!q) { faixa.style.display = 'none'; faixa.innerHTML = ''; return; }
     const lojas = expLojasSelecionadas();
@@ -82117,7 +82151,7 @@ ${JSON.stringify(metricas, null, 2)}`
   async function expBuscar() {
     const lista = document.getElementById('expLista');
     const acoes = document.getElementById('expAcoes');
-    const buscaEl = document.getElementById('pedBusca');
+    const buscaEl = document.getElementById('expBusca') || document.getElementById('pedBusca');
     const q = (buscaEl && buscaEl.value || '').trim();
     if (!q) { expCarregar(); return; }   // busca vazia → recarrega contadores + lista (respeita a loja atual)
     const lojas = expLojasSelecionadas();
@@ -82190,7 +82224,9 @@ ${JSON.stringify(metricas, null, 2)}`
     if (!silencioso) lista.innerHTML = _expSkeletons();
     try {
       // v33k.390: passa o texto do campo de busca (pedido/SKU/produto) pra filtrar.
-      const buscaEl = document.getElementById('pedBusca');
+      // ★ v33k.1937: `expBusca` e o campo desta tela. O fallback pra `pedBusca`
+      // fica porque a tela de Pedidos ainda tem o dela, e a funcao e a mesma.
+      const buscaEl = document.getElementById('expBusca') || document.getElementById('pedBusca');
       const q = (buscaEl && buscaEl.value || '').trim();
       // v33k.593: sem sub-status selecionado ("Todos") → manda a ETAPA, e o
       // backend devolve a etapa inteira. Assim o número da lista bate com o card.
@@ -94168,15 +94204,69 @@ function _cortesiaHtmlTexto() {
     return Number.isFinite(v) && v > 0 ? v : 0;
   }
 
+  // ★ v33k.1938: SKUs das variações a partir do CATÁLOGO LOCAL.
+  // O `get_discount` da Shopee não traz SKU de variação, e pedir por API
+  // custaria uma chamada `get_model_list` por item da campanha (24, 60, 500).
+  // `produtosErp` já tem o vínculo anúncio→produto→variações→sku.
+  // Cache por item_id: `_promoFiltrarOrdenar` roda a cada tecla digitada, e
+  // varrer o catálogo inteiro por item a cada tecla travaria a digitação.
+  const _promoSkuCache = new Map();
+  function _promoSkusLocais(itemId) {
+    const pid = String(itemId || '');
+    if (!pid) return '';
+    if (_promoSkuCache.has(pid)) return _promoSkuCache.get(pid);
+    let achado = '';
+    for (const p of (typeof produtosErp !== 'undefined' ? (produtosErp || []) : [])) {
+      let casa = false;
+      for (const v of (p.variacoes || [])) {
+        for (const vi of (v.vinculos || [])) {
+          if (String(vi.marketplace || '').toLowerCase() === 'shopee' && String(vi.anuncioId) === pid) { casa = true; break; }
+        }
+        if (casa) break;
+      }
+      if (!casa) continue;
+      const skus = [p.skuPai || ''].concat((p.variacoes || []).map(v => v.sku || ''));
+      achado = skus.filter(Boolean).join(' ');
+      break;
+    }
+    _promoSkuCache.set(pid, achado);
+    return achado;
+  }
+  // o catálogo pode chegar/mudar depois do modal abrir; quem recarrega limpa.
+  window._promoSkusLocaisLimparCache = () => _promoSkuCache.clear();
+
   // Filtra (nome/ID/SKU) e ordena os itens pra exibição, preservando o índice original
   function _promoFiltrarOrdenar(itensComIdx) {
     let arr = itensComIdx;
     // v33k.1677: busca compartilhada com o modal do TikTok — sem acento, termos
     // fora de ordem, e casando também pelo SKU (que o operador tem na mão).
     if ((_promoBusca || '').trim()) {
+      // ★★ v33k.1938: A BUSCA POR SKU NUNCA FUNCIONOU AQUI.
+      // ───────────────────────────────────────────────────────────────
+      // RELATO de 24/08: "flor apareceu porque estava no TÍTULO, não pegou o
+      // código SKU; testei com outra loja digitando SKU e o produto não
+      // apareceu". Estava certo, e o defeito é de NOME DE CAMPO:
+      //
+      //   · a tela mostra   `item.sku`      (linha do "SKU: FLOR")
+      //   · a busca lia     `item.item_sku` (nunca existe)
+      //
+      // Quem grava é `marketplaces.js`, na rota de detalhe da promoção:
+      //     it.foto = m.foto || null; it.sku = m.sku || '';
+      // Só `sku`. `item_sku` é o nome que a Shopee usa no `get_item_base_info`,
+      // e ele morre dentro do adaptador — nunca chega ao painel. A intenção
+      // estava no comentário desde a v33k.1677; o campo é que estava errado,
+      // e como `undefined` vira string vazia, a busca casava só pelo título
+      // e nada acusava.
+      //
+      // `model_sku` tinha o mesmo problema, mas pior: o `get_discount` da
+      // Shopee NÃO devolve SKU nenhum no `model_list` (por isso a rota
+      // precisa enriquecer). Buscar SKU de variação pela API custaria um
+      // `get_model_list` POR ITEM. O catálogo local já tem esses SKUs, então
+      // eles saem de `produtosErp`, com custo zero de API.
       arr = arr.filter(({ item }) => _promoCasaBusca(_promoBusca,
-        item.item_name, item.item_id, item.item_sku,
-        ((item.model_list || []).map(m => m.model_sku || '').join(' '))));
+        item.item_name, item.item_id,
+        item.sku, item.item_sku,                 // pai: o que existe + o legado
+        _promoSkusLocais(item.item_id)));        // variações, do catálogo local
     }
     // ordenação compartilhada, agora incluindo DESCONTO
     return _promoOrdenarLista(arr, _promoOrdem, ({ item }) => ({
@@ -94382,6 +94472,14 @@ function _cortesiaHtmlTexto() {
     footer.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span id="promoSelCount" style="font-size:12px;color:#6b7280">0 selecionada(s)</span>
+        <!-- ★ v33k.1937: MARCAR TODAS AS VISIVEIS. Este modal (editar promocao)
+             nunca teve marcar-todos: dava pra filtrar por SKU e depois era
+             preciso clicar variacao por variacao. A v33k.1936 mexeu no modal
+             de CRIAR promocao, que e outro. O filtro aqui nao esconde: ele
+             NAO RENDERIZA o que nao casa, entao "visivel" = o que esta no DOM,
+             e marcar tudo que esta no DOM nunca alcanca o que o filtro tirou. -->
+        <button onclick="promoMarcarVisiveis(true)" style="padding:6px 10px;background:#fff;color:var(--lc-primary-text);border:1px solid var(--lc-primary-soft);border-radius:6px;cursor:pointer;font-size:12px;font-weight:700" title="Marca todas as variações que a busca deixou na tela"><span id="promoMarcarVisRot">Marcar visíveis</span></button>
+        <button onclick="promoMarcarVisiveis(false)" style="padding:6px 10px;background:#fff;color:#6b7280;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-size:12px" title="Desmarca tudo">Nenhuma</button>
         <input type="text" inputmode="decimal" id="promoShopeeMassaPreco" placeholder="R$" style="width:80px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px">
         <button onclick="promoAplicarMassa()" style="padding:6px 10px;background:var(--lc-primary);color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" title="Define este preço nas selecionadas">= Definir</button>
         <button onclick="promoAjustarMassa(-1)" style="padding:6px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-size:12px" title="Diminui este valor das selecionadas">− Baixar</button>
@@ -94407,8 +94505,24 @@ function _cortesiaHtmlTexto() {
     const n = document.querySelectorAll('.promo-chk:checked').length;
     const el = document.getElementById('promoSelCount');
     if (el) el.textContent = n + ' selecionada(s)';
+    // o rotulo diz QUANTAS o clique vai marcar. Sem o numero, "visiveis" ainda
+    // deixa o operador adivinhando o alcance do proprio clique.
+    const rot = document.getElementById('promoMarcarVisRot');
+    if (rot) rot.textContent = 'Marcar visíveis (' + document.querySelectorAll('.promo-chk').length + ')';
   }
   window.promoAtualizarContadorSel = promoAtualizarContadorSel;
+
+  // ★ v33k.1937: marca/desmarca as variacoes VISIVEIS deste modal.
+  // `.promo-chk` so existe pra item renderizado, e `renderEditorPromo` filtra
+  // ANTES de montar o HTML (nao usa display:none). Entao percorrer o DOM e,
+  // por construcao, percorrer exatamente o que a busca deixou na tela.
+  // Desmarcar tambem so alcanca o visivel — mas aqui isso e seguro, porque o
+  // que o filtro tirou tambem nao esta selecionado: ele nunca foi renderizado.
+  function promoMarcarVisiveis(marcar) {
+    document.querySelectorAll('.promo-chk').forEach(chk => { chk.checked = !!marcar; });
+    promoAtualizarContadorSel();
+  }
+  window.promoMarcarVisiveis = promoMarcarVisiveis;
 
   function promoAplicarMassa() {
     const campo = document.getElementById('promoShopeeMassaPreco');
