@@ -36323,7 +36323,25 @@ Retorne JSON: {"ID": "valor", ...}`;
       (Array.isArray(p.variacoes) ? p.variacoes : []).forEach(v => {
         if (!v) return;
         const daVariacao = Array.isArray(v.vinculos) ? v.vinculos : [];
-        v.vinculos = daVariacao.concat(anuncios);
+        // ★ v33k.1987: NÃO ESPALHA O QUE A VARIAÇÃO JÁ TEM.
+        // A função SQL classificava pelo `variacaoExternaId` sozinho, então
+        // vínculo com `modelIdExterno` (97% dos que têm id, no censo do dono 1)
+        // ia pro balde "de produto", perdia o id no colapso e voltava espalhado
+        // em TODAS as variações — sem id nenhum. Medido: o produto 9547 tem
+        // 1.044 vínculos no banco e o painel montava 2.496; 1.453 pushes
+        // falharam com `sem_id_e_sku_nao_bate`.
+        //
+        // O conserto de verdade é o SQL (MIGRACAO_v1987). Esta guarda é cinto e
+        // suspensório: mesmo com a função antiga no ar, uma variação nunca fica
+        // com dois vínculos pro mesmo anúncio+loja. Um backend velho contra um
+        // painel novo é situação NORMAL aqui, não exceção.
+        const jaTem = new Set(daVariacao
+          .filter(x => x && x.anuncioId)
+          .map(x => String(x.anuncioId) + '|' + String(x.lojaIdBanco || x.lojaId)));
+        const aEspalhar = jaTem.size
+          ? anuncios.filter(a => a && !jaTem.has(String(a.anuncioId) + '|' + String(a.lojaIdBanco || a.lojaId)))
+          : anuncios;
+        v.vinculos = daVariacao.concat(aEspalhar);
       });
       // marca ANTES de soltar o produto no catálogo: quem escrever nele sem
       // passar pela guarda vai bater na trava do save
@@ -71406,7 +71424,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1986-o-ml-tem-dois-modelos';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1987-o-sql-tambem-lia-um-nome-so';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
