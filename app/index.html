@@ -61693,6 +61693,80 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // v33k.1135: modo do histórico — 'sku' (uma variação) ou 'produto' (todas as
   // variações do produto interno juntas). Guarda os SKUs do produto no modo produto.
   let _histEstModo = 'sku', _histEstSkusProduto = [], _histEstSaldoProduto = null;
+
+  // ★ v33k.1991 (Leva 3): PERÍODO DO HISTÓRICO.
+  // A tela dizia "baixas do período selecionado" e não havia período nenhum: o
+  // backend devolvia os N mais recentes, fossem de quando fossem.
+  //
+  // O padrão é 30 dias, não "tudo". Abrir a ficha e receber o catálogo inteiro
+  // de movimentos é o mesmo problema com outra roupa — o operador não pediu
+  // "tudo", ele quer saber o que aconteceu por aqui.
+  let _histEstPeriodo = { atalho: '30d', de: null, ate: null };
+  // ★ v33k.1999: páginas acumuladas. O "carregar mais" ACRESCENTA — recomeçar
+  // do zero a cada clique faria o operador perder o que já tinha lido.
+  let _histEstGrupos = [], _histEstCursor = null, _histEstCarregando = false;
+
+  // ★ QUALQUER MEXIDA NA MÃO É BALANÇO.
+  // Pedido do Alessandro: "quando eu mexer a mão no estoque deverá ser tratado
+  // como balanço". O banco guarda entrada/saída/ajuste separados — e continua
+  // guardando, porque o antes→depois já diz a direção. O que muda é o RÓTULO:
+  // três nomes pra mesma coisa (mexi no estoque) só fazem o operador traduzir.
+  const _ORIGEM_ROTULO = {
+    balanco: { txt: 'Balanço', cor: '#1d4ed8', bg: '#eff6ff' },
+    ajuste: { txt: 'Balanço', cor: '#1d4ed8', bg: '#eff6ff' },
+    ajuste_manual: { txt: 'Balanço', cor: '#1d4ed8', bg: '#eff6ff' },
+    entrada: { txt: 'Balanço', cor: '#1d4ed8', bg: '#eff6ff' },
+    saida: { txt: 'Balanço', cor: '#1d4ed8', bg: '#eff6ff' },
+    replicar: { txt: 'Replicação', cor: '#6b7280', bg: '#f3f4f6' },
+    sync_estoque_cron: { txt: 'Sincronização', cor: '#6b7280', bg: '#f3f4f6' },
+    venda: { txt: 'Venda', cor: '#b91c1c', bg: '#fef2f2' },
+    kit: { txt: 'Baixa de kit', cor: '#a16207', bg: '#fefce8' },
+  };
+  function _rotuloOrigem(o) {
+    return _ORIGEM_ROTULO[String(o || '').toLowerCase()]
+      // ★ origem que o mapa não conhece aparece COMO ELA É, não como "outro".
+      // Origem nova virando rótulo genérico é como um evento novo some da tela.
+      || { txt: String(o || 'movimento'), cor: '#6b7280', bg: '#f3f4f6' };
+  }
+  window._histEstCarregarMais = function () {
+    if (_histEstCarregando || !_histEstCursor) return;
+    _histEstAbrirModal({ continuar: true });
+  };
+  const _HIST_ATALHOS = [
+    { id: 'hoje', rotulo: 'Hoje', dias: 0 },
+    { id: '7d',   rotulo: '7 dias', dias: 7 },
+    { id: '30d',  rotulo: '30 dias', dias: 30 },
+    { id: 'mes',  rotulo: 'Este mês', dias: null },
+    { id: 'tudo', rotulo: 'Tudo', dias: null },
+  ];
+  // Devolve { de, ate } em AAAA-MM-DD, no fuso LOCAL. Usar UTC aqui faria
+  // "hoje" começar às 21h do dia anterior no Brasil.
+  function _histEstIntervalo() {
+    const p = _histEstPeriodo;
+    if (p.atalho === 'custom') return { de: p.de || null, ate: p.ate || null };
+    if (p.atalho === 'tudo') return { de: null, ate: null };
+    const iso = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const hoje = new Date();
+    if (p.atalho === 'mes') return { de: iso(new Date(hoje.getFullYear(), hoje.getMonth(), 1)), ate: iso(hoje) };
+    const at = _HIST_ATALHOS.find(a => a.id === p.atalho);
+    const dias = at && at.dias != null ? at.dias : 30;
+    const ini = new Date(hoje); ini.setDate(ini.getDate() - dias);
+    return { de: iso(ini), ate: iso(hoje) };
+  }
+  window._histEstTrocarPeriodo = function (atalho) {
+    _histEstPeriodo = { atalho, de: null, ate: null };
+    _histEstAbrirModal();
+  };
+  window._histEstPeriodoCustom = function () {
+    const de = (document.getElementById('histEstDe') || {}).value || '';
+    const ate = (document.getElementById('histEstAte') || {}).value || '';
+    if (!de && !ate) { showToast('Escolha ao menos uma das duas datas', true); return; }
+    // ★ inverter as datas devolveria vazio e pareceria "não houve movimento" —
+    // o backend recusa, e a tela não deixa nem chegar lá.
+    if (de && ate && de > ate) { showToast('A data inicial é depois da final', true); return; }
+    _histEstPeriodo = { atalho: 'custom', de: de || null, ate: ate || null };
+    _histEstAbrirModal();
+  };
   function _mkLogoChip(mk) {
     // v33k.1137: usa o LOGO REAL do marketplace (LC_LOGO), como no resto do
     // sistema. Fallback pro selo de sigla só se não houver logo pra essa chave.
@@ -61763,7 +61837,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window.abrirHistoricoProduto = abrirHistoricoProduto;
 
-  async function _histEstAbrirModal() {
+  async function _histEstAbrirModal(opts) {
+    const _continuar = !!(opts && opts.continuar);
+    if (!_continuar) { _histEstGrupos = []; _histEstCursor = null; }
     let ov = document.getElementById('histEstOverlay');
     if (!ov) {
       ov = document.createElement('div');
@@ -61795,6 +61871,9 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
               '<button onclick="fecharHistoricoEstoque()" style="background:#f3f4f6;border:none;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:16px">✕</button>' +
             '</div>' +
           '</div>' +
+          // ★ v33k.1991: barra de período — atalhos + intervalo livre.
+          '<div id="histEstBarra" style="padding:10px 22px;border-bottom:1px solid #e5e7eb;display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:0 0 auto;background:#fafafa"></div>' +
+          '<div id="histEstResumo" style="padding:0 22px;flex:0 0 auto"></div>' +
           '<div id="histEstCorpo" style="padding:18px 22px;overflow:auto;flex:1 1 auto;min-height:0"></div>' +
         '</div>';
       document.body.appendChild(ov);
@@ -61807,6 +61886,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // ajustes manuais só no modo variação (1 SKU)
     const _acoes = document.getElementById('histEstAcoes');
     if (_acoes) _acoes.style.display = (_histEstModo === 'produto') ? 'none' : 'inline-flex';
+    // ★ v33k.1991: a barra de período. Fica fora do `try` pra o operador poder
+    // trocar de período mesmo quando a busca falha — barra que só aparece no
+    // sucesso deixa a tela sem saída no erro.
+    const _iv = _histEstIntervalo();
+    const _barra = document.getElementById('histEstBarra');
+    if (_barra) {
+      _barra.innerHTML =
+        _HIST_ATALHOS.map(a =>
+          '<button onclick="_histEstTrocarPeriodo(\'' + a.id + '\')" style="padding:6px 12px;border-radius:999px;cursor:pointer;font-size:12px;font-weight:700;border:1px solid '
+          + (_histEstPeriodo.atalho === a.id ? '#2563eb;background:#2563eb;color:#fff' : '#d1d5db;background:#fff;color:#374151')
+          + '">' + a.rotulo + '</button>').join('') +
+        '<span style="width:1px;height:22px;background:#e5e7eb;margin:0 4px"></span>' +
+        '<input type="date" id="histEstDe" value="' + (_histEstPeriodo.atalho === 'custom' ? (_histEstPeriodo.de || '') : '') + '" style="padding:5px 8px;border:1px solid #d1d5db;border-radius:7px;font-size:12px">' +
+        '<span style="color:#9ca3af;font-size:12px">até</span>' +
+        '<input type="date" id="histEstAte" value="' + (_histEstPeriodo.atalho === 'custom' ? (_histEstPeriodo.ate || '') : '') + '" style="padding:5px 8px;border:1px solid #d1d5db;border-radius:7px;font-size:12px">' +
+        '<button onclick="_histEstPeriodoCustom()" style="padding:6px 12px;border-radius:7px;border:1px solid #d1d5db;background:#fff;color:#374151;cursor:pointer;font-size:12px;font-weight:700">Aplicar</button>' +
+        '<span style="margin-left:auto;font-size:12px;color:#6b7280">'
+          + (_iv.de || _iv.ate ? ((_iv.de || 'início') + ' → ' + (_iv.ate || 'hoje')) : 'todo o histórico') + '</span>';
+    }
+    const _res = document.getElementById('histEstResumo');
+    if (_res) _res.innerHTML = '';
+
     const corpo = document.getElementById('histEstCorpo');
     corpo.innerHTML = '<div style="text-align:center;padding:40px;color:#9ca3af">Carregando histórico…</div>';
     ov.classList.add('active');
@@ -61817,6 +61918,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       if (_histEstModo === 'produto') qs.set('skus', _histEstSkusProduto.join(','));
       else qs.set('sku', String(_histEstSkuAtual || _histEstSkusProduto[0] || ''));
       if (lojas.length) qs.set('lojaIds', lojas.join(','));
+      if (_iv.de) qs.set('de', _iv.de);
+      if (_iv.ate) qs.set('ate', _iv.ate);
+      if (_continuar && _histEstCursor) qs.set('cursor', _histEstCursor);
+      _histEstCarregando = true;
       const resp = await fetch(BACKEND_URL + '/api/marketplaces/estoque-historico?' + qs.toString(),
         { headers: { 'x-api-token': getApiToken() } });
       if (!resp.ok) {
@@ -61852,12 +61957,106 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const movs = d.movimentos || [];
       const vendas = d.vendas || [];
       const devolucoes = d.devolucoes || [];
+
+      // ★ v33k.1991: FAIXA DE RESUMO — estoque atual, entradas e saídas DO PERÍODO.
+      // Os números vêm do backend (`d.resumo`), num lugar só: somar aqui faria
+      // a tela repetir uma regra que o servidor já aplica, e foi assim que o
+      // `contarPendencias` acabou duplicado em dois blocos.
+      if (_res) {
+        const R = d.resumo || null;
+        const _saldo = (_histEstModo === 'produto')
+          ? _histEstSaldoProduto
+          : (() => {
+              let s = null;
+              (produtosErp || []).some(p => (p.variacoes || []).some(v => {
+                if (String(v.sku || '') === String(_histEstSkuAtual || '')) { s = parseInt(v.estoque, 10); return true; }
+                return false;
+              }));
+              return s;
+            })();
+        const cartao = (rot, val, cor) =>
+          '<div style="flex:1 1 130px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px 12px">' +
+            '<div style="font-size:11px;color:#6b7280;font-weight:600">' + rot + '</div>' +
+            '<div style="font-size:20px;font-weight:800;color:' + cor + '">' + val + '</div>' +
+          '</div>';
+        _res.innerHTML =
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 0">' +
+            cartao('Em estoque agora', (_saldo == null ? '—' : _saldo + ' un.'), '#1e293b') +
+            cartao('Entradas no período', (R ? '+' + R.entradas : '—'), '#15803d') +
+            cartao('Saídas no período', (R ? '-' + R.saidas : '—'), '#b91c1c') +
+            cartao('Movimentos', (R ? R.movimentos : movs.length), '#1e293b') +
+          '</div>' +
+          // ★ o teto avisa. "200 movimentos" num período que teve 900 é número
+          // errado apresentado como certo.
+          (R && R.truncado
+            ? '<div style="margin-top:8px;padding:8px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e">'
+              + 'Este período tem mais movimentos do que cabe numa consulta. Os números acima contam só os mostrados — reduza o período para ver a conta fechada.'
+              + '</div>'
+            : '') +
+          // ★ e a coluna de pedido só enche na Leva 4. Dizer isso agora evita o
+          // operador achar que a tela quebrou.
+          (R && R.movimentos && !movs.some(m => m.pedido_id)
+            ? '<div style="margin-top:8px;font-size:12px;color:#9ca3af">A coluna de pedido começa a ser preenchida quando a baixa automática por venda entrar no ar.</div>'
+            : '');
+      }
+
+      // ★ v33k.1999: A LISTA É DE OPERAÇÕES, NÃO DE PUSHES.
+      // Um balanço de 9999 pra 50 em 30 anúncios é UMA linha. Os 30 pushes são
+      // consequência, e viram um detalhe discreto ("30 anúncios"), não 30 itens.
+      _histEstCarregando = false;
+      if (Array.isArray(d.grupos)) {
+        _histEstGrupos = _continuar ? _histEstGrupos.concat(d.grupos) : d.grupos;
+        _histEstCursor = d.proximoCursor || null;
+        if (_histEstGrupos.length) {
+          const fmtHora = (s) => s ? new Date(s).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+          const tag = (txt, cor, bg) => '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;color:' + cor + ';background:' + bg + '">' + txt + '</span>';
+          const linhas = _histEstGrupos.map(g => {
+            const o = _rotuloOrigem(g.origem);
+            const delta = (g.qtdAntes != null && g.qtdDepois != null) ? (g.qtdDepois - g.qtdAntes) : null;
+            const setaCor = delta == null ? '#6b7280' : (delta > 0 ? '#15803d' : (delta < 0 ? '#b91c1c' : '#6b7280'));
+            return '<div style="display:flex;gap:12px;align-items:center;padding:11px 4px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap">' +
+              '<div style="min-width:120px;font-size:12px;color:#6b7280">' + fmtHora(g.criadoEm) + '</div>' +
+              '<div style="min-width:100px">' + tag(o.txt, o.cor, o.bg) + '</div>' +
+              '<div style="min-width:130px;font-weight:700;color:' + setaCor + '">' +
+                (g.qtdAntes == null || g.qtdDepois == null ? '—'
+                  : (g.qtdAntes + ' → ' + g.qtdDepois + (delta ? ' (' + (delta > 0 ? '+' : '') + delta + ')' : ''))) +
+              '</div>' +
+              // ★ pedido e NF: as colunas existem e ficam VAZIAS até a Leva 4.
+              // Coluna que aparece só quando tem dado faz a tela mudar de forma
+              // e o operador achar que sumiu algo.
+              '<div style="min-width:150px;font-size:12px;color:' + (g.pedidoId ? '#1e293b' : '#cbd5e1') + '">' +
+                (g.pedidoId ? ('Pedido ' + g.pedidoId + (g.orderSn ? ' · NF ' + g.orderSn : '')) : 'sem pedido') + '</div>' +
+              '<div style="display:flex;gap:4px;flex-wrap:wrap">' +
+                (g.marketplaces || []).map(m => tag(((MK_INFO[m] && MK_INFO[m].nome) || m), '#374151', '#f3f4f6')).join('') +
+              '</div>' +
+              '<div style="margin-left:auto;font-size:12px;color:#9ca3af">' +
+                g.anuncios + ' anúncio(s)' + (g.falhas ? ' · ' + g.falhas + ' sem enviar' : '') + '</div>' +
+            '</div>';
+          }).join('');
+          const maisBtn = _histEstCursor
+            ? '<div style="text-align:center;padding:14px"><button onclick="_histEstCarregarMais()" style="padding:8px 18px;border:1px solid #d1d5db;background:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;color:#374151">Carregar mais</button></div>'
+            : '<div style="text-align:center;padding:14px;font-size:12px;color:#9ca3af">Fim do período.</div>';
+          corpo.innerHTML =
+            '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">' + _histEstGrupos.length + ' operação(ões)' +
+              (d.resumo && d.resumo.grupoMaiorQueOTeto ? ' · ★ uma operação passou do teto da consulta: os anúncios dela podem estar incompletos' : '') +
+            '</div>' + linhas + maisBtn;
+          return;
+        }
+      }
+
       if (!movs.length && !vendas.length && !devolucoes.length) {
         corpo.innerHTML =
           '<div style="padding:34px;text-align:center;color:#9ca3af">' +
-            '<div style="font-size:15px;font-weight:600;color:#6b7280;margin-bottom:6px">Nenhum registro ainda</div>' +
-            '<div style="font-size:13px">Aqui aparecem as vendas (com pedido e NF), devoluções, entradas, balanços e replicações desta variação.<br>' +
-            'O histórico de estoque começou a ser gravado a partir da v33k.598.</div>' +
+            // ★ v33k.1991: vazio COM período é "nada NESTE período", não "nunca
+            // houve nada". Os dois levam a conclusões opostas: um manda ampliar
+            // a busca, o outro manda procurar defeito.
+            '<div style="font-size:15px;font-weight:600;color:#6b7280;margin-bottom:6px">' +
+              ((_iv.de || _iv.ate) ? 'Nenhum movimento neste período' : 'Nenhum registro ainda') + '</div>' +
+            '<div style="font-size:13px">' +
+              ((_iv.de || _iv.ate)
+                ? ('De ' + (_iv.de || 'início') + ' até ' + (_iv.ate || 'hoje') + '. Isso não quer dizer que a variação nunca se moveu — experimente "Tudo" na barra acima.')
+                : 'Aqui aparecem as vendas (com pedido e NF), devoluções, entradas, balanços e replicações desta variação.<br>O histórico de estoque começou a ser gravado a partir da v33k.598.') +
+            '</div>' +
           '</div>';
         return;
       }
@@ -63428,6 +63627,55 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   }
   window._idDaVariacaoDoVinculo = _idDaVariacaoDoVinculo;
 
+  // ★ v33k.1989: TRADUZ A CAUSA PRA QUEM OPERA A LOJA.
+  // O relatório mostrava 1.453 "falhas" em vermelho com mensagens técnicas
+  // truncadas, e o operador parava tudo achando que o sistema quebrou. As
+  // causas eram conhecidas e cada uma tem UMA ação.
+  //
+  // ★ REDUZIR ALARME NÃO É REDUZIR INFORMAÇÃO. Causa que este mapa NÃO conhece
+  // continua saindo com a mensagem técnica inteira e em tom de erro — senão um
+  // problema novo vira "atenção" genérica e some, que é exatamente o defeito
+  // que esta sessão inteira perseguiu. O mapa acalma o que já entendemos; o
+  // desconhecido continua incomodando de propósito.
+  const _CAUSAS_ESTOQUE = {
+    sem_id_e_sku_nao_bate: {
+      titulo: 'O vínculo não aponta para nenhuma variação existente no anúncio',
+      acao: 'Refaça o vínculo dessas variações na tela de Anúncios. O estoque delas não chega no marketplace enquanto isso.',
+    },
+    id_nao_existe_mais: {
+      titulo: 'A variação foi recriada no marketplace e o vínculo ficou apontando pra antiga',
+      acao: 'Refaça o vínculo dessas variações na tela de Anúncios.',
+    },
+    // ★ v33k.1992: condição DO MARKETPLACE, sem ação do nosso lado.
+    // Em 25/08 foram 70 das 73 "falhas" de um produto. Erro que não tem
+    // conserto aqui, apresentado como erro, treina a pessoa a ignorar a tela.
+    status_nao_permite: {
+      titulo: 'O anúncio está num estado que o marketplace não deixa alterar estoque',
+      acao: 'Não há o que corrigir no sistema. Reative ou libere o anúncio no painel do marketplace e o estoque vai na próxima sincronização.',
+    },
+  };
+
+  // Monta o texto que o operador lê. Devolve também se há causa desconhecida,
+  // porque é isso que decide o TOM: conhecido vira aviso, novo continua erro.
+  function _resumoCausasEstoque(motivos) {
+    const linhas = [];
+    let temDesconhecida = false;
+    Object.entries(motivos)
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([chave, n]) => {
+        const mCod = /^\[([a-z_]+)\]\s*/.exec(chave);
+        const cod = mCod ? mCod[1] : null;
+        const conhecida = cod && _CAUSAS_ESTOQUE[cod];
+        if (!conhecida) {
+          temDesconhecida = true;
+          linhas.push(n + ' anúncio(s): ' + chave);
+          return;
+        }
+        linhas.push(n + ' anúncio(s) — ' + conhecida.titulo + '\n     O que fazer: ' + conhecida.acao);
+      });
+    return { linhas, temDesconhecida };
+  }
+
   // ★ v33k.1962: fecha o ciclo. Quando o push dá certo, o adapter devolve QUAL
   // variação ele acertou (model_id na Shopee, variationId no ML, skuId no
   // TikTok, skuCode na SHEIN). Guardar isso no vínculo faz a próxima
@@ -63975,7 +64223,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         });
         atualizarMassaProgress(feitos, comAnuncio.length,
           a.nome + ' [' + a.sku + '] → ' + (d.sucesso || 0) + '/' + a.anuncios.length + ' anúncio(s)'
-          + (falhaLinha ? ' · ' + falhaLinha + ' falha(s)' : '')
+          + (falhaLinha ? ' · ' + falhaLinha + ' pendente(s)' : '')
           + (avisoLinha ? ' · ⏳ ' + avisoLinha + ' em oferta ativa' : ''), falhaLinha > 0);
       } catch (e) {
         feitos++; falhaAnuncios += a.anuncios.length;
@@ -63985,8 +64233,10 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       }
     }
     finalizarMassaProgress(
-      '✓ ' + okAnuncios + ' anúncio(s) atualizado(s)'
-      + (falhaAnuncios ? ' · ✗ ' + falhaAnuncios + ' falha(s)' : '')
+      // ★ v33k.1989: "✗ N falha(s)" em vermelho no rodapé era o que assustava
+      // antes mesmo de abrir o detalhe. O número continua — some o alarme.
+      okAnuncios + ' anúncio(s) atualizado(s)'
+      + (falhaAnuncios ? ' · ' + falhaAnuncios + ' precisam de atenção' : '')
       + (aguardandoOferta ? ' · ⏳ ' + aguardandoOferta + ' aguardando oferta ativa encerrar' : '')
       + (semAnuncio.length ? ' · ' + semAnuncio.length + ' variação(ões) sem anúncio' : ''));
     // FALHAS REAIS → alerta vermelho (perigo) com os motivos
@@ -63994,10 +64244,23 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     if (_motivosOrd.length) {
       // com o agrupamento funcionando, cinco linhas passam a caber o problema
       // inteiro; antes cinco linhas eram cinco de doze.
-      const linhas = _motivosOrd.slice(0, 5).map(([m, n]) => n + '× ' + m);
-      const _sobra = _motivosOrd.length > 5 ? ('\n\n(+' + (_motivosOrd.length - 5) + ' outro(s) motivo(s))') : '';
-      console.warn('[replicar massa] MOTIVOS DAS FALHAS:\n' + linhas.join('\n'));
-      lcAlert('Motivos das ' + falhaAnuncios + ' falha(s):\n\n' + linhas.join('\n\n') + _sobra, { tipo: 'perigo', titulo: '❌ Anúncios que falharam' });
+      // ★ v33k.1989: o operador lê a CAUSA e a AÇÃO, não a mensagem técnica.
+      // Antes eram 1.453 "falhas" em vermelho com texto truncado, e ele parava
+      // tudo. Causa que o mapa conhece vira aviso com o que fazer; causa NOVA
+      // continua saindo inteira e em vermelho — senão um problema novo vira
+      // "atenção" genérica e some.
+      const _res = _resumoCausasEstoque(_motivosFalha);
+      const linhas = _res.linhas.slice(0, 5).map((t, i) => '  ' + (i + 1) + '. ' + t);
+      const _sobra = _res.linhas.length > 5 ? ('\n\n  (+' + (_res.linhas.length - 5) + ' outro(s) motivo(s))') : '';
+      console.warn('[replicar massa] MOTIVOS:\n' + _res.linhas.join('\n'));
+      const _cab = _res.temDesconhecida
+        ? (falhaAnuncios + ' anúncio(s) não receberam o estoque, e há um motivo que o sistema ainda não sabe explicar:')
+        : ('O estoque interno já foi salvo. ' + falhaAnuncios + ' anúncio(s) precisam de atenção antes de receber:');
+      lcAlert(_cab + '\n\n' + linhas.join('\n\n') + _sobra, {
+        tipo: _res.temDesconhecida ? 'perigo' : 'aviso',
+        // ★ sem emoji na UI: o ícone é do componente (Lucide), não do texto.
+        titulo: _res.temDesconhecida ? 'Motivo não reconhecido' : 'Anúncios que precisam de atenção',
+      });
     }
     // AGUARDANDO OFERTA ATIVA → aviso AMARELO (não é erro; zera quando a oferta encerra)
     const _avisosOrd = Object.entries(_avisosOferta).sort((a, b) => b[1] - a[1]);
@@ -71424,7 +71687,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.1988-so-colapsa-o-universal';
+  const _DIAG_VERSAO_PAINEL = 'v33k.1999-historico-por-operacao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
