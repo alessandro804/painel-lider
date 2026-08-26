@@ -63659,21 +63659,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   // porque é isso que decide o TOM: conhecido vira aviso, novo continua erro.
   function _resumoCausasEstoque(motivos) {
     const linhas = [];
-    let temDesconhecida = false;
+    let temDesconhecida = false, conhecidas = 0, desconhecidas = 0;
     Object.entries(motivos)
       .sort((a, b) => b[1] - a[1])
       .forEach(([chave, n]) => {
-        const mCod = /^\[([a-z_]+)\]\s*/.exec(chave);
+        const mCod = /^\[([a-z_]+)\]$/.exec(chave) || /^\[([a-z_]+)\]\s*/.exec(chave);
         const cod = mCod ? mCod[1] : null;
         const conhecida = cod && _CAUSAS_ESTOQUE[cod];
         if (!conhecida) {
-          temDesconhecida = true;
+          temDesconhecida = true; desconhecidas++;
           linhas.push(n + ' anúncio(s): ' + chave);
           return;
         }
+        conhecidas++;
         linhas.push(n + ' anúncio(s) — ' + conhecida.titulo + '\n     O que fazer: ' + conhecida.acao);
       });
-    return { linhas, temDesconhecida };
+    return { linhas, temDesconhecida, conhecidas, desconhecidas };
   }
 
   // ★ v33k.1962: fecha o ciclo. Quando o push dá certo, o adapter devolve QUAL
@@ -64210,8 +64211,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           const _msg = String(x.erro || 'erro desconhecido').replace(/\s+/g, ' ').trim().slice(0, 300);
           // chave estável: o código da causa quando o adapter manda; senão a
           // mensagem sem os números de item, que é o que a fazia ser única.
+          // ★ v33k.2001: A CHAVE COM CAUSA CARREGAVA A MENSAGEM INTEIRA.
+          // Quando havia `causa`, a chave virava `[causa] + mensagem` — e a
+          // mensagem tem o id do anúncio dentro. Resultado na tela de 25/08:
+          //
+          //   1. 35 anúncio(s) — O anúncio está num estado que o marketplace...
+          //   2. 35 anúncio(s) — O anúncio está num estado que o marketplace...
+          //
+          // A MESMA causa, partida em dois, porque dois ids diferentes. É o
+          // defeito da v33k.1971 de novo: agrupador que nunca agrupa esconde a
+          // escala. Eu corrigi no ramo SEM causa (o `\d{6,}` vira `#`) e deixei
+          // o ramo COM causa carregando o id.
+          //
+          // O código de causa JÁ identifica o problema — a mensagem é detalhe
+          // do caso, não parte da identidade dele.
           const m = x.causa
-            ? ('[' + x.causa + '] ' + _msg)
+            ? ('[' + x.causa + ']')
             : _msg.replace(/\b\d{6,}\b/g, '#');
           if (x.dados && x.dados.flashAtivaResidual) {
             aguardandoOferta++; avisoLinha++;
@@ -64253,13 +64268,20 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       const linhas = _res.linhas.slice(0, 5).map((t, i) => '  ' + (i + 1) + '. ' + t);
       const _sobra = _res.linhas.length > 5 ? ('\n\n  (+' + (_res.linhas.length - 5) + ' outro(s) motivo(s))') : '';
       console.warn('[replicar massa] MOTIVOS:\n' + _res.linhas.join('\n'));
-      const _cab = _res.temDesconhecida
-        ? (falhaAnuncios + ' anúncio(s) não receberam o estoque, e há um motivo que o sistema ainda não sabe explicar:')
-        : ('O estoque interno já foi salvo. ' + falhaAnuncios + ' anúncio(s) precisam de atenção antes de receber:');
+      // ★ v33k.2001: O TÍTULO DIZIA QUE NADA ERA RECONHECIDO QUANDO QUASE TUDO ERA.
+      // Na tela de 25/08, 4 dos 5 motivos tinham explicação e ação, e o título
+      // era "Motivo não reconhecido". Um motivo novo NÃO pode calar os outros —
+      // ele tem que aparecer, sem apagar o que a gente já sabe explicar.
+      const _todosDesconhecidos = _res.temDesconhecida && _res.conhecidas === 0;
+      const _cab = ('O estoque interno já foi salvo. ' + falhaAnuncios
+        + ' anúncio(s) precisam de atenção antes de receber:')
+        + (_res.temDesconhecida
+          ? ('\n\n★ ' + _res.desconhecidas + ' motivo(s) o sistema ainda não sabe explicar — aparecem abaixo com o texto técnico.')
+          : '');
       lcAlert(_cab + '\n\n' + linhas.join('\n\n') + _sobra, {
-        tipo: _res.temDesconhecida ? 'perigo' : 'aviso',
+        tipo: _todosDesconhecidos ? 'perigo' : 'aviso',
         // ★ sem emoji na UI: o ícone é do componente (Lucide), não do texto.
-        titulo: _res.temDesconhecida ? 'Motivo não reconhecido' : 'Anúncios que precisam de atenção',
+        titulo: _todosDesconhecidos ? 'Motivo não reconhecido' : 'Anúncios que precisam de atenção',
       });
     }
     // AGUARDANDO OFERTA ATIVA → aviso AMARELO (não é erro; zera quando a oferta encerra)
@@ -71687,7 +71709,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2000-push-pelo-terminal';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2001-a-causa-e-a-chave';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
