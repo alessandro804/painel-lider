@@ -19182,6 +19182,13 @@ window.LC_SVG = {
         </div>
         <div class="top-actions">
           <span id="emContador" style="font-size:12.5px;font-weight:700;margin-right:12px"></span>
+          <!-- v33k.2031: so aparece pra quem esta em CAPA_IA_USUARIOS. Nasce
+               display:none e quem acende e `emCapaIaPrepararBotao`, depois de
+               PERGUNTAR ao servidor. Nunca deduzido no painel: o painel nao
+               sabe quem esta na lista, e chutar erraria pros dois lados. -->
+          <button class="lc-btn" id="emBtnCapaIa" onclick="emCapaIaAbrir()" style="display:none;background:var(--lc-surface);color:var(--lc-text);margin-right:6px">
+            <span class="lc-ic" data-lucide="sparkles" style="width:14px;height:14px"></span>
+            Gerar fotos de capa com IA</button>
           <button class="lc-btn" onclick="emCancelar()" style="background:var(--lc-surface);color:var(--lc-text)">Cancelar</button>
           <button class="lc-btn lc-btn--primary" id="emBtnConfirmar" onclick="emConfirmar()">Confirmar e exportar</button>
         </div>
@@ -45074,7 +45081,8 @@ Retorne JSON: {"ID": "valor", ...}`;
       // ★ v33k.1865: sugestão do canal aparece preenchida, mas MARCADA. A
       //   conferência existe pra a pessoa ver o que a máquina decidiu;
       //   mostrar palpite com cara de dado conferido seria o oposto disso.
-      const ehSugerida = !!((linha.categoriaSugerida || {})[_emCanal()]) && cat;
+      const _fonteSug = (linha.categoriaSugerida || {})[_emCanal()];
+      const ehSugerida = !!_fonteSug && cat;
       // ★ v33k.1866: ID NÃO É NOME, E A TELA NÃO FINGE QUE É.
       //   Relato do Alessandro, com print: a célula mostrava "601281".
       //   "Categoria em números não ajuda o usuário a saber se está certo ou
@@ -45095,7 +45103,8 @@ Retorne JSON: {"ID": "valor", ...}`;
         escapeHtml(cat ? (_soId ? ('lendo o nome da categoria ' + cat.id + '…') : _txtCat) : 'escolher categoria') +
         (ehSugerida ? '<div style="font-size:10.5px;color:#b45309;margin-top:2px;display:flex;align-items:center;gap:4px">' +
           '<span class="lc-ic" data-lucide="sparkles" style="width:11px;height:11px"></span>' +
-          'sugerida pelo canal · confira</div>' : '') +
+          (_fonteSug === 'titulo' ? 'sugerida pelo título · confira' : 'sugerida pelo canal · confira') +
+          '</div>' : '') +
         '</div>';
     }
     if (col.tipo === 'atributos') {
@@ -45478,9 +45487,38 @@ Retorne JSON: {"ID": "valor", ...}`;
         '</div>';
     }
 
-    h += '<label style="display:flex;gap:9px;align-items:center;font-size:12.5px;color:#475569;cursor:pointer">' +
-      '<input type="checkbox" id="emMassaSoVazio" checked> Só preencher onde está vazio</label>' +
-      '<div style="font-size:11.5px;color:#94a3b8;margin-top:5px">Desmarque para sobrescrever o que já está preenchido.</div>';
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.2026: "SÓ ONDE ESTÁ VAZIO" NÃO PODE NASCER MARCADO NUM NÚMERO.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 27/08, no modal dos anúncios que serão criados: alterar o
+    // estoque em massa "dá um aviso que deu certo, mas nada alterado".
+    //
+    // Estava certo nos dois pontos. A caixa nascia MARCADA, e célula de
+    // Quantidade nunca está vazia numa cópia — ela herda o estoque da origem.
+    // `String("0").trim()` é `"0"`, que é truthy: TODA linha era pulada,
+    // `n` fechava em zero, e o rodapé chamava `showToast('Nada foi alterado.')`
+    // — que, com um argumento só, sai VERDE e com ✓. Um aviso de sucesso
+    // dizendo que nada aconteceu.
+    //
+    // ★ E o modo "Ajustar o valor atual" era INALCANÇÁVEL por construção:
+    //   não existe ajustar o que está vazio, então com a caixa marcada ele
+    //   pulava 100% das linhas, sempre, em qualquer coluna.
+    //
+    // Duas correções, e a segunda é a que importa:
+    //   1. em coluna numérica a caixa nasce DESMARCADA (o uso real é
+    //      sobrescrever preço e estoque, não preencher buraco);
+    //   2. no modo ajuste ela some da tela — filtro que nunca pode deixar
+    //      passar nada não é opção, é armadilha.
+    //
+    // ★ Mesma família da lição do handoff: número errado ao lado da frase que
+    //   o explica é pior que número nenhum. Aqui era ícone de certo ao lado da
+    //   frase que dizia que nada foi feito.
+    h += '<label id="emMassaSoVazioBox" style="display:flex;gap:9px;align-items:center;font-size:12.5px;color:#475569;cursor:pointer">' +
+      '<input type="checkbox" id="emMassaSoVazio"' + (numerico ? '' : ' checked') + '> Só preencher onde está vazio</label>' +
+      '<div id="emMassaSoVazioAjuda" style="font-size:11.5px;color:#94a3b8;margin-top:5px">' +
+      (numerico
+        ? 'Desmarcado, o valor vale para todas as linhas. Marque só se quiser preencher apenas onde está em branco.'
+        : 'Desmarque para sobrescrever o que já está preenchido.') + '</div>';
 
     lcAlert(h, {
       tipo: 'info', titulo: 'Editar ' + col.nome, largura: 460, html: true,
@@ -45492,7 +45530,19 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.emAbrirMassa = emAbrirMassa;
 
-  function emMassaTrocarModo() { /* os campos ficam todos visíveis; o modo escolhido é lido no confirmar */ }
+  // ★ v33k.2026: no modo "Ajustar o valor atual" a caixa "só onde está vazio"
+  //   não tem significado — ajustar exige um número de partida. Deixá-la
+  //   visível e ativa é oferecer um filtro que só pode zerar o resultado.
+  //   Some da tela e é ignorada no confirmar (ver `emMassaAplicar`).
+  function emMassaTrocarModo() {
+    const el = document.querySelector('input[name="emMassaModo"]:checked');
+    const modo = el ? el.value : 'valor';
+    const box = document.getElementById('emMassaSoVazioBox');
+    const ajuda = document.getElementById('emMassaSoVazioAjuda');
+    const mostra = (modo !== 'ajuste');
+    if (box) box.style.display = mostra ? 'flex' : 'none';
+    if (ajuda) ajuda.style.display = mostra ? 'block' : 'none';
+  }
   window.emMassaTrocarModo = emMassaTrocarModo;
 
   function emMassaAplicar() {
@@ -45532,14 +45582,21 @@ Retorne JSON: {"ID": "valor", ...}`;
       });
       emColetarTela(); emRecontar();
       if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
-      showToast(nd ? (nd + ' medida(s) alterada(s). Dá pra desfazer no ícone ao lado.') : 'Nada foi alterado.');
+      // ★ v33k.2026: mesmo defeito do ramo de baixo — zero saía verde.
+      if (nd) showToast(nd + ' medida(s) alterada(s). Dá pra desfazer no ícone ao lado.');
+      else showToast('Nada mudou: as medidas já estão preenchidas e ' +
+        '"Só preencher onde está vazio" está marcado.', true);
       return;
     }
 
+    // ★ v33k.2026: `ajuste` entra junto de `substituir` na lista de modos que
+    //   IGNORAM o filtro de vazio. Os dois partem do valor que já está lá; um
+    //   filtro que exige célula vazia os torna inalcançáveis.
     let n = 0;
+    let puladasPorFiltro = 0;
     campos.forEach(c => {
       const atual = String(c.value || '');
-      if (soVazio && atual.trim() && modo !== 'substituir') return;
+      if (soVazio && atual.trim() && modo !== 'substituir' && modo !== 'ajuste') { puladasPorFiltro++; return; }
       if (modo === 'valor') {
         const v = (document.getElementById('emMassaValor') || {}).value;
         if (v == null || v === '') return;
@@ -45570,7 +45627,19 @@ Retorne JSON: {"ID": "valor", ...}`;
     });
     emColetarTela(); emRecontar();
     if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
-    showToast(n ? (n + ' linha(s) alterada(s). Dá pra desfazer no ícone ao lado.') : 'Nada foi alterado.');
+    // ★ v33k.2026: ZERO NÃO SAI VERDE, E DIZ ONDE FOI PARAR.
+    //   `showToast(msg)` com um argumento só desenha ✓ e fundo de sucesso.
+    //   "Nada foi alterado." com ícone de certo é a definição de aviso que
+    //   mente. Agora zero é aviso (vermelho) e nomeia a causa: ou o filtro de
+    //   vazio comeu todas as linhas, ou o campo do modal ficou em branco.
+    if (n) {
+      showToast(n + ' de ' + campos.length + ' linha(s) alterada(s). Dá pra desfazer no ícone ao lado.');
+    } else if (puladasPorFiltro) {
+      showToast('Nada mudou: as ' + puladasPorFiltro + ' linha(s) já têm valor e ' +
+        '"Só preencher onde está vazio" está marcado. Desmarque e confirme de novo.', true);
+    } else {
+      showToast('Nada mudou: nenhum valor foi informado no campo acima.', true);
+    }
   }
   window.emMassaAplicar = emMassaAplicar;
 
@@ -47071,10 +47140,281 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (typeof emResolverNomesCategoria === 'function') {
           Promise.resolve().then(emResolverNomesCategoria).catch(() => {});
         }
+        // v33k.2031: pergunta ao servidor se este usuario ve o botao de IA
+        if (typeof emCapaIaPrepararBotao === 'function') {
+          Promise.resolve().then(emCapaIaPrepararBotao).catch(() => {});
+        }
       }, 60);
     });
   }
   window.emAbrir = emAbrir;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // GERAR FOTOS DE CAPA COM IA (v33k.2031)
+  // ──────────────────────────────────────────────────────────────────────
+  // PEDIDO DE 26/08, fechado em 27/08:
+  //   · botão dentro da conferência, visível SÓ para quem está em
+  //     CAPA_IA_USUARIOS
+  //   · manda a capa de cada anúncio + prompt pro Nano Banana 2
+  //   · a gerada SUBSTITUI a foto 1 (o anúncio já costuma estar nas 9)
+  //   · barra de progresso com PAUSAR
+  //   · pausou: o que já trocou fica trocado, o resto segue com a capa
+  //     antiga, e exportar depois não pode dar erro nenhum
+  //   · duas gerações ao mesmo tempo, se der
+  //   · retomar CONTINUA o baralho de onde parou
+  //
+  // ★ O ESTADO VIVE FORA DO DESENHO. `_capaIa` guarda fila, feitos e o
+  //   índice do baralho. A barra só LÊ isso. Se o estado morasse no DOM,
+  //   pausar e redesenhar perderia o lugar — e perder o lugar é justamente
+  //   o que não pode acontecer quando ele para em 50 de 100.
+  // ══════════════════════════════════════════════════════════════════════
+  var _capaIa = null;
+
+  // ★ PERGUNTA AO SERVIDOR, NÃO DEDUZ. O painel não sabe quem está na lista
+  //   do .env, e a mesma função que responde aqui é a que barra a rota — não
+  //   existe a chance de a tela esconder e o servidor deixar passar.
+  async function emCapaIaPrepararBotao() {
+    const b = document.getElementById('emBtnCapaIa');
+    if (!b) return;
+    b.style.display = 'none';
+    try {
+      const r = await fetch(BACKEND_URL + '/api/capa-ia/permissao', {
+        headers: { 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      if (!r || !r.ok || !r.liberado) return;
+      b.style.display = '';
+      b.dataset.chave = r.chaveConfigurada ? '1' : '';
+      if (window.lcHydrateIcons) window.lcHydrateIcons(b.parentNode);
+    } catch (e) {
+      // falha aberta: sem resposta, o botão continua escondido. Esconder de
+      // quem podia é chato; mostrar pra quem não podia é um 403 na cara.
+      console.warn('[capa IA] não consegui checar a permissão:', e.message);
+    }
+  }
+  window.emCapaIaPrepararBotao = emCapaIaPrepararBotao;
+
+  // as linhas que TÊM capa pra trocar
+  function _capaIaElegiveis() {
+    const st = _emEstado;
+    if (!st) return [];
+    return (st.linhas || []).map((linha, li) => ({ linha, li }))
+      .filter(x => {
+        const f = (x.linha && x.linha.fotos) || [];
+        if (!f.length) return false;
+        const u = typeof f[0] === 'string' ? f[0] : (f[0] && (f[0].url || f[0].src));
+        return !!u && /^https?:\/\//i.test(u);
+      });
+  }
+
+  async function emCapaIaAbrir() {
+    const st = _emEstado; if (!st) return;
+    const b = document.getElementById('emBtnCapaIa');
+    if (b && !b.dataset.chave) {
+      lcAlert('A chave do Google AI Studio não está configurada no servidor. '
+        + 'Sem ela nenhuma geração sai — e cada tentativa voltaria com o mesmo erro.',
+        { tipo: 'erro', titulo: 'Falta a GEMINI_API_KEY' });
+      return;
+    }
+    const alvos = _capaIaElegiveis();
+    if (!alvos.length) {
+      lcAlert('Nenhum anúncio desta lista tem foto de capa com endereço público pra enviar.',
+        { tipo: 'aviso', titulo: 'Nada pra gerar' });
+      return;
+    }
+    const ok = await lcConfirm(
+      'Gerar capa nova com IA para ' + alvos.length + ' anúncio(s)?\n\n'
+      + 'A foto 1 de cada um é SUBSTITUÍDA pela gerada — a quantidade de fotos não muda.\n'
+      + 'Dá pra pausar no meio: o que já trocou fica pronto pra exportar e o resto '
+      + 'continua com a capa de agora.',
+      { titulo: 'Gerar fotos de capa com IA' });
+    if (!ok) return;
+    _capaIaIniciar(alvos);
+  }
+  window.emCapaIaAbrir = emCapaIaAbrir;
+
+  function _capaIaIniciar(alvos) {
+    _capaIa = {
+      fila: alvos.slice(),
+      total: alvos.length,
+      pos: 0,            // próximo da fila
+      feitos: 0, falhas: 0, pulados: 0,
+      prompts: [],       // o baralho do lote, sorteado no servidor
+      promptPos: 0,      // ★ ONDE O BARALHO PAROU. Retomar continua daqui.
+      pausado: false,
+      encerrado: false,
+      emVoo: 0,
+      esperandoLimite: false,
+      erros: {},
+    };
+    _capaIaDesenhar();
+    _capaIaBaralhoENada();
+  }
+
+  async function _capaIaBaralhoENada() {
+    const s = _capaIa; if (!s) return;
+    try {
+      const r = await fetch(BACKEND_URL + '/api/capa-ia/prompts?n=' + s.total, {
+        headers: { 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      s.prompts = (r && r.ok && Array.isArray(r.prompts)) ? r.prompts : [];
+    } catch (e) { s.prompts = []; }
+    if (!s.prompts.length) {
+      s.encerrado = true;
+      _capaIaDesenhar();
+      return;
+    }
+    _capaIaBombear();
+  }
+
+  // ★ CONCORRÊNCIA 2, e o número mora aqui em cima. Ele pediu duas "se der";
+  //   duas é o que cabe sem o 429 virar regra — e quando vira, a escada do
+  //   backend já segura, então subir isso só troca throughput por espera.
+  var CAPA_IA_PARALELO = 2;
+
+  function _capaIaBombear() {
+    const s = _capaIa; if (!s || s.encerrado) return;
+    while (!s.pausado && s.emVoo < CAPA_IA_PARALELO && s.pos < s.fila.length) {
+      const item = s.fila[s.pos++];
+      // ★ o baralho anda com a GERAÇÃO, não com a fila. Pausar entre as duas
+      //   deixaria uma carta consumida sem foto — e retomar pularia um prompt.
+      const carta = s.prompts[s.promptPos % s.prompts.length];
+      s.promptPos++;
+      s.emVoo++;
+      _capaIaUm(item, carta).then(() => {
+        s.emVoo--;
+        _capaIaDesenhar();
+        if (!s.pausado) _capaIaBombear();
+        else if (!s.emVoo) _capaIaDesenhar();
+        if (s.pos >= s.fila.length && !s.emVoo) { s.encerrado = true; _capaIaDesenhar(); }
+      });
+    }
+    _capaIaDesenhar();
+  }
+
+  async function _capaIaUm(item, carta) {
+    const s = _capaIa; if (!s) return;
+    const fotos = (item.linha && item.linha.fotos) || [];
+    const atual = typeof fotos[0] === 'string' ? fotos[0] : (fotos[0] && (fotos[0].url || fotos[0].src));
+    try {
+      const r = await fetch(BACKEND_URL + '/api/capa-ia/gerar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({ fotoUrl: atual, prompt: (carta && carta.texto) || '', ref: String(item.li) }),
+      }).then(x => x.json());
+
+      if (r && r.ok && r.url) {
+        // ★ SUBSTITUI A POSIÇÃO 0. Nunca `unshift`: o anúncio costuma estar
+        //   nas 9 da Shopee, e 10 faz o canal recusar o anúncio INTEIRO.
+        const antes = fotos.length;
+        const item0 = fotos[0];
+        if (item0 && typeof item0 === 'object') {
+          if (item0.src != null && item0.url == null) item0.src = r.url;
+          else item0.url = r.url;
+        } else {
+          fotos[0] = r.url;
+        }
+        // conferência local: se a contagem mudou, desfaz. Barato e definitivo.
+        if (fotos.length !== antes) { fotos.length = antes; s.falhas++; return; }
+        item.linha._capaIaAntiga = atual;
+        item.linha._capaIaPrompt = (carta && carta.texto) || '';
+        s.feitos++;
+      } else {
+        s.falhas++;
+        const m = (r && r.erro) || 'não respondeu';
+        s.erros[m] = (s.erros[m] || 0) + 1;
+        // ★ 429 não é falha do anúncio: o backend já esperou e desistiu depois
+        //   da escada. Avisa na barra que o limite bateu, pra ele saber que
+        //   pausar um pouco resolve.
+        if (r && r.limite) s.esperandoLimite = true;
+      }
+    } catch (e) {
+      s.falhas++;
+      s.erros[e.message] = (s.erros[e.message] || 0) + 1;
+    }
+  }
+
+  function emCapaIaPausar() {
+    const s = _capaIa; if (!s) return;
+    s.pausado = true;
+    _capaIaDesenhar();
+  }
+  window.emCapaIaPausar = emCapaIaPausar;
+
+  // ★ RETOMAR CONTINUA DE ONDE PAROU, decidido por ele em 27/08. `pos` e
+  //   `promptPos` não são zerados — reembaralhar aqui poderia repetir um
+  //   prompt já usado no mesmo lote, que é exatamente o que o baralho existe
+  //   pra evitar.
+  function emCapaIaRetomar() {
+    const s = _capaIa; if (!s || s.encerrado) return;
+    s.pausado = false;
+    s.esperandoLimite = false;
+    _capaIaBombear();
+  }
+  window.emCapaIaRetomar = emCapaIaRetomar;
+
+  // Fechar a barra NÃO desfaz nada: o que trocou está trocado, e a exportação
+  // segue normal. É literalmente o que ele descreveu — 50 atualizadas, 50 com
+  // a capa de antes, sem erro nenhum por causa disso.
+  function emCapaIaFechar() {
+    const s = _capaIa;
+    _capaIa = null;
+    const ov = document.getElementById('capaIaOverlay');
+    if (ov) ov.remove();
+    if (s && s.feitos) {
+      emDesenharTabela();
+      showToast(s.feitos + ' capa(s) trocada(s). As demais seguem com a foto de antes.');
+    }
+  }
+  window.emCapaIaFechar = emCapaIaFechar;
+
+  function _capaIaDesenhar() {
+    const s = _capaIa;
+    let ov = document.getElementById('capaIaOverlay');
+    if (!s) { if (ov) ov.remove(); return; }
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'capaIaOverlay';
+      ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.55);'
+        + 'display:flex;align-items:center;justify-content:center;padding:20px';
+      document.body.appendChild(ov);
+    }
+    const concl = s.feitos + s.falhas;
+    const pct = s.total ? Math.round((concl / s.total) * 100) : 0;
+    const listaErros = Object.keys(s.erros).slice(0, 4)
+      .map(k => '<div style="font-size:11.5px;color:#b45309">' + s.erros[k] + '× ' + escapeHtml(k.slice(0, 110)) + '</div>').join('');
+
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;max-width:560px;width:100%;padding:20px 22px">' +
+        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:4px">' +
+          (s.encerrado ? 'Geração concluída' : (s.pausado ? 'Pausado' : 'Gerando capas com IA')) + '</div>' +
+        '<div style="font-size:12.5px;color:#64748b;margin-bottom:14px">' +
+          concl + ' de ' + s.total + ' · ' + s.feitos + ' trocada(s)' +
+          (s.falhas ? ' · ' + s.falhas + ' sem trocar (ficam com a capa de antes)' : '') + '</div>' +
+        '<div style="height:10px;background:#e2e8f0;border-radius:99px;overflow:hidden;margin-bottom:6px">' +
+          '<div style="height:100%;width:' + pct + '%;background:var(--lc-primary);transition:width .25s"></div></div>' +
+        '<div style="font-size:11.5px;color:#94a3b8;margin-bottom:12px">' + pct + '%' +
+          (s.emVoo ? ' · ' + s.emVoo + ' em andamento' : '') + '</div>' +
+        (s.esperandoLimite
+          ? '<div style="font-size:12px;color:#b45309;margin-bottom:10px">O AI Studio sinalizou limite de uso. ' +
+            'Pausar por alguns minutos e retomar costuma resolver — o que já trocou está salvo.</div>' : '') +
+        (s.pausado && !s.encerrado
+          ? '<div style="font-size:12px;color:#475569;margin-bottom:10px">' +
+            'As ' + s.feitos + ' já trocadas estão prontas pra exportar. Retomar continua de onde parou, ' +
+            'sem repetir prompt.</div>' : '') +
+        listaErros +
+        '<div style="display:flex;gap:9px;margin-top:14px;justify-content:flex-end">' +
+          (s.encerrado
+            ? '<button class="lc-btn lc-btn--primary" onclick="emCapaIaFechar()">Concluir</button>'
+            : (s.pausado
+              ? '<button class="lc-btn" onclick="emCapaIaFechar()" style="background:var(--lc-surface);color:var(--lc-text)">Parar por aqui</button>' +
+                '<button class="lc-btn lc-btn--primary" onclick="emCapaIaRetomar()">Retomar</button>'
+              : '<button class="lc-btn" onclick="emCapaIaPausar()" style="background:var(--lc-surface);color:var(--lc-text)">Pausar</button>')) +
+        '</div>' +
+      '</div>';
+  }
 
   // devolve os overlays que a conferência escondeu (v33k.1833). Sai pelos
   // dois caminhos — confirmar segue pra fase 2, cancelar precisa mostrar o
@@ -47318,7 +47658,15 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   dado conferido seria o oposto disso.
     // ★ EM SÉRIE E COM TETO: é uma chamada ao canal por linha, e um lote de
     //   quinze não pode virar quinze chamadas simultâneas.
-    const TETO_SUGESTAO = 15;
+    // ★ v33k.2029: O TETO DE 15 CORTAVA METADE DE UM LOTE DE 30.
+    //   Relato de 27/08: 30 anúncios, nenhum com categoria. Mesmo depois de a
+    //   busca por título voltar a achar (categoria-busca.js), as linhas 16 a
+    //   30 nunca chegariam a pedir — o contador é do LOTE, não da loja.
+    //   O teto existia contra rajada, e rajada quem evita é a pausa entre as
+    //   chamadas, não o corte no meio da lista: cortar não protege o canal,
+    //   só entrega metade do trabalho sem dizer que entregou metade.
+    const TETO_SUGESTAO = 300;
+    const PAUSA_MS = 120;
     let pedidas = 0;
     for (const d of (destinos || [])) {
       const mkt = d.marketplace;
@@ -47338,11 +47686,18 @@ Retorne JSON: {"ID": "valor", ...}`;
           linha.categoria = linha.categoria || {};
           linha.categoria[mkt] = { id: String(sug.id), nome: sug.caminho || sug.nome, caminho: sug.caminho || sug.nome };
           linha.categoriaSugerida = linha.categoriaSugerida || {};
-          linha.categoriaSugerida[mkt] = true;
+          // ★ v33k.2029: DE ONDE VEIO A SUGESTÃO MUDA O QUE A TELA PODE DIZER.
+          //   O TikTok devolve a folha que o próprio canal escolheria — ali
+          //   "sugerida pelo canal" é verdade. Na Shopee somos NÓS casando o
+          //   título contra a árvore, e chamar isso de sugestão do canal é a
+          //   mesma mentira do id que se apresentava como nome (v33k.1866).
+          linha.categoriaSugerida[mkt] = (sug.fonte === 'titulo') ? 'titulo' : 'canal';
         } catch (e) {
           // falha aberta: sem sugestão, a tela volta a pedir — como antes
           console.warn('[conferência] sugestão de categoria falhou:', e.message);
         }
+        // respiro entre chamadas: é isto que protege o canal, não o corte
+        await new Promise(res => setTimeout(res, PAUSA_MS));
       }
     }
 
@@ -63697,6 +64052,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       titulo: 'A variação foi recriada no marketplace e o vínculo ficou apontando pra antiga',
       acao: 'Refaça o vínculo dessas variações na tela de Anúncios.',
     },
+    // ★ v33k.2024: ANÚNCIO ENCERRADO NO ML. Em 27/08 foram 36 dos 80
+    // pendentes, saindo como texto técnico (`[status:closed, has_bids:true]`),
+    // que é verdade e não diz o que fazer.
+    // ★ Este é o único da lista em que o conserto é DESVINCULAR, não refazer:
+    //   anúncio encerrado não volta, e enquanto o vínculo existir cada
+    //   sincronização gasta uma chamada nele à toa.
+    anuncio_encerrado: {
+      titulo: 'Anúncio ENCERRADO no Mercado Livre — não aceita mais estoque',
+      acao: 'Anúncio encerrado não reabre. Remova o vínculo dessas variações na tela de Anúncios: enquanto ele existir, toda sincronização gasta uma chamada à toa e o número fica no relatório sem nunca resolver.',
+    },
+    // ★ v33k.2024: "Validation error" sozinho não diz nada. O backend passou a
+    // extrair o `cause` da resposta do ML, que é onde mora o detalhe útil.
+    ml_recusa_de_validade: {
+      titulo: 'O Mercado Livre recusou a alteração por validação',
+      acao: 'Abra o anúncio no ML e confira o que ele está reclamando (costuma ser atributo obrigatório, ficha técnica ou categoria). O detalhe que a API devolveu aparece no exemplo abaixo.',
+    },
     // ★ v33k.1992: condição DO MARKETPLACE, sem ação do nosso lado.
     // Em 25/08 foram 70 das 73 "falhas" de um produto. Erro que não tem
     // conserto aqui, apresentado como erro, treina a pessoa a ignorar a tela.
@@ -71797,7 +72168,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2023-a-tela-conta-a-mesma-historia';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2031-capa-por-ia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
