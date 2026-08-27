@@ -46370,6 +46370,123 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.emAbrirFotos = emAbrirFotos;
 
+  // ══════════════════════════════════════════════════════════════════════
+  // REGERAR UMA CAPA (v33k.2037)
+  // ──────────────────────────────────────────────────────────────────────
+  // Uma imagem, um clique, dentro do modal de fotos. Reusa a mesma rota do
+  // lote — então herda de graça a escada de 429, o teto de 2 MB, o sufixo
+  // certo por tipo de prompt e o portão de permissão.
+  //
+  // ★ A BASE É SEMPRE A FOTO ORIGINAL. `_capaIaAntiga` é gravada na primeira
+  //   troca e NUNCA é sobrescrita depois — se fosse, o segundo clique
+  //   guardaria a gerada como se fosse a original, e a partir daí a base
+  //   seria saída de IA. Três cliques e o produto vira outro.
+  //
+  // ★ E O PROMPT NÃO REPETE O QUE JÁ SAIU. Pedir 1 e receber o mesmo que a
+  //   pessoa acabou de rejeitar é o pior resultado possível deste botão:
+  //   ela clica, espera onze segundos e recebe a mesma ideia. Pede um punhado
+  //   e escolhe um diferente do último.
+  var _emRegerando = false;
+
+  function _emRegerarStatus(txt, erro) {
+    const el = document.getElementById('emRegerarStatus');
+    if (el) el.innerHTML = txt
+      ? '<span style="color:' + (erro ? '#dc2626' : 'var(--lc-primary-text)') + '">' + escapeHtml(txt) + '</span>'
+      : '';
+  }
+
+  async function emRegerarCapa() {
+    if (_emRegerando) return;
+    const linha = _emFotosDaLinha();
+    if (!linha) return;
+    const fotos = Array.isArray(linha.fotos) ? linha.fotos : [];
+    // a base: a original quando já houve troca, senão a que está no ar
+    const base = linha._capaIaAntiga ||
+      (typeof fotos[0] === 'string' ? fotos[0] : (fotos[0] && (fotos[0].url || fotos[0].src)));
+    if (!base || !/^https?:\/\//i.test(String(base))) {
+      _emRegerarStatus('Esta capa não tem endereço público pra enviar.', true);
+      return;
+    }
+
+    _emRegerando = true;
+    const btn = document.getElementById('emRegerarBtn');
+    if (btn) { btn.disabled = true; btn.style.opacity = '.6'; }
+    _emRegerarStatus('Gerando outra capa… costuma levar uns dez segundos.');
+
+    try {
+      // pede um punhado pra poder fugir do último usado
+      const rp = await fetch(BACKEND_URL + '/api/capa-ia/prompts?n=6', {
+        headers: { 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      }).then(x => x.json());
+      const cartas = (rp && rp.ok && Array.isArray(rp.prompts)) ? rp.prompts : [];
+      if (!cartas.length) { _emRegerarStatus('Não consegui sortear um prompt agora.', true); return; }
+      const usado = String(linha._capaIaPrompt || '');
+      const carta = cartas.find(c => c && c.texto && c.texto !== usado) || cartas[0];
+
+      const r = await fetch(BACKEND_URL + '/api/capa-ia/gerar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+        body: JSON.stringify({ fotoUrl: base, prompt: carta.texto, ref: 'regerar' }),
+      }).then(x => x.json());
+
+      if (!r || !r.ok || !r.url) {
+        _emRegerarStatus((r && r.erro) || 'Não consegui gerar agora. A capa continua a mesma.', true);
+        return;
+      }
+
+      // ★ SUBSTITUI a posição 0, como o lote. Nunca acrescenta.
+      const antes = fotos.length;
+      const item0 = fotos[0];
+      if (item0 && typeof item0 === 'object') {
+        if (item0.src != null && item0.url == null) item0.src = r.url;
+        else item0.url = r.url;
+      } else if (antes) {
+        fotos[0] = r.url;
+      } else {
+        fotos.push(r.url);
+      }
+      if (antes && fotos.length !== antes) { fotos.length = antes; _emRegerarStatus('A troca mudou a contagem de fotos e foi desfeita.', true); return; }
+
+      // ★ só grava a original na PRIMEIRA vez. Sobrescrever aqui faria o
+      //   próximo clique gerar em cima de uma imagem já gerada.
+      if (!linha._capaIaAntiga) linha._capaIaAntiga = base;
+      linha._capaIaPrompt = carta.texto;
+      emFotosDesenhar();
+      setTimeout(() => _emRegerarStatus('Capa nova aplicada · ' + (carta.familia || '')), 60);
+    } catch (e) {
+      _emRegerarStatus('Falha de rede: ' + e.message, true);
+    } finally {
+      _emRegerando = false;
+      const b2 = document.getElementById('emRegerarBtn');
+      if (b2) { b2.disabled = false; b2.style.opacity = ''; }
+    }
+  }
+  window.emRegerarCapa = emRegerarCapa;
+
+  // Volta a capa original. Não desfaz o resto da fila nem mexe na contagem.
+  function emRegerarVoltar() {
+    const linha = _emFotosDaLinha();
+    if (!linha || !linha._capaIaAntiga) return;
+    const fotos = Array.isArray(linha.fotos) ? linha.fotos : [];
+    if (!fotos.length) return;
+    const antes = fotos.length;
+    const item0 = fotos[0];
+    if (item0 && typeof item0 === 'object') {
+      if (item0.src != null && item0.url == null) item0.src = linha._capaIaAntiga;
+      else item0.url = linha._capaIaAntiga;
+    } else {
+      fotos[0] = linha._capaIaAntiga;
+    }
+    if (fotos.length !== antes) { fotos.length = antes; return; }
+    delete linha._capaIaAntiga;
+    delete linha._capaIaPrompt;
+    emFotosDesenhar();
+    setTimeout(() => _emRegerarStatus('Capa original restaurada.'), 60);
+  }
+  window.emRegerarVoltar = emRegerarVoltar;
+
   // ═══════════════════════════════════════════════════════════════════════
   // v33k.1847: O MODAL DE FOTOS, REFEITO.
   // ───────────────────────────────────────────────────────────────────────
@@ -46501,6 +46618,46 @@ Retorne JSON: {"ID": "valor", ...}`;
     const GRADE = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:12px';
     let h = '';
 
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.2037: REGERAR A CAPA, UMA DE CADA VEZ.
+    // ───────────────────────────────────────────────────────────────────
+    // PEDIDO DE 27/08: "para poder gerar novamente alguma que não fique bom".
+    // O lote acerta a maioria e erra algumas; sem isto, uma capa ruim só se
+    // conserta refazendo o lote inteiro — que gasta cota nas 99 que estavam
+    // boas para arrumar 1.
+    //
+    // ★ E A ENTRADA É A FOTO ORIGINAL, NUNCA A JÁ GERADA. Este é o ponto
+    //   que faz a função valer alguma coisa. Mandar a capa atual (que já é
+    //   saída de IA) seria gerar em cima de geração: a cada rodada o produto
+    //   se afasta mais do que a pessoa recebe em casa, e o terceiro clique
+    //   devolve outro produto. `_capaIaAntiga` guarda a original desde a
+    //   v33k.2031 exatamente para isto.
+    //
+    // ★ SÓ APARECE PARA QUEM PODE. O mesmo portão do botão do lote — e a
+    //   rota confere de novo, porque esconder botão não é permissão.
+    h += '<div id="emRegerarFaixa" style="display:none;background:var(--lc-primary-softer);' +
+      'border:1px solid var(--lc-primary-soft);border-radius:10px;padding:11px 12px;margin-bottom:12px;' +
+      'align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:220px;font-size:12.5px;color:var(--lc-primary-text)">' +
+        '<strong>Não gostou da capa?</strong> Gera outra com um prompt sorteado, ' +
+        'sempre a partir da foto original.' +
+        (linha._capaIaAntiga
+          ? '<div style="font-size:11px;opacity:.85;margin-top:2px">Esta capa foi gerada por IA. ' +
+            'A original está guardada.</div>'
+          : '<div style="font-size:11px;opacity:.85;margin-top:2px">A capa de agora vira a base da geração.</div>') +
+      '</div>' +
+      '<button type="button" id="emRegerarBtn" class="lc-btn" onclick="emRegerarCapa()" ' +
+        'style="background:var(--lc-surface);color:var(--lc-text);font-size:12.5px;padding:7px 12px">' +
+        '<span class="lc-ic" data-lucide="refresh-cw" style="width:13px;height:13px"></span> ' +
+        'Gerar outra capa</button>' +
+      (linha._capaIaAntiga
+        ? '<button type="button" class="lc-btn" onclick="emRegerarVoltar()" ' +
+          'style="background:var(--lc-surface);color:var(--lc-text);font-size:12.5px;padding:7px 12px">' +
+          '<span class="lc-ic" data-lucide="undo-2" style="width:13px;height:13px"></span> ' +
+          'Voltar à original</button>' : '') +
+      '<div id="emRegerarStatus" style="width:100%;font-size:12px;color:var(--lc-primary-text)"></div>' +
+      '</div>';
+
     if (porVariacao) {
       // ═══════════════════════════════════════════════════════════════════
       // v33k.1848: NO MERCADO LIVRE A FOTO É DA VARIAÇÃO.
@@ -46597,6 +46754,21 @@ Retorne JSON: {"ID": "valor", ...}`;
       largura: 920, html: true, painel: true,
       botoes: [{ texto: 'Fechar', primario: true, onclick: 'emFotoFechar()' }],
     });
+    // ★ a faixa nasce escondida e só acende se o servidor disser que pode.
+    //   `_capaIaLiberado` é preenchido quando a conferência abre; se ainda não
+    //   voltou, pergunta agora. Nulo (não sei) mantém escondido.
+    setTimeout(() => {
+      const f = document.getElementById('emRegerarFaixa');
+      if (!f) return;
+      const mostrar = () => {
+        if (!window._capaIaLiberado) return;
+        f.style.display = 'flex';
+        if (window.lcHydrateIcons) window.lcHydrateIcons(f);
+      };
+      if (window._capaIaLiberado == null && typeof emCapaIaPrepararBotao === 'function') {
+        Promise.resolve().then(emCapaIaPrepararBotao).then(mostrar).catch(() => {});
+      } else mostrar();
+    }, 40);
   }
 
   function _emFotosDaLinha() {
@@ -47182,6 +47354,10 @@ Retorne JSON: {"ID": "valor", ...}`;
         headers: { 'x-api-token': getApiToken(),
           'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
       }).then(x => x.json());
+      // ★ v33k.2037: guarda a resposta pra a faixa do modal de fotos não
+      //   precisar perguntar de novo a cada abertura.
+      window._capaIaLiberado = !!(r && r.ok && r.liberado);
+      window._capaIaChave = !!(r && r.chaveConfigurada);
       if (!r || !r.ok || !r.liberado) return;
       b.style.display = '';
       b.dataset.chave = r.chaveConfigurada ? '1' : '';
@@ -47254,6 +47430,9 @@ Retorne JSON: {"ID": "valor", ...}`;
       pausado: false,
       encerrado: false,
       emVoo: 0,
+      paralelo: CAPA_IA_PARALELO_MIN,   // sobe e desce sozinho (v33k.2036)
+      seguidos: 0,
+      ajustes: 0,
       esperandoLimite: false,
       erros: {},
     };
@@ -47280,14 +47459,62 @@ Retorne JSON: {"ID": "valor", ...}`;
     _capaIaBombear();
   }
 
-  // ★ CONCORRÊNCIA 2, e o número mora aqui em cima. Ele pediu duas "se der";
-  //   duas é o que cabe sem o 429 virar regra — e quando vira, a escada do
-  //   backend já segura, então subir isso só troca throughput por espera.
-  var CAPA_IA_PARALELO = 2;
+  // ══════════════════════════════════════════════════════════════════════
+  // ★ v33k.2036: CONCORRÊNCIA QUE SE ACHA SOZINHA.
+  // ──────────────────────────────────────────────────────────────────────
+  // "Qual seria o máximo sem estourar os tokens?"
+  //
+  // MEDIDO na documentação da Google, e a resposta surpreende: o gargalo NÃO
+  // é RPM, é o LIMITE DE GASTO por janela de 10 minutos.
+  //
+  //   Tier 1 (cartão ligado)      US$ 10 / 10 min
+  //   Tier 2 (US$ 100 + 3 dias)   US$ 200 / 10 min
+  //
+  // Uma imagem 1K do Nano Banana 2 custa cerca de US$ 0,067 (a saída de imagem
+  // é cobrada a US$ 60 por milhão de tokens, e uma 1K gasta ~1.100).
+  // Então:
+  //   Tier 1   ~149 imagens por 10 min = ~15 por minuto
+  //   Tier 2   ~2.985 por 10 min = ~299 por minuto
+  //
+  // Com ~11s por geração, paralelo 2 dá ~11 img/min — cabe no Tier 1 com folga,
+  // e é por isso que 2 vinha funcionando. Paralelo 3 já dá ~16/min e encosta
+  // na parede. No Tier 2, paralelo 12 ainda sobra.
+  //
+  // ★ POR ISSO O NÚMERO NÃO É FIXO. Ele depende do tier, o tier muda quando
+  //   ele gasta, e a própria Google avisa que os limites "não são garantidos e
+  //   a capacidade real pode variar". Chutar 4 aqui daria 429 no Tier 1 e
+  //   desperdiçaria o Tier 2.
+  //
+  // Então: começa no piso, SOBE enquanto passa, CAI pela metade em cada 429.
+  // Em poucos minutos ele para no número que a conta dele realmente aguenta —
+  // e continua certo no dia em que ela virar Tier 2, sem deploy nenhum.
+  var CAPA_IA_PARALELO_MIN = 2;     // o que já se provou seguro no Tier 1
+  var CAPA_IA_PARALELO_MAX = 12;    // teto: acima disso o ganho some na latência
+  var CAPA_IA_SUBIR_APOS = 6;       // sucessos seguidos antes de arriscar +1
+
+  // ★ 429 CUSTA CARO E SUCESSO CUSTA POUCO, então a escada é assimétrica:
+  //   cai pela metade de uma vez, sobe de um em um. Subir devagar perde alguns
+  //   segundos; bater na parede repetidamente gasta a janela de 10 minutos
+  //   inteira esperando, e aí o lote para de verdade.
+  function _capaIaAjustar(s, bateuNoLimite) {
+    if (bateuNoLimite) {
+      const antes = s.paralelo;
+      s.paralelo = Math.max(CAPA_IA_PARALELO_MIN, Math.floor(s.paralelo / 2));
+      s.seguidos = 0;
+      if (s.paralelo !== antes) s.ajustes = (s.ajustes || 0) + 1;
+      return;
+    }
+    s.seguidos = (s.seguidos || 0) + 1;
+    if (s.seguidos >= CAPA_IA_SUBIR_APOS && s.paralelo < CAPA_IA_PARALELO_MAX) {
+      s.paralelo++;
+      s.seguidos = 0;
+      s.ajustes = (s.ajustes || 0) + 1;
+    }
+  }
 
   function _capaIaBombear() {
     const s = _capaIa; if (!s || s.encerrado) return;
-    while (!s.pausado && s.emVoo < CAPA_IA_PARALELO && s.pos < s.fila.length) {
+    while (!s.pausado && s.emVoo < s.paralelo && s.pos < s.fila.length) {
       const item = s.fila[s.pos++];
       // ★ o baralho anda com a GERAÇÃO, não com a fila. Pausar entre as duas
       //   deixaria uma carta consumida sem foto — e retomar pularia um prompt.
@@ -47321,6 +47548,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           ref: String(item.li) }),
       }).then(x => x.json());
 
+      _capaIaAjustar(s, !!(r && r.limite));
       if (r && r.ok && r.url) {
         // ★ SUBSTITUI A POSIÇÃO 0. Nunca `unshift`: o anúncio costuma estar
         //   nas 9 da Shopee, e 10 faz o canal recusar o anúncio INTEIRO.
@@ -47349,6 +47577,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     } catch (e) {
       s.falhas++;
       s.erros[e.message] = (s.erros[e.message] || 0) + 1;
+      _capaIaAjustar(s, true);   // rede caindo também pede pé no freio
     }
   }
 
@@ -47416,7 +47645,9 @@ Retorne JSON: {"ID": "valor", ...}`;
         '<div style="height:10px;background:#e2e8f0;border-radius:99px;overflow:hidden;margin-bottom:6px">' +
           '<div style="height:100%;width:' + pct + '%;background:var(--lc-primary);transition:width .25s"></div></div>' +
         '<div style="font-size:11.5px;color:#94a3b8;margin-bottom:12px">' + pct + '%' +
-          (s.emVoo ? ' · ' + s.emVoo + ' em andamento' : '') + '</div>' +
+          (s.emVoo ? ' · ' + s.emVoo + ' em andamento' : '') +
+          ' · ' + s.paralelo + ' por vez' +
+          (s.ajustes ? ' (ajustado ' + s.ajustes + '×)' : '') + '</div>' +
         (s.esperandoLimite
           ? '<div style="font-size:12px;color:#b45309;margin-bottom:10px">O AI Studio sinalizou limite de uso. ' +
             'Pausar por alguns minutos e retomar costuma resolver — o que já trocou está salvo.</div>' : '') +
@@ -72188,7 +72419,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2035-um-botao-so';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2037-regerar-uma';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
