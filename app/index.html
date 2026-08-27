@@ -26180,7 +26180,86 @@ window.LC_SVG = {
     const contextoFotos = (p.fotos[0] ? 'ANALISE A IMAGEM ANEXADA para extrair DETALHES: marca visível, materiais aparentes, cor predominante, tipo de fechamento, design.\n' : '');
     // v33k.251: se o usuário informou o produto, o TIPO dele manda. A IA não pode
     // trocar "Chuteira Society" por "Tênis Futsal", usa a foto só pra detalhes.
-    const _produtoInformado = (d.produto || '').trim();
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.2053: CÓDIGO NÃO É NOME DE PRODUTO.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 27/08: a descrição saiu com "Especificações do 100064:" e
+    // "O que acompanha: 1 100064".
+    //
+    // A IA obedeceu — o prompt manda RESPEITAR o que o lojista informou como
+    // tipo do produto, e o que chegou foi a referência interna. Ela fez
+    // exatamente o que foi pedido, com a entrada errada.
+    //
+    // ★ Referência ainda é útil: ela ajuda a IA a reconhecer a linha. Mas ela
+    //   entra como REFERÊNCIA, não como tipo — e aí o tipo sai da foto, que é
+    //   de onde ele deveria sair quando não há nome de verdade.
+    const _pareceCodigo = (x) => {
+      const t = String(x || '').trim();
+      if (!t) return false;
+      if (/^\d+$/.test(t)) return true;                       // 100064
+      if (/^[A-Z0-9]{2,}[-_/][A-Z0-9-_/]+$/i.test(t) && !/\s/.test(t)) return true;  // ARF015-CARAMELO-36
+      // uma palavra só, curta, sem vogal suficiente pra ser nome
+      if (!/\s/.test(t) && t.length <= 12 && (t.match(/[aeiouAEIOU]/g) || []).length <= 1) return true;
+      return false;
+    };
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.2054: O GUIA DE TAMANHOS SAI DA NOSSA TABELA, NÃO DA IA.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 27/08: "o último sempre está vindo vazio", inclusive em
+    // produto com quatro numerações:
+    //     37 -------- 24,00 cm
+    //     39 -------- 25,00 cm
+    //     41 -------- 26,00 cm
+    //     43 -------- — cm
+    //
+    // MEDIDO contra a nossa tabela (`marketplaces.js:905`): 37 = 24,0 bate,
+    // mas 39 = 25,5 e 41 = 26,5 — a IA estava chutando perto, não lendo. E o
+    // 43, que EXISTE na tabela (28,0), ela deixava em branco.
+    //
+    // ★ Não adianta pedir melhor: o guia não tem fonte. Texto livre gerado por
+    //   modelo sobre uma tabela que ele não recebeu vai errar em algum lugar,
+    //   e o "último vazio" é só o erro que aparece sempre. A saída é o guia
+    //   sair em CÓDIGO, das variações reais e da tabela, e a IA nem escrever
+    //   essa parte.
+    //
+    // ★ A TABELA ESTÁ DUPLICADA, E ISSO É MEDIDO. Ela vive no backend
+    //   (`_CM_POR_NUMERO`) e aqui. Duplicação é dois lugares pra divergir —
+    //   por isso `qa_guia_tamanhos_bate.js` compara as duas entrada por
+    //   entrada e reprova na primeira diferença. Duplicar sem medir é que
+    //   seria o erro.
+    const _CM_POR_NUMERO_PAINEL = {
+      16: 10.5, 17: 11.0, 18: 11.5, 19: 12.0, 20: 12.5, 21: 13.5, 22: 14.0, 23: 14.5,
+      24: 15.5, 25: 16.0, 26: 16.5, 27: 17.5, 28: 18.0, 29: 18.5, 30: 19.5, 31: 20.0,
+      32: 20.5, 33: 21.5, 34: 22.0, 35: 22.5, 36: 23.5, 37: 24.0, 38: 24.5, 39: 25.5,
+      40: 26.0, 41: 26.5, 42: 27.5, 43: 28.0, 44: 28.5, 45: 29.5, 46: 30.0,
+    };
+    function _guiaDeTamanhosTexto(prod) {
+      const nums = [...new Set((prod.variacoes || [])
+        .map(v => String((v && v.tamanho) || '').trim())
+        .filter(Boolean))];
+      if (!nums.length) return '';
+      // só numeração: tamanho "P/M/G" não tem cm nesta tabela
+      const comCm = nums
+        .map(t => ({ t, n: Number(String(t).replace(',', '.')) }))
+        .filter(x => isFinite(x.n) && _CM_POR_NUMERO_PAINEL[x.n] != null)
+        .sort((a, b) => a.n - b.n);
+      // ★ TODOS ou NENHUM. Meia tabela, com uns preenchidos e outros não, é
+      //   exatamente o defeito que estamos consertando.
+      if (!comCm.length || comCm.length !== nums.length) return '';
+      const linhas = comCm.map(x =>
+        x.t + ' -------- ' + _CM_POR_NUMERO_PAINEL[x.n].toFixed(2).replace('.', ',') + ' cm');
+      return 'Guia de tamanhos em centímetros:\n' + linhas.join('\n');
+    }
+    const _guiaTexto = _guiaDeTamanhosTexto(p);
+
+    const _informadoBruto = (d.produto || '').trim();
+    const _ehCodigo = _pareceCodigo(_informadoBruto);
+    const _produtoInformado = _ehCodigo ? '' : _informadoBruto;
+    const regraReferencia = _ehCodigo
+      ? ('A referência interna deste produto é "' + _informadoBruto + '". Ela é um CÓDIGO, ' +
+         'NÃO é o nome nem o tipo do produto: nunca escreva esse código no título nem na descrição. ' +
+         'Deduza o tipo do produto pelas fotos e pelas variações.\n')
+      : '';
     const regraProdutoInformado = _produtoInformado
       ? ('IMPORTANTÍSSIMO: o lojista informou que o produto é "' + _produtoInformado + '". ' +
          'RESPEITE esse tipo de produto no título e na categoria, NÃO troque por outro tipo (ex.: se é "Chuteira Society", NÃO escreva "Tênis Futsal" nem "Chuteira de Futsal"). ' +
@@ -26191,12 +26270,12 @@ window.LC_SVG = {
 Crie um anúncio COMPLETO para este produto.
 
 DADOS DISPONÍVEIS:
-- Produto/referência: "${d.produto || p.nome || '(use as fotos)'}"
+- Produto: "${_produtoInformado || (_ehCodigo ? '(deduza pelas fotos)' : (p.nome || '(use as fotos)'))}"
 - Categoria interna: "${p.categoria || '(detecte das fotos)'}"
 - Categoria ML: ${p.categoryIdMl || '(não definida)'}
 - Variações: ${variacoesTxt}
 - Preço: R$ ${p.preco}
-${regraProdutoInformado}${contextoFotos}
+${regraReferencia}${regraProdutoInformado}${contextoFotos}
 
 REGRAS DO TÍTULO (serve pra ML e Shopee):
 - Tamanho: entre 80 e 100 caracteres. IMPORTANTE: o título é cortado em 60 pro Mercado Livre,
@@ -26204,7 +26283,7 @@ REGRAS DO TÍTULO (serve pra ML e Shopee):
   e use os 40 caracteres seguintes pra palavras-chave extras e sinônimos regionais (ex: chinelo/chinela/sandália;
   sapatilha/sapato baixo) que ampliam a busca na Shopee. Assim funciona bem cortado (ML) ou inteiro (Shopee).
   Ex: "Sapatilha Feminina Confortável Bico Fino Casual Leve Sapato Baixo Trabalho Dia a Dia"
-- Descrição: NO MÍNIMO 400 caracteres. Comece com o TÍTULO numa linha sozinha, deixe uma linha em branco, depois 1-2 parágrafos CURTOS (máximo 3 linhas no total) que despertem desejo, com 1 situação real de uso. Início enxuto. Depois siga com: Especificações, O que acompanha, Guia de tamanhos, Dúvidas frequentes. Sem emojis, sem markdown.
+- Descrição: NO MÍNIMO 400 caracteres. Comece com o TÍTULO numa linha sozinha, deixe uma linha em branco, depois 1-2 parágrafos CURTOS (máximo 3 linhas no total) que despertem desejo, com 1 situação real de uso. Início enxuto. Depois siga com: Especificações, O que acompanha, ${_guiaTexto ? 'a linha exata {{GUIA_TAMANHOS}} numa linha sozinha (NÃO escreva a tabela de medidas: ela é inserida pelo sistema)' : 'Guia de tamanhos'}, Dúvidas frequentes. Sem emojis, sem markdown.
   Exemplo de início (enxuto):
   Tênis Esportivo Feminino Leve Confortável
   
@@ -26245,10 +26324,76 @@ RETORNE APENAS JSON nesse formato exato (sem \`\`\`json):
       throw new Error('Pass 1 (conteúdo), IA retornou JSON inválido. ' + e.message); 
     }
     
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.2053: O TÍTULO CURTO PASSAVA DIRETO.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 27/08: "está sendo geradas com menos de 60 caracteres e
+    // podemos deixar chegar até uns 100".
+    //
+    // O prompt PEDE 80-100 desde sempre. Só que `slice(0, 100)` CORTA, nunca
+    // estica — título de 55 passava sem ninguém olhar. Pedir e não conferir é
+    // a mesma coisa que não pedir.
+    //
+    // ★ E NÃO INVENTA PALAVRA. Quando vem curto, pede DE NOVO à IA, dizendo
+    //   quantos caracteres vieram e o que fazer com o espaço que sobra.
+    //   Preencher aqui com sinônimo genérico produziria título que ninguém
+    //   escreveu e que não descreve o produto.
+    const MIN_TITULO = 70;
+    if (dadosConteudo.nome && String(dadosConteudo.nome).trim().length < MIN_TITULO) {
+      const _curto = String(dadosConteudo.nome).trim();
+      console.warn('[ia conteúdo] título com ' + _curto.length + ' chars (mínimo ' + MIN_TITULO + '), pedindo de novo');
+      try {
+        // ★ `chamarIA` recebe { prompt, system } e devolve STRING. Eu tinha
+        //   escrito no formato de mensagens do chat — a chamada não quebraria
+        //   em teste nenhum, só devolveria lixo em produção.
+        const _r2 = await chamarIA({ maxTokens: 200,
+          system: 'Você responde APENAS com o título pedido, sem aspas e sem explicação.',
+          prompt:
+          'Este título de anúncio ficou curto demais para a Shopee:\n\n"' + _curto + '"\n\n'
+          + 'Ele tem ' + _curto.length + ' caracteres e precisa ter entre 80 e 100.\n'
+          + 'Reescreva MANTENDO o tipo do produto e as palavras que já estão lá, na mesma ordem, '
+          + 'e ACRESCENTANDO no fim palavras-chave e sinônimos regionais que ampliem a busca '
+          + '(ex.: chinelo/chinela/sandália; tênis/sapatênis). '
+          + 'Os primeiros 60 caracteres têm que continuar sendo o essencial, porque o Mercado Livre corta ali.\n'
+          + 'NÃO invente característica que o produto não tem. NÃO repita palavra.\n'
+          + 'Responda APENAS com o título, sem aspas e sem explicação.' });
+        const _novo = String(_r2 || '').trim()
+          .replace(/^["']|["']$/g, '').split('\n')[0].trim();
+        if (_novo.length >= MIN_TITULO && _novo.toLowerCase().indexOf(_curto.slice(0, 15).toLowerCase()) >= 0) {
+          console.log('[ia conteúdo] título esticado: ' + _curto.length + ' → ' + _novo.length + ' chars');
+          dadosConteudo.nome = _novo;
+        } else {
+          // ★ o retorno não serviu: fica o original. Título curto vende menos;
+          //   título que perdeu o tipo do produto não vende nada.
+          console.warn('[ia conteúdo] a 2ª tentativa não serviu (' + _novo.length + ' chars), mantendo o original');
+        }
+      } catch (e) { console.warn('[ia conteúdo] 2ª tentativa falhou: ' + e.message); }
+    }
+
     // Aplica conteúdo
     // Nome base até 100 (mira Shopee). O ML corta pra 60 no montarPayloadExport.
     if (dadosConteudo.nome) p.nome = String(dadosConteudo.nome).slice(0, 100);
-    if (dadosConteudo.descricao) p.descricao = dadosConteudo.descricao;
+    if (dadosConteudo.descricao) {
+      let _desc = String(dadosConteudo.descricao);
+      if (_guiaTexto) {
+        if (_desc.indexOf('{{GUIA_TAMANHOS}}') >= 0) {
+          _desc = _desc.split('{{GUIA_TAMANHOS}}').join(_guiaTexto);
+        } else {
+          // ★ a IA ignorou o marcador e escreveu a tabela dela. Troca pela
+          //   nossa: um guia inventado é pior que nenhum, porque o cliente
+          //   compra pelo número que está escrito ali.
+          const _re = /Guia de tamanhos[^\n]*:\n(?:[^\n]*-{4,}[^\n]*\n?)+/i;
+          if (_re.test(_desc)) {
+            console.warn('[ia conteúdo] a IA escreveu a própria tabela de medidas; substituída pela do sistema');
+            _desc = _desc.replace(_re, _guiaTexto + '\n');
+          } else {
+            console.warn('[ia conteúdo] marcador do guia não veio; acrescentando o guia no fim');
+            _desc = _desc.trimEnd() + '\n\n' + _guiaTexto;
+          }
+        }
+      }
+      p.descricao = _desc;
+    }
     if (dadosConteudo.marca) p.marca = dadosConteudo.marca;
     if (dadosConteudo.peso) p.peso = parseFloat(dadosConteudo.peso) || 0.5;
     if (dadosConteudo.skuPai && !p.skuPai) p.skuPai = String(dadosConteudo.skuPai).toUpperCase().replace(/[^A-Z0-9\-\/]/g,'');
@@ -47540,8 +47685,29 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Então: começa no piso, SOBE enquanto passa, CAI pela metade em cada 429.
   // Em poucos minutos ele para no número que a conta dele realmente aguenta —
   // e continua certo no dia em que ela virar Tier 2, sem deploy nenhum.
-  var CAPA_IA_PARALELO_MIN = 2;     // o que já se provou seguro no Tier 1
-  var CAPA_IA_PARALELO_MAX = 12;    // teto: acima disso o ganho some na latência
+  // ★ v33k.2055: OS LIMITES REAIS DA CONTA, DO PAINEL DO AI STUDIO.
+  //   Em 27/08 ele mandou o print: RPM 100 · TPM 200K · RPD 1.000. Antes eu
+  //   estimava pelo teto de GASTO (US$10/10min do Tier 1); com o número da
+  //   conta na mão, a conta é direta.
+  //
+  //   Com ~11s por geração, cada slot de concorrência gera ~5,5 req/min:
+  //       paralelo 12 →  65 req/min ·  84K tok/min
+  //       paralelo 15 →  82 req/min · 106K tok/min
+  //       paralelo 18 →  98 req/min · 127K tok/min   ← encosta no RPM
+  //       paralelo 50 → 273 req/min · 352K tok/min   ← estoura RPM e TPM
+  //
+  // ★ POR ISSO 50 SIMULTÂNEAS NÃO DÁ: seriam 2,7× o RPM e 1,8× o TPM. O lote
+  //   PODE ter 50, 100 ou 500 anúncios — o que o limite governa é quantas
+  //   viajam ao mesmo tempo, não o tamanho da fila.
+  //
+  // ★ E A IMAGEM DE ENTRADA CONTA NO TPM. Cada chamada manda a capa atual
+  //   (~1.290 tokens numa 1K). Capa em 2K dobra isso e derruba o teto pela
+  //   metade — é o TPM que estoura primeiro, não o RPM.
+  //
+  // 15 deixa 18% de folga no RPM. O ajuste automático continua por cima: se
+  // a conta mudar de tier ou o modelo ficar mais lento, ele desce sozinho.
+  var CAPA_IA_PARALELO_MIN = 2;     // piso já provado
+  var CAPA_IA_PARALELO_MAX = 15;    // teto: ~82 req/min de 100 disponíveis
   var CAPA_IA_SUBIR_APOS = 6;       // sucessos seguidos antes de arriscar +1
 
   // ★ 429 CUSTA CARO E SUCESSO CUSTA POUCO, então a escada é assimétrica:
@@ -72582,7 +72748,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2052-o-id-tem-quatro-nomes';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2055-teto-medido-na-conta';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
