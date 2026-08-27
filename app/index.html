@@ -39076,15 +39076,37 @@ Retorne JSON: {"ID": "valor", ...}`;
     document.getElementById('massaProgressX').style.display = 'none';
     ov.classList.add('active');
   }
-  function atualizarMassaProgress(feitos, total, logLinha, ehErro) {
+  // ★ v33k.2002: 31 DE 33 NÃO É UM ✗ VERMELHO.
+  // O terceiro argumento era booleano: qualquer pendência pintava a linha
+  // inteira de vermelho com ✗. Na tela de 25/08 saía assim:
+  //
+  //   ✗ Café / 41 [RF-180-CAFE-41] → 31/33 anúncio(s) · 2 pendente(s)
+  //
+  // Trinta e um de trinta e três deram certo — 94% — e a linha grita erro. Uma
+  // tela toda vermelha faz o operador parar a operação achando que quebrou
+  // tudo, e foi exatamente o que aconteceu duas vezes nesta sessão.
+  //
+  // ★ Sucesso parcial é uma TERCEIRA coisa, não um erro fraco. Agora:
+  //     tudo ok     -> verde
+  //     parcial     -> âmbar, e a linha diz quantos foram, não só quantos não
+  //     nada passou -> vermelho, que é quando vermelho significa alguma coisa
+  //
+  // Aceita booleano (chamadas antigas) ou 'ok'|'parcial'|'erro'.
+  function atualizarMassaProgress(feitos, total, logLinha, estado) {
     const pct = total > 0 ? Math.round((feitos / total) * 100) : 0;
     document.getElementById('massaProgressFill').style.width = pct + '%';
     document.getElementById('massaProgressText').textContent = feitos + ' / ' + total + ' (' + pct + '%)';
     if (logLinha) {
+      const e = (estado === true) ? 'erro' : (estado === false || estado == null ? 'ok' : String(estado));
+      const visual = {
+        ok:      { icone: '✓', cor: '#15803d' },
+        parcial: { icone: '!', cor: '#a16207' },
+        erro:    { icone: '✗', cor: '#b91c1c' },
+      }[e] || { icone: '✓', cor: '#15803d' };
       const log = document.getElementById('massaProgressLog');
       const div = document.createElement('div');
-      div.textContent = (ehErro ? '✗ ' : '✓ ') + logLinha;
-      if (ehErro) div.style.color = '#b91c1c';
+      div.textContent = visual.icone + ' ' + logLinha;
+      div.style.color = visual.cor;
       log.appendChild(div);
       log.scrollTop = log.scrollHeight;
     }
@@ -61722,6 +61744,30 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     venda: { txt: 'Venda', cor: '#b91c1c', bg: '#fef2f2' },
     kit: { txt: 'Baixa de kit', cor: '#a16207', bg: '#fefce8' },
   };
+  // ★ v33k.2002: O RESUMO VIRA HTML.
+  // Era texto corrido com `\n` dentro de um alerta que não formata: no print de
+  // 25/08 saiu tudo grudado, sem hierarquia, transbordando o modal. Número,
+  // causa, onde está e o que fazer são quatro coisas diferentes e precisam
+  // parecer quatro coisas diferentes.
+  // ★ v33k.2002: usa o `_esc` que JÁ EXISTE (linha ~205). Declarar outro aqui
+  // seria a segunda cópia da mesma função no mesmo escopo — e é exatamente o
+  // defeito de "dois nomes pra mesma coisa" que custou esta sessão inteira,
+  // cometido em duas linhas de HTML.
+  function _cartaoCausa(n, titulo, acao, ondeEsta, ehGrave) {
+    const cor = ehGrave ? '#b91c1c' : '#a16207';
+    const bg = ehGrave ? '#fef2f2' : '#fffbeb';
+    const borda = ehGrave ? '#fecaca' : '#fde68a';
+    return '<div style="border:1px solid ' + borda + ';background:' + bg
+      + ';border-radius:10px;padding:12px 14px;margin-bottom:10px">'
+      + '<div style="font-weight:800;color:' + cor + ';font-size:13px;margin-bottom:4px">'
+        + n + ' anúncio(s) · ' + _esc(titulo) + '</div>'
+      + (ondeEsta ? '<div style="font-size:12px;color:#475569;margin-bottom:6px">Ex.: ' + ondeEsta + '</div>' : '')
+      + '<div style="font-size:12px;color:#334155"><b>O que fazer:</b> ' + acao + '</div>'
+      + '</div>';
+  }
+  function _nomeMkt(m) {
+    return (typeof MK_INFO !== 'undefined' && MK_INFO[m] && MK_INFO[m].nome) ? MK_INFO[m].nome : String(m || '');
+  }
   function _rotuloOrigem(o) {
     return _ORIGEM_ROTULO[String(o || '').toLowerCase()]
       // ★ origem que o mapa não conhece aparece COMO ELA É, não como "outro".
@@ -62017,9 +62063,14 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             return '<div style="display:flex;gap:12px;align-items:center;padding:11px 4px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap">' +
               '<div style="min-width:120px;font-size:12px;color:#6b7280">' + fmtHora(g.criadoEm) + '</div>' +
               '<div style="min-width:100px">' + tag(o.txt, o.cor, o.bg) + '</div>' +
+              // ★ v33k.2003: quando os "antes" divergem entre os anúncios, a
+              // linha mostra só o DESTINO. Escolher um dos 33 antes a dedo e
+              // apresentá-lo como se fosse O antes seria inventar um fato.
               '<div style="min-width:130px;font-weight:700;color:' + setaCor + '">' +
-                (g.qtdAntes == null || g.qtdDepois == null ? '—'
-                  : (g.qtdAntes + ' → ' + g.qtdDepois + (delta ? ' (' + (delta > 0 ? '+' : '') + delta + ')' : ''))) +
+                (g.qtdDepois == null ? '—'
+                  : (g.antesVaria || g.qtdAntes == null
+                      ? ('→ ' + g.qtdDepois)
+                      : (g.qtdAntes + ' → ' + g.qtdDepois + (delta ? ' (' + (delta > 0 ? '+' : '') + delta + ')' : '')))) +
               '</div>' +
               // ★ pedido e NF: as colunas existem e ficam VAZIAS até a Leva 4.
               // Coluna que aparece só quando tem dado faz a tela mudar de forma
@@ -63650,14 +63701,17 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // Em 25/08 foram 70 das 73 "falhas" de um produto. Erro que não tem
     // conserto aqui, apresentado como erro, treina a pessoa a ignorar a tela.
     status_nao_permite: {
-      titulo: 'O anúncio está num estado que o marketplace não deixa alterar estoque',
-      acao: 'Não há o que corrigir no sistema. Reative ou libere o anúncio no painel do marketplace e o estoque vai na próxima sincronização.',
+      // ★ v33k.2002: dizer o QUE É, não só o que a API respondeu. O operador
+      // não fala "status não permitido" — ele fala "meu anúncio foi suspenso".
+      titulo: 'Anúncio provavelmente suspenso, banido ou removido no marketplace',
+      acao: 'Abra o anúncio no painel do marketplace e veja o motivo. Não há nada a corrigir aqui: assim que ele voltar ao ar, o estoque vai na próxima sincronização.',
     },
   };
 
   // Monta o texto que o operador lê. Devolve também se há causa desconhecida,
   // porque é isso que decide o TOM: conhecido vira aviso, novo continua erro.
-  function _resumoCausasEstoque(motivos) {
+  function _resumoCausasEstoque(motivos, exemplos) {
+    const _ex = exemplos || {};
     const linhas = [];
     let temDesconhecida = false, conhecidas = 0, desconhecidas = 0;
     Object.entries(motivos)
@@ -63668,11 +63722,22 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         const conhecida = cod && _CAUSAS_ESTOQUE[cod];
         if (!conhecida) {
           temDesconhecida = true; desconhecidas++;
-          linhas.push(n + ' anúncio(s): ' + chave);
+          // ★ o desconhecido sai com o texto técnico INTEIRO e em vermelho:
+          // é a única pista que existe sobre ele.
+          linhas.push(_cartaoCausa(n, 'Motivo que o sistema ainda não sabe explicar',
+            _esc(String(chave)), '', true));
           return;
         }
         conhecidas++;
-        linhas.push(n + ' anúncio(s) — ' + conhecida.titulo + '\n     O que fazer: ' + conhecida.acao);
+        // ★ um exemplo concreto: id, título e plataforma. Sem isso o operador
+        // lê "35 anúncios" e não sabe por onde começar.
+        const e = _ex[chave] || {};
+        const ondeEsta = e.anuncioId
+          ? ((e.mkt ? _nomeMkt(e.mkt) + ' · ' : '') + e.anuncioId
+             + (e.titulo ? ' — ' + _esc(e.titulo) : '')
+             + (e.loja ? ' (loja ' + _esc(e.loja) + ')' : ''))
+          : '';
+        linhas.push(_cartaoCausa(n, conhecida.titulo, conhecida.acao, ondeEsta, false));
       });
     return { linhas, temDesconhecida, conhecidas, desconhecidas };
   }
@@ -64175,6 +64240,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     // v33k.1150/1151: separa FALHA REAL de "aguardando oferta relâmpago ATIVA".
     // A reserva de uma oferta que está no ar NÃO é erro (a Shopee só a libera
     // quando ela encerra) — então isso vira AVISO amarelo, não falha vermelha.
+    const _exemploCausa = {};
     const _motivosFalha = {};   // falhas de verdade (vermelho)
     const _avisosOferta = {};   // aguardando a oferta ativa encerrar (amarelo)
     for (const a of comAnuncio) {
@@ -64228,6 +64294,18 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
           const m = x.causa
             ? ('[' + x.causa + ']')
             : _msg.replace(/\b\d{6,}\b/g, '#');
+          // ★ v33k.2002: GUARDA UM EXEMPLO CONCRETO POR CAUSA.
+          // "35 anúncios num estado que não deixa alterar" não diz QUAIS, e o
+          // operador não tem por onde começar. Um exemplo com id, título e
+          // plataforma transforma um número numa tarefa.
+          if (!_exemploCausa[m]) {
+            _exemploCausa[m] = {
+              anuncioId: x.anuncioId || null,
+              titulo: (x.titulo || x.nomeAnuncio || '').slice(0, 60),
+              mkt: x.marketplace || null,
+              loja: x.lojaNome || null,
+            };
+          }
           if (x.dados && x.dados.flashAtivaResidual) {
             aguardandoOferta++; avisoLinha++;
             _avisosOferta[m] = (_avisosOferta[m] || 0) + 1;
@@ -64236,10 +64314,13 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
             _motivosFalha[m] = (_motivosFalha[m] || 0) + 1;
           }
         });
+        // ★ v33k.2002: o estado vem do PLACAR, não de "houve pendência".
+        const _okLinha = (d.sucesso || 0);
+        const _estadoLinha = _okLinha === 0 ? 'erro' : (falhaLinha ? 'parcial' : 'ok');
         atualizarMassaProgress(feitos, comAnuncio.length,
-          a.nome + ' [' + a.sku + '] → ' + (d.sucesso || 0) + '/' + a.anuncios.length + ' anúncio(s)'
+          a.nome + ' [' + a.sku + '] → ' + _okLinha + '/' + a.anuncios.length + ' anúncio(s)'
           + (falhaLinha ? ' · ' + falhaLinha + ' pendente(s)' : '')
-          + (avisoLinha ? ' · ⏳ ' + avisoLinha + ' em oferta ativa' : ''), falhaLinha > 0);
+          + (avisoLinha ? ' · ' + avisoLinha + ' em oferta ativa' : ''), _estadoLinha);
       } catch (e) {
         feitos++; falhaAnuncios += a.anuncios.length;
         const m = String(e.message || 'erro de rede').slice(0, 160);
@@ -64264,21 +64345,28 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       // tudo. Causa que o mapa conhece vira aviso com o que fazer; causa NOVA
       // continua saindo inteira e em vermelho — senão um problema novo vira
       // "atenção" genérica e some.
-      const _res = _resumoCausasEstoque(_motivosFalha);
-      const linhas = _res.linhas.slice(0, 5).map((t, i) => '  ' + (i + 1) + '. ' + t);
-      const _sobra = _res.linhas.length > 5 ? ('\n\n  (+' + (_res.linhas.length - 5) + ' outro(s) motivo(s))') : '';
-      console.warn('[replicar massa] MOTIVOS:\n' + _res.linhas.join('\n'));
+      const _res = _resumoCausasEstoque(_motivosFalha, _exemploCausa);
+      const linhas = _res.linhas.slice(0, 6);
+      const _sobra = _res.linhas.length > 6
+        ? ('<div style="font-size:12px;color:#6b7280">(+' + (_res.linhas.length - 6) + ' outro(s) motivo(s) — veja o console)</div>')
+        : '';
+      console.warn('[replicar massa] MOTIVOS:\n' + Object.keys(_motivosFalha).join('\n'));
       // ★ v33k.2001: O TÍTULO DIZIA QUE NADA ERA RECONHECIDO QUANDO QUASE TUDO ERA.
       // Na tela de 25/08, 4 dos 5 motivos tinham explicação e ação, e o título
       // era "Motivo não reconhecido". Um motivo novo NÃO pode calar os outros —
       // ele tem que aparecer, sem apagar o que a gente já sabe explicar.
       const _todosDesconhecidos = _res.temDesconhecida && _res.conhecidas === 0;
-      const _cab = ('O estoque interno já foi salvo. ' + falhaAnuncios
-        + ' anúncio(s) precisam de atenção antes de receber:')
+      const _cab = '<div style="font-size:13px;color:#334155;margin-bottom:12px">'
+        + '<b>' + okAnuncios + '</b> anúncio(s) receberam o estoque. '
+        + 'O estoque interno já está salvo — <b>' + falhaAnuncios + '</b> anúncio(s) precisam de atenção antes de receber.'
         + (_res.temDesconhecida
-          ? ('\n\n★ ' + _res.desconhecidas + ' motivo(s) o sistema ainda não sabe explicar — aparecem abaixo com o texto técnico.')
-          : '');
-      lcAlert(_cab + '\n\n' + linhas.join('\n\n') + _sobra, {
+          ? '<div style="margin-top:6px;color:#b91c1c">' + _res.desconhecidas
+            + ' motivo(s) o sistema ainda não sabe explicar — aparecem abaixo com o texto técnico.</div>'
+          : '')
+        + '</div>';
+      lcAlert('', {
+        html: _cab + linhas.join('') + _sobra,
+        largura: 620,
         tipo: _todosDesconhecidos ? 'perigo' : 'aviso',
         // ★ sem emoji na UI: o ícone é do componente (Lucide), não do texto.
         titulo: _todosDesconhecidos ? 'Motivo não reconhecido' : 'Anúncios que precisam de atenção',
@@ -71709,7 +71797,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2001-a-causa-e-a-chave';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2023-a-tela-conta-a-mesma-historia';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -88923,6 +89011,16 @@ ${JSON.stringify(metricas, null, 2)}`
           sub: 'Ligue as contas em que o sistema deve <strong>manter o estoque igual ao do painel</strong> (reconciliação periódica). Nas contas <strong>desligadas</strong>, o sistema nunca mexe sozinho no estoque, útil se você controla aquela loja por fora.',
           extra: { icone: 'hand', titulo: 'Alteração manual sempre reflete',
             sub: 'Quando você edita o estoque de um produto na mão, a nova quantidade vai para os anúncios vinculados na hora, <strong>em todas as contas</strong>, mesmo nas que estão desligadas aqui. Este controle afeta só a reconciliação automática.' },
+        },
+        // ★ v33k.2023: esta automação DEBITA ESTOQUE, e o padrão dela é
+        // OPT-IN: loja sem registro fica de fora. O texto precisa dizer isso,
+        // senão o vendedor lê o mesmo "ligue as contas" das outras e assume
+        // que o resto já está ligado.
+        baixa_venda_replicar: {
+          icone: 'package-minus', titulo: 'Dedução de estoque por conta',
+          sub: 'Ligue as contas em que a venda deve <strong>descontar o estoque</strong> do painel automaticamente e replicar a nova quantidade para os anúncios. Nas contas <strong>desligadas</strong>, a venda não mexe no estoque.',
+          extra: { icone: 'shield-alert', titulo: 'Aqui o padrão é ficar DE FORA',
+            sub: 'Diferente das outras automações, uma conta <strong>só participa se você ligar</strong>. Conta nova nunca começa a deduzir estoque sozinha — descontar o que não devia é caro de descobrir e pior de desfazer.' },
         },
         nf_automatica: {
           icone: 'file-check-2', titulo: 'Emissão automática por conta',
