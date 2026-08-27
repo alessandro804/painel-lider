@@ -51178,12 +51178,43 @@ REGRAS DURAS:
                 //   é exatamente o que vai pra Shopee, variação por variação.
                 const _mapaPromo = (typeof mapaPromoPorSkuParaReplicar === 'function')
                   ? mapaPromoPorSkuParaReplicar(novo) : { porSku: {}, tipico: null };
+                // ═══════════════════════════════════════════════════════════
+                // ★ v33k.2050: POR QUE A TAREFA NÃO NASCEU.
+                // ───────────────────────────────────────────────────────────
+                // 27/08: dois anúncios exportados pro TikTok, nenhuma linha
+                // nova em `tarefas_agendadas` e nada no log do handler. O
+                // handler está certo — ele nunca foi chamado.
+                //
+                // E este bloco não dizia nada ao decidir NÃO criar: sem régua
+                // e sem `_promo` herdado, ele simplesmente passava batido. O
+                // `catch` só fala quando alguma coisa LANÇA, e não lançar é
+                // justamente o caso.
+                //
+                // ★ Mesmo defeito que eu consertei no `[tiktok-promo]` horas
+                //   atrás: caminho de decisão sem rastro. A conferência já tem
+                //   `dupLogStep` na tela — passa a usar.
+                const _temRegua = !!(reguaResolvida
+                  && ((reguaResolvida.imediato != null && reguaResolvida.imediato > 0)
+                      || (Array.isArray(reguaResolvida.degraus) && reguaResolvida.degraus.length)));
+                const _nPromoHerdado = Object.keys((_mapaPromo && _mapaPromo.porSku) || {}).length;
+                if (!_temRegua && _nPromoHerdado === 0 && _mapaPromo.tipico == null) {
+                  dupLogStep('  ⓘ Sem preço promocional: nem régua preenchida, nem promoção '
+                    + 'herdada do anúncio de origem. Nenhuma tarefa de promoção foi criada.', 'info');
+                }
+                if (!itemId || itemId === '?') {
+                  dupLogStep('  ⚠ Sem itemId do canal: não dá pra criar a tarefa de promoção.', 'err');
+                }
+
                 if (reguaResolvida && itemId && itemId !== '?') {
                   const itensPromo = [];
                   const _base = (reguaResolvida.imediato != null && reguaResolvida.imediato > 0)
                     ? Number(reguaResolvida.imediato) : _mapaPromo.tipico;
                   if (_base != null && _base > 0) {
                     itensPromo.push({ itemId, preco: Number(_base), porSku: _mapaPromo.porSku });
+                  }
+                  if (!itensPromo.length) {
+                    dupLogStep('  ⓘ Régua veio sem valor imediato e o anúncio de origem não tinha '
+                      + 'promoção: nada a aplicar agora (degraus futuros, se houver, seguem).', 'info');
                   }
                   if (itensPromo.length > 0) {
                     await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
@@ -51193,7 +51224,7 @@ REGRAS DURAS:
                       params:{ lojaIdBanco: lojaIdBanco, marketplace: lojaDestino.marketplace, itens: itensPromo }
                     }) });
                     const _nSku = Object.keys(_mapaPromo.porSku || {}).length;
-                    dupLogStep(`  💰 Promoção aplicada` +
+                    dupLogStep(`  💰 Promoção enviada pro ${lojaDestino.marketplace}` +
                       (_nSku ? ` em ${_nSku} variação(ões) pelo preço de cada uma` : '') +
                       ` (reserva R$ ${Number(itensPromo[0].preco).toFixed(2)})`, 'ok');
                   }
@@ -51214,6 +51245,9 @@ REGRAS DURAS:
                 } else {
                   const promoCopia = (typeof precoPromoParaReplicar === 'function')
                     ? precoPromoParaReplicar(novo) : null;
+                  if (promoCopia == null) {
+                    dupLogStep('  ⓘ O anúncio de origem não tem preço promocional pra replicar.', 'info');
+                  }
                   if (promoCopia != null && itemId && itemId !== '?') {
                     // mesmo mapa por SKU do caminho da régua
                     await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
@@ -72497,7 +72531,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2049-faixa-redonda-nos-quatro';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2050-porque-nao-nasceu';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
