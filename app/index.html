@@ -46749,11 +46749,58 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   rolável, sem a coluna do ícone comendo 56px da grade. E 920px: com
     //   a largura finalmente sendo aplicada (o seletor estava errado), cabem
     //   6 ladrilhos por linha em vez de 2.
-    lcAlert(h, {
-      tipo: 'info', titulo: 'Imagens · ' + escapeHtml((linha.nome || '').slice(0, 40)),
-      largura: 920, html: true, painel: true,
-      botoes: [{ texto: 'Fechar', primario: true, onclick: 'emFotoFechar()' }],
-    });
+    // ═══════════════════════════════════════════════════════════════════
+    // ★ v33k.2039: REDESENHAR NÃO É REABRIR.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 27/08: "as setas que mudam as imagens de lugar não estão
+    // funcionando direito, parece que sobrepõe embaixo do modal atual um
+    // outro modal com a alteração da sequência".
+    //
+    // Está exatamente certo, e a descrição dele é o diagnóstico. Toda ação
+    // desta tela (seta, estrela, lixeira, arrastar — e o `Gerar outra capa`
+    // que EU liguei aqui na v33k.2037) terminava chamando `emFotosDesenhar`,
+    // que terminava chamando `lcAlert`. E `_lcModalAbrir` (index.html:92735),
+    // desde a v33k.1835, ENFILEIRA quando já existe modal na tela:
+    //
+    //     if (naTela) { _lcModalFila.push({ cfg, resolve }); return; }
+    //
+    // Ou seja: a reordenação acontecia no modelo, mas o desenho novo ia para
+    // a FILA — aparecia só depois de fechar o atual. Dois modais, um por
+    // trás do outro, e a impressão de que a seta não funciona.
+    //
+    // ★ A fila está certa; quem estava errado era eu, usando `lcAlert` como
+    //   se fosse um `render`. Abrir é um evento; redesenhar é outro. Com o
+    //   modal já na tela, troca o CONTEÚDO no lugar e pronto.
+    // ★ `typeof document` antes de usar: a suíte `qa_fotos_sequencia` executa
+    //   este desenhador num sandbox SEM DOM, pra medir o HTML que ele produz.
+    //   Sem esta guarda ele estoura lá — e foi o que aconteceu na primeira
+    //   versão desta correção. Fora do navegador não há modal aberto, então
+    //   "não sei" e "não está aberto" dão o mesmo caminho: abrir.
+    const _abertoAgora = (() => {
+      if (typeof document === 'undefined') return false;
+      const ov = document.getElementById('lcModalOverlay');
+      return !!(ov && ov.classList.contains('aberto') && ov.dataset.emFotos === '1');
+    })();
+    if (_abertoAgora) {
+      const msg = document.getElementById('lcModalMsg');
+      if (msg) {
+        msg.innerHTML = h;
+        if (window.lcHydrateIcons) window.lcHydrateIcons(msg);
+        else if (window._hidratarIcones) window._hidratarIcones(msg);
+      }
+    } else {
+      lcAlert(h, {
+        tipo: 'info', titulo: 'Imagens · ' + escapeHtml((linha.nome || '').slice(0, 40)),
+        largura: 920, html: true, painel: true,
+        botoes: [{ texto: 'Fechar', primario: true, onclick: 'emFotoFechar()' }],
+      });
+      // marca o overlay como sendo ESTE modal: sem isso, um `lcAlert` de
+      // outra tela que ficasse aberto receberia o innerHTML das fotos.
+      if (typeof document !== 'undefined') setTimeout(() => {
+        const ov = document.getElementById('lcModalOverlay');
+        if (ov) ov.dataset.emFotos = '1';
+      }, 20);
+    }
     // ★ a faixa nasce escondida e só acende se o servidor disser que pode.
     //   `_capaIaLiberado` é preenchido quando a conferência abre; se ainda não
     //   voltou, pergunta agora. Nulo (não sei) mantém escondido.
@@ -46844,6 +46891,11 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.emFotoAdicionar = emFotoAdicionar;
 
   function emFotoFechar() {
+    // ★ v33k.2039: solta a marca do overlay. Presa, o próximo `lcAlert`
+    //   qualquer seria tratado como "o modal de fotos ainda está aberto" e
+    //   receberia o innerHTML das fotos por cima da mensagem dele.
+    const _ov = (typeof document !== 'undefined') && document.getElementById('lcModalOverlay');
+    if (_ov) delete _ov.dataset.emFotos;
     if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
     emDesenharTabela();
   }
@@ -72419,7 +72471,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2037-regerar-uma';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2039-redesenhar-nao-e-reabrir';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
