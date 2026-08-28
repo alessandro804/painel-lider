@@ -72748,7 +72748,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2057-fila-escolhida';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2060-dentro-do-card';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -89965,8 +89965,22 @@ ${JSON.stringify(metricas, null, 2)}`
       el.innerHTML = '<div style="padding:20px;color:#b91c1c">' + escapeHtml((d && d.erro) || 'não consegui carregar') + '</div>';
       return;
     }
-    // catálogo de títulos: vem da sugestão (é a única fonte com nome e foto)
+    // catálogo de títulos. Duas fontes, e a ORDEM importa:
+    //  1) a sugestão (nosso banco de vendas) entra primeiro;
+    //  2) o `catalogo` da Shopee sobrescreve, porque é a capa e o título que o
+    //     comprador vê AGORA. A foto do nosso banco pode ser de uma venda
+    //     antiga, anterior a uma troca de capa.
     (d.sugestao || []).forEach(function (p) { _impFila.catalogo[String(p.itemId)] = p; });
+    Object.keys(d.catalogo || {}).forEach(function (k) {
+      const atual = _impFila.catalogo[k] || {};
+      const novo = d.catalogo[k] || {};
+      _impFila.catalogo[k] = Object.assign({}, atual, {
+        itemId: novo.itemId, status: novo.status,
+        titulo: novo.titulo || atual.titulo || null,
+        foto: novo.foto || atual.foto || null,
+      });
+    });
+    _impFila.noArDetalhe = d.noAr || [];
     _impFila.escolhidos = (d.fila || []).map(String);
     _impFila.noAr = (d.noAr || []).map(function (i) { return String(i.itemId); });
     _impFila.dados = d;
@@ -89990,15 +90004,67 @@ ${JSON.stringify(metricas, null, 2)}`
       const n = (d.noAr || []).length;
       const teto = d.tetoSlots || 5;
       const cheio = n >= teto;
-      h += '<div style="background:' + (cheio ? '#fef2f2' : '#f0fdf4') + ';border:1px solid ' + (cheio ? '#fecaca' : '#bbf7d0') +
+      // ★ com a lotação cheia, o número que ele quer é QUANDO abre — e a
+      //   Shopee informa (medido em 27/08: `cool_down_second` é mesmo o tempo
+      //   que falta). "Sem vaga" sozinho parece defeito; "abre em 1h18" é
+      //   informação. O menor cronômetro é o da próxima vaga.
+      let quando = '';
+      if (cheio) {
+        const secs = (d.noAr || []).map(function (i) { return i.coolDownSecond; })
+          .filter(function (v) { return v != null && v >= 0; });
+        if (secs.length) {
+          const menor = Math.min.apply(null, secs);
+          const hh = Math.floor(menor / 3600), mm = Math.round((menor % 3600) / 60);
+          quando = ' A próxima vaga abre em ' + (hh ? hh + 'h' + (mm < 10 ? '0' : '') + mm : mm + ' min') + '.';
+        }
+      }
+      h += '<div style="background:' + (cheio ? '#fffbeb' : '#f0fdf4') + ';border:1px solid ' + (cheio ? '#fde68a' : '#bbf7d0') +
         ';border-radius:10px;padding:12px;font-size:13px;margin-bottom:12px">' +
         '<b>' + n + ' de ' + teto + ' impulsionando agora</b> · ' + Math.max(0, teto - n) + ' vaga(s)' +
-        (cheio ? '<br>Sem vaga no momento. O impulsionar automático da própria Shopee também usa estes slots, então isso é esperado e não é erro.' : '') +
+        (cheio ? '<br>Sem vaga no momento.' + quando + ' O impulsionar automático da própria Shopee também usa estes slots, então isso é esperado e não é erro.' : '') +
         '</div>';
     }
 
+    // ── ★ OS 5 QUE ESTAO NO AR, COM FOTO ─────────────────────────────
+    // A previa ampliada ao passar o mouse e automatica: o painel liga o zoom
+    // em qualquer <img> QUADRADA de 24 a 96px com src http (v33k.1523). Por
+    // isso a miniatura e 48x48 e leva `lc-foto-zoom` — nao precisa de handler
+    // proprio, e nao pode fugir desse formato ou o recurso some sem aviso.
+    if ((d.noAr || []).length) {
+      h += '<div style="font-size:13px;font-weight:600;margin-bottom:6px">No ar agora (' + (d.noAr || []).length + ')</div>' +
+        '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:14px">';
+      (d.noAr || []).forEach(function (it, i) {
+        const id = String(it.itemId);
+        const p = _impFila.catalogo[id] || {};
+        const naFila = _impFila.escolhidos.indexOf(id) > -1;
+        const s2 = it.coolDownSecond;
+        let falta = '';
+        if (s2 != null && s2 >= 0) {
+          const hh = Math.floor(s2 / 3600), mm = Math.round((s2 % 3600) / 60);
+          falta = 'sai em ' + (hh ? hh + 'h' + (mm < 10 ? '0' : '') + mm : mm + ' min');
+        }
+        h += '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-top:' + (i ? '1px solid #f1f5f9' : 'none') + '">' +
+          _impMini(p.foto) +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+              escapeHtml(p.titulo || ('Anúncio ' + id)) + '</div>' +
+            '<div style="font-size:11px;color:#94a3b8">' + escapeHtml(falta) +
+              (naFila ? ' · <span style="color:#16a34a">na sua fila</span>'
+                      : ' · <span style="color:#b45309">fora da sua fila</span>') + '</div>' +
+          '</div>' +
+          (naFila ? '' : '<button class="auto-etapa-rodar" onclick="impPor(\'' + escapeHtml(id) + '\')"><span class="lc-ic" data-lucide="plus"></span> Pôr na fila</button>') +
+        '</div>';
+      });
+      h += '</div>';
+    }
+
     // ── a fila escolhida ─────────────────────────────────────────────
-    h += '<div style="font-size:13px;font-weight:600;margin-bottom:6px">Sua fila (' + _impFila.escolhidos.length + ')</div>';
+    h += '<div style="font-size:13px;font-weight:600;margin-bottom:2px">Sua fila (' + _impFila.escolhidos.length + ')</div>' +
+      '<div style="font-size:11px;color:#94a3b8;margin-bottom:6px">' +
+        (_impFila.escolhidos.length > 5
+          ? 'Mais de 5: os que não couberem esperam a vez. O rodízio anda sozinho, na ordem desta lista, e volta ao topo no fim.'
+          : 'Até 5 cabem ao mesmo tempo. A ordem desta lista é a ordem em que sobem.') +
+      '</div>';
     if (!_impFila.escolhidos.length) {
       h += '<div style="padding:14px;border:1px dashed #cbd5e1;border-radius:10px;color:#64748b;font-size:13px;margin-bottom:14px">' +
         'Nenhum anúncio escolhido. Enquanto a fila estiver vazia, esta loja não impulsiona nada.</div>';
@@ -90009,6 +90075,7 @@ ${JSON.stringify(metricas, null, 2)}`
         const noAr = _impFila.noAr.indexOf(id) > -1;
         h += '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-top:' + (i ? '1px solid #f1f5f9' : 'none') + '">' +
           '<span style="font-size:12px;color:#94a3b8;min-width:20px">' + (i + 1) + '</span>' +
+          _impMini(p.foto) +
           '<div style="flex:1;min-width:0">' +
             '<div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
               escapeHtml(p.titulo || ('Anúncio ' + id)) + '</div>' +
@@ -90035,6 +90102,7 @@ ${JSON.stringify(metricas, null, 2)}`
       h += '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">';
       fora.forEach(function (p, i) {
         h += '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-top:' + (i ? '1px solid #f1f5f9' : 'none') + '">' +
+          _impMini((_impFila.catalogo[String(p.itemId)] || {}).foto || p.foto) +
           '<div style="flex:1;min-width:0">' +
             '<div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.titulo || ('Anúncio ' + p.itemId)) + '</div>' +
             '<div style="font-size:11px;color:#94a3b8">' + p.unidades + ' vendidos' +
@@ -90051,6 +90119,70 @@ ${JSON.stringify(metricas, null, 2)}`
 
     el.innerHTML = h;
     if (window.lcHydrateIcons) { try { window.lcHydrateIcons(el); } catch (e) {} }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // AS TIRAS DA ABA CONTAS (v33k.2060)
+  // ─────────────────────────────────────────────────────────────────────
+  // Uma loja por vez, EM SERIE. Sao ate 22 contas e cada uma custa duas
+  // chamadas a Shopee; disparar as 22 juntas e o caminho mais curto pro rate
+  // limit — e a punicao por estourar cai no proximo cron, longe da causa.
+  //
+  // Cada tira preenche a si mesma. Se uma loja falhar, as outras continuam: a
+  // aba Contas serve pra ligar e desligar loja, e nao pode deixar de abrir
+  // porque uma credencial venceu.
+  async function _impCarregarTiras() {
+    const alvos = Array.prototype.slice.call(document.querySelectorAll('[data-imp-loja]'));
+    for (const el of alvos) {
+      if (!document.body.contains(el)) return;   // ele fechou o modal: para
+      const lojaId = el.getAttribute('data-imp-loja');
+      let d = null;
+      try {
+        d = await _automacoesFetch('/impulsionar_shopee_auto/fila?lojaId=' + encodeURIComponent(lojaId), { method: 'GET' });
+      } catch (e) { d = null; }
+      if (!document.body.contains(el)) return;
+
+      if (!d || !d.ok) {
+        el.innerHTML = '<span style="font-size:11px;color:#b45309">não consegui ler o que está no ar</span>';
+        continue;
+      }
+      if (d.erroNoAr) {
+        // ★ "nao consegui ler" NUNCA vira "nenhum impulsionando": zero
+        //   miniatura sugeriria 5 vagas numa loja que pode estar cheia.
+        el.innerHTML = '<span style="font-size:11px;color:#b45309">' + escapeHtml(d.erroNoAr) + '</span>';
+        continue;
+      }
+      const itens = d.noAr || [];
+      if (!itens.length) {
+        el.innerHTML = '<span style="font-size:11px;color:#94a3b8">nenhum anúncio impulsionado agora · 5 vagas livres</span>';
+        continue;
+      }
+      const cat = d.catalogo || {};
+      let t = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px">';
+      itens.forEach(function (it) {
+        const pp = cat[String(it.itemId)] || {};
+        const sec = it.coolDownSecond;
+        let tit = pp.titulo || ('Anúncio ' + it.itemId);
+        if (sec != null && sec >= 0) {
+          const hh = Math.floor(sec / 3600), mm = Math.round((sec % 3600) / 60);
+          tit += ' — sai em ' + (hh ? hh + 'h' + (mm < 10 ? '0' : '') + mm : mm + ' min');
+        }
+        t += '<span title="' + escapeHtml(tit) + '">' + _impMini(pp.foto) + '</span>';
+      });
+      t += '<span style="font-size:11px;color:#94a3b8;margin-left:2px">' + itens.length + ' de 5 no ar</span></div>';
+      el.innerHTML = t;
+    }
+  }
+
+  // Miniatura 48x48 QUADRADA com src http: e exatamente a forma que o zoom por
+  // hover reconhece sozinho (v33k.1523). `lc-foto-zoom` marca na mao pra nao
+  // depender so da medida. Sem foto vira um bloco cinza do MESMO tamanho, pra
+  // as linhas nao dancarem quando um anuncio nao tem capa.
+  function _impMini(foto) {
+    if (!foto) return '<div style="width:48px;height:48px;border-radius:8px;background:#f1f5f9;border:1px solid #e2e8f0;flex:0 0 auto"></div>';
+    return '<img class="lc-foto-zoom" src="' + escapeHtml(foto) + '" loading="lazy" ' +
+      'style="width:48px;height:48px;border-radius:8px;object-fit:cover;border:1px solid #e2e8f0;flex:0 0 auto" ' +
+      'onerror="this.outerHTML=\'<div style=&quot;width:48px;height:48px;border-radius:8px;background:#f1f5f9;border:1px solid #e2e8f0;flex:0 0 auto&quot;></div>\'">';
   }
 
   function impPor(id) {
@@ -90247,7 +90379,12 @@ ${JSON.stringify(metricas, null, 2)}`
           const qtd = (c.configLoja && Array.isArray(c.configLoja.fila)) ? c.configLoja.fila.length : 0;
           extra += '<div class="auto-conta-extra">' +
             (qtd ? qtd + ' anúncio(s) na fila' : '<strong>nenhum anúncio na fila ainda</strong>') +
-            ' · <a href="#" onclick="impAbrirFila(' + c.id + ');return false;">escolher</a></div>';
+            ' · <a href="#" onclick="impAbrirFila(' + c.id + ');return false;">escolher a fila</a></div>' +
+            // ★ as miniaturas do que esta impulsionando AGORA nesta loja.
+            //   Carregam DEPOIS que a lista aparece, uma loja por vez.
+            '<div class="auto-imp-tiras" data-imp-loja="' + c.id + '">' +
+              '<span style="font-size:11px;color:#94a3b8">carregando o que está no ar…</span>' +
+            '</div>';
         }
 
         // controle à direita: toggle (per-loja) OU badge estático (demais)
@@ -90279,6 +90416,7 @@ ${JSON.stringify(metricas, null, 2)}`
 
       body.innerHTML = html;
       if (window.lcHydrateIcons) { try { window.lcHydrateIcons(body); } catch (e) {} }
+      if (_autoModalTipo === 'impulsionar_shopee_auto') _impCarregarTiras();
     } catch (e) {
       body.innerHTML = '<div class="auto-empty"><span class="lc-ic" data-lucide="alert-triangle"></span><div>Não foi possível carregar</div><div class="auto-empty-sub">' + escapeHtml(e.message) + '</div></div>';
       if (window.lcHydrateIcons) { try { window.lcHydrateIcons(body); } catch (e) {} }
