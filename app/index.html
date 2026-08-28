@@ -19307,12 +19307,14 @@ window.LC_SVG = {
                  poluía a lista e obrigava a clicar pedido por pedido. -->
             <button class="lc-btn lc-btn--sm" id="expBtnImpresso" onclick="expAcaoImpresso()" disabled
               style="display:none;background:#f59e0b;color:#fff"></button>
-            <!-- seletor do rodapé da etiqueta (só relevante na etapa Imprimir) -->
-            <div id="expRodapeSel" style="display:none;align-items:center;gap:8px;font-size:12px;color:var(--lc-muted);border-left:1px solid var(--lc-border);padding-left:10px">
-              <span>Rodapé:</span>
-              <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="expRodape" value="variacao" checked onchange="expSetRodape('variacao')"> variação</label>
-              <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="expRodape" value="sku" onchange="expSetRodape('sku')"> SKU</label>
-            </div>
+            <!-- ★ v33k.2061: O SELETOR DE RODAPÉ SAIU DA BARRA.
+                 Ele ficava escondido numa barra de ações, longe do momento de
+                 imprimir, e a escolha era GLOBAL e persistente: alguém mexia
+                 uma vez e todas as impressões seguintes saíam assim, inclusive
+                 semanas depois, sem nada na tela lembrando disso. Era a
+                 dificuldade que o pessoal estava relatando.
+                 Agora a pergunta acontece NO ATO, no modal de antes de gerar
+                 (`_expPerguntarRodape`), onde ela é impossível de não ver. -->
             </div><!-- /expGrupoSel -->
             <!-- ★ v33k.1937: A BARRA DE BUSCA MORA AQUI, na barra que ja existia.
                  A v33k.1936 fiou a busca no #pedBusca, que vive em `pedidosScreen`
@@ -19327,7 +19329,18 @@ window.LC_SVG = {
               <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBuscaLimpar" onclick="expLimparBusca()" title="Limpar a busca" style="display:none;padding:4px 8px"><span class="lc-ic" data-size="sm" data-lucide="x"></span></button>
             </div>
             <div style="flex:1"></div>
-            <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBtnOrdem" onclick="expToggleOrdem()" title="Alternar ordem por prazo de envio"><span class="lc-ic" data-lucide="arrow-up-down"></span> Mais recentes</button>
+            <!-- ★ v33k.2061: era um BOTAO que ciclava entre 3 ordens. Com 5, ciclar
+                 vira adivinhacao: pra chegar em "Ultimos impressos" seriam ate 4
+                 cliques as cegas, e a pessoa nao tem como saber o que existe sem
+                 clicar tudo. Menu mostra as opcoes de uma vez. -->
+            <select class="lc-input lc-input--sm" id="expSelOrdem" onchange="expTrocarOrdem(this.value)"
+              title="Ordem da lista" style="max-width:190px;font-size:12px">
+              <option value="sku">Por SKU</option>
+              <option value="recentes">Prazo mais longe</option>
+              <option value="antigos">Mais urgentes</option>
+              <option value="impressos">Últimos impressos</option>
+              <option value="programados">Últimos programados</option>
+            </select>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" id="expBtnAtrasados" onclick="expToggleAtrasados()" title="Mostrar só os pedidos com prazo de envio vencido"><span class="lc-ic" data-lucide="alarm-clock"></span> Só atrasados</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expAbrirHistorico()" title="Ver o histórico de etiquetas impressas"><span class="lc-ic" data-lucide="history"></span> Histórico</button>
             <button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="expSemear()" title="Recarrega os pedidos pendentes atuais para a fila"><span class="lc-ic" data-lucide="refresh-cw"></span> Sincronizar</button>
@@ -72748,7 +72761,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2060-dentro-do-card';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2061-rodape-no-ato';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -83440,14 +83453,11 @@ ${JSON.stringify(metricas, null, 2)}`
     _expEstadoSel = _expEstadoPadrao(et);
     _expSel.clear();
     _expPagina = 1;                      // v33k.402: troca de etapa → página 1
-    // seletor de rodapé (SKU/variação) aparece em TODAS as etapas que imprimem
-    // etiqueta: 3 (Imprimir), 4 (Atendidos/Reimprimir) e 8 (Devolvidos).
+    // v33k.2061: o seletor de rodapé saiu daqui — a pergunta agora acontece no
+    // modal de antes de gerar, em TODA impressão. O bloco defensivo abaixo fica
+    // porque `expRodapeSel` pode voltar num tema antigo em cache do navegador.
     const rod = document.getElementById('expRodapeSel');
-    if (rod) {
-      rod.style.display = [3, 4, 8].includes(et) ? 'flex' : 'none';
-      const modoAtual = getModoEtiqueta();
-      rod.querySelectorAll('input[name="expRodape"]').forEach(r => { r.checked = (r.value === modoAtual); });
-    }
+    if (rod) rod.style.display = 'none';
     // desenha já com o que temos (resposta instantânea)…
     expRenderEtapas(); expRenderChips(); expCarregarLista({ forcar: true });
     // …e rebusca os contadores frescos pra o card bater com a lista.
@@ -84350,14 +84360,21 @@ ${JSON.stringify(metricas, null, 2)}`
   // guarda a escolha do rodapé da etiqueta (variação=padrão | sku), GLOBAL e
   // PERSISTENTE (v33k.392): vale pra TODAS as impressões e lembra entre sessões.
   window._LC_MODO_ETIQUETA_KEY = 'lc_modo_etiqueta';
+  // ★ v33k.2061: O PADRAO E SKU. Antes era 'variacao', e o backend tinha SEIS
+  //   lugares decidindo o padrao — dois deles ja diziam SKU (ML e TikTok). O
+  //   mesmo pedido saia com rodape diferente conforme o canal. Agora o backend
+  //   tem UM lugar (`util/modo-rodape.js`) e a tela concorda com ele.
+  //
+  //   O valor guardado continua servindo pra PRE-MARCAR a opcao no modal, nao
+  //   pra decidir sozinho: quem decide e o clique dele, toda vez.
   function getModoEtiqueta() {
     try {
       const v = localStorage.getItem(window._LC_MODO_ETIQUETA_KEY);
-      return (v === 'sku') ? 'sku' : 'variacao';
-    } catch (_) { return window._expModoRodape === 'sku' ? 'sku' : 'variacao'; }
+      return (v === 'variacao') ? 'variacao' : 'sku';
+    } catch (_) { return window._expModoRodape === 'variacao' ? 'variacao' : 'sku'; }
   }
   function setModoEtiqueta(m) {
-    const modo = (m === 'sku') ? 'sku' : 'variacao';
+    const modo = (m === 'variacao') ? 'variacao' : 'sku';
     window._expModoRodape = modo;
     try { localStorage.setItem(window._LC_MODO_ETIQUETA_KEY, modo); } catch (_) {}
     // sincroniza todos os radios da tela (podem existir em várias etapas)
@@ -84365,6 +84382,96 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window._expModoRodape = getModoEtiqueta();
   function expSetRodape(m) { setModoEtiqueta(m); }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // A PERGUNTA DO RODAPÉ, NO ATO (v33k.2061)
+  // ─────────────────────────────────────────────────────────────────────
+  // Abre SEMPRE antes de gerar etiqueta, com qualquer quantidade. Devolve
+  // 'sku' | 'variacao', ou `null` se ele fechar/cancelar.
+  //
+  // ★ POR QUE SEMPRE, E NÃO "SÓ QUANDO FOR MUITO". A escolha antiga era
+  //   global e persistente: alguém marcava uma vez e todas as impressões
+  //   seguintes saíam assim, por semanas, sem nada na tela lembrando. Um modal
+  //   que só aparece às vezes teria o mesmo problema nas vezes em que não
+  //   aparece — e pior, ensinaria que "quando não perguntou, é o de sempre",
+  //   que é exatamente a suposição que está custando caro hoje.
+  //
+  // ★ CANCELAR TEM QUE CANCELAR DE VERDADE. Fechar o modal não pode cair no
+  //   padrão e imprimir mesmo assim: seriam etiquetas erradas geradas por um
+  //   gesto de desistência. Por isso `null` e o chamador aborta.
+  //
+  // ★ NÃO É `lcAlert`. Já se descobriu (leva 2039) que ele ENFILEIRA quando já
+  //   há modal na tela. Este usa o mesmo overlay do resto e resolve a Promise.
+  function _expPerguntarRodape(qtd) {
+    return new Promise(function (resolver) {
+      const pre = getModoEtiqueta();     // pré-marca a última escolha
+      const ID = 'expRodapeModal';
+      const anterior = document.getElementById(ID);
+      if (anterior && anterior.parentNode) anterior.parentNode.removeChild(anterior);
+
+      const cx = document.createElement('div');
+      cx.id = ID;
+      cx.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.55);'
+        + 'display:flex;align-items:center;justify-content:center;padding:16px';
+
+      const op = function (valor, titulo, exemplo, icone) {
+        const marcado = (valor === pre);
+        return '<button type="button" data-rod="' + valor + '" style="' +
+          'display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:14px;' +
+          'border:2px solid ' + (marcado ? '#16a34a' : '#e2e8f0') + ';background:' + (marcado ? '#f0fdf4' : '#fff') + ';' +
+          'border-radius:12px;cursor:pointer;margin-bottom:10px">' +
+          '<span class="lc-ic" data-lucide="' + icone + '" style="flex:0 0 auto"></span>' +
+          '<span style="flex:1;min-width:0">' +
+            '<span style="display:block;font-size:14px;font-weight:600;color:#0f172a">' + titulo +
+              (marcado ? ' <span style="font-size:11px;color:#16a34a;font-weight:600">· última usada</span>' : '') + '</span>' +
+            '<span style="display:block;font-size:12px;color:#64748b;margin-top:2px">' + exemplo + '</span>' +
+          '</span></button>';
+      };
+
+      cx.innerHTML = '<div style="background:#fff;border-radius:16px;max-width:460px;width:100%;' +
+        'box-shadow:0 20px 50px rgba(0,0,0,.25);overflow:hidden">' +
+        '<div style="padding:16px 18px;border-bottom:1px solid #f1f5f9">' +
+          '<div style="font-size:16px;font-weight:700;color:#0f172a">O que vai no rodapé da etiqueta?</div>' +
+          '<div style="font-size:12px;color:#64748b;margin-top:2px">' +
+            (qtd > 1 ? qtd + ' etiquetas serão geradas' : '1 etiqueta será gerada') + '</div>' +
+        '</div>' +
+        '<div style="padding:16px 18px 6px">' +
+          op('sku', 'SKU', 'Ex.: CHN-4521-PRT-38 — o código que você usa na conferência', 'hash') +
+          op('variacao', 'Título + Variação', 'Ex.: Chinelo Slide Conforto — Preto · 38', 'type') +
+        '</div>' +
+        '<div style="padding:6px 18px 16px;display:flex;gap:8px;justify-content:flex-end">' +
+          '<button type="button" data-rod-cancelar="1" style="padding:9px 14px;border:1px solid #e2e8f0;' +
+            'background:#fff;border-radius:9px;font-size:13px;cursor:pointer;color:#475569">Cancelar</button>' +
+        '</div></div>';
+
+      let respondido = false;
+      const fechar = function (valor) {
+        if (respondido) return;
+        respondido = true;
+        document.removeEventListener('keydown', aoTeclar);
+        if (cx.parentNode) cx.parentNode.removeChild(cx);
+        resolver(valor);
+      };
+      const aoTeclar = function (e) { if (e.key === 'Escape') fechar(null); };
+
+      cx.addEventListener('click', function (e) {
+        // clique no fundo cancela; dentro da caixa, não
+        if (e.target === cx) { fechar(null); return; }
+        const cancelar = e.target.closest ? e.target.closest('[data-rod-cancelar]') : null;
+        if (cancelar) { fechar(null); return; }
+        const alvo = e.target.closest ? e.target.closest('[data-rod]') : null;
+        if (!alvo) return;
+        const escolhido = alvo.getAttribute('data-rod');
+        // guarda pra pré-marcar da próxima vez — NÃO pra pular a pergunta
+        setModoEtiqueta(escolhido);
+        fechar(escolhido);
+      });
+      document.addEventListener('keydown', aoTeclar);
+      document.body.appendChild(cx);
+      if (window.lcHydrateIcons) { try { window.lcHydrateIcons(cx); } catch (e) {} }
+    });
+  }
+  window._expPerguntarRodape = _expPerguntarRodape;
 
   // v33k.1152: a barra de ações (#expAcoes) contém o próprio checkbox
   // "Selecionar todos" + os botões de massa. A visibilidade dela deve depender de
@@ -84613,7 +84720,24 @@ ${JSON.stringify(metricas, null, 2)}`
   }
 
   // v33k.401: cicla a ordenação recentes → antigos → sku → recentes...
+  // ★ v33k.2061: as ordens que a tela conhece. A lista mora AQUI e o backend
+  //   tem a dela; se as duas discordarem, a tela pede uma ordem que o backend
+  //   ignora em silencio e volta pro padrao — e o usuario ve a lista nao mudar
+  //   ao escolher. O `qa_ordem_expedicao.js` compara as duas listas.
+  const _EXP_ORDENS = ['sku', 'recentes', 'antigos', 'impressos', 'programados'];
+
+  function expTrocarOrdem(valor) {
+    if (_EXP_ORDENS.indexOf(valor) < 0) return;
+    _expOrdem = valor;
+    _expPagina = 1;                      // muda ordem → volta pra página 1
+    _expAtualizarBotoesFiltro();
+    expCarregarLista();
+  }
+  window.expTrocarOrdem = expTrocarOrdem;
+
   function expToggleOrdem() {
+    // v33k.2061: mantido pra quem ainda tiver o botao antigo em cache. O
+    // caminho novo e `expTrocarOrdem`, com o valor explicito.
     _expOrdem = _expOrdem === 'recentes' ? 'antigos' : (_expOrdem === 'antigos' ? 'sku' : 'recentes');
     _expPagina = 1;                      // v33k.402: muda ordem → volta pra página 1
     _expAtualizarBotoesFiltro();
@@ -84628,13 +84752,11 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   // atualiza o visual dos botões de ordem/atrasados conforme o estado atual.
   function _expAtualizarBotoesFiltro() {
+    const sel = document.getElementById('expSelOrdem');
+    if (sel && sel.value !== _expOrdem) sel.value = _expOrdem;
+    // o botao antigo pode sobreviver num tema em cache: mantem coerente
     const bo = document.getElementById('expBtnOrdem');
-    if (bo) {
-      const lbl = _expOrdem === 'recentes' ? '↕ Mais recentes' : (_expOrdem === 'antigos' ? '↕ Mais urgentes' : '↕ Por SKU');
-      bo.textContent = lbl;
-      bo.classList.toggle('lc-btn--primary', _expOrdem === 'sku');
-      bo.classList.toggle('lc-btn--ghost', _expOrdem !== 'sku');
-    }
+    if (bo) bo.style.display = 'none';
     const ba = document.getElementById('expBtnAtrasados');
     if (ba) {
       ba.classList.toggle('lc-btn--primary', _expSoAtrasados);
@@ -84758,6 +84880,18 @@ ${JSON.stringify(metricas, null, 2)}`
   // impedir o segundo clique, que era o que gerava etiqueta repetida.
   async function expAvancar(orderSns, acao, origem) {
     if (!orderSns || !orderSns.length) return;
+
+    // ★ v33k.2061: A PERGUNTA VEM ANTES DE QUALQUER COISA.
+    //   Antes de travar botão, antes de abrir overlay, antes de chamar a rede.
+    //   Se ele cancelar, a tela tem que ficar EXATAMENTE como estava — e a
+    //   forma barata de garantir isso é não ter mexido em nada ainda.
+    //   `programar` não imprime nada, então não pergunta.
+    let modoEscolhido = null;
+    if (acao === 'gerar_etiqueta') {
+      modoEscolhido = await _expPerguntarRodape(orderSns.length);
+      if (!modoEscolhido) return;   // cancelou: nada foi tocado
+    }
+
     const lojas = expLojasSelecionadas();
     const btn = document.getElementById('expBtnMassa');
     const labelOrig = btn ? btn.textContent : '';
@@ -84780,8 +84914,11 @@ ${JSON.stringify(metricas, null, 2)}`
       btnLinha.style.cursor = '';
       btnLinha.innerHTML = labelLinha;
     };
-    // modo do rodapé da etiqueta (guardado no seletor da própria tela)
-    const modo = getModoEtiqueta();
+    // ★ o modo vem da ESCOLHA DELE no modal, não de um estado guardado. O
+    //   `getModoEtiqueta()` só entra no caminho de `programar`, que não gera
+    //   etiqueta e portanto não perguntou — e mesmo ali o backend hoje resolve
+    //   o padrão sozinho (`util/modo-rodape.js`).
+    const modo = modoEscolhido || getModoEtiqueta();
 
     // ═══════════════════════════════════════════════════════════════════
     // v33k.1554: O AVISO ABRE AGORA, NÃO SÓ QUANDO VEM jobId.
