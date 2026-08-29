@@ -1802,6 +1802,45 @@
   // 8 de 9 pedidos em etapa 4 SEM impresso_em (a etiqueta saiu por fora e o
   // campo nunca foi carimbado). A v33k.581 passa a gravar, mas os antigos
   // continuam sem, e fingir uma data seria pior que admitir a lacuna.
+  // ═══════════════════════════════════════════════════════════════════════
+  // AS NOTAS DO PEDIDO, LADO A LADO (v33k.2089)
+  // ─────────────────────────────────────────────────────────────────────
+  // O pedido mostrava UM número de NF — o da venda, ou pior, o da devolução
+  // mais recente. Com isso, 343 notas no mesmo pedido passaram semanas sem
+  // ninguém ver. Agora aparecem todas, e cada uma diz o que É.
+  //
+  // ★ O TIPO VEM DO XML (`tpNF`/`finNFe`), não da ordem nem do nome. Foi
+  //   inferir por posição que produziu o laço.
+  function _dpNotasDoPedido(notas) {
+    if (!Array.isArray(notas) || notas.length < 2) return '';   // 1 nota: nada a comparar
+    const rotulo = { venda: 'Venda', devolucao: 'Devolução', outra: 'Outra', desconhecida: '?' };
+    const cor = { venda: '#0f172a', devolucao: '#b45309', outra: '#475569', desconhecida: '#94a3b8' };
+    const nDev = notas.filter(n => n.tipo === 'devolucao' && n.status === 'autorizada').length;
+
+    let h = '<div style="margin-top:14px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">' +
+      '<div style="padding:8px 10px;background:#f8fafc;font-size:12px;font-weight:700;border-bottom:1px solid #e2e8f0">' +
+        'Notas deste pedido (' + notas.length + ')' +
+        // ★ mais de uma devolução autorizada é anomalia — dizer isso na cara
+        //   é o que faltava pra o problema aparecer sem ninguém procurar.
+        (nDev > 1 ? '<span style="color:#b91c1c;font-weight:700"> · ' + nDev
+          + ' devoluções autorizadas: isso não é normal</span>' : '') +
+      '</div>';
+    notas.forEach((n, i) => {
+      const canc = n.status === 'cancelada';
+      h += '<div style="display:flex;align-items:center;gap:10px;padding:7px 10px;font-size:12px;' +
+        'border-top:' + (i ? '1px solid #f1f5f9' : 'none') + (canc ? ';opacity:.55' : '') + '">' +
+        '<span style="min-width:78px;font-weight:600;color:' + (cor[n.tipo] || '#475569') + '">' +
+          (rotulo[n.tipo] || '?') + '</span>' +
+        '<span style="min-width:96px">nº ' + escapeHtml(n.numero) + ' / série ' + escapeHtml(n.serie) + '</span>' +
+        '<span style="min-width:88px;color:' + (canc ? '#b91c1c' : '#16a34a') + '">' + escapeHtml(n.status) + '</span>' +
+        '<span style="flex:1;color:#64748b">' + (n.em ? new Date(n.em).toLocaleString('pt-BR') : '') + '</span>' +
+        '<span style="color:#64748b">' + (n.valor != null
+          ? Number(n.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '') + '</span>' +
+      '</div>';
+    });
+    return h + '</div>';
+  }
+
   function _dpLinhaTempo(lt) {
     if (!lt) return '';
     const fmt = (iso) => {
@@ -2100,7 +2139,7 @@
         }
       } catch (_) { /* resumo é extra: nunca bloqueia o modal */ }
 
-      el.innerHTML = faixaPedido + faixaEmpresa + blocoResumo + faixaCorrecao + faixaAviso + blocoProdutos + blocoDesconto + blocoDest + _dpLinhaTempo(data.linhaTempo) + rodape;
+      el.innerHTML = faixaPedido + faixaEmpresa + blocoResumo + faixaCorrecao + faixaAviso + blocoProdutos + blocoDesconto + blocoDest + _dpNotasDoPedido(data.notasDoPedido) + _dpLinhaTempo(data.linhaTempo) + rodape;
       _hidratarIcones(el);
       _dpRenderProdutos();      // v33k.1166: monta a tabela editável de produtos
       _dpAtualizarTotais();     // pinta subtotal/total já na abertura
@@ -15993,6 +16032,54 @@ window.LC_SVG = {
   .lc-block-pill { font-size: var(--lc-fs-xs); font-weight: 700; color: var(--lc-primary-text); background: var(--lc-primary-soft); padding: 3px 9px; border-radius: 999px; }
   .lc-block-empty { font-size: var(--lc-fs-sm); color: var(--lc-muted); text-align: center; padding: 20px 0; }
 
+
+  /* ── MAPA DE VENDAS POR ESTADO (v33k.2092) ────────────────────────────
+     A escala de cor sai da paleta esmeralda do sistema. Seis degraus, do
+     quase branco ao verde escuro. Estado SEM venda no periodo NAO recebe
+     nenhum degrau: fica com --lc-uf-vazio (cinza claro), pra nao virar
+     "vendeu pouquinho" no olho de quem le. Zero e zero. */
+  :root {
+    --lc-uf-0: #ecfdf5;
+    --lc-uf-1: #d1fae5;
+    --lc-uf-2: #a7e8c8;
+    --lc-uf-3: #6ec99f;
+    --lc-uf-4: #34a373;
+    --lc-uf-5: #10b981;
+    --lc-uf-vazio: #f3f4f6;
+  }
+  .lc-mapa-wrap { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 18px; align-items: start; }
+  .lc-mapa-svg { position: relative; }
+  .lc-mapa-svg svg { width: 100%; height: auto; display: block; max-height: 380px; }
+  .lc-mapa-svg svg path {
+    fill: var(--lc-uf-vazio);
+    stroke: var(--lc-surface); stroke-width: 1; stroke-linejoin: round;
+    transition: fill .18s ease, opacity .18s ease;
+  }
+  .lc-mapa-svg svg path.tem-venda { cursor: pointer; }
+  .lc-mapa-svg svg path.tem-venda:hover { opacity: .78; }
+  .lc-mapa-svg svg path.destacado { stroke: var(--lc-primary-text); stroke-width: 1.6; }
+  .lc-mapa-legenda { display: flex; align-items: center; gap: 4px; margin-top: 8px; font-size: 10.5px; color: var(--lc-muted); }
+  .lc-mapa-legenda i { display: inline-block; width: 20px; height: 9px; border-radius: 2px; border: 1px solid var(--lc-border); }
+  .lc-mapa-rank { min-width: 0; }
+  .lc-uf-sigla {
+    width: 30px; height: 24px; flex-shrink: 0; border-radius: 6px;
+    background: var(--lc-surface-2); color: var(--lc-ink-2);
+    font-size: 11px; font-weight: 800; letter-spacing: .3px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  /* tooltip do mapa: segue o cursor, sem depender de biblioteca */
+  .lc-mapa-tip {
+    position: fixed; z-index: 9999; pointer-events: none;
+    background: var(--lc-ink); color: #fff; font-size: 11.5px; line-height: 1.4;
+    padding: 7px 10px; border-radius: 7px; box-shadow: 0 4px 14px rgba(0,0,0,.18);
+    max-width: 220px; white-space: nowrap;
+  }
+  .lc-mapa-tip b { font-weight: 700; }
+  @media (max-width: 860px) {
+    .lc-mapa-wrap { grid-template-columns: 1fr; }
+    .lc-mapa-svg svg { max-height: 300px; }
+  }
+
   /* Top clientes (lista com barra) */
   .lc-rank-item { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--lc-border); }
   .lc-rank-item:last-child { border-bottom: none; }
@@ -17820,6 +17907,37 @@ window.LC_SVG = {
             <span class="lc-block-pill">top 5 do período</span>
           </div>
           <div id="lcPodio"><div class="lc-block-empty">carregando…</div></div>
+        </div>
+
+
+        <!-- ===== PARA ONDE VENDEMOS: MAPA + TOP 5 ESTADOS (v33k.2092) ===== -->
+        <div class="lc-block" id="homeBlocoEstados" style="margin-bottom:18px">
+          <div class="lc-block-head">
+            <div class="lc-block-title"><span class="lc-ic" data-lucide="map"></span> Para onde vendemos</div>
+            <span class="lc-block-pill">top 5 estados do periodo</span>
+          </div>
+          <div class="lc-mapa-wrap">
+            <div class="lc-mapa-svg">
+              <svg id="homeMapaSvg" viewBox="0 0 620 636.6" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mapa do Brasil com as vendas por estado"><path id="ufBR-AC" data-uf="AC" d="M116.7 247.7L99.4 260.0L93.9 260.4L85.1 267.0L75.6 264.5L53.2 265.4L54.8 239.7L43.8 248.3L29.4 249.0L25.7 240.9L12.5 239.3L16.3 232.4L7.2 221.9L3.6 215.2L4.5 212.7L0.0 209.0L0.6 206.1L4.5 204.9L3.2 201.8L21.2 209.6L57.4 218.7L116.7 247.7Z"/><path id="ufBR-AL" data-uf="AL" d="M585.4 248.2L566.4 238.2L573.9 230.3L586.7 238.4L596.1 235.8L601.3 230.9L615.0 231.1L607.9 241.4L603.3 243.8L603.4 246.4L595.0 256.9L585.4 248.2Z"/><path id="ufBR-AM" data-uf="AM" d="M113.5 246.2L57.4 218.7L21.2 209.6L3.2 201.8L4.9 197.2L13.7 191.2L12.1 185.2L16.2 177.6L17.6 169.2L34.1 159.1L47.9 156.6L50.7 153.7L56.9 153.3L59.6 155.8L63.8 155.8L72.8 105.1L69.1 93.9L62.2 87.8L62.5 76.1L71.7 73.6L76.8 74.8L74.2 68.4L65.7 68.3L65.7 57.7L92.2 57.5L91.9 53.1L96.0 57.0L104.5 51.0L108.9 57.7L109.5 66.2L112.8 65.6L121.9 73.3L131.7 69.5L135.0 74.3L140.9 67.5L155.1 60.6L158.7 53.7L167.9 49.2L171.8 50.0L178.8 53.8L177.5 59.4L182.9 72.4L180.8 85.3L185.1 96.0L182.0 98.2L191.9 108.2L196.0 109.2L197.4 97.4L202.3 93.7L206.9 94.7L210.0 99.5L216.3 97.1L216.7 89.4L221.2 81.9L239.5 81.9L239.8 91.3L247.1 102.7L258.8 111.5L267.7 115.1L273.2 119.1L273.1 121.1L277.1 120.8L278.8 124.6L246.4 194.6L251.1 205.4L244.6 228.4L194.5 227.4L191.3 230.5L187.9 228.7L184.1 222.5L181.5 222.1L178.6 217.2L165.6 216.2L164.8 218.9L158.4 223.4L159.6 224.9L156.3 227.4L156.4 231.5L146.0 232.3L141.0 239.7L139.0 236.8L130.4 241.8L127.8 239.3L120.4 239.2L118.7 242.9L113.5 246.2Z"/><path id="ufBR-AP" data-uf="AP" d="M350.0 104.5L344.5 104.3L341.9 99.8L340.1 99.8L338.3 92.0L333.8 88.7L332.2 84.7L330.6 73.8L325.8 70.2L325.5 65.0L315.4 61.0L310.8 56.8L305.0 56.6L304.1 50.8L305.3 46.0L314.6 50.9L320.3 47.1L334.0 49.4L339.0 44.3L348.4 25.1L356.8 15.1L360.6 18.7L368.6 50.7L372.7 55.7L380.6 58.5L381.5 66.6L368.0 81.9L359.6 86.9L350.0 104.5Z"/><path id="ufBR-BA" data-uf="BA" d="M442.1 334.6L444.5 319.9L439.7 314.2L439.0 308.6L441.7 303.6L440.4 300.5L442.1 297.5L439.5 294.6L440.7 289.8L437.8 287.1L438.1 283.1L442.0 280.4L438.9 277.7L441.9 275.0L436.5 273.4L434.2 270.4L439.3 263.8L438.5 261.3L447.1 254.3L450.9 255.6L454.1 261.6L462.5 262.9L466.4 259.1L471.5 259.1L476.3 255.9L479.6 249.4L477.9 239.5L483.6 237.5L484.8 239.3L488.7 238.7L496.8 241.8L501.6 237.6L508.9 236.7L510.8 232.2L514.5 231.5L516.6 227.9L524.1 230.2L527.4 240.3L531.7 239.0L533.9 234.9L539.0 232.9L540.1 230.2L547.1 225.3L559.3 230.8L561.9 229.8L565.2 233.2L573.4 250.2L573.3 259.1L570.3 261.2L566.9 260.6L566.2 263.5L573.1 273.8L579.2 273.3L566.1 295.3L562.0 297.2L558.9 291.7L556.4 294.4L557.8 296.4L552.6 307.5L554.2 307.9L553.3 314.9L555.0 314.7L553.1 324.9L555.9 344.7L550.8 366.1L551.6 374.7L543.5 384.9L535.3 379.7L534.9 375.7L528.6 369.6L529.9 362.1L534.4 360.5L534.2 356.1L540.4 348.7L534.5 343.9L525.1 341.7L517.1 342.3L516.7 338.6L509.7 332.3L505.2 333.5L491.5 325.3L487.1 324.6L482.9 327.1L477.7 325.6L478.4 319.8L471.5 318.1L442.1 334.6Z"/><path id="ufBR-CE" data-uf="CE" d="M529.7 206.3L529.0 203.1L531.6 196.8L527.0 194.3L526.0 191.6L523.2 174.1L518.5 160.9L521.2 156.2L515.3 141.7L518.1 133.2L530.7 131.2L538.8 132.3L562.3 146.3L575.8 160.6L582.1 164.3L574.3 168.2L567.9 181.6L560.7 187.8L558.3 199.9L561.4 204.7L554.6 213.7L543.7 206.0L529.7 206.3Z"/><path id="ufBR-DF" data-uf="DF" d="M422.6 347.5L407.6 347.4L408.7 338.5L420.7 338.7L422.6 340.1L422.6 347.5Z"/><path id="ufBR-ES" data-uf="ES" d="M522.9 433.0L511.1 430.3L510.6 425.6L508.4 424.6L508.9 418.2L511.0 415.6L516.6 415.2L519.9 406.6L523.1 403.6L523.3 398.3L518.7 393.4L523.5 392.7L520.2 384.4L523.8 381.2L526.1 381.8L523.8 379.1L531.5 377.8L543.5 384.9L543.0 400.4L532.0 421.5L525.7 427.0L522.9 433.0Z"/><path id="ufBR-GO" data-uf="GO" d="M364.7 404.2L361.9 400.5L340.4 391.0L334.5 390.7L335.9 385.9L331.9 385.3L329.1 369.9L332.1 361.7L337.5 356.3L337.7 351.6L350.7 342.7L354.8 332.8L361.1 330.2L373.7 291.6L377.3 287.9L376.1 296.8L389.7 301.9L395.5 292.2L399.0 296.7L399.9 304.1L401.2 300.8L408.0 299.4L416.6 303.7L417.3 299.8L420.4 301.9L439.5 294.6L442.1 297.5L439.1 312.1L444.5 319.9L444.6 325.5L440.2 329.5L435.1 325.9L434.6 331.2L429.1 331.3L430.1 344.3L422.6 347.5L420.2 354.9L425.0 362.8L419.0 370.6L422.9 372.2L423.0 380.5L412.7 386.8L396.5 384.9L390.4 389.1L387.0 387.9L376.0 390.8L364.7 404.2ZM422.6 347.5L422.6 340.1L420.7 338.7L408.7 338.5L407.6 347.4L422.6 347.5Z"/><path id="ufBR-MA" data-uf="MA" d="M400.2 173.0L414.7 160.6L418.2 159.8L426.4 148.3L428.3 141.0L434.2 132.1L432.7 130.3L438.8 120.5L439.8 115.1L438.3 113.8L443.1 104.3L451.8 107.7L453.9 113.6L457.9 109.5L463.5 113.9L462.6 114.9L464.6 114.1L466.4 119.1L462.9 122.6L464.4 124.3L468.0 121.0L468.9 124.2L465.6 127.6L463.5 137.9L468.0 133.6L471.3 125.9L473.2 126.3L471.9 131.4L484.7 124.4L502.6 131.2L509.0 130.6L509.1 135.1L503.1 141.6L498.6 141.9L490.9 154.8L493.8 169.8L489.0 179.8L489.6 184.5L493.1 187.7L492.0 194.5L483.4 197.3L480.0 195.0L474.3 196.1L463.6 206.4L451.6 210.9L449.9 218.7L443.6 231.4L446.5 240.1L444.1 254.0L437.8 251.6L432.7 244.7L434.4 240.7L426.1 233.1L430.7 223.3L435.3 222.7L435.5 215.6L427.2 216.9L420.2 208.6L419.4 204.9L416.1 203.5L418.9 200.3L421.0 190.4L419.7 176.4L413.4 171.9L405.6 170.0L400.2 173.0Z"/><path id="ufBR-MG" data-uf="MG" d="M364.2 413.9L364.7 404.2L376.0 390.8L387.0 387.9L390.4 389.1L396.5 384.9L412.7 386.8L423.0 380.5L422.9 372.2L419.0 370.6L425.0 362.8L420.2 354.9L422.6 347.5L430.1 344.3L429.1 331.3L434.6 331.2L435.1 325.9L438.5 329.1L442.9 328.4L442.1 334.6L469.8 318.2L477.5 319.4L477.7 325.6L482.9 327.1L487.1 324.6L491.5 325.3L505.2 333.5L509.7 332.3L516.7 338.6L517.1 342.3L525.1 341.7L534.5 343.9L540.4 348.7L534.2 356.1L534.4 360.5L530.8 361.1L529.1 365.4L528.6 369.6L534.9 375.7L534.9 379.2L531.5 377.8L523.8 379.1L526.1 381.8L523.8 381.2L520.2 384.4L523.5 392.7L518.7 393.4L523.3 398.3L523.1 403.6L519.9 406.6L516.6 415.2L511.0 415.6L508.9 418.2L509.6 422.8L507.2 427.1L504.3 427.9L500.8 438.2L502.1 440.2L489.7 445.9L477.8 445.9L454.8 454.8L448.4 455.0L446.5 458.8L438.7 459.3L435.8 456.0L436.1 453.3L432.2 450.1L433.7 447.0L432.7 441.8L435.2 436.0L427.4 435.1L423.9 427.1L425.7 422.5L422.8 419.1L423.6 415.0L420.1 412.2L398.7 414.8L397.1 419.2L395.1 415.3L392.6 417.0L391.4 412.0L372.2 408.8L364.2 413.9Z"/><path id="ufBR-MS" data-uf="MS" d="M364.7 404.2L364.2 413.9L355.6 421.3L346.3 440.3L341.9 446.0L322.6 461.2L312.8 478.3L306.7 474.5L297.7 477.8L294.2 476.7L291.0 455.8L287.3 449.9L281.1 449.2L277.9 446.1L270.1 449.3L253.5 445.6L256.0 428.5L250.8 414.9L255.5 411.9L251.2 408.0L257.8 396.6L256.7 394.5L261.3 383.0L257.2 375.2L261.7 377.9L266.0 376.5L273.2 368.4L283.4 366.2L297.9 374.4L308.3 371.6L311.6 374.2L321.7 367.4L320.5 373.7L317.0 378.4L331.6 379.8L331.9 385.3L335.9 385.9L334.5 390.7L340.4 391.0L361.9 400.5L364.7 404.2Z"/><path id="ufBR-MT" data-uf="MT" d="M210.2 308.7L215.6 304.7L224.4 287.9L220.0 277.4L223.1 271.5L221.6 267.6L214.7 265.3L197.6 264.5L196.9 244.4L198.2 243.0L196.2 237.8L198.1 231.1L196.2 228.7L244.6 228.4L251.1 205.4L259.0 220.0L260.0 228.6L272.8 239.0L376.2 246.3L370.4 260.1L368.7 270.9L369.6 292.4L372.3 295.3L364.5 321.8L361.1 330.2L354.8 332.8L350.7 342.7L337.7 351.6L337.5 356.3L332.1 361.7L329.2 368.2L331.6 379.8L317.0 378.4L320.5 373.7L321.7 367.4L314.3 373.5L310.4 374.2L308.3 371.6L305.5 371.6L297.9 374.4L283.4 366.2L273.2 368.4L267.9 375.2L261.7 377.9L257.2 375.2L256.0 371.6L247.0 367.0L245.7 358.3L247.8 351.5L218.9 351.3L217.8 338.4L212.4 332.1L217.3 332.0L214.1 317.2L215.2 314.5L210.2 308.7Z"/><path id="ufBR-PA" data-uf="PA" d="M238.8 65.2L245.2 64.6L247.9 59.6L252.7 60.7L253.6 58.6L259.7 57.7L267.2 52.7L271.7 54.8L285.5 55.2L286.3 52.2L282.8 48.7L285.3 44.5L289.2 46.3L301.1 43.1L305.3 46.0L305.0 56.6L310.8 56.8L315.4 61.0L325.5 65.0L325.8 70.2L330.6 73.8L332.2 84.7L333.8 88.7L338.3 92.0L340.1 99.8L341.9 99.8L344.5 104.3L350.0 104.5L348.0 108.4L344.6 107.8L337.8 110.9L349.1 111.5L365.8 100.9L369.0 114.3L373.6 118.5L379.9 115.5L384.4 117.0L390.8 113.8L385.7 129.0L392.4 116.9L400.4 109.9L404.3 111.9L406.1 109.8L404.2 108.3L404.5 104.3L410.5 97.2L418.6 96.5L420.8 98.1L420.5 96.1L423.2 96.1L443.1 104.3L438.3 113.8L439.8 115.1L438.8 120.5L432.7 130.3L434.2 132.1L428.3 141.0L426.4 148.3L418.2 159.8L414.7 160.6L400.0 172.7L408.5 176.5L407.6 182.7L405.1 189.4L392.4 200.0L390.4 208.2L393.0 214.0L391.3 221.1L380.3 236.1L376.2 246.3L277.2 240.2L268.4 236.3L267.5 233.4L260.0 228.6L259.0 220.0L246.4 194.6L278.8 124.6L277.1 120.8L273.1 121.1L273.2 119.1L267.7 115.1L258.8 111.5L242.2 96.9L239.8 91.3L238.8 65.2ZM359.7 102.2L354.0 107.5L349.3 109.3L355.5 96.2L360.1 94.4L361.6 96.4L359.7 102.2ZM405.4 90.4L396.9 109.8L393.0 108.6L392.1 111.7L387.7 110.2L386.5 113.5L383.0 114.8L378.9 113.4L372.9 115.0L370.4 113.3L367.9 105.8L370.8 103.6L367.5 102.1L367.6 96.8L369.7 90.0L372.6 88.1L402.3 89.3L405.4 90.4ZM369.6 87.7L365.3 90.9L363.5 89.2L366.6 86.4L369.6 87.7ZM389.7 86.5L384.5 87.9L382.6 87.1L387.8 84.2L389.7 86.5ZM382.5 85.4L375.4 85.1L374.5 83.4L384.1 81.2L382.5 85.4ZM374.0 75.9L372.9 85.7L370.1 84.7L374.0 75.9Z"/><path id="ufBR-PB" data-uf="PB" d="M558.8 210.0L561.4 204.7L558.4 198.1L561.6 189.8L567.8 192.1L573.7 186.4L581.6 184.0L582.9 185.4L577.5 194.7L582.3 197.0L585.9 195.1L589.0 196.1L590.3 199.5L592.5 198.7L594.5 193.7L593.7 189.7L596.9 188.6L597.5 190.3L602.7 191.2L617.8 191.8L620.0 200.3L619.6 208.9L616.3 206.6L609.5 207.3L608.6 210.6L602.6 213.6L594.9 213.4L586.3 220.9L583.3 215.8L580.3 216.2L583.1 212.3L582.6 209.3L585.5 208.2L581.7 204.3L568.5 213.3L565.8 213.8L564.3 211.3L561.6 212.4L558.8 210.0Z"/><path id="ufBR-PE" data-uf="PE" d="M516.6 227.9L528.9 218.2L528.0 206.4L543.7 206.0L552.9 213.9L558.8 210.0L561.6 212.4L564.3 211.3L565.8 213.8L581.7 204.3L585.5 208.2L582.6 209.3L583.1 212.3L580.3 216.2L583.3 215.8L586.3 220.9L594.9 213.4L602.6 213.6L608.6 210.6L609.5 207.3L616.3 206.6L619.6 208.9L620.0 215.7L615.0 231.1L601.3 230.9L592.4 237.3L586.7 238.4L573.9 230.3L566.4 238.2L565.2 233.2L561.9 229.8L559.3 230.8L547.1 225.3L540.1 230.2L539.0 232.9L533.9 234.9L531.7 239.0L527.4 240.3L524.1 230.2L516.6 227.9Z"/><path id="ufBR-PI" data-uf="PI" d="M449.5 254.3L444.1 254.0L446.5 240.1L443.6 231.4L449.9 218.7L451.6 210.9L463.6 206.4L474.3 196.1L480.0 195.0L483.4 197.3L491.0 195.7L493.1 187.7L489.6 184.5L489.1 177.4L493.8 169.8L490.9 154.8L498.6 141.9L503.1 141.6L509.1 135.1L509.0 130.6L518.1 133.2L515.3 141.7L521.2 156.2L518.7 159.7L519.5 165.8L523.2 174.1L527.0 194.3L531.6 196.8L529.0 203.1L529.7 206.3L527.3 206.9L529.8 214.7L528.9 218.2L514.5 231.5L510.8 232.2L508.9 236.7L501.6 237.6L496.8 241.8L488.7 238.7L484.8 239.3L483.6 237.5L477.9 239.5L479.6 249.4L473.0 258.5L468.3 258.5L458.4 263.5L454.1 261.6L449.5 254.3Z"/><path id="ufBR-PR" data-uf="PR" d="M312.8 478.3L322.6 461.2L333.2 454.2L344.8 455.3L347.2 453.4L358.5 455.5L367.5 460.3L380.4 459.8L385.7 465.4L386.2 475.3L392.2 483.0L391.1 488.4L403.8 489.7L402.6 494.8L407.9 494.1L410.4 498.6L408.4 500.7L408.6 498.9L405.2 498.3L404.1 501.1L400.0 499.9L405.2 503.6L401.1 507.6L402.3 510.0L394.0 510.1L388.0 513.8L380.7 510.4L371.3 510.6L368.3 514.0L360.2 515.9L360.3 520.1L357.4 521.6L345.1 517.5L330.5 516.2L326.8 514.1L321.8 514.4L316.4 503.3L306.9 503.3L312.8 478.3Z"/><path id="ufBR-RJ" data-uf="RJ" d="M462.5 467.0L462.3 461.0L472.2 456.3L471.5 454.5L464.8 454.7L461.7 451.5L477.8 445.9L489.7 445.9L502.1 440.2L500.8 438.2L504.3 427.9L508.7 424.9L510.6 425.6L511.1 430.3L522.9 433.0L522.4 444.8L511.2 449.9L506.9 454.3L505.9 460.3L491.4 460.7L488.3 456.7L487.2 461.0L476.5 462.8L475.3 462.1L480.0 461.3L477.0 459.7L464.8 462.1L465.9 465.7L462.5 467.0Z"/><path id="ufBR-RN" data-uf="RN" d="M567.8 192.1L560.7 187.8L567.9 181.6L574.3 168.2L582.1 164.3L592.2 168.8L601.9 168.1L609.7 169.9L613.6 176.5L617.8 191.8L602.7 191.2L595.5 188.5L593.7 189.7L593.6 196.4L590.3 199.5L589.0 196.1L585.9 195.1L582.3 197.0L577.5 194.7L582.9 184.4L573.7 186.4L567.8 192.1Z"/><path id="ufBR-RO" data-uf="RO" d="M116.7 247.7L113.5 246.2L118.7 242.9L120.4 239.2L127.8 239.3L130.4 241.8L139.0 236.8L141.0 239.7L146.0 232.3L156.4 231.5L156.3 227.4L159.6 224.9L158.4 223.4L164.8 218.9L165.6 216.2L176.9 216.5L181.5 222.1L184.1 222.5L187.9 228.7L191.3 230.5L194.5 227.4L197.8 230.0L196.2 237.8L198.2 243.0L196.9 244.4L197.6 264.5L214.7 265.3L221.6 267.6L223.1 271.5L220.0 277.4L224.4 287.9L223.1 291.7L217.4 299.0L215.6 304.7L210.2 308.7L204.6 305.9L193.3 306.5L188.1 300.5L177.9 297.8L173.1 292.5L168.7 292.6L163.3 289.3L151.7 288.7L150.2 285.6L142.6 281.1L136.3 269.2L137.2 263.5L135.4 257.2L137.8 251.3L136.2 244.2L116.7 247.7Z"/><path id="ufBR-RR" data-uf="RR" d="M239.5 81.9L221.2 81.9L216.7 89.4L216.3 97.1L210.0 99.5L206.9 94.7L202.3 93.7L197.4 97.4L196.0 109.2L191.9 108.2L182.0 98.2L185.1 96.0L181.0 86.3L182.9 72.4L177.5 59.4L178.8 53.8L167.9 49.2L168.0 46.2L157.6 44.7L154.8 27.0L145.8 15.7L149.2 17.9L155.3 18.2L158.0 21.4L168.8 21.1L176.4 26.9L178.7 19.9L192.8 17.0L201.4 11.8L205.2 11.8L211.7 5.7L209.9 0.6L219.4 0.0L221.8 2.5L219.3 11.5L226.3 14.0L225.8 16.5L228.7 21.3L223.9 27.0L221.7 41.6L225.5 48.4L226.9 57.0L238.0 64.3L239.5 81.9Z"/><path id="ufBR-RS" data-uf="RS" d="M317.6 529.1L322.7 529.9L326.9 527.8L346.1 531.1L362.2 539.7L370.8 549.2L382.5 550.4L384.7 552.6L380.7 555.8L377.3 563.8L379.1 565.0L378.7 563.2L380.7 562.4L384.5 564.5L370.1 590.2L361.7 599.7L347.7 610.1L347.3 605.4L353.3 604.5L359.8 599.6L361.5 593.8L364.4 593.4L365.0 590.3L369.0 587.0L368.6 582.5L370.7 582.7L371.0 579.7L363.7 581.5L359.4 576.1L361.6 581.5L359.6 587.8L358.4 586.5L356.1 593.6L348.7 598.1L345.2 606.3L346.3 610.9L337.9 626.8L326.6 636.6L324.0 635.2L324.0 627.3L330.5 620.2L322.9 614.8L320.4 609.1L313.1 605.8L307.3 599.8L298.0 596.4L291.2 589.4L284.9 593.1L284.2 588.2L271.8 577.3L267.2 577.9L265.7 580.1L259.5 578.6L286.7 548.9L289.9 549.1L289.3 546.2L299.2 540.7L303.5 535.5L311.4 533.4L317.6 529.1Z"/><path id="ufBR-SC" data-uf="SC" d="M321.8 514.4L345.1 517.5L357.4 521.6L360.3 520.1L360.2 515.9L368.3 514.0L371.3 510.6L380.7 510.4L388.0 513.8L394.0 510.1L402.3 510.0L399.7 514.6L402.8 529.7L401.8 544.1L398.9 552.2L384.5 564.5L380.7 562.4L378.7 563.2L379.1 565.0L377.3 562.4L379.8 560.8L384.1 551.2L370.8 549.2L362.2 539.7L346.1 531.1L326.9 527.8L322.7 529.9L317.6 529.1L321.1 524.6L321.8 514.4Z"/><path id="ufBR-SE" data-uf="SE" d="M579.2 273.3L573.1 273.8L566.2 263.5L566.9 260.6L570.3 261.2L573.3 259.1L573.4 250.2L569.4 244.4L570.3 240.9L585.4 248.2L595.0 256.9L586.7 262.3L580.1 271.8L580.0 269.3L579.2 273.3Z"/><path id="ufBR-SP" data-uf="SP" d="M330.6 455.3L346.3 440.3L355.6 421.3L372.2 408.8L391.4 412.0L392.6 417.0L395.1 415.3L397.1 419.2L398.7 414.8L420.1 412.2L423.6 415.0L422.8 419.1L425.7 422.5L423.9 427.1L427.4 435.1L435.2 436.0L432.7 441.8L433.7 447.0L432.2 450.1L436.1 453.3L437.6 458.6L446.5 458.8L448.4 455.0L452.6 455.4L461.7 451.5L464.8 454.7L471.5 454.5L472.2 456.3L462.3 461.0L462.5 467.0L453.9 471.0L451.7 474.3L443.7 474.2L429.5 481.4L411.8 494.4L412.7 496.6L410.4 498.6L407.9 494.1L402.6 494.8L403.8 489.7L391.1 488.4L392.2 483.0L386.2 475.3L385.7 465.4L380.4 459.8L367.5 460.3L358.5 455.5L347.2 453.4L344.8 455.3L330.6 455.3Z"/><path id="ufBR-TO" data-uf="TO" d="M370.4 260.1L380.3 236.1L391.3 221.1L393.0 214.0L390.4 208.2L392.4 200.0L405.1 189.4L407.6 182.7L408.5 176.5L400.2 173.0L405.6 170.0L413.4 171.9L419.7 176.4L421.1 184.7L420.0 196.5L416.1 203.5L419.4 204.9L420.2 208.6L427.2 216.9L435.5 215.6L435.3 222.7L430.7 223.3L426.1 233.1L434.4 240.7L432.7 244.7L437.8 251.6L447.1 254.3L438.5 261.3L439.3 263.8L434.2 270.4L436.5 273.4L441.9 275.0L438.9 277.7L442.0 280.4L437.9 283.6L438.3 288.4L440.7 289.8L439.5 294.6L420.4 301.9L417.3 299.8L416.6 303.7L408.0 299.4L401.2 300.8L399.9 304.1L399.0 296.7L395.5 292.2L389.7 301.9L376.1 296.8L377.3 287.9L371.0 294.9L368.7 270.9L370.4 260.1Z"/></svg>
+              <div class="lc-mapa-legenda">
+                <span>menos</span>
+                <i style="background:var(--lc-uf-0)"></i>
+                <i style="background:var(--lc-uf-1)"></i>
+                <i style="background:var(--lc-uf-2)"></i>
+                <i style="background:var(--lc-uf-3)"></i>
+                <i style="background:var(--lc-uf-4)"></i>
+                <i style="background:var(--lc-uf-5)"></i>
+                <span>mais</span>
+              </div>
+            </div>
+            <div class="lc-mapa-rank">
+              <div id="lcTopEstados"><div class="lc-block-empty">carregando...</div></div>
+            </div>
+          </div>
+          <div id="homeEstadosSemUf" style="display:none;margin-top:12px;font-size:11.5px;color:var(--lc-muted);background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:8px;padding:9px 12px;align-items:flex-start;gap:7px;line-height:1.45">
+            <span class="lc-ic" data-lucide="info" style="width:14px;height:14px;flex-shrink:0;margin-top:1px"></span>
+            <span id="homeEstadosSemUfTxt"></span>
+          </div>
         </div>
 
         <!-- ===== BLOCOS DE ÁREA (lojas, alertas, IA, whatsapp) ===== -->
@@ -37509,6 +37627,10 @@ Retorne JSON: {"ID": "valor", ...}`;
         <span class="lc-ic" data-lucide="pin" style="width:12px;height:12px"></span>
         Anúncio de referência <span style="font-weight:600;opacity:.85">— a cópia usa só as variações dele</span></label>
       <select class="form-input dup-anuncio-ref-select" data-pid="${pid}" onchange="dupOnEscolherAnuncio('${pid}', this.value)" style="font-size:13px;width:100%">${options}</select>
+      <!-- v33k.2070: o cartao do anuncio escolhido (capa + precos). Enche
+           sozinho, sem clique, a partir da MESMA leitura que ja busca as
+           variacoes — e cacheada, entao nao custa chamada nenhuma a mais. -->
+      <div class="dup-anuncio-ref-cartao" data-pid="${pid}" style="margin-top:8px"></div>
       <div class="dup-anuncio-ref-vars" data-pid="${pid}" style="margin-top:8px"></div>
     </div>`;
   }
@@ -37519,6 +37641,104 @@ Retorne JSON: {"ID": "valor", ...}`;
   //   vínculos entra só como palpite enquanto a leitura não volta, e sempre
   //   rotulada como palpite. Foi mostrar palpite com cara de fato que produziu
   //   as 123 variações iguais nos dois anúncios do print de 20/08.
+  // ═══════════════════════════════════════════════════════════════════════
+  // O CARTÃO DO ANÚNCIO DE REFERÊNCIA (v33k.2070)
+  // ─────────────────────────────────────────────────────────────────────
+  // O seletor mostrava só "🛒 Shopee · LOJA · #123456". Escolher a referência
+  // é decidir QUAIS variações a cópia leva e de qual anúncio ela herda — e
+  // isso era decidido olhando um número de 11 dígitos.
+  //
+  // ★ A CAPA É 56×56 QUADRADA de propósito: o painel liga a prévia ampliada
+  //   por FORMA (<img> quadrada de 24 a 96px, v33k.1523). Fugir dessa medida
+  //   faz o zoom sumir em silêncio.
+  //
+  // ★ E OS DOIS PREÇOS SÃO NOMEADOS NA FONTE. `dados.preco` significa o BRUTO
+  //   na Shopee e o COM DESCONTO no Mercado Livre — mesmo nome, sentidos
+  //   opostos. A tela consome `precoBruto`/`precoComDesconto` (v33k.2070) e
+  //   não adivinha.
+  const _dupMoeda = (v) => (v == null || !Number.isFinite(Number(v)))
+    ? null : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+  // Faixa de preços das variações, quando elas discordam entre si. Mostrar um
+  // preço só num anúncio de 30 variações que vão de 39 a 89 seria informação
+  // errada com cara de exata.
+  function _dupFaixa(valores) {
+    const ns = (valores || []).map(Number).filter(n => Number.isFinite(n) && n > 0);
+    if (!ns.length) return null;
+    const min = Math.min.apply(null, ns), max = Math.max.apply(null, ns);
+    return (min === max) ? _dupMoeda(min) : (_dupMoeda(min) + ' a ' + _dupMoeda(max));
+  }
+
+  function _dupCartaoAnuncio(an) {
+    if (!an) return '';
+    const vars = Array.isArray(an.variacoes) ? an.variacoes : [];
+    // a variação é a fonte mais confiável dos dois preços: o nível do anúncio
+    // só tem um número, e nem sempre o mesmo em cada canal.
+    const bruto = _dupFaixa(vars.map(v => v.precoOriginal).filter(x => x != null))
+      || _dupMoeda(an.precoBruto);
+    const comDesc = _dupFaixa(vars.map(v => v.preco).filter(x => x != null))
+      || _dupMoeda(an.precoComDesconto);
+
+    const capa = an.foto
+      ? '<img class="lc-foto-zoom" src="' + escapeHtml(an.foto) + '" loading="lazy" ' +
+        'style="width:56px;height:56px;border-radius:8px;object-fit:cover;border:1px solid #e2e8f0;flex:0 0 auto">'
+      : '<div style="width:56px;height:56px;border-radius:8px;background:#f1f5f9;border:1px solid #e2e8f0;flex:0 0 auto"></div>';
+
+    // ★ só chama de "com desconto" quando é MENOR que o bruto. Repetir o mesmo
+    //   número com dois rótulos faria a tela anunciar um desconto que não
+    //   existe — e quem confere acredita.
+    const temDesconto = comDesc && bruto && comDesc !== bruto;
+    let precos;
+    if (!bruto && !comDesc) {
+      precos = '<span style="font-size:11px;color:#94a3b8">preço não veio na leitura do canal</span>';
+    } else if (temDesconto) {
+      precos = '<span style="font-size:11px;color:#94a3b8;text-decoration:line-through">' + bruto + '</span>' +
+        ' <span style="font-size:13px;font-weight:700;color:#16a34a">' + comDesc + '</span>' +
+        '<span style="font-size:10.5px;color:#64748b;display:block">bruto riscado · à venda em verde</span>';
+    } else {
+      precos = '<span style="font-size:13px;font-weight:700;color:#0f172a">' + (comDesc || bruto) + '</span>' +
+        '<span style="font-size:10.5px;color:#64748b;display:block">sem desconto ativo</span>';
+    }
+
+    return '<div style="display:flex;gap:10px;align-items:center;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:8px">' +
+      capa +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:12.5px;font-weight:600;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+          escapeHtml(an.titulo || ('Anúncio ' + (an.itemId || ''))) + '</div>' +
+        '<div style="margin-top:2px">' + precos + '</div>' +
+      '</div>' +
+      (an.estoqueTotal != null
+        ? '<div style="font-size:11px;color:#64748b;white-space:nowrap">' + an.estoqueTotal + ' un.</div>' : '') +
+    '</div>';
+  }
+
+  // Enche o cartão do anúncio escolhido. Usa a MESMA leitura já cacheada que
+  // busca as variações: nenhuma chamada a mais ao canal.
+  async function dupRenderCartaoAnuncio(pid) {
+    const box = document.querySelector('.dup-anuncio-ref-cartao[data-pid="' + pid + '"]');
+    if (!box) return;
+    const p = produtosErp.find(x => String(x.id) === String(pid));
+    const anuncioId = _dupAnuncioRefEscolhido[pid];
+    if (!p || !anuncioId) { box.innerHTML = ''; return; }
+    const vinc = (typeof _acharVinculoDoAnuncio === 'function') ? _acharVinculoDoAnuncio(p, anuncioId) : null;
+    if (!vinc) { box.innerHTML = ''; return; }
+
+    box.dataset.lendo = String(anuncioId);
+    box.innerHTML = '<div style="font-size:11px;color:#64748b">Lendo capa e preços…</div>';
+    let an = null;
+    try { an = await lerAnuncioPublicado(p, vinc); } catch (_) { an = null; }
+    // ele pode ter trocado o anúncio enquanto a leitura vinha
+    if (box.dataset.lendo !== String(anuncioId)) return;
+    if (!an) {
+      // ★ não some em silêncio: some é indistinguível de "não tem foto".
+      box.innerHTML = '<div style="font-size:11px;color:#b45309">Não consegui ler capa e preços deste anúncio no canal.</div>';
+      return;
+    }
+    box.innerHTML = _dupCartaoAnuncio(an);
+    if (window.lcHydrateIcons) { try { window.lcHydrateIcons(box); } catch (e) {} }
+  }
+  window.dupRenderCartaoAnuncio = dupRenderCartaoAnuncio;
+
   async function dupRenderVariacoesDoAnuncio(pid) {
     const p = produtosErp.find(x => String(x.id) === String(pid));
     const box = document.querySelector(`.dup-anuncio-ref-vars[data-pid="${pid}"]`);
@@ -37674,6 +37894,11 @@ Retorne JSON: {"ID": "valor", ...}`;
     _dupAnuncioRefEscolhido[pid] = anuncioId;
     // ★ v33k.1887: a partir daqui é decisão da pessoa, e não se mexe mais
     delete _dupAnuncioRefAuto[pid];
+    // ★ v33k.2070: o cartao (capa e precos) e DECORACAO; a lista de variacoes
+    //   e a DECISAO — e ela decide o que a copia leva. Uma falha no cartao nao
+    //   pode levar a lista junto. A QA `qa_troca_anuncio_ref` pegou isso
+    //   executando: sem a guarda, um erro aqui derrubava as duas.
+    try { dupRenderCartaoAnuncio(pid); } catch (e) { console.warn('[dup] cartão:', e.message); }
     dupRenderVariacoesDoAnuncio(pid);
   }
   window.dupOnEscolherAnuncio = dupOnEscolherAnuncio;
@@ -48585,8 +48810,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (refBox) {
       _dupAnuncioRefEscolhido = {}; window._dupAnuncioRefEscolhido = _dupAnuncioRefEscolhido; // reseta escolhas
       refBox.innerHTML = montarSeletorAnuncioRef(p, { comprimido: false });
-      // renderiza as variações do anúncio default (mais antigo)
-      setTimeout(() => dupRenderVariacoesDoAnuncio(String(p.id)), 0);
+      // renderiza capa/preços e variações do anúncio default (mais antigo).
+      // ★ v33k.2070: POR PADRÃO, sem clique — era o pedido.
+      setTimeout(() => { dupRenderCartaoAnuncio(String(p.id)); dupRenderVariacoesDoAnuncio(String(p.id)); }, 0);
     }
 
     document.getElementById('dupConfigOverlay').classList.add('active');
@@ -48647,8 +48873,11 @@ Retorne JSON: {"ID": "valor", ...}`;
           '<div style="max-height:260px;overflow-y:auto;padding-right:4px">' +
           lista.map(pr => montarSeletorAnuncioRef(pr, { comprimido: true })).join('') +
           '</div>';
-        // renderiza as variações do anúncio default de cada produto
-        setTimeout(() => lista.forEach(pr => dupRenderVariacoesDoAnuncio(String(pr.id))), 0);
+        // renderiza capa/preços e variações do anúncio default de cada produto
+        setTimeout(() => lista.forEach(pr => {
+          dupRenderCartaoAnuncio(String(pr.id));
+          dupRenderVariacoesDoAnuncio(String(pr.id));
+        }), 0);
       } else {
         refBoxM.innerHTML = '';
       }
@@ -72813,7 +73042,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2069-fila-vazia-nao-e-erro';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2094-o-endereco-estava-na-mao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -75283,6 +75512,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
       if (sub) sub.textContent = (r.serie && r.serie.length) ? (r.serie[0].rotulo + ' a ' + r.serie[r.serie.length - 1].rotulo) : '—';
       homeDesenharTopProdutos(r.topProdutos || []);
       homeDesenharTopLojas(r.topLojas || []);
+      homeDesenharMapaEstados(r.estados || [], r.semUf);
       lcWhenChartReady(() => { if (meu === _homeDashToken) homeDesenharEvolucao(r.serie); });
     } catch (e) {
       if (meu !== _homeDashToken) return;
@@ -75476,6 +75706,184 @@ Responda APENAS com JSON válido (sem markdown), formato:
       '</div>';
     }).join('');
   }
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // MAPA DE VENDAS POR ESTADO (v33k.2092)
+  // ══════════════════════════════════════════════════════════════════════
+  // O criterio e FATURAMENTO, o mesmo do Top Lojas logo abaixo. Se um dia
+  // virar unidades, muda aqui e no rotulo: os dois tem que andar juntos,
+  // senao a cor do mapa conta uma historia e a lista ao lado conta outra.
+  //
+  // ESCALA DE COR: seis degraus por QUANTIS, nao por divisao linear do
+  // maximo. Motivo pratico: a distribuicao de venda por estado no Brasil e
+  // muito torta (SP costuma valer varias vezes o segundo colocado). Numa
+  // escala linear, SP fica escuro e TODO o resto vira quase branco, e o
+  // mapa nao informa mais nada. Por quantis, os degraus separam os estados
+  // entre si, que e o que a pessoa quer ver.
+  //
+  // ESTADO SEM VENDA fica cinza (--lc-uf-vazio), FORA da escala. Pintar o
+  // zero com o tom mais claro do verde faria "nao vendemos nada aqui"
+  // parecer "vendemos pouquinho". Zero e zero.
+  const _UF_NOMES = {
+    AC:'Acre', AL:'Alagoas', AP:'Amapá', AM:'Amazonas', BA:'Bahia',
+    CE:'Ceará', DF:'Distrito Federal', ES:'Espírito Santo', GO:'Goiás',
+    MA:'Maranhão', MT:'Mato Grosso', MS:'Mato Grosso do Sul',
+    MG:'Minas Gerais', PA:'Pará', PB:'Paraíba', PR:'Paraná',
+    PE:'Pernambuco', PI:'Piauí', RJ:'Rio de Janeiro',
+    RN:'Rio Grande do Norte', RS:'Rio Grande do Sul', RO:'Rondônia',
+    RR:'Roraima', SC:'Santa Catarina', SP:'São Paulo', SE:'Sergipe',
+    TO:'Tocantins',
+  };
+  const _MAPA_DEGRAUS = 6;
+  let _homeMapaTip = null;
+
+  // Devolve, pra cada UF com venda, o indice do degrau (0..5).
+  //
+  // O degrau sai do POSTO do estado entre os valores DISTINTOS, nao de um
+  // corte por valor. A primeira versao cortava por valor (`vals[n*i/6]`) e o
+  // teste de DOM pegou o defeito com dado realista: com 7 estados, o ultimo
+  // corte caia exatamente em cima do 6o valor, e o LIDER ficava com a mesma
+  // cor do vice (SP com 120 mil e MG com 20 mil pintados igual). Justo o
+  // estado que a pessoa abre a Home pra ver.
+  //
+  // Por posto isso nao acontece: o maior sempre fica sozinho no tom mais
+  // escuro, a ordem das cores nunca contradiz a ordem do ranking ao lado, e
+  // valores empatados continuam recebendo a mesma cor. A magnitude exata a
+  // pessoa le no tooltip e na lista; a cor serve pra ordenar, nao pra medir.
+  function _mapaDegraus(estados) {
+    const fora = {};
+    if (!estados.length) return fora;
+    const distintos = [...new Set(estados.map(e => e.receita))].sort((a, b) => a - b);
+    // um so valor (um estado, ou todos empatados): tom cheio, sem escala falsa
+    if (distintos.length === 1) {
+      estados.forEach(e => { fora[e.uf] = _MAPA_DEGRAUS - 1; });
+      return fora;
+    }
+    const posto = new Map();
+    distintos.forEach((v, i) => { posto.set(v, i); });
+    const ultimo = distintos.length - 1;
+    estados.forEach(e => {
+      const i = posto.get(e.receita);
+      // espalha os postos [0..ultimo] nos degraus [0..5], com o topo fixo em 5
+      fora[e.uf] = Math.round((i / ultimo) * (_MAPA_DEGRAUS - 1));
+    });
+    return fora;
+  }
+
+  function homeDesenharMapaEstados(estados, semUf) {
+    const svg = document.getElementById('homeMapaSvg');
+    const lista = document.getElementById('lcTopEstados');
+    const aviso = document.getElementById('homeEstadosSemUf');
+    const avisoTxt = document.getElementById('homeEstadosSemUfTxt');
+    if (!svg || !lista) return;
+
+    estados = Array.isArray(estados) ? estados : [];
+    semUf = semUf || { receita: 0, pedidos: 0, percentual: 0 };
+
+    const porUf = {};
+    estados.forEach(e => { porUf[e.uf] = e; });
+    const degrau = _mapaDegraus(estados);
+    const totalComUf = estados.reduce((a, e) => a + e.receita, 0);
+
+    // ── pinta o mapa ──
+    svg.querySelectorAll('path').forEach(el => {
+      const uf = el.getAttribute('data-uf');
+      const dado = porUf[uf];
+      el.classList.toggle('tem-venda', !!dado);
+      el.classList.remove('destacado');
+      el.style.fill = dado
+        ? 'var(--lc-uf-' + degrau[uf] + ')'
+        : 'var(--lc-uf-vazio)';
+      // acessibilidade e leitura sem mouse: o proprio SVG carrega o texto
+      let t = el.querySelector('title');
+      if (!t) { t = document.createElementNS('http://www.w3.org/2000/svg', 'title'); el.appendChild(t); }
+      t.textContent = dado
+        ? (_UF_NOMES[uf] || uf) + ': ' + formatBRLCompact(dado.receita)
+            + ' | ' + dado.pedidos + ' pedido' + (dado.pedidos === 1 ? '' : 's')
+        : (_UF_NOMES[uf] || uf) + ': sem venda no período';
+    });
+
+    // ── top 5 ao lado ──
+    const top = estados.slice(0, 5);
+    if (!top.length) {
+      lista.innerHTML = '<div class="lc-block-empty">Nenhuma venda com estado identificado neste período</div>';
+    } else {
+      const max = top[0].receita || 1;
+      lista.innerHTML = top.map((e, i) => {
+        const fatia = totalComUf > 0 ? ((e.receita / totalComUf) * 100).toFixed(1) : '0';
+        return '<div class="lc-rank-item" data-uf-linha="' + e.uf + '" style="cursor:pointer">' +
+          '<span class="lc-rank-pos">' + (i + 1) + '</span>' +
+          '<span class="lc-uf-sigla">' + escapeHtml(e.uf) + '</span>' +
+          '<div class="lc-rank-body" style="margin-left:8px">' +
+            '<div class="lc-rank-name">' + escapeHtml(e.nome || _UF_NOMES[e.uf] || e.uf) + '</div>' +
+            '<div class="lc-rank-bar"><i style="width:' + Math.round((e.receita / max) * 100) + '%"></i></div>' +
+          '</div>' +
+          '<span class="lc-rank-val">' + formatBRLCompact(e.receita) +
+            '<div style="font-size:10px;color:var(--lc-muted);font-weight:500;text-align:right">' + fatia + '% · ' + e.unidades + ' un</div>' +
+          '</span>' +
+        '</div>';
+      }).join('');
+      // passar o mouse na linha destaca o estado no mapa (e o contrario tambem)
+      lista.querySelectorAll('[data-uf-linha]').forEach(row => {
+        const uf = row.getAttribute('data-uf-linha');
+        const alvo = document.getElementById('ufBR-' + uf);
+        row.addEventListener('mouseenter', () => { if (alvo) alvo.classList.add('destacado'); });
+        row.addEventListener('mouseleave', () => { if (alvo) alvo.classList.remove('destacado'); });
+      });
+    }
+
+    // ── aviso de cobertura ──
+    // A regra de quando avisar esta no BACKEND (percentual em /dashboard); aqui
+    // so decidimos o texto. Nao inventamos limiar novo na tela.
+    if (aviso && avisoTxt) {
+      const pct = Number(semUf.percentual) || 0;
+      if (pct >= 99.5 && !estados.length) {
+        avisoTxt.innerHTML = 'Nenhum pedido do período tem o estado do comprador registrado ainda. '
+          + 'O estado passa a ser gravado nos pedidos <b>sincronizados a partir de agora</b>, '
+          + 'então o mapa vai preenchendo sozinho conforme as sincronizações rodam.';
+        aviso.style.display = 'flex';
+      } else if (pct >= 20) {
+        avisoTxt.innerHTML = '<b>' + pct.toFixed(1) + '%</b> do faturamento do período está sem estado identificado '
+          + '(' + semUf.pedidos + ' pedido' + (semUf.pedidos === 1 ? '' : 's') + '). '
+          + 'Esse valor não está no mapa nem no ranking, então trate os números acima como parciais.';
+        aviso.style.display = 'flex';
+      } else {
+        aviso.style.display = 'none';
+      }
+    }
+
+    try { window.lcHydrateIcons && window.lcHydrateIcons(document.getElementById('homeBlocoEstados')); } catch (e) {}
+  }
+
+  // Tooltip que segue o cursor. O <title> do SVG ja resolve sozinho, mas ele
+  // demora ~1s pra aparecer e some rapido; num mapa a pessoa passa o mouse
+  // varrendo os estados e quer ler na hora.
+  (function _mapaTooltip() {
+    document.addEventListener('mouseover', (ev) => {
+      const alvo = ev.target && ev.target.closest && ev.target.closest('#homeMapaSvg path');
+      if (!alvo) return;
+      const t = alvo.querySelector('title');
+      if (!t || !t.textContent) return;
+      if (!_homeMapaTip) {
+        _homeMapaTip = document.createElement('div');
+        _homeMapaTip.className = 'lc-mapa-tip';
+        document.body.appendChild(_homeMapaTip);
+      }
+      const partes = t.textContent.split(': ');
+      _homeMapaTip.innerHTML = '<b>' + escapeHtml(partes[0]) + '</b><br>' + escapeHtml(partes.slice(1).join(': '));
+      _homeMapaTip.style.display = 'block';
+    });
+    document.addEventListener('mousemove', (ev) => {
+      if (!_homeMapaTip || _homeMapaTip.style.display === 'none') return;
+      _homeMapaTip.style.left = Math.min(ev.clientX + 14, window.innerWidth - 240) + 'px';
+      _homeMapaTip.style.top = (ev.clientY + 16) + 'px';
+    });
+    document.addEventListener('mouseout', (ev) => {
+      const alvo = ev.target && ev.target.closest && ev.target.closest('#homeMapaSvg path');
+      if (alvo && _homeMapaTip) _homeMapaTip.style.display = 'none';
+    });
+  })();
 
   function homeDesenharTopLojas(lista) {
     const el = document.getElementById('lcTopLojas');
@@ -75701,7 +76109,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     set('lcAtrasadosNum','—'); set('lcAtrasadosSub','indisponível');
     set('lcBanidosNum','—'); set('lcBanidosSub','indisponível');
-    ['lcIaHoje','lcIaProgramado','lcWhatsapp','lcPodio'].forEach(id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="lc-block-empty">Indisponível offline</div>'; });
+    ['lcIaHoje','lcIaProgramado','lcWhatsapp','lcPodio','lcTopEstados'].forEach(id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="lc-block-empty">Indisponível offline</div>'; });
     const t = document.getElementById('lcIaHojeTotal'); if (t) t.textContent = '—';
   }
   // v33k.386: dispara a varredura de pedidos atrasados na hora (reusa a rota
