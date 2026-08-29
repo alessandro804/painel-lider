@@ -73042,7 +73042,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2094-o-endereco-estava-na-mao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2095-itens-zero';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -75795,13 +75795,24 @@ Responda APENAS com JSON válido (sem markdown), formato:
       el.style.fill = dado
         ? 'var(--lc-uf-' + degrau[uf] + ')'
         : 'var(--lc-uf-vazio)';
-      // acessibilidade e leitura sem mouse: o proprio SVG carrega o texto
-      let t = el.querySelector('title');
-      if (!t) { t = document.createElementNS('http://www.w3.org/2000/svg', 'title'); el.appendChild(t); }
-      t.textContent = dado
+      // O texto vai em `data-tip` e em `aria-label`, NAO em <title>.
+      //
+      // v33k.2095: com <title>, o navegador desenha o tooltip NATIVO dele
+      // depois de ~1s com o mouse parado — por cima do nosso, com a mesma
+      // informacao duplicada. Nao da pra desligar o tooltip nativo por CSS.
+      // `aria-label` no path com role=img cobre o leitor de tela, que era o
+      // motivo do <title> existir.
+      const texto = dado
         ? (_UF_NOMES[uf] || uf) + ': ' + formatBRLCompact(dado.receita)
             + ' | ' + dado.pedidos + ' pedido' + (dado.pedidos === 1 ? '' : 's')
         : (_UF_NOMES[uf] || uf) + ': sem venda no período';
+      el.setAttribute('data-tip', texto);
+      el.setAttribute('aria-label', texto);
+      el.setAttribute('role', 'img');
+      // remove <title> de render anterior (o painel nao recarrega entre trocas
+      // de periodo, entao um resquicio ficaria mostrando valor velho)
+      const tOld = el.querySelector('title');
+      if (tOld) tOld.remove();
     });
 
     // ── top 5 ao lado ──
@@ -75838,7 +75849,16 @@ Responda APENAS com JSON válido (sem markdown), formato:
     // so decidimos o texto. Nao inventamos limiar novo na tela.
     if (aviso && avisoTxt) {
       const pct = Number(semUf.percentual) || 0;
-      if (pct >= 99.5 && !estados.length) {
+      // v33k.2095: o aviso sai da tela do CLIENTE.
+      //
+      // Ele existe pra impedir uma leitura errada: com cobertura baixa, o mapa
+      // representa uma fatia do faturamento e alguem olharia achando que e o
+      // total. Mas quem PODE agir nisso e a agencia (rodar sincronizacao,
+      // conferir integracao); pro cliente e um numero tecnico que so parece
+      // sistema quebrado. Some sozinho quando a cobertura passa de 80%.
+      const papel = (typeof papelAtual === 'function') ? papelAtual() : '';
+      if (papel === 'cliente') { aviso.style.display = 'none'; }
+      else if (pct >= 99.5 && !estados.length) {
         avisoTxt.innerHTML = 'Nenhum pedido do período tem o estado do comprador registrado ainda. '
           + 'O estado passa a ser gravado nos pedidos <b>sincronizados a partir de agora</b>, '
           + 'então o mapa vai preenchendo sozinho conforme as sincronizações rodam.';
@@ -75863,14 +75883,14 @@ Responda APENAS com JSON válido (sem markdown), formato:
     document.addEventListener('mouseover', (ev) => {
       const alvo = ev.target && ev.target.closest && ev.target.closest('#homeMapaSvg path');
       if (!alvo) return;
-      const t = alvo.querySelector('title');
-      if (!t || !t.textContent) return;
+      const texto = alvo.getAttribute('data-tip');
+      if (!texto) return;
       if (!_homeMapaTip) {
         _homeMapaTip = document.createElement('div');
         _homeMapaTip.className = 'lc-mapa-tip';
         document.body.appendChild(_homeMapaTip);
       }
-      const partes = t.textContent.split(': ');
+      const partes = texto.split(': ');
       _homeMapaTip.innerHTML = '<b>' + escapeHtml(partes[0]) + '</b><br>' + escapeHtml(partes.slice(1).join(': '));
       _homeMapaTip.style.display = 'block';
     });
