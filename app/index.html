@@ -45984,7 +45984,7 @@ Retorne JSON: {"ID": "valor", ...}`;
             '<input type="radio" name="emMassaPrefixo" value="ref" onchange="emMassaTrocarPrefixo()">' +
             '<span>Usar esta referência para todas</span></label>' +
           '<input id="emMassaPrefixoRef" disabled placeholder="ex.: CORACAO" ' +
-            'oninput="emMassaPreverSku()" ' +
+            'oninput="emMassaTrocarPrefixo()" onfocus="emMassaTrocarPrefixo()" ' +
             'style="width:100%;padding:7px 10px;border:1px solid var(--lc-border);border-radius:7px;' +
             'font-size:13px;box-sizing:border-box;text-transform:uppercase">' +
           '<div id="emMassaPreviaSku" style="font-size:11.5px;color:var(--lc-muted);margin-top:8px;' +
@@ -46099,6 +46099,24 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
 
   function emMassaTrocarPrefixo() {
+    // ★ v33k.2108: SELECIONAR O PREFIXO SELECIONA O MODO.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 29/08: "selecionei a opção de usar esta referência para todas
+    // e deu erro — Nada mudou: nenhum valor informado acima".
+    //
+    // Eram DOIS grupos de rádio. Marcar "Usar esta referência" (grupo
+    // `emMassaPrefixo`) não marcava "Montar do prefixo + variações" (grupo
+    // `emMassaModo`), que seguia em "Novo texto" — vazio. O modal então
+    // reclamava, com razão, de um campo que a pessoa nem estava usando.
+    //
+    // Culpa do desenho: se mexer numa opção não a torna a ação escolhida, a
+    // pessoa não tem como saber. Agora mexer no prefixo (ou digitar a
+    // referência) já seleciona o modo.
+    const rMontar = document.querySelector('input[name="emMassaModo"][value="montarSku"]');
+    if (rMontar && !rMontar.checked) {
+      rMontar.checked = true;
+      if (typeof emMassaTrocarModo === 'function') emMassaTrocarModo();
+    }
     const { modo } = _emMontarSkuPrefixoEscolhido();
     const inp = document.getElementById('emMassaPrefixoRef');
     if (inp) {
@@ -49164,8 +49182,25 @@ Retorne JSON: {"ID": "valor", ...}`;
         ? ' · conteúdo do produto (canal sem leitura)' : ''),
     }));
 
+    // ★ v33k.2108: DIZER O QUE NÃO FOI LIDO DO CANAL.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 29/08: "o mesmo ainda está sem categoria selecionada, peso,
+    // medidas, ou seja, se eu for editar apenas o SKU esses outros dados vão
+    // ser enviados também de maneira errada".
+    //
+    // A preocupação é justa e a resposta é: NÃO vão. O que a tela envia sai do
+    // DIFF, e o diff só compara título, descrição, SKU pai, fotos e os campos
+    // de variação. Categoria, peso, medidas, NCM e origem NÃO ENTRAM — nem se
+    // preenchidos. (Travado por teste: `NE1`-`NE4` em qa_publicar_anuncios.)
+    //
+    // Mas a célula vazia é enganosa mesmo: o `obterAnuncioCompleto` não traz
+    // esses campos, então vazio aqui significa "não li do canal", e não "o
+    // anúncio está sem". Quem olha não tem como distinguir — e a leitura
+    // natural é a errada. Por isso a tela agora DIZ.
     const aviso = 'Cada linha é UM anúncio publicado. Ao confirmar você vê o resumo do que mudou '
-      + 'e decide se envia aos marketplaces — com simulação antes, se quiser.'
+      + 'e decide se envia aos marketplaces — com simulação antes, se quiser. '
+      + '⚠️ Categoria, peso, medidas, NCM e origem aparecem VAZIOS porque não são lidos do canal — '
+      + 'estão preenchidos lá e NÃO serão enviados por esta tela, mesmo se você digitar algo neles.'
       + (semLeitura.length
         ? ' ' + semLeitura.length + ' anúncio(s) de canal sem leitura abriram com o conteúdo do produto interno.'
         : '');
@@ -53674,7 +53709,7 @@ REGRAS DURAS:
         // mesclar), então só aparece nesse caso; num produto normal, nada de selo.
         const _ehDeOutroProduto = a.produtoId != null && String(a.produtoId) !== String(p.id);
         const selo = _ehDeOutroProduto
-          ? '<button type="button" onclick="_prodDefinirComoPai(' + a.produtoId + ')" title="Unificar: tornar este o produto de referência" style="font-size:10px;font-weight:700;background:#fef9c3;color:#854d0e;border:1px solid #fde68a;border-radius:5px;padding:1px 6px;cursor:pointer">unificar aqui</button>'
+          ? '<button type="button" onclick="_prodTrazerAnuncio(' + a.produtoId + ',' + _escProd(JSON.stringify(JSON.stringify({ anuncioId: a.anuncioId, marketplace: a.marketplace, titulo: a.titulo, nomeLoja: a.nomeLoja || a.lojaNome }))) + ')" title="Traz ESTE anúncio para o produto que você está vendo" style="font-size:10px;font-weight:700;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:5px;padding:1px 6px;cursor:pointer">trazer pra cá</button>'
           : '';
         return '<div data-anuncio-linha="' + _escProd(a.anuncioId) + '" style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:8px 10px;margin-bottom:6px">'
           + foto
@@ -53736,10 +53771,123 @@ REGRAS DURAS:
   window._prodEnriquecerAnunciosReais = _prodEnriquecerAnunciosReais;
 
   // v33k.852: torna outro produto o PAI da família (o atual vira duplicação dele)
-  async function _prodDefinirComoPai(produtoId) {
+  // ══════════════════════════════════════════════════════════════════════
+  // TRAZER O ANÚNCIO PRO PRODUTO ABERTO (v33k.2109)
+  // ──────────────────────────────────────────────────────────────────────
+  // RELATO DE 29/08: "quando a gente vincular precisa ser ao anúncio que
+  // estamos aberto, vincular o anúncio a ele, não fazer o produto que estamos
+  // ir para dentro do que vinculamos, isso é o básico".
+  //
+  // Ele está certo, e o botão anterior fazia o OPOSTO: `definirComoPai` movia
+  // o PRODUTO ABERTO pra dentro do outro, e o aberto sumia da listagem.
+  // Quem está vendo um produto e clica num anúncio quer o anúncio vindo pra
+  // cá — a direção é essa, e não tem por que ser outra.
+  //
+  // A operação certa já existia: `moverVinculos` com `destino.modo:
+  // 'existente'`. É atômica no servidor e mexe SÓ no vínculo — nenhum produto
+  // é reparentado, nenhum some da lista.
+  async function _prodTrazerAnuncio(produtoOrigemId, anuncioJson) {
+    const destinoId = window._prodVincIdAtual
+      || (typeof _produtoEditandoId !== 'undefined' ? _produtoEditandoId : null);
+    if (destinoId == null) return;
+    if (String(produtoOrigemId) === String(destinoId)) {
+      showToast('Este anúncio já está neste produto.', true); return;
+    }
+    let a = {};
+    try { a = JSON.parse(anuncioJson) || {}; } catch (_) {}
+
+    const origem = (typeof produtosErp !== 'undefined'
+      ? produtosErp.find(x => String(x.id) === String(produtoOrigemId)) : null);
+    const destino = (typeof produtosErp !== 'undefined'
+      ? produtosErp.find(x => String(x.id) === String(destinoId)) : null);
+
+    // quais variações da ORIGEM carregam este anúncio
+    const selecoes = [];
+    ((origem && origem.variacoes) || []).forEach(v => {
+      (v.vinculos || []).forEach(vi => {
+        if (String(vi.anuncioId) === String(a.anuncioId)) {
+          selecoes.push({ anuncioId: String(a.anuncioId), variacaoId: String(v.id) });
+        }
+      });
+    });
+    if (!selecoes.length) {
+      showToast('Não achei as variações deste anúncio no produto de origem. Recarregue a página e tente de novo.', true);
+      return;
+    }
+
     const ok = await (typeof lcConfirm === 'function'
-      ? lcConfirm('Tornar este anúncio o produto PAI (referência)?\n\nO produto atual passa a ser uma duplicação dele.')
-      : Promise.resolve(confirm('Tornar este o produto pai?')));
+      ? lcConfirm('Trazer este anúncio para o produto aberto?\n\n'
+        + 'ANÚNCIO: ' + (a.titulo || a.anuncioId) + (a.nomeLoja ? ' (' + a.nomeLoja + ')' : '') + '\n'
+        + 'SAI DE: ' + ((origem && origem.nome) || ('produto ' + produtoOrigemId)) + '\n'
+        + 'VAI PARA: ' + ((destino && destino.nome) || ('produto ' + destinoId)) + '\n\n'
+        + 'Move ' + selecoes.length + ' variação(ões). Nada muda nos marketplaces e '
+        + 'nenhum produto sai da listagem.')
+      : Promise.resolve(confirm('Trazer este anúncio para o produto aberto?')));
+    if (!ok) return;
+
+    const r = await _prodApi('/api/produtos/mover-vinculos', {
+      method: 'POST',
+      body: JSON.stringify({
+        origemId: produtoOrigemId,
+        selecoes,
+        destino: { modo: 'existente', produtoId: destinoId },
+      }),
+    });
+    if (!r.ok || !r.data || !r.data.ok) {
+      showToast((r.data && r.data.erro) || 'Não foi possível trazer o anúncio.', true);
+      return;
+    }
+    showToast('Anúncio trazido para este produto.');
+    // recarrega a lista do MESMO produto — a tela não muda de produto,
+    // que era justamente o incômodo do botão anterior.
+    // ★ o nome certo é `carregarProdutosDoBackend`. Escrevi `sincronizarProdutos`
+    //   de cabeça na primeira versão: função que não existe, protegida por um
+    //   `typeof` que faria o recarregamento sumir em silêncio — a lista
+    //   ficaria mostrando o anúncio no lugar velho e a pessoa acharia que a
+    //   operação falhou. Conferido no arquivo antes de trocar.
+    if (typeof carregarProdutosDoBackend === 'function') {
+      try { await carregarProdutosDoBackend(); } catch (e) { console.warn('recarga:', e.message); }
+    }
+    const pAtual = (typeof produtosErp !== 'undefined'
+      ? produtosErp.find(x => String(x.id) === String(destinoId)) : null);
+    if (pAtual) {
+      try { _prodCarregarCabecalhoVinculo(pAtual); } catch (e) {}
+      try { _prodDesenharPainelAnuncios(pAtual); } catch (e) {}
+    }
+  }
+  window._prodTrazerAnuncio = _prodTrazerAnuncio;
+
+  async function _prodDefinirComoPai(produtoId) {
+    // ★ v33k.2108: ESTE BOTÃO NÃO VINCULA ANÚNCIO. ELE INVERTE A HIERARQUIA.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 29/08: "apareceu os 8 anúncios, mas com um botão amarelo de
+    // vincular, eu o fiz em TODOS os anúncios e agora ele sumiu da listagem".
+    //
+    // Foi exatamente o que o botão faz: cada clique torna aquele produto a
+    // RAIZ e põe o anterior como FILHO. Oito cliques = oito inversões, e o
+    // produto que aparecia na lista acabou pendurado como filho de outro.
+    // Filho não aparece na listagem, por projeto — então o CORACAO sumiu.
+    //
+    // Três culpas do desenho, todas minhas de não ter olhado antes:
+    //   • o rótulo dizia "unificar aqui", que soa como juntar anúncios;
+    //   • a confirmação falava em "produto PAI (referência)", vocabulário
+    //     interno que não diz o que a pessoa vai VER depois;
+    //   • nada avisava que o produto atual SAI da listagem.
+    //
+    // Agora o texto diz o efeito visível, nomeia os dois produtos, e a ação
+    // é marcada como perigosa. Reverter: `diag-quem-e-o-pai.js`.
+    const _pNome = (typeof produtosErp !== 'undefined'
+      ? (produtosErp.find(x => String(x.id) === String(produtoId)) || {}).nome : '') || ('produto ' + produtoId);
+    const _atualNome = (typeof produtosErp !== 'undefined'
+      ? (produtosErp.find(x => String(x.id) === String(_produtoEditandoId)) || {}).nome : '') || 'o produto atual';
+    const ok = await (typeof lcConfirm === 'function'
+      ? lcConfirm('Trocar qual produto aparece na listagem?\n\n'
+        + 'PASSA A APARECER: ' + _pNome + '\n'
+        + 'SAI DA LISTAGEM: ' + _atualNome + '\n\n'
+        + 'Isto NÃO vincula anúncio nem muda nada nos marketplaces — só troca '
+        + 'qual dos dois é a referência. O que sair continua existindo, ligado ao outro.',
+        { perigo: true })
+      : Promise.resolve(confirm('Trocar qual produto aparece na listagem?')));
     if (!ok) return;
     const r = await _prodApi('/api/produtos/' + encodeURIComponent(produtoId) + '/definir-como-pai', { method: 'POST' });
     if (!r.ok || !r.data.ok) {
@@ -74237,7 +74385,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2107-uma-contagem-so';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2109-o-anuncio-vem-pra-ca';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
