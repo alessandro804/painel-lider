@@ -19344,6 +19344,12 @@ window.LC_SVG = {
           <button class="lc-btn" id="emBtnCapaIa" onclick="emCapaIaAbrir()" style="display:none;background:var(--lc-surface);color:var(--lc-text);margin-right:6px">
             <span class="lc-ic" data-lucide="sparkles" style="width:14px;height:14px"></span>
             Gerar fotos de capa com IA</button>
+          <button class="lc-btn" id="emBtnGerarSku" onclick="emSkuLoteAbrir()" style="background:var(--lc-surface);color:var(--lc-text);margin-right:6px" title="Monta os SKUs das variações a partir do SKU principal de cada linha. Mostra a prévia antes de aplicar.">
+            <span class="lc-ic" data-lucide="wand-2" style="width:14px;height:14px"></span>
+            Gerar SKUs</button>
+          <button class="lc-btn" id="emBtnDesfazerSku" onclick="emSkuLoteDesfazer()" style="display:none;background:var(--lc-surface);color:var(--lc-text);margin-right:6px">
+            <span class="lc-ic" data-lucide="undo-2" style="width:14px;height:14px"></span>
+            Desfazer SKUs</button>
           <button class="lc-btn" onclick="emCancelar()" style="background:var(--lc-surface);color:var(--lc-text)">Cancelar</button>
           <button class="lc-btn lc-btn--primary" id="emBtnConfirmar" onclick="emConfirmar()">Confirmar e exportar</button>
         </div>
@@ -21351,6 +21357,7 @@ window.LC_SVG = {
       <div class="modal-v2-actions" style="margin-left:auto">
         
         
+        <button class="modal-v2-btn modal-v2-btn-secondary" id="prodEditarAnunciosBtn" onclick="edAnAbrirSelecao(_produtoEditandoId)" style="display:none;background:#7c3aed;color:white;border-color:#7c3aed" title="Abre a tela de conferência com uma linha por anúncio vinculado, carregada com o conteúdo publicado em cada canal">✏️ Editar anúncios</button>
         <button class="modal-v2-btn modal-v2-btn-secondary" id="prodAtualizarMktBtn" onclick="v31AbrirModalPropagar(_produtoEditandoId)" style="display:none;background:#3b82f6;color:white;border-color:#3b82f6" title="Escolha quais campos e quais anúncios receber as mudanças (não espalha cegamente)">📤 Propagar para anúncios</button>
         <button class="modal-v2-btn modal-v2-btn-secondary" onclick="closeProduto()">Cancelar</button>
         <button class="modal-v2-btn modal-v2-btn-primary" onclick="salvarProduto()">💾 Salvar produto</button>
@@ -48185,6 +48192,158 @@ Retorne JSON: {"ID": "valor", ...}`;
     });
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // SKU EM LOTE NA CONFERÊNCIA (v33k.2097)
+  // ──────────────────────────────────────────────────────────────────────
+  // Pedido do Alessandro: "pegar o SKU do produto pai e as variações e montar
+  // os SKUs automaticamente de TODOS os anúncios listados".
+  //
+  // Cada linha usa o SEU PRÓPRIO `skuPai`, não um comum. Isso importa: com
+  // uma linha por anúncio, dois anúncios do mesmo produto têm o mesmo skuPai
+  // e portanto geram SKUs IDÊNTICOS para a mesma variação — que é o certo, é
+  // assim que o ERP casa a venda com a variação. Já um anúncio que veio de
+  // outra família tem skuPai próprio e continua com o SKU dele.
+  //
+  // ★ PRÉVIA ANTES DE APLICAR, sempre. Gerar SKU por cima de SKU existente é
+  //   destrutivo de um jeito que não dá alarme: a variação continua lá, o
+  //   anúncio continua no ar, e só quando chega o pedido é que o casamento
+  //   falha. A prévia separa "vazio → preenchido" (seguro) de "trocou"
+  //   (precisa olhar), e a segunda lista vem sempre por inteiro.
+  //
+  // Não escreve em marketplace. Escreve na LINHA, e a linha só sai daqui se
+  // a pessoa confirmar a tela.
+
+  function emSkuLotePrevia() {
+    const st = _emEstado;
+    if (!st || !Array.isArray(st.linhas)) return null;
+    if (typeof emColetarTela === 'function') emColetarTela();
+
+    const novos = [], trocas = [], semPai = [];
+    st.linhas.forEach((l, li) => {
+      const rotulo = (l._anuncio
+        ? ((l._anuncio.nomeLoja || '') + ' #' + l._anuncio.anuncioId)
+        : (l.nome || ('linha ' + (li + 1))));
+      const base = lcSkuPaiBase(l.skuPai || '');
+      if (!base) { semPai.push(rotulo); return; }
+      const gerados = lcMontarSkusDasVariacoes(base, l.variacoes || []);
+      (l.variacoes || []).forEach((v, vi) => {
+        const de = String(v.sku == null ? '' : v.sku).trim();
+        const para = gerados[vi];
+        if (!para || de === para) return;
+        const item = { li, vi, rotulo, variacao: v.nome || [v.cor, v.tamanho].filter(Boolean).join(' / ') || ('var ' + (vi + 1)), de, para };
+        (de ? trocas : novos).push(item);
+      });
+    });
+    return { novos, trocas, semPai };
+  }
+
+  function emSkuLoteAbrir() {
+    const prev = emSkuLotePrevia();
+    if (!prev) return;
+    if (!prev.novos.length && !prev.trocas.length) {
+      showToast(prev.semPai.length
+        ? 'Nada a gerar: nenhuma linha com SKU principal preenchido.'
+        : 'Todos os SKUs já estão como a regra geraria.');
+      return;
+    }
+    const lista = (itens, cor) => itens.map(x =>
+      '<li style="margin-bottom:2px">' + escapeHtml(x.rotulo) + ' · ' + escapeHtml(x.variacao) + ': '
+      + (x.de ? '<s style="color:var(--lc-muted)">' + escapeHtml(x.de) + '</s> → ' : '')
+      + '<b style="color:' + cor + '">' + escapeHtml(x.para) + '</b></li>').join('');
+
+    let html = '<div style="font-size:12.5px;color:var(--lc-ink-2);margin-bottom:12px;line-height:1.5">'
+      + 'Cada linha usa o <b>SKU principal dela</b>. Anúncios do mesmo produto geram o mesmo SKU '
+      + 'para a mesma variação — é assim que o pedido casa com a variação no ERP.</div>';
+
+    if (prev.novos.length) {
+      html += '<div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:4px">'
+        + prev.novos.length + ' variação(ões) SEM SKU (seguro)</div>'
+        + '<ul style="margin:0 0 14px 16px;padding:0;font-size:11.5px;max-height:190px;overflow:auto">'
+        + lista(prev.novos, '#166534') + '</ul>';
+    }
+    if (prev.trocas.length) {
+      // ★ a lista de troca NUNCA é truncada: é a parte perigosa.
+      html += '<div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:4px">'
+        + prev.trocas.length + ' variação(ões) com SKU que SERÁ TROCADO</div>'
+        + '<div style="font-size:11.5px;color:#b45309;margin-bottom:5px">'
+        + 'Se algum desses SKUs já está no marketplace ou em etiqueta impressa, trocar aqui '
+        + 'quebra o casamento do pedido com a variação. Confira antes.</div>'
+        + '<ul style="margin:0 0 14px 16px;padding:0;font-size:11.5px;max-height:220px;overflow:auto">'
+        + lista(prev.trocas, '#b45309') + '</ul>';
+    }
+    if (prev.semPai.length) {
+      html += '<div style="font-size:11.5px;color:var(--lc-muted);border-top:1px solid var(--lc-border);padding-top:8px">'
+        + prev.semPai.length + ' linha(s) sem SKU principal ficaram de fora: '
+        + escapeHtml(prev.semPai.slice(0, 6).join(', '))
+        + (prev.semPai.length > 6 ? ' e mais ' + (prev.semPai.length - 6) : '') + '.</div>';
+    }
+
+    window._emSkuLotePrev = prev;
+    lcAlert(html, {
+      tipo: prev.trocas.length ? 'aviso' : 'info', html: true, largura: 720,
+      titulo: 'Gerar SKUs das variações',
+      botoes: [
+        { texto: 'Cancelar', onclick: 'lcModalFechar()' },
+        { texto: (prev.trocas.length ? 'Aplicar (inclui trocas)' : 'Aplicar'),
+          onclick: 'emSkuLoteAplicar()', primario: true },
+      ],
+    });
+  }
+  window.emSkuLoteAbrir = emSkuLoteAbrir;
+
+  function emSkuLoteAplicar() {
+    const prev = window._emSkuLotePrev;
+    const st = _emEstado;
+    if (!prev || !st) { if (typeof lcModalFechar === 'function') lcModalFechar(); return; }
+
+    // ★ ESCREVE NO CAMPO DA TELA, não no modelo.
+    //   O `emColetarTela` varre `[data-emcol]` e joga o valor do input POR CIMA
+    //   do modelo. Se eu escrevesse só em `st.linhas`, o próximo evento de
+    //   digitação (o `oninput` de qualquer campo chama `emRecontar`, e o
+    //   confirmar chama `emColetarTela`) devolveria o SKU antigo e o lote seria
+    //   desfeito sozinho — sem erro nenhum na tela.
+    //   É o mesmo caminho que o `emAplicarColuna` já usa: mexe no input,
+    //   depois coleta.
+    const antes = [];
+    [...prev.novos, ...prev.trocas].forEach(x => {
+      const el = document.querySelector('[data-emcol="sku"][data-emli="' + x.li + '"][data-emvi="' + x.vi + '"]');
+      if (!el) return;              // coluna escondida pelo seletor: não inventa
+      antes.push({ li: x.li, vi: x.vi, valor: el.value });
+      el.value = x.para;
+    });
+    if (!antes.length) {
+      if (typeof lcModalFechar === 'function') lcModalFechar();
+      showToast('A coluna SKU está escondida. Ligue ela no seletor de colunas e tente de novo.', true);
+      return;
+    }
+    window._emSkuLoteDesfazer = antes;
+
+    emColetarTela();
+    if (typeof emRecontar === 'function') emRecontar();
+    if (typeof lcModalFechar === 'function') lcModalFechar();
+    showToast(antes.length + ' SKU(s) gerado(s). Use Desfazer SKUs se precisar voltar.');
+
+    const btn = document.getElementById('emBtnDesfazerSku');
+    if (btn) btn.style.display = 'inline-flex';
+  }
+  window.emSkuLoteAplicar = emSkuLoteAplicar;
+
+  function emSkuLoteDesfazer() {
+    const st = _emEstado, antes = window._emSkuLoteDesfazer;
+    if (!st || !antes || !antes.length) { showToast('Nada para desfazer.', true); return; }
+    antes.forEach(x => {
+      const el = document.querySelector('[data-emcol="sku"][data-emli="' + x.li + '"][data-emvi="' + x.vi + '"]');
+      if (el) el.value = x.valor;
+    });
+    window._emSkuLoteDesfazer = null;
+    emColetarTela();
+    if (typeof emRecontar === 'function') emRecontar();
+    showToast('SKUs voltaram ao que estavam.');
+    const btn = document.getElementById('emBtnDesfazerSku');
+    if (btn) btn.style.display = 'none';
+  }
+  window.emSkuLoteDesfazer = emSkuLoteDesfazer;
+
   function emCancelar() {
     const st = _emEstado; _emEstado = null;
     goTo((st && st.voltarPara) || 'estoqueScreen');
@@ -48208,6 +48367,771 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (st.resolve) st.resolve(st.linhas);
   }
   window.emConfirmar = emConfirmar;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // EDITAR ANÚNCIOS VINCULADOS — LEVA 1 (v33k.2096)
+  // ──────────────────────────────────────────────────────────────────────
+  // Abre a MESMA tela da conferência de exportação (`emAbrir`), mas com UMA
+  // LINHA POR ANÚNCIO VINCULADO, carregada com o que está publicado de
+  // verdade em cada canal — não com a cópia do produto interno.
+  //
+  // ── POR QUE UMA LINHA POR ANÚNCIO ────────────────────────────────────
+  // Decisão do Alessandro em 29/08. O mesmo produto pode ter 8 anúncios em
+  // 4 canais, e o título do ML (60 caracteres) não é o da Shopee (120). Uma
+  // linha por produto obrigaria a inventar um valor comum que nenhum canal
+  // tem. A edição em massa continua existindo pela própria tela (o "aplicar
+  // em todas" de cada coluna), que é onde ela deve ficar.
+  //
+  // ── O QUE NÃO SE FAZ AQUI ────────────────────────────────────────────
+  // ★ NÃO chamamos `emAplicarNoProduto`. As N linhas apontariam para o MESMO
+  //   produto interno e a última sobrescreveria as anteriores — em silêncio.
+  //   O produto tem UM nome e UMA descrição; os anúncios têm N. Escrever de
+  //   volta ali seria perder N-1 edições sem avisar ninguém.
+  //
+  // ★ NÃO escrevemos no marketplace. Isso é a Leva 2, de propósito: os
+  //   adapters já têm `atualizarAnuncioRespeitandoPersonalizado` com
+  //   `camposPropagar`, mas escrever ao vivo em loja de cliente é a parte
+  //   que precisa de rodada de teste própria. Aqui a Leva 1 fecha
+  //   calculando o DIFF por anúncio, que é exatamente o que a Leva 2 vai
+  //   consumir. Trabalho nenhum jogado fora.
+  //
+  // ── LIMITE DECLARADO ─────────────────────────────────────────────────
+  // `obterAnuncioCompleto` existe na Shopee e no ML. TikTok e Shein NÃO
+  // têm — a rota devolve `suportado: false` com motivo. Esses anúncios
+  // aparecem na lista (o lote traz título/preço deles) mas abrem com o dado
+  // do produto interno, e a tela DIZ isso, anúncio por anúncio. Mostrar
+  // dado do produto fingindo ser do anúncio seria pior que não mostrar.
+
+  // Agrupa os vínculos por (anuncioId, loja). Extraído do
+  // `v31AbrirModalPropagar`, que já fazia exatamente isto — a diferença é
+  // que agora as duas telas leem da mesma função, em vez de duas cópias que
+  // divergem na primeira mudança.
+  function lcAnunciosVinculadosDoProduto(p) {
+    const grupos = new Map();
+    if (!p) return [];
+    const juntar = (prod, ehFilho) => {
+      (prod.variacoes || []).forEach((v) => {
+        (v.vinculos || []).forEach((vinc) => {
+          if (!vinc.anuncioId || !vinc.marketplace) return;
+          const lojaIdBanco = vinc.lojaIdBanco || vinc.lojaId || '';
+          const chave = String(vinc.anuncioId) + '|' + lojaIdBanco;
+          if (!grupos.has(chave)) {
+            const loja = (typeof lojasErp !== 'undefined')
+              ? (lojasErp.find(l => String(l.idBanco) === String(lojaIdBanco))
+                 || lojasErp.find(l => String(l.id) === String(vinc.lojaId)))
+              : null;
+            grupos.set(chave, {
+              chave,
+              anuncioId: String(vinc.anuncioId),
+              marketplace: String(vinc.marketplace || '').toLowerCase(),
+              lojaIdBanco: lojaIdBanco,
+              nomeLoja: (loja && loja.nome) || '(loja não encontrada)',
+              titulo: vinc.titulo || prod.nome || '',
+              produtoOrigem: prod,
+              deFilho: !!ehFilho,
+              personalizado: (typeof v31_temPersonalizacao === 'function')
+                ? !!v31_temPersonalizacao(vinc) : false,
+              variacoesDoErp: [],
+            });
+          }
+          grupos.get(chave).variacoesDoErp.push({ cor: v.cor, tamanho: v.tamanho, sku: v.sku });
+        });
+      });
+    };
+    juntar(p, false);
+    // ★ Os FILHOS duplicados entram junto, igual o `contarVinculosPorMarketplace`
+    //   já contava. Se a lista mostrasse menos anúncios do que o contador do
+    //   botão diz, a primeira reação seria achar que sumiu vínculo.
+    if (typeof produtosErp !== 'undefined') {
+      produtosErp
+        .filter(f => f.duplicadoDeId && String(f.duplicadoDeId) === String(p.id) && f.status !== 'excluido')
+        .forEach(f => juntar(f, true));
+    }
+    // ordem estável: canal, depois loja, depois id. Sem isto a lista embaralha
+    // a cada abertura e a pessoa perde a referência de onde estava.
+    return Array.from(grupos.values()).sort((a, b) =>
+      (a.marketplace || '').localeCompare(b.marketplace || '')
+      || String(a.nomeLoja).localeCompare(String(b.nomeLoja))
+      || String(a.anuncioId).localeCompare(String(b.anuncioId)));
+  }
+  window.lcAnunciosVinculadosDoProduto = lcAnunciosVinculadosDoProduto;
+
+  // canais em que sabemos ler o anúncio publicado
+  const EDAN_LEITURA_REAL = ['shopee', 'mercadolivre'];
+  var _edAnState = null;
+
+  function _edAnRotuloMkt(mkt) {
+    const m = String(mkt || '').toLowerCase();
+    if (/shopee/.test(m)) return 'Shopee';
+    if (/mercad/.test(m)) return 'Mercado Livre';
+    if (/tiktok/.test(m)) return 'TikTok';
+    if (/shein/.test(m)) return 'Shein';
+    return m || '?';
+  }
+
+  async function edAnAbrirSelecao(produtoId) {
+    const p = (typeof produtosErp !== 'undefined')
+      ? produtosErp.find(x => String(x.id) === String(produtoId)) : null;
+    if (!p) { showToast('Produto não encontrado', true); return; }
+
+    const anuncios = lcAnunciosVinculadosDoProduto(p);
+    if (!anuncios.length) {
+      showToast('Este produto ainda não tem anúncio vinculado.', true);
+      return;
+    }
+    _edAnState = { produto: p, anuncios, marcados: {} };
+    // tudo marcado por padrão: quem abre isto quer editar os anúncios dele.
+    // (o modal de PROPAGAR desmarca os personalizados porque lá o risco é
+    // sobrescrever customização com o valor do pai; aqui a pessoa edita cada
+    // anúncio na mão, então não há o que atropelar.)
+    anuncios.forEach(a => { _edAnState.marcados[a.chave] = true; });
+
+    lcAlert('<div id="edAnCorpo"></div>', {
+      tipo: 'info', html: true, largura: 780,
+      titulo: 'Editar anúncios de: ' + (p.nome || 'produto'),
+      botoes: [
+        { texto: 'Cancelar', onclick: 'lcModalFechar()' },
+        { texto: 'Abrir editor', onclick: 'edAnConfirmarSelecao()', primario: true },
+      ],
+    });
+    setTimeout(() => {
+      edAnDesenharSelecao();
+      // enriquece com o dado publicado (lote: Shopee 50/chamada, ML 20)
+      Promise.resolve().then(() => edAnEnriquecer(p.id, anuncios)).catch(() => {});
+    }, 40);
+  }
+  window.edAnAbrirSelecao = edAnAbrirSelecao;
+
+  function edAnDesenharSelecao() {
+    const st = _edAnState; if (!st) return;
+    const box = document.getElementById('edAnCorpo'); if (!box) return;
+
+    const porCanal = {};
+    st.anuncios.forEach(a => { (porCanal[a.marketplace] = porCanal[a.marketplace] || []).push(a); });
+    const nMarcados = Object.keys(st.marcados).filter(k => st.marcados[k]).length;
+
+    let html = '<div style="font-size:12.5px;color:var(--lc-ink-2);margin-bottom:12px;line-height:1.5">'
+      + '<b>' + st.anuncios.length + ' anúncio(s)</b> vinculado(s). Cada um marcado vira <b>uma linha</b> no editor, '
+      + 'com o conteúdo publicado naquele canal.'
+      + '</div>';
+
+    html += '<div style="display:flex;gap:8px;margin-bottom:10px">'
+      + '<button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="edAnMarcarTodos(true)">Marcar todos</button>'
+      + '<button class="lc-btn lc-btn--ghost lc-btn--sm" onclick="edAnMarcarTodos(false)">Desmarcar todos</button>'
+      + '</div>';
+
+    Object.keys(porCanal).sort().forEach(mkt => {
+      const semLeitura = EDAN_LEITURA_REAL.indexOf(mkt) < 0;
+      html += '<div style="margin-bottom:14px">'
+        + '<div style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:800;'
+        + 'color:var(--lc-ink);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">'
+        + escapeHtml(_edAnRotuloMkt(mkt))
+        + '<button class="lc-btn lc-btn--ghost lc-btn--sm" style="font-size:10px;padding:2px 8px"'
+        + ' onclick="edAnMarcarCanal(\'' + escapeHtml(mkt) + '\')">só este canal</button>'
+        + (semLeitura
+          ? '<span style="font-size:10px;font-weight:700;background:#fef3c7;color:#92400e;'
+            + 'border-radius:5px;padding:2px 7px" title="Este canal ainda não expõe leitura do anúncio publicado">'
+            + 'abre com o dado do produto</span>'
+          : '')
+        + '</div>';
+
+      porCanal[mkt].forEach(a => {
+        const marcado = !!st.marcados[a.chave];
+        html += '<label data-anuncio-linha="' + escapeHtml(a.anuncioId) + '"'
+          + ' style="display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border:1px solid var(--lc-border);'
+          + 'border-radius:9px;margin-bottom:6px;cursor:pointer;background:var(--lc-surface)">'
+          + '<input type="checkbox" ' + (marcado ? 'checked' : '')
+          + ' onchange="edAnAlternar(\'' + escapeHtml(a.chave) + '\', this.checked)"'
+          + ' style="margin-top:3px;accent-color:var(--lc-primary)">'
+          + '<img data-campo="foto" src="" alt="" style="width:38px;height:38px;border-radius:7px;'
+          + 'object-fit:cover;border:1px solid var(--lc-border);flex-shrink:0;visibility:hidden">'
+          + '<div style="flex:1;min-width:0">'
+          + '<div data-campo="titulo" style="font-size:12.5px;font-weight:600;color:var(--lc-ink);'
+          + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(a.titulo || '(sem título)') + '</div>'
+          + '<div data-campo="meta" style="font-size:11px;color:var(--lc-muted);margin-top:2px">#'
+          + escapeHtml(a.anuncioId) + '</div>'
+          + '<div style="font-size:11px;color:var(--lc-muted);margin-top:2px">'
+          + escapeHtml(a.nomeLoja)
+          + (a.deFilho ? ' · <span style="color:#7c3aed">de uma duplicação</span>' : '')
+          + (a.personalizado ? ' · <span style="color:#b45309">tem customização</span>' : '')
+          + '</div>'
+          + '</div></label>';
+      });
+      html += '</div>';
+    });
+
+    html += '<div id="edAnResumo" style="font-size:12px;color:var(--lc-ink-2);border-top:1px solid var(--lc-border);'
+      + 'padding-top:9px"><b>' + nMarcados + '</b> anúncio(s) marcado(s).</div>';
+    box.innerHTML = html;
+  }
+
+  function edAnAlternar(chave, valor) {
+    if (!_edAnState) return;
+    _edAnState.marcados[chave] = !!valor;
+    const n = Object.keys(_edAnState.marcados).filter(k => _edAnState.marcados[k]).length;
+    const el = document.getElementById('edAnResumo');
+    if (el) el.innerHTML = '<b>' + n + '</b> anúncio(s) marcado(s).';
+  }
+  window.edAnAlternar = edAnAlternar;
+
+  function edAnMarcarTodos(valor) {
+    if (!_edAnState) return;
+    _edAnState.anuncios.forEach(a => { _edAnState.marcados[a.chave] = !!valor; });
+    edAnDesenharSelecao();
+    Promise.resolve().then(() => edAnEnriquecer(_edAnState.produto.id, _edAnState.anuncios)).catch(() => {});
+  }
+  window.edAnMarcarTodos = edAnMarcarTodos;
+
+  function edAnMarcarCanal(mkt) {
+    if (!_edAnState) return;
+    _edAnState.anuncios.forEach(a => { _edAnState.marcados[a.chave] = (a.marketplace === mkt); });
+    edAnDesenharSelecao();
+    Promise.resolve().then(() => edAnEnriquecer(_edAnState.produto.id, _edAnState.anuncios)).catch(() => {});
+  }
+  window.edAnMarcarCanal = edAnMarcarCanal;
+
+  // Enriquece a lista com título/foto/preço/estoque REAIS. Reusa a mesma rota
+  // em lote que a lista de anúncios do produto já usa (v33k.921).
+  // Falha aberta: sem isto a lista ainda funciona com o título do vínculo.
+  async function edAnEnriquecer(produtoId, anuncios) {
+    const alvos = (anuncios || [])
+      .filter(a => a.anuncioId && a.lojaIdBanco)
+      .map(a => ({ lojaId: a.lojaIdBanco, anuncioId: a.anuncioId }));
+    if (!alvos.length) return;
+    try {
+      const r = await _prodApi('/api/produtos/' + encodeURIComponent(produtoId) + '/anuncios-reais', {
+        method: 'POST', body: JSON.stringify({ itens: alvos }),
+      });
+      if (!r.ok || !r.data || !r.data.ok) return;
+      (r.data.anuncios || []).forEach(real => {
+        if (!real.ok) return;
+        const linha = document.querySelector('#edAnCorpo [data-anuncio-linha="' + real.anuncioId + '"]');
+        if (!linha) return;
+        const t = linha.querySelector('[data-campo="titulo"]');
+        if (t && real.titulo) t.textContent = real.titulo;
+        const img = linha.querySelector('[data-campo="foto"]');
+        if (img && real.foto) { img.src = real.foto; img.style.visibility = 'visible'; }
+        const meta = linha.querySelector('[data-campo="meta"]');
+        if (meta) {
+          const partes = ['#' + real.anuncioId];
+          if (real.qtdVariacoes) partes.push(real.qtdVariacoes + ' variação(ões)');
+          if (real.preco != null) partes.push('R$ ' + Number(real.preco).toFixed(2));
+          if (real.estoqueTotal != null) partes.push('estoque ' + real.estoqueTotal);
+          if (real.status) partes.push(String(real.status));
+          meta.textContent = partes.join(' · ');
+        }
+      });
+    } catch (_) { /* a lista já serve sem o enriquecimento */ }
+  }
+
+  // ── do anúncio publicado → linha do editor ────────────────────────────
+  // ★ Cada linha ganha uma CÓPIA DESTACADA do produto como `_produto`. Se as
+  //   N linhas apontassem para o mesmo objeto, uma edição sobrescreveria a
+  //   outra na hora em que qualquer coisa chamasse `emAplicarNoProduto`.
+  //   A cópia é descartável: nada aqui volta para o painel na Leva 1.
+  function edAnLinhaDoAnuncio(produto, alvo, real, i) {
+    const base = JSON.parse(JSON.stringify(produto));
+    const linha = emLinhaDeProduto(base, i);
+    linha.ref = 'a' + i;
+    linha._anuncio = {
+      anuncioId: alvo.anuncioId,
+      marketplace: alvo.marketplace,
+      lojaIdBanco: alvo.lojaIdBanco,
+      nomeLoja: alvo.nomeLoja,
+      leituraReal: !!real,
+    };
+    if (!real) return linha;   // canal sem leitura: fica o dado do produto
+
+    // o que está PUBICADO manda sobre o que o produto interno guarda
+    if (real.titulo) linha.nome = real.titulo;
+    if (real.descricao) linha.descricao = real.descricao;
+    if (Array.isArray(real.fotos) && real.fotos.length) linha.fotos = real.fotos.slice();
+    if (real.skuPai) linha.skuPai = real.skuPai;
+
+    // variações do anúncio, casadas por SKU e depois por nome. Sem casar,
+    // a variação do anúncio entra como nova — e é melhor mostrar a verdade
+    // do canal do que forçar ela dentro do molde do produto.
+    if (Array.isArray(real.variacoes) && real.variacoes.length) {
+      linha.variacoes = real.variacoes.map((rv, vi) => {
+        const antiga = linha.variacoes.find(x =>
+          (rv.sku && x.sku && String(x.sku).toUpperCase() === String(rv.sku).toUpperCase())
+          || (rv.nome && x.nome && x.nome === rv.nome)) || {};
+        return Object.assign({}, antiga, {
+          ref: 'v' + vi,
+          nome: rv.nome || antiga.nome || '',
+          cor: rv.cor || antiga.cor || '',
+          tamanho: rv.tamanho != null ? String(rv.tamanho) : (antiga.tamanho || ''),
+          sku: rv.sku != null ? rv.sku : (antiga.sku || ''),
+          preco: rv.preco != null ? rv.preco : (antiga.preco != null ? antiga.preco : ''),
+          estoque: rv.estoque != null ? rv.estoque : (antiga.estoque != null ? antiga.estoque : ''),
+          ean: rv.ean || antiga.ean || '',
+          precoPromo: rv.precoPromo != null ? rv.precoPromo : (antiga.precoPromo != null ? antiga.precoPromo : ''),
+          valores: Object.assign({}, antiga.valores || {}),
+          atributos: Array.isArray(antiga.atributos) ? antiga.atributos.slice() : [],
+          corShein: antiga.corShein || {},
+        });
+      });
+    }
+    return linha;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // PUBLICAR AS EDIÇÕES NOS MARKETPLACES — LEVA 3 (v33k.2098)
+  // ──────────────────────────────────────────────────────────────────────
+  // Fecha o ciclo: o diff da Leva 1 vira chamada de atualização, anúncio por
+  // anúncio. NADA de rota nova — as duas que fazem o trabalho já existem:
+  //
+  //   POST /api/marketplaces/loja/:lojaId/anuncio/:anuncioId/sincronizar-este
+  //        → título, descrição, preço, fotos, atributos (via camposPropagar)
+  //   POST /api/produtos/:id/anuncio-variacoes
+  //        → SKU, preço e estoque POR VARIAÇÃO, e já nasce com dryRun:true
+  //
+  // Escolhi `sincronizar-este` (1 anúncio por chamada) em vez de `/propagar`
+  // (N anúncios, 1 produto) porque aqui CADA anúncio tem o SEU conteúdo e o
+  // SEU conjunto de campos alterados. O `/propagar` empurraria o mesmo
+  // produto para todos, que é o oposto do que esta tela existe pra fazer.
+  // Bônus: uma chamada por anúncio isola falha de graça.
+  //
+  // ★ SÓ VAI O QUE MUDOU. O `camposPropagar` é montado a partir do diff. Um
+  //   campo que a pessoa não tocou não entra na chamada — e isso não é
+  //   economia, é segurança: mandar `descricao` sem querer sobrescreve a
+  //   descrição customizada que alguém escreveu no marketplace.
+  //
+  // ★ O QUE NÃO TEM CAMINHO DE ESCRITA É DITO ANTES, NÃO DEPOIS.
+  //   Levantado no código dos adapters, não presumido:
+  //     Shopee  → título, descrição, preço, fotos, atributos: sim.
+  //               SKU de variação: sim, mas por `anuncio-variacoes`
+  //               (precisa do modelId). SKU pai: NÃO tem caminho.
+  //     ML      → o mesmo, e o SKU pai vai como `seller_custom_field`
+  //               junto da flag de atributos.
+  //     TikTok  → `atualizarAnuncioRespeitandoPersonalizado` existe.
+  //     Shein   → sem update por anúncio.
+  //   Um campo editado que não tem como ser publicado aparece na
+  //   confirmação, ANTES de publicar. Dizer depois — ou não dizer — seria a
+  //   mesma falha do "Itens: 0": sucesso na tela, nada por trás.
+
+  // ★ v33k.2099: esta tabela ESTAVA ERRADA em dois campos, e errada do pior
+  //   jeito: dizia "não será publicado" para coisa que funciona, o que faria
+  //   a pessoa deixar de usar um recurso que já tem.
+  //
+  //   O que eu tinha feito de errado foi confiar numa busca contaminada
+  //   (`grep ean` casa com `filter(Boolean)`) e olhar só uma das funções de
+  //   atualização do ML. Refeito lendo os caminhos de CRIAÇÃO e de
+  //   ATUALIZAÇÃO lado a lado:
+  //
+  //     EAN na Shopee  → `montarModels` grava `gtin_code` desde a v32f.5.
+  //                      Todo anúncio criado pelo painel foi COM EAN. Faltava
+  //                      só no update; ligado na v33k.2099.
+  //     EAN no ML      → `atualizarAnuncio` já mandava GTIN (e
+  //                      EMPTY_GTIN_REASON quando vazio, pro ML não pausar).
+  //     SKU pai Shopee → `add_item` grava `item_sku`; o `update_item` não
+  //                      mandava. Ligado na v33k.2099.
+  //
+  //   O padrão era o mesmo nos três: o caminho de CRIAÇÃO sabia escrever, o
+  //   de ATUALIZAÇÃO não carregava o campo. Quem criava pelo painel tinha o
+  //   dado lá; quem editava depois não conseguia corrigir.
+  const PUB_CAMPOS = {
+    shopee:       { titulo: 1, descricao: 1, preco: 1, fotos: 1, atributos: 1, skuVariacao: 1, skuPai: 1, ean: 1 },
+    mercadolivre: { titulo: 1, descricao: 1, preco: 1, fotos: 1, atributos: 1, skuVariacao: 1, skuPai: 1, ean: 1 },
+    // ★ TikTok (v33k.2100): a linha anterior dizia que titulo/descricao/fotos/
+    //   atributos eram publicaveis. NAO ERAM. O
+    //   `atualizarAnuncioRespeitandoPersonalizado` do TikTok so mandava PREÇO
+    //   e devolvia `ok:true` com um aviso — o painel lia o ok e escrevia
+    //   PUBLICADO para uma edicao que nunca saiu do backend.
+    //
+    //   Prometer publicacao que nao acontece e pior que recusar: o anuncio
+    //   fica intacto no ar e ninguem procura o motivo.
+    //
+    //   Ligado agora no `partial_edit`. `fotos` segue FALSE de propósito: o
+    //   endpoint exige `uri` (upload previo), nao URL — e mandar URL faria o
+    //   TikTok recusar o payload inteiro, derrubando junto o titulo que teria
+    //   funcionado.
+    tiktok:       { titulo: 1, descricao: 1, preco: 1, fotos: 0, atributos: 1, ean: 1 },
+    shein:        {},
+  };
+
+  // diff → { camposPropagar, variacoes, naoSuportado }
+  function edAnPlanoDaLinha(linha) {
+    const mkt = (linha._anuncio && linha._anuncio.marketplace) || '';
+    const pode = PUB_CAMPOS[mkt] || {};
+    const diff = edAnDiffDaLinha(linha);
+    const campos = new Set();
+    const porVar = {};
+    const naoSuportado = [];
+
+    diff.forEach(d => {
+      if (d.campo === 'nome') { pode.titulo ? campos.add('titulo') : naoSuportado.push('Título'); return; }
+      if (d.campo === 'descricao') { pode.descricao ? campos.add('descricao') : naoSuportado.push('Descrição'); return; }
+      if (d.campo === 'fotos') { pode.fotos ? campos.add('fotos') : naoSuportado.push('Fotos'); return; }
+      if (d.campo === 'skuPai') {
+        // Sobe sob a flag de ATRIBUTOS nos dois canais: no ML como
+        // `seller_custom_field`, na Shopee como `item_sku` no update_item.
+        // Não vai sob a flag de título de propósito — quem marca "título" não
+        // está pedindo pra mexer em SKU, e SKU trocado sem querer quebra o
+        // casamento do pedido com a variação.
+        if (pode.skuPai) { campos.add('atributos'); } else { naoSuportado.push('SKU principal'); }
+        return;
+      }
+      if (d.campo && d.campo.indexOf('variacao.') === 0) {
+        const sub = d.campo.split('.')[1];
+        const vi = d.vi;
+        if (sub === 'sku') {
+          if (!pode.skuVariacao) { naoSuportado.push('SKU da variação'); return; }
+          (porVar[vi] = porVar[vi] || {}).sku = d.para;
+          return;
+        }
+        if (sub === 'preco') {
+          if (!pode.preco) { naoSuportado.push('Preço'); return; }
+          (porVar[vi] = porVar[vi] || {}).preco = d.para;
+          return;
+        }
+        if (sub === 'estoque') { (porVar[vi] = porVar[vi] || {}).estoque = d.para; return; }
+        if (sub === 'ean') {
+          if (!pode.ean) { naoSuportado.push('EAN'); return; }
+          (porVar[vi] = porVar[vi] || {}).ean = d.para;
+          return;
+        }
+        // PREÇO PROMOCIONAL segue de fora, e não por esquecimento: na Shopee
+        // o `original_price` do update é o preço NORMAL — promoção lá é a API
+        // de desconto (`shopee-discount.js`), com campanha e data. Ligar um no
+        // outro sem entender o modelo de campanha publicaria desconto errado.
+        naoSuportado.push(sub === 'precoPromo' ? 'Preço promocional' : sub);
+        return;
+      }
+    });
+
+    // liga cada variação ao id do canal. Sem modelId/variationId a rota de
+    // variações não sabe onde escrever — e escrever na variação errada é pior
+    // que não escrever, então essas ficam de fora e são reportadas.
+    const variacoes = [];
+    const semId = [];
+    Object.keys(porVar).forEach(vi => {
+      const v = (linha.variacoes || [])[Number(vi)] || {};
+      const id = v.modelId || v.variationId || v.idCanal || null;
+      const rot = v.nome || [v.cor, v.tamanho].filter(Boolean).join(' / ') || ('variação ' + (Number(vi) + 1));
+      if (!id) { semId.push(rot); return; }
+      variacoes.push(Object.assign({ modelId: String(id) }, porVar[vi]));
+    });
+
+    return {
+      mkt,
+      camposPropagar: [...campos],
+      variacoes,
+      naoSuportado: [...new Set(naoSuportado)],
+      semId,
+      nMudancas: diff.length,
+    };
+  }
+
+  function edAnAbrirPublicar() {
+    const pend = window._edAnPendentes;
+    if (!pend || !pend.linhas) { showToast('Nada para publicar.', true); return; }
+
+    const planos = pend.linhas.map(l => ({ linha: l, plano: edAnPlanoDaLinha(l) }))
+      .filter(x => x.plano.nMudancas > 0);
+    if (!planos.length) { showToast('Nenhuma alteração para publicar.'); return; }
+
+    const vaiMudar = planos.filter(x => x.plano.camposPropagar.length || x.plano.variacoes.length);
+    let html = '<div style="font-size:12.5px;color:var(--lc-ink-2);margin-bottom:12px;line-height:1.5">'
+      + 'Vou enviar <b>somente os campos que você alterou</b>, anúncio por anúncio. '
+      + 'Campo que você não tocou não entra na chamada — mandar um campo sem querer '
+      + 'sobrescreve o que estiver customizado no marketplace.</div>';
+
+    planos.forEach(({ linha, plano }) => {
+      const a = linha._anuncio || {};
+      html += '<div style="border:1px solid var(--lc-border);border-radius:9px;padding:10px 12px;margin-bottom:8px">'
+        + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink)">'
+        + escapeHtml(_edAnRotuloMkt(a.marketplace)) + ' · ' + escapeHtml(a.nomeLoja || '')
+        + ' <span style="font-weight:500;color:var(--lc-muted)">#' + escapeHtml(a.anuncioId || '') + '</span></div>';
+      if (plano.camposPropagar.length) {
+        html += '<div style="font-size:11.5px;color:#166534;margin-top:3px">envia: <b>'
+          + escapeHtml(plano.camposPropagar.join(', ')) + '</b></div>';
+      }
+      if (plano.variacoes.length) {
+        html += '<div style="font-size:11.5px;color:#166534;margin-top:2px">'
+          + plano.variacoes.length + ' variação(ões) com sku/preço/estoque</div>';
+      }
+      if (plano.naoSuportado.length) {
+        html += '<div style="font-size:11.5px;color:#b45309;margin-top:3px">'
+          + '<b>não será publicado</b> (sem caminho de escrita neste canal): '
+          + escapeHtml(plano.naoSuportado.join(', ')) + '</div>';
+      }
+      if (plano.semId.length) {
+        html += '<div style="font-size:11.5px;color:#b45309;margin-top:2px">'
+          + 'variação sem id do canal, fica de fora: ' + escapeHtml(plano.semId.join(', ')) + '</div>';
+      }
+      if (!plano.camposPropagar.length && !plano.variacoes.length) {
+        html += '<div style="font-size:11.5px;color:var(--lc-muted);margin-top:3px">nada a enviar neste anúncio</div>';
+      }
+      html += '</div>';
+    });
+
+    html += '<label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-top:10px;'
+      + 'background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:8px;padding:9px 11px">'
+      + '<input type="checkbox" id="edAnSimular" checked style="accent-color:var(--lc-primary)">'
+      + '<span>Simular primeiro (não grava nada; mostra o que aconteceria)</span></label>';
+
+    window._edAnPlanos = planos;
+    lcAlert(html, {
+      tipo: 'aviso', html: true, largura: 760,
+      titulo: 'Publicar em ' + vaiMudar.length + ' anúncio(s)',
+      botoes: [
+        { texto: 'Cancelar', onclick: 'lcModalFechar()' },
+        { texto: 'Continuar', onclick: 'edAnPublicar()', primario: true },
+      ],
+    });
+  }
+  window.edAnAbrirPublicar = edAnAbrirPublicar;
+
+  async function edAnPublicar() {
+    const planos = window._edAnPlanos || [];
+    const simular = !!(document.getElementById('edAnSimular') || {}).checked;
+    const produtoId = (_edAnState && _edAnState.produto && _edAnState.produto.id) || null;
+    if (typeof lcModalFechar === 'function') lcModalFechar();
+    if (!planos.length) return;
+
+    const resultados = [];
+    for (let i = 0; i < planos.length; i++) {
+      const { linha, plano } = planos[i];
+      const a = linha._anuncio || {};
+      const res = { anuncio: a, ok: true, feitos: [], erros: [] };
+      showToast('(' + (i + 1) + '/' + planos.length + ') ' + (simular ? 'simulando ' : 'publicando ')
+        + _edAnRotuloMkt(a.marketplace) + ' #' + a.anuncioId);
+
+      // ── 1) campos do anúncio ──
+      if (plano.camposPropagar.length) {
+        if (simular) {
+          res.feitos.push('(simulado) ' + plano.camposPropagar.join(', '));
+        } else {
+          try {
+            const r = await _prodApi('/api/marketplaces/loja/' + encodeURIComponent(a.lojaIdBanco)
+              + '/anuncio/' + encodeURIComponent(a.anuncioId) + '/sincronizar-este', {
+              method: 'POST',
+              body: JSON.stringify({
+                produto: {
+                  nome: linha.nome, descricao: linha.descricao, skuPai: linha.skuPai,
+                  fotos: linha.fotos || [], variacoes: linha.variacoes || [],
+                },
+                // ★ personalizado: null faz o adapter LER o estado atual do
+                //   anúncio e migrar. É o comportamento que o `sincronizar-este`
+                //   já tinha; mandar {} aqui apagaria a customização existente.
+                personalizado: null,
+                camposPropagar: plano.camposPropagar,
+              }),
+            });
+            if (r.ok && r.data && r.data.ok) res.feitos.push(plano.camposPropagar.join(', '));
+            else { res.ok = false; res.erros.push((r.data && r.data.erro) || 'falhou'); }
+          } catch (e) { res.ok = false; res.erros.push(e.message); }
+        }
+      }
+
+      // ── 2) variações (sku / preço / estoque) ──
+      if (plano.variacoes.length && produtoId) {
+        try {
+          const r = await _prodApi('/api/produtos/' + encodeURIComponent(produtoId) + '/anuncio-variacoes', {
+            method: 'POST',
+            body: JSON.stringify({
+              lojaId: a.lojaIdBanco, anuncioId: a.anuncioId,
+              dryRun: simular,               // a rota já nasce dryRun:true
+              variacoes: plano.variacoes,
+            }),
+          });
+          if (r.ok && r.data && r.data.ok) {
+            if (r.data.suportado === false) res.erros.push(r.data.motivo || 'variações sem suporte neste canal');
+            else res.feitos.push((simular ? '(simulado) ' : '') + plano.variacoes.length + ' variação(ões)');
+          } else { res.ok = false; res.erros.push((r.data && r.data.erro) || 'variações falharam'); }
+        } catch (e) { res.ok = false; res.erros.push(e.message); }
+      }
+
+      if (plano.naoSuportado.length) res.erros.push('não publicado: ' + plano.naoSuportado.join(', '));
+      resultados.push(res);
+      // ★ falha em um anúncio NÃO para os outros: o loop continua e o
+      //   relatório final diz exatamente qual caiu.
+      if (i < planos.length - 1) await new Promise(x => setTimeout(x, 350));
+    }
+
+    edAnMostrarResultado(resultados, simular);
+  }
+  window.edAnPublicar = edAnPublicar;
+
+  function edAnMostrarResultado(resultados, simular) {
+    const nOk = resultados.filter(r => r.ok && !r.erros.length).length;
+    const nParcial = resultados.filter(r => r.ok && r.erros.length).length;
+    const nRuim = resultados.filter(r => !r.ok).length;
+
+    let html = '<div style="font-size:12.5px;margin-bottom:12px">'
+      + (simular
+        ? '<b>Simulação.</b> Nada foi gravado em marketplace nenhum. '
+        : '<b>Publicado.</b> ')
+      + nOk + ' anúncio(s) sem problema'
+      + (nParcial ? ', ' + nParcial + ' com ressalva' : '')
+      + (nRuim ? ', <b style="color:#b91c1c">' + nRuim + ' com erro</b>' : '')
+      + '.</div>';
+
+    resultados.forEach(r => {
+      const cor = !r.ok ? '#b91c1c' : (r.erros.length ? '#b45309' : '#166534');
+      html += '<div style="border-left:3px solid ' + cor + ';padding:5px 0 5px 10px;margin-bottom:8px">'
+        + '<div style="font-size:12px;font-weight:700">'
+        + escapeHtml(_edAnRotuloMkt(r.anuncio.marketplace)) + ' · '
+        + escapeHtml(r.anuncio.nomeLoja || '') + ' #' + escapeHtml(r.anuncio.anuncioId || '') + '</div>'
+        + (r.feitos.length ? '<div style="font-size:11.5px;color:#166534">' + escapeHtml(r.feitos.join(' · ')) + '</div>' : '')
+        + (r.erros.length ? '<div style="font-size:11.5px;color:' + cor + '">' + escapeHtml(r.erros.join(' · ')) + '</div>' : '')
+        + '</div>';
+    });
+
+    if (simular) {
+      html += '<div style="font-size:11.5px;color:var(--lc-ink-2);border-top:1px solid var(--lc-border);'
+        + 'padding-top:9px;margin-top:6px">Se estiver certo, abra de novo e '
+        + '<b>desmarque "Simular primeiro"</b> para valer.</div>';
+    }
+
+    lcAlert(html, {
+      tipo: nRuim ? 'erro' : 'info', html: true, largura: 720,
+      titulo: simular ? 'Simulação do envio' : 'Resultado do envio',
+      botoes: [{ texto: 'Fechar', onclick: 'lcModalFechar()', primario: true }],
+    });
+  }
+
+  // Retrato do estado ANTES de a pessoa mexer. Sem ele o diff nao tem com o
+  // que comparar e diria que tudo mudou. Fica fora do `emLinhaDeProduto` de
+  // proposito: e assunto desta tela, nao da conferencia de exportacao.
+  function edAnCarimbarOriginal(linha) {
+    linha._original = {
+      nome: linha.nome, descricao: linha.descricao, skuPai: linha.skuPai,
+      fotos: (linha.fotos || []).slice(),
+      variacoes: (linha.variacoes || []).map(v => ({
+        sku: v.sku, preco: v.preco, estoque: v.estoque, ean: v.ean, precoPromo: v.precoPromo,
+      })),
+    };
+    return linha;
+  }
+
+  async function edAnConfirmarSelecao() {
+    const st = _edAnState; if (!st) return;
+    const escolhidos = st.anuncios.filter(a => st.marcados[a.chave]);
+    if (!escolhidos.length) { showToast('Marque pelo menos um anúncio.', true); return; }
+    if (typeof lcModalFechar === 'function') lcModalFechar();
+
+    showToast('Lendo ' + escolhidos.length + ' anúncio(s) no marketplace…');
+
+    // ── lê cada anúncio publicado, um a um ─────────────────────────────
+    // Um a um de propósito: a rota completa (`/anuncio-real`) não tem lote,
+    // e ela é a única que traz DESCRIÇÃO e VARIAÇÕES, que é o que a tela
+    // edita. A pausa entre chamadas é a mesma do resto do sistema.
+    const linhas = [];
+    const semLeitura = [];
+    for (let i = 0; i < escolhidos.length; i++) {
+      const a = escolhidos[i];
+      let real = null;
+      if (EDAN_LEITURA_REAL.indexOf(a.marketplace) > -1) {
+        try {
+          const r = await _prodApi('/api/produtos/' + encodeURIComponent(st.produto.id) + '/anuncio-real'
+            + '?lojaId=' + encodeURIComponent(a.lojaIdBanco)
+            + '&anuncioId=' + encodeURIComponent(a.anuncioId));
+          if (r.ok && r.data && r.data.ok && r.data.suportado) real = r.data.anuncio || null;
+        } catch (_) { real = null; }
+      }
+      if (!real) semLeitura.push(a);
+      linhas.push(edAnCarimbarOriginal(edAnLinhaDoAnuncio(st.produto, a, real, i)));
+      if (i < escolhidos.length - 1) await new Promise(x => setTimeout(x, 140));
+    }
+
+    // ── destinos: um por LOJA distinta, pras abas por canal ────────────
+    const vistos = {};
+    const destinos = [];
+    escolhidos.forEach(a => {
+      const k = a.marketplace + '|' + a.lojaIdBanco;
+      if (vistos[k] || !a.lojaIdBanco) return;
+      vistos[k] = true;
+      destinos.push({ lojaIdBanco: a.lojaIdBanco, marketplace: a.marketplace, nome: a.nomeLoja });
+    });
+
+    // ── papéis: cada linha se identifica, igual "CÓPIA 1/3" na duplicação
+    const papeis = escolhidos.map(a => ({
+      texto: _edAnRotuloMkt(a.marketplace).toUpperCase() + ' · ' + (a.nomeLoja || ''),
+      tom: 'azul',
+      nota: '#' + a.anuncioId + (EDAN_LEITURA_REAL.indexOf(a.marketplace) < 0
+        ? ' · conteúdo do produto (canal sem leitura)' : ''),
+    }));
+
+    const aviso = 'Cada linha é UM anúncio publicado. Ao confirmar você vê o resumo do que mudou '
+      + 'e decide se envia aos marketplaces — com simulação antes, se quiser.'
+      + (semLeitura.length
+        ? ' ' + semLeitura.length + ' anúncio(s) de canal sem leitura abriram com o conteúdo do produto interno.'
+        : '');
+
+    const confirmadas = await emAbrir({
+      titulo: 'Editar ' + linhas.length + ' anúncio(s) vinculado(s)',
+      linhas, destinos, papeis, aviso,
+      voltarPara: 'estoqueScreen',
+    });
+    // ★ NÃO chamamos emAplicarNoProduto: ver o cabeçalho deste bloco.
+    if (!confirmadas) return;
+    edAnMostrarDiff(confirmadas, escolhidos);
+  }
+  window.edAnConfirmarSelecao = edAnConfirmarSelecao;
+
+  // ── o DIFF por anúncio ────────────────────────────────────────────────
+  // É o que a Leva 2 vai mandar pro `camposPropagar`. Sai agora porque
+  // calcular a diferença é o trabalho de verdade; empurrar é a parte curta.
+  function edAnDiffDaLinha(linha) {
+    const orig = linha._original || {};
+    const mudou = [];
+    const cmpTexto = (k, rot) => {
+      const a = String(orig[k] == null ? '' : orig[k]);
+      const b = String(linha[k] == null ? '' : linha[k]);
+      if (a !== b) mudou.push({ campo: k, rotulo: rot, de: a, para: b });
+    };
+    cmpTexto('nome', 'Título');
+    cmpTexto('descricao', 'Descrição');
+    cmpTexto('skuPai', 'SKU principal');
+    const fa = JSON.stringify(orig.fotos || []), fb = JSON.stringify(linha.fotos || []);
+    if (fa !== fb) mudou.push({ campo: 'fotos', rotulo: 'Fotos', de: '(lista)', para: '(lista)' });
+    (linha.variacoes || []).forEach((v, i) => {
+      const ov = (orig.variacoes || [])[i] || {};
+      ['sku', 'preco', 'estoque', 'ean', 'precoPromo'].forEach(k => {
+        const a = String(ov[k] == null ? '' : ov[k]);
+        const b = String(v[k] == null ? '' : v[k]);
+        if (a !== b) {
+          // `vi` vai junto: sem ele o plano de publicação não sabe QUAL
+          // variação escrever, e escrever na variação errada é pior que não
+          // escrever.
+          mudou.push({ campo: 'variacao.' + k, vi: i, rotulo: (v.nome || ('Variação ' + (i + 1))) + ' · ' + k, de: a, para: b });
+        }
+      });
+    });
+    return mudou;
+  }
+
+  function edAnMostrarDiff(linhas, escolhidos) {
+    const blocos = linhas.map((l, i) => {
+      const a = (l._anuncio) || (escolhidos[i] || {});
+      const d = edAnDiffDaLinha(l);
+      const cab = '<div style="font-size:12px;font-weight:700;color:var(--lc-ink);margin-bottom:4px">'
+        + escapeHtml(_edAnRotuloMkt(a.marketplace)) + ' · ' + escapeHtml(a.nomeLoja || '')
+        + ' <span style="font-weight:500;color:var(--lc-muted)">#' + escapeHtml(a.anuncioId || '') + '</span></div>';
+      if (!d.length) {
+        return cab + '<div style="font-size:11.5px;color:var(--lc-muted);margin-bottom:10px">sem alteração</div>';
+      }
+      return cab + '<ul style="margin:0 0 10px 16px;padding:0;font-size:11.5px;color:var(--lc-ink-2)">'
+        + d.map(x => '<li>' + escapeHtml(x.rotulo)
+            + ': <s style="color:var(--lc-muted)">' + escapeHtml(String(x.de).slice(0, 60)) + '</s>'
+            + ' → <b>' + escapeHtml(String(x.para).slice(0, 60)) + '</b></li>').join('')
+        + '</ul>';
+    }).join('');
+    const total = linhas.reduce((n, l) => n + edAnDiffDaLinha(l).length, 0);
+    window._edAnPendentes = { linhas, escolhidos, em: new Date().toISOString() };
+    lcAlert(
+      '<div style="font-size:12.5px;color:var(--lc-ink-2);margin-bottom:12px">'
+      + '<b>' + total + ' alteração(ões)</b> em ' + linhas.length + ' anúncio(s). '
+      + '<b>Nada foi publicado ainda</b> — o envio é o botão abaixo.'
+      + '</div>' + blocos,
+      { tipo: 'info', html: true, largura: 720, titulo: 'O que você mudou',
+        botoes: [
+          { texto: 'Fechar', onclick: 'lcModalFechar()' },
+          { texto: 'Publicar nos marketplaces…', onclick: 'edAnAbrirPublicar()', primario: true },
+        ] });
+  }
 
   // ══════════════════════════════════════════════════════════════════════
   // A PONTE: PRODUTO DO PAINEL ↔ LINHAS DO EDITOR (v33k.1810)
@@ -52493,6 +53417,14 @@ REGRAS DURAS:
       btnAtu.style.display = temVinc ? 'inline-block' : 'none';
       btnAtu.textContent = '📤 Propagar para ' + contarVinculosProduto(p) + ' anúncio(s)';
     }
+    // v33k.2096: editar anúncio a anúncio (uma linha por anúncio vinculado)
+    const btnEdAn = document.getElementById('prodEditarAnunciosBtn');
+    if (btnEdAn) {
+      const nAn = (typeof lcAnunciosVinculadosDoProduto === 'function')
+        ? lcAnunciosVinculadosDoProduto(p).length : 0;
+      btnEdAn.style.display = nAn > 0 ? 'inline-block' : 'none';
+      btnEdAn.textContent = '✏️ Editar ' + nAn + ' anúncio(s)';
+    }
     // Mostra "Recuperar variações ML" se tem vinculo ML
     const btnRec = document.getElementById('prodRecuperarVarBtn');
     if (btnRec) {
@@ -54402,6 +55334,56 @@ REGRAS DURAS:
     }
   }
   
+  // ══════════════════════════════════════════════════════════════════════
+  // MONTAGEM DE SKU DAS VARIAÇÕES — NÚCLEO ÚNICO (v33k.2097)
+  // ──────────────────────────────────────────────────────────────────────
+  // Esta regra morava DENTRO do `gerarSkusVariacoesAutomatico`, presa ao
+  // `_variacoesProduto` (a sessão de um produto no modal antigo) e ao
+  // `renderVariacoesProduto`. Para gerar SKU dos N anúncios da conferência
+  // eu teria que copiar a regra — e regra de SKU copiada é regra que
+  // diverge: um lugar passa a montar `SAND-PRETO-38` e o outro
+  // `SAND-PRT-38`, e o casamento por SKU (que é como o ERP acha a variação
+  // no pedido) começa a falhar em silêncio.
+  //
+  // Agora é função pura: entra `skuPai` + lista de variações, sai a lista de
+  // SKUs. Não lê tela, não escreve em lugar nenhum, não mostra toast.
+  //
+  // AS DECISÕES QUE ELA CARREGA (todas já existiam, nenhuma inventada aqui):
+  //  • cor COMPLETA, não abreviada em 3 letras (v32h.4 #7): "Preto Pink"
+  //    vira "PRETO-PINK". Abreviar colidia demais.
+  //  • acento removido e espaço vira hífen: SKU vai em URL, etiqueta e
+  //    arquivo de importação, e acento quebra em pelo menos um dos três.
+  //  • tamanho preserva ponto, hífen e barra ("38.5", "P/M"), que são
+  //    tamanho de verdade; o resto sai.
+  //  • sem cor nem tamanho, o pedaço vira "UN" em vez de sumir — senão duas
+  //    variações diferentes gerariam o MESMO SKU.
+  //  • duplicado ganha sufixo numérico a partir de 2.
+  function lcMontarSkusDasVariacoes(skuPai, variacoes) {
+    const base = lcSkuPaiBase(skuPai);
+    if (!base) return [];
+    const abrevCor = (cor) => {
+      if (!cor) return '';
+      const limpo = String(cor)
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase().replace(/[^A-Z0-9\s-]/g, '').trim().replace(/[\s-]+/g, '-');
+      return limpo || 'COR';
+    };
+    const vistos = new Map();
+    return (variacoes || []).map((v) => {
+      const cor = abrevCor(v && v.cor);
+      const tam = String((v && v.tamanho) || '').trim().replace(/[^\w.\-\/]/g, '') || 'UN';
+      let sku = [base, cor, tam].filter(Boolean).join('-');
+      if (vistos.has(sku)) {
+        let n = 2;
+        while (vistos.has(sku + '-' + n)) n++;
+        sku = sku + '-' + n;
+      }
+      vistos.set(sku, true);
+      return sku;
+    });
+  }
+  window.lcMontarSkusDasVariacoes = lcMontarSkusDasVariacoes;
+
   async function gerarSkusVariacoesAutomatico() {
     if (_variacoesProduto.length === 0) {
       showToast('Adicione pelo menos uma variação primeiro', true);
@@ -54422,34 +55404,12 @@ REGRAS DURAS:
       }
     }
     
-    // v32h.4 #7: cor COMPLETA no SKU (não mais 3 primeiras). "Preto Pink" → "PRETO-PINK"
-    function abrevCor(cor) {
-      if (!cor) return '';
-      const limpo = String(cor)
-        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
-        .toUpperCase()
-        .replace(/[^A-Z0-9\s-]/g, '')
-        .trim()
-        .replace(/[\s-]+/g, '-');
-      return limpo || 'COR';
-    }
-    
-    // Detecta duplicados pra adicionar sufixo numerico
-    const skusGerados = new Map();
-    _variacoesProduto.forEach((v, i) => {
-      const cor = abrevCor(v.cor);
-      const tam = String(v.tamanho || '').trim().replace(/[^\w.\-\/]/g, '') || 'UN';
-      let novoSku = [lcSkuPaiBase(skuPai), cor, tam].filter(Boolean).join('-');
-      
-      // Se ja existe, adiciona contador
-      if (skusGerados.has(novoSku)) {
-        let n = 2;
-        while (skusGerados.has(novoSku + '-' + n)) n++;
-        novoSku = novoSku + '-' + n;
-      }
-      skusGerados.set(novoSku, true);
-      v.sku = novoSku;
-    });
+    // v33k.2097: a regra saiu daqui e virou `lcMontarSkusDasVariacoes`, para a
+    // conferência gerar SKU dos N anúncios com a MESMA regra. Regra de SKU
+    // copiada é regra que diverge, e o casamento por SKU é como o ERP acha a
+    // variação no pedido.
+    const gerados = lcMontarSkusDasVariacoes(skuPai, _variacoesProduto);
+    _variacoesProduto.forEach((v, i) => { v.sku = gerados[i]; });
     
     renderVariacoesProduto();
     showToast('✓ ' + _variacoesProduto.length + ' SKU(s) gerado(s). Revise e clique Salvar.');
@@ -73042,7 +74002,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2095-itens-zero';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2100-tiktok-tambem';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
