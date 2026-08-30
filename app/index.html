@@ -2779,6 +2779,8 @@
     const doc = (d.cpf || d.cnpj || '').replace(/\D/g, '');
     const destinatario = {
       nome: d.nome, cpf: doc.length === 11 ? doc : undefined, cnpj: doc.length === 14 ? doc : undefined,
+      // ★ v33k.2127: idem ao lote — a IE do CNPJ chegava e era descartada.
+      ...(doc.length === 14 && d.ie ? { ie: d.ie, indicadorIE: 1 } : {}),
       endereco: { logradouro: end.logradouro, numero: end.numero, bairro: end.bairro,
         complemento: end.complemento, cep: end.cep, municipio: end.municipio, uf: end.uf, codigoMunicipio: end.codigoMunicipio },
     };
@@ -3229,6 +3231,10 @@
       const doc = (d.cpf || d.cnpj || '').replace(/\D/g, '');
       const destinatario = {
         nome: d.nome, cpf: doc.length === 11 ? doc : undefined, cnpj: doc.length === 14 ? doc : undefined,
+        // ★ v33k.2127: a IE do comprador CNPJ vinha do backend e era jogada
+        //   fora aqui. O painel remontava o destinatário só com nome/doc/
+        //   endereço, então o dado chegava até a tela e morria nela.
+        ...(doc.length === 14 && d.ie ? { ie: d.ie, indicadorIE: 1 } : {}),
         endereco: { logradouro: end.logradouro, numero: end.numero, bairro: end.bairro,
           complemento: end.complemento, cep: end.cep, municipio: end.municipio, uf: end.uf, codigoMunicipio: end.codigoMunicipio },
       };
@@ -74631,7 +74637,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2122-a-trava-e-o-indice';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2146-a-soma-tem-que-fechar';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -83714,12 +83720,12 @@ ${JSON.stringify(metricas, null, 2)}`
         : '';
       varsHtml += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--lc-surface-2)">'
         + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">'
-        + '<input type="checkbox" class="custos-var-cb" data-anuncio="' + escapeHtml(String(it.item_id)) + '" data-chave="' + escapeHtml(chave) + '" onchange="custosAtualizarSelecao()" style="width:15px;height:15px;cursor:pointer;flex-shrink:0">'
+        + '<input type="checkbox" class="custos-var-cb" data-anuncio="' + escapeHtml(String(it.item_id)) + '" data-chave="' + escapeHtml(chave) + '" data-produto="' + escapeHtml(String(v.produto_id || '')) + '" data-sku="' + escapeHtml(String(v.sku || '')) + '" onchange="custosAtualizarSelecao()" style="width:15px;height:15px;cursor:pointer;flex-shrink:0">'
         + '<span style="font-size:13px;color:var(--lc-ink-2)">' + escapeHtml(rotulo) + tagVend + '</span>'
         + '</label>'
         + '<input type="text" class="form-input money-input lucro-custo-inp" data-chave="' + escapeHtml(chave) + '" inputmode="numeric" placeholder="R$ 0,00" '
         + 'value="' + (v.custo > 0 ? formatBRL(v.custo) : '') + '" '
-        + 'oninput="maskMoney(this);lucroMarcarCusto(\'' + escapeHtml(String(it.item_id)) + '\',\'' + escapeHtml(v.model_name || '') + '\',this.value)" '
+        + 'oninput="maskMoney(this);lucroMarcarCusto(\'' + escapeHtml(String(it.item_id)) + '\',\'' + escapeHtml(v.model_name || '') + '\',this.value,\'' + escapeHtml(String(v.produto_id || '')) + '\',\'' + escapeHtml(String(v.sku || '')) + '\')" '
         + 'style="width:150px;text-align:right">'
         + '</div>';
     });
@@ -83773,10 +83779,27 @@ ${JSON.stringify(metricas, null, 2)}`
   }
   window.custosToggleAnuncio = custosToggleAnuncio;
 
-  function lucroMarcarCusto(itemId, modelName, valorStr) {
+  function lucroMarcarCusto(itemId, modelName, valorStr, produtoId, sku) {
     // v33k.1675: `[^\d,]` apagava o PONTO — custo digitado "30.90" virava 3090.
     const num = (typeof window._parsePrecoPromo === 'function' ? (window._parsePrecoPromo(valorStr) || 0) : 0);
-    _lucroCustosPag.alterados[itemId + '|' + modelName] = { item_id: Number(itemId), variacao: modelName, custo: num };
+    // ★★ v33k.2142: guarda a IDENTIDADE INTERNA (produto + sku) junto.
+    //    `item_id: Number(itemId)` continua aqui só pro caminho legado — e é
+    //    exatamente ele o defeito: `Number('MLB4260049765')` é NaN, e o backend
+    //    antigo pulava a linha e respondia `ok: true, gravados: 0`. Com
+    //    produto_id/sku a gravação vai pela rota nova e não depende do formato
+    //    do id do marketplace, que muda a cada canal novo.
+    // ★ PRESERVA A IDENTIDADE quando quem chama não a passa. `custosAplicarMassa`
+    //   chama com três argumentos, e sem esta linha a edição em massa APAGARIA
+    //   o produto_id/sku de cada linha que tocasse — jogando tudo de volta na
+    //   rota antiga, que é o defeito que estamos consertando. Peguei isto
+    //   relendo o próprio patch.
+    const _ant = _lucroCustosPag.alterados[itemId + '|' + modelName] || {};
+    const _el = document.querySelector('[data-chave="' + (itemId + '|' + modelName).replace(/"/g, '\\"') + '"]');
+    _lucroCustosPag.alterados[itemId + '|' + modelName] = {
+      item_id: Number(itemId), variacao: modelName, custo: num,
+      produto_id: produtoId || _ant.produto_id || (_el && _el.getAttribute('data-produto')) || null,
+      sku: sku || _ant.sku || (_el && _el.getAttribute('data-sku')) || null,
+    };
   }
 
   // ─── seleção e edição em massa ───
@@ -83844,14 +83867,47 @@ ${JSON.stringify(metricas, null, 2)}`
     const btn = document.getElementById('custosSalvarBtn');
     if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
     try {
+      // ★ v33k.2142: as que TÊM identidade interna vão pela rota nova (por
+      //   variação); as demais seguem pela antiga, que ainda atende os anúncios
+      //   sem produto no catálogo. Medido em 30/08: a variação sozinha cobre
+      //   menos que o legado (2.553 contra 3.608), então os dois convivem.
+      const _comIdentidade = alterados.filter(c => c && c.produto_id && c.sku);
+      const _semIdentidade = alterados.filter(c => !(c && c.produto_id && c.sku));
+      if (_comIdentidade.length) {
+        // ★ MESMO helper de header da rota antiga. Escrevi `authHeaders()`,
+        //   que não existe neste arquivo — teria ido sem token e voltado 401.
+        const rv = await fetch(BACKEND_URL + '/api/lucro/custos-variacao', {
+          method: 'POST',
+          headers: hLucroAuth({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ custos: _comIdentidade }),
+        });
+        const jv = await rv.json().catch(() => ({}));
+        if (!rv.ok || !jv.ok) {
+          // ★ NÃO ENGOLE. Era o `gravados: 0` silencioso que escondia o defeito.
+          showToast('Não consegui salvar ' + _comIdentidade.length + ' custo(s): '
+            + (jv.erro || ('HTTP ' + rv.status)), true);
+          if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+          return;
+        }
+      }
+      if (!_semIdentidade.length) {
+        _lucroCustosPag.alterados = {};
+        showToast(_comIdentidade.length + ' custo(s) salvos');
+        if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+        if (typeof lucroCarregarCustos === 'function') lucroCarregarCustos(1);
+        return;
+      }
+      // ★ SÓ O QUE SOBROU. Mandar `alterados` inteiro aqui gravaria de novo,
+      //   pelo caminho antigo, o que a rota nova acabou de gravar — duas
+      //   verdades pro mesmo custo, que é o problema que viemos resolver.
       const resp = await fetch(BACKEND_URL + '/api/lucro/custos', {
         method: 'POST',
         headers: hLucroAuth({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ custos: alterados }),
+        body: JSON.stringify({ custos: _semIdentidade }),
       });
       const data = await resp.json();
       if (!data.ok) throw new Error(data.erro || 'Falha ao salvar');
-      showToast((data.gravados || 0) + ' custo(s) salvos');
+      showToast((_comIdentidade.length + (data.gravados || 0)) + ' custo(s) salvos');
       _lucroCustosPag.alterados = {};
     } catch (e) {
       showToast('Erro: ' + e.message, true);
