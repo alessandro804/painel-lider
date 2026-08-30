@@ -46085,7 +46085,10 @@ Retorne JSON: {"ID": "valor", ...}`;
         ? 'Desmarcado, o valor vale para todas as linhas. Marque só se quiser preencher apenas onde está em branco.'
         : 'Desmarque para sobrescrever o que já está preenchido.') + '</div>';
 
-    lcAlert(h, {
+    // ★ v33k.2114: ROLA. Com o modo "montar" aberto e a prévia listando
+    // exemplos, o conteúdo passava da altura da tela e o botão Confirmar saía
+    // de vista — dava pra ver o que ia acontecer e não dava pra confirmar.
+    lcAlert('<div style="max-height:58vh;overflow-y:auto;padding-right:6px">' + h + '</div>', {
       tipo: 'info', titulo: 'Editar ' + col.nome, largura: 460, html: true,
       botoes: [
         { texto: 'Cancelar', onclick: 'lcModalFechar()' },
@@ -46106,7 +46109,17 @@ Retorne JSON: {"ID": "valor", ...}`;
       const m = document.querySelector('input[name="emMassaModo"]:checked');
       const box = document.getElementById('emMassaMontarBox');
       if (box) box.style.opacity = (m && m.value === 'montarSku') ? '1' : '.45';
-      if (m && m.value === 'montarSku') emMassaPreverSku();
+      if (m && m.value === 'montarSku') {
+        // ★ v33k.2114: no modo MONTAR a caixa "só onde está vazio" nasce
+        // DESMARCADA. Quem escolhe montar os SKUs quer os SKUs montados — se
+        // metade já tem código, deixar marcado faz o botão parecer que não
+        // funcionou ("nada mudou"), que foi o relato de 29/08 numa variação
+        // deste mesmo tropeço. A prévia já mostra em destaque quantos serão
+        // TROCADOS, então a informação não some: só deixa de bloquear.
+        const cx = document.getElementById('emMassaSoVazio');
+        if (cx) cx.checked = false;
+        emMassaPreverSku();
+      }
     } catch (e) {}
     const el = document.querySelector('input[name="emMassaModo"]:checked');
     const modo = el ? el.value : 'valor';
@@ -49052,7 +49065,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   endpoint exige `uri` (upload previo), nao URL — e mandar URL faria o
     //   TikTok recusar o payload inteiro, derrubando junto o titulo que teria
     //   funcionado.
-    tiktok:       { titulo: 1, descricao: 1, preco: 1, fotos: 0, atributos: 1, ean: 1 },
+    // v33k.2114: `skuVariacao` ligado. O `_partialEditTk` passou a mandar
+    // `seller_sku` — o mesmo campo que a criação do TikTok já gravava.
+    tiktok:       { titulo: 1, descricao: 1, preco: 1, fotos: 0, atributos: 1, ean: 1, skuVariacao: 1 },
     shein:        {},
   };
 
@@ -49081,8 +49096,16 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (d.campo && d.campo.indexOf('variacao.') === 0) {
         const sub = d.campo.split('.')[1];
         const vi = d.vi;
+        // ★ v33k.2114: NO TIKTOK, SKU E EAN VÃO PELO `partial_edit`.
+        // ─────────────────────────────────────────────────────────────
+        // Eles não têm rota própria nesse canal: entram no array `skus` do
+        // partial_edit, junto com título e descrição. Mandar pela rota
+        // `anuncio-variacoes` (que é Shopee/ML) devolveria "sem suporte" e o
+        // SKU não subiria — em silêncio, que é o pior jeito de não funcionar.
+        const _viaPartial = (mkt === 'tiktok');
         if (sub === 'sku') {
           if (!pode.skuVariacao) { naoSuportado.push('SKU da variação'); return; }
+          if (_viaPartial) { campos.add('skuVariacao'); return; }
           (porVar[vi] = porVar[vi] || {}).sku = d.para;
           return;
         }
@@ -49094,6 +49117,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (sub === 'estoque') { (porVar[vi] = porVar[vi] || {}).estoque = d.para; return; }
         if (sub === 'ean') {
           if (!pode.ean) { naoSuportado.push('EAN'); return; }
+          if (_viaPartial) { campos.add('ean'); return; }
           (porVar[vi] = porVar[vi] || {}).ean = d.para;
           return;
         }
@@ -49186,10 +49210,25 @@ Retorne JSON: {"ID": "valor", ...}`;
       html += '</div>';
     });
 
-    html += '<label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-top:10px;'
-      + 'background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:8px;padding:9px 11px">'
-      + '<input type="checkbox" id="edAnSimular" checked style="accent-color:var(--lc-primary)">'
-      + '<span>Simular primeiro (não grava nada; mostra o que aconteceria)</span></label>';
+    // ★ v33k.2114: A CAIXA "SIMULAR PRIMEIRO" SAIU.
+    // ───────────────────────────────────────────────────────────────────
+    // Decisão do Alessandro em 29/08: "não deve existir isso aqui, se fizemos
+    // a alteração é para rodar nos marketplaces e pronto".
+    //
+    // Ele tem razão, e eu concordo pelo desenho: a simulação era REDUNDANTE.
+    // Até chegar aqui a pessoa já passou por (1) a marca verde em cada campo
+    // alterado, (2) o resumo do diff campo a campo, e (3) esta lista, que diz
+    // anúncio por anúncio exatamente o que vai e o que não vai. Um quarto
+    // passo que não mostra nada novo não é segurança: é atrito, e atrito que
+    // não informa acaba sendo clicado no automático — o que o torna pior que
+    // inútil, porque dá sensação de conferência sem conferência.
+    //
+    // O modo `dryRun` continua existindo no `edAnPublicar` e na rota
+    // `anuncio-variacoes` (ela nasce `dryRun:true`). Só não é mais um passo
+    // obrigatório da tela.
+    html += '<div style="display:flex;gap:8px;align-items:flex-start;font-size:12px;margin-top:10px;'
+      + 'background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 11px;color:#92400e">'
+      + '<span>Ao continuar, as alterações acima são <b>publicadas nos marketplaces</b>.</span></div>';
 
     window._edAnPlanos = planos;
     // ★ v33k.2113: o conteúdo rola. Com 5 anúncios × dezenas de variações a
@@ -49200,7 +49239,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       titulo: 'Publicar em ' + vaiMudar.length + ' anúncio(s)',
       botoes: [
         { texto: 'Cancelar', onclick: 'lcModalFechar()' },
-        { texto: 'Continuar', onclick: 'edAnPublicar()', primario: true },
+        { texto: 'Atualizar no Marketplace', onclick: 'edAnPublicar()', primario: true },
       ],
     });
   }
@@ -49208,7 +49247,9 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   async function edAnPublicar() {
     const planos = window._edAnPlanos || [];
-    const simular = !!(document.getElementById('edAnSimular') || {}).checked;
+    // v33k.2114: publica direto. A caixa saiu da tela (ver `edAnAbrirPublicar`),
+    // mas o parâmetro segue aceito pra quem chamar por código.
+    const simular = !!(window._edAnSimular === true);
     const produtoId = (_edAnState && _edAnState.produto && _edAnState.produto.id) || null;
     if (typeof lcModalFechar === 'function') lcModalFechar();
     if (!planos.length) return;
@@ -49302,11 +49343,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         + '</div>';
     });
 
-    if (simular) {
-      html += '<div style="font-size:11.5px;color:var(--lc-ink-2);border-top:1px solid var(--lc-border);'
-        + 'padding-top:9px;margin-top:6px">Se estiver certo, abra de novo e '
-        + '<b>desmarque "Simular primeiro"</b> para valer.</div>';
-    }
+
 
     lcAlert('<div style="max-height:60vh;overflow-y:auto;padding-right:6px">' + html + '</div>', {
       tipo: nRuim ? 'erro' : 'info', html: true, largura: 720,
@@ -74594,7 +74631,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2113-o-id-da-variacao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2122-a-trava-e-o-indice';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
