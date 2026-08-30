@@ -2087,6 +2087,16 @@
     // Sempre: "Salvar correções" (persiste o override). Na etapa Emitir, também
     // "Salvar e emitir NF-e". Se o pedido já tem NF (badge da lista), oferece
     // imprimir o DANFE direto daqui.
+    // ★ v33k.2154: o botão sempre aparece; quem decide se PODE cancelar é o
+    //   backend, ao ser clicado. Esconder por regra da tela criaria uma segunda
+    //   cópia da regra — e seria ela a divergir na primeira mudança.
+    const btnCancelar = '<button class="lc-btn" style="background:#dc2626;color:#fff"'
+      + ' onclick="lcCancelarPedido(' + JSON.stringify(String(lojaId)) + ','
+      + JSON.stringify(String(orderSn)) + ', function(){ if(typeof expCarregar===\'function\') expCarregar(); '
+      + 'var o=document.getElementById(\'detPedidoOverlay\'); if(o) o.remove(); })"'
+      + ' title="Cancela o pedido no marketplace. Não tem volta.">'
+      + '<span class="lc-ic" data-lucide="ban"></span> Cancelar pedido</button>';
+
     let btnEmitir = '';
     if (podeEmitir) {
       btnEmitir = '<button class="lc-btn" style="background:#16a34a;color:#fff" onclick="_dpSalvarEEmitir()"' + (data.empresa ? '' : ' disabled') + '><span class="lc-ic" data-lucide="receipt"></span> Salvar e emitir NF-e</button>';
@@ -2096,6 +2106,10 @@
         '<div id="dpMsg" style="font-size:13px;color:#64748b;flex:1;min-width:180px"></div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
           '<button class="lc-btn lc-btn--ghost" onclick="document.getElementById(\'detPedidoOverlay\').remove()">Fechar</button>' +
+          // ★ v33k.2154: cancelar fica AO LADO do salvar, em vermelho, como
+          //   pedido em 30/08. A cor separa o que é rotina do que não tem
+          //   volta; a confirmação por digitação está em `lcCancelarPedido`.
+          btnCancelar +
           '<button class="lc-btn" style="background:#0ea5e9;color:#fff" onclick="_dpSalvarCorrecoes()"><span class="lc-ic" data-lucide="save"></span> Salvar correções</button>' +
           btnEmitir +
         '</div>' +
@@ -3473,6 +3487,134 @@
   window._ncmLoteBuscar = _ncmLoteBuscar;
   window._ncmLoteMarcarTodos = _ncmLoteMarcarTodos;
   window.abrirDetalhesPedido = abrirDetalhesPedido;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★ CANCELAR PEDIDO (v33k.2154)
+  // ─────────────────────────────────────────────────────────────────────
+  // PEDIDO DE 30/08: botão no fim do modal de Detalhes, nas duas telas
+  // (Pedidos e Notas Fiscais), em vermelho, com confirmação extra e o motivo
+  // quando o canal exigir.
+  //
+  // ★ O BOTÃO NÃO DECIDE NADA. Ele pergunta ao backend (`/cancelamento/opcoes`)
+  //   se dá para cancelar, e mostra o que o backend respondeu. Toda regra —
+  //   fase do pedido, NF autorizada, motivos válidos — mora lá, testada, e é
+  //   refeita do zero no POST. A tela é conveniência; a trava é o servidor.
+  //
+  // ★ POR QUE A CONFIRMAÇÃO É POR DIGITAÇÃO e não um "tem certeza?": cancelar
+  //   é irreversível E tem custo comercial (a taxa de cancelamento afeta a
+  //   saúde da conta no marketplace). Clique duplo em modal é reflexo; digitar
+  //   o número do pedido não é.
+  async function lcCancelarPedido(lojaId, orderSn, aoConcluir) {
+    if (!lojaId || !orderSn) return;
+    const info = await _api('/api/expedicao/cancelamento/opcoes?lojaId='
+      + encodeURIComponent(lojaId) + '&orderSn=' + encodeURIComponent(orderSn));
+    if (!info || !info.ok) {
+      await lcAlert((info && info.erro) || 'Não consegui conferir se este pedido pode ser cancelado.',
+        { titulo: 'Cancelar pedido' });
+      return;
+    }
+    // impedimento de FASE (já enviado, já cancelado, NF autorizada...)
+    if (!info.podeCancelar) {
+      await lcAlert(_esc(info.impedimento || 'Este pedido não pode ser cancelado agora.'),
+        { titulo: 'Não dá para cancelar', tipo: 'aviso' });
+      return;
+    }
+    // canal sem integração: diz o que fazer no lugar, em vez de só recusar
+    if (!info.suportado) {
+      await lcAlert(_esc(info.motivoSemSuporte || 'Canal sem cancelamento integrado.'),
+        { titulo: 'Cancele pelo marketplace', tipo: 'aviso' });
+      return;
+    }
+
+    // ★★ v33k.2155: a NOTA vai junto, e a tela DIZ isso antes do clique.
+    //   "Cancelar pedido" que também cancela um documento fiscal sem avisar
+    //   seria a pior surpresa possível — ainda mais porque a nota cai PRIMEIRO.
+    const blocoNota = info.exigeCancelarNf
+      ? '<div style="margin-top:12px;padding:11px 13px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;color:#92400e;font-size:12.5px;line-height:1.55">'
+        + '<b>A NF-e ' + _esc((info.notas || []).map(n => 'nº ' + n.numero).join(', '))
+        + ' será cancelada junto.</b> Ela cai primeiro; só depois o pedido é cancelado no '
+        + 'marketplace. Se a SEFAZ recusar o cancelamento da nota, <b>nada</b> é cancelado.'
+        + ((info.horasDesdeEmissao != null)
+            ? ' Emitida há ' + info.horasDesdeEmissao + 'h (a SEFAZ aceita até 24h).' : '')
+        + '</div>'
+      : '';
+    const campoJustificativa = info.exigeJustificativa
+      ? '<div style="margin-top:12px"><label style="display:block;font-size:12px;font-weight:700;color:#334155;margin-bottom:5px">'
+        + 'Justificativa do cancelamento da NF-e <span style="font-weight:500;color:#64748b">(a SEFAZ exige de 15 a 255 caracteres)</span></label>'
+        + '<textarea id="lcCancJust" rows="2" placeholder="Ex.: pedido cancelado a pedido do comprador antes do envio" '
+        + 'style="width:100%;padding:10px;border:1.5px solid #e5e7eb;border-radius:9px;font-size:13.5px;font-family:inherit;resize:vertical"></textarea></div>'
+      : '';
+
+    const opcoesMotivo = (info.motivos || []).map(m =>
+      '<option value="' + _esc(String(m.codigo)) + '">' + _esc(m.rotulo || m.codigo) + '</option>').join('');
+    const campoMotivo = info.exigeMotivo
+      ? '<div style="margin-top:12px"><label style="display:block;font-size:12px;font-weight:700;color:#334155;margin-bottom:5px">Motivo do cancelamento (exigido pelo marketplace)</label>'
+        + '<select id="lcCancMotivo" style="width:100%;padding:10px;border:1.5px solid #e5e7eb;border-radius:9px;font-size:14px">'
+        + '<option value="">Selecione…</option>' + opcoesMotivo + '</select></div>'
+      : '';
+
+    const corpo =
+      '<div style="padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;color:#991b1b;font-size:13px;line-height:1.55">'
+      + '<b>Isto não tem volta.</b> O pedido <b>' + _esc(orderSn) + '</b> será cancelado no '
+      + _esc(info.marketplace || 'marketplace') + '. Cancelamentos feitos pelo vendedor contam '
+      + 'na taxa de cancelamento da conta e afetam a saúde da loja.'
+      + '</div>'
+      + blocoNota
+      + campoMotivo
+      + campoJustificativa
+      + '<div style="margin-top:12px"><label style="display:block;font-size:12px;font-weight:700;color:#334155;margin-bottom:5px">'
+      + 'Para confirmar, digite o número do pedido</label>'
+      + '<input id="lcCancConf" placeholder="' + _esc(orderSn) + '" autocomplete="off" '
+      + 'style="width:100%;padding:10px;border:1.5px solid #e5e7eb;border-radius:9px;font-size:14px;font-family:inherit"></div>'
+      + '<div id="lcCancMsg" style="margin-top:10px;font-size:12.5px;color:#b91c1c"></div>';
+
+    await lcAlert(corpo, {
+      html: true, painel: true, largura: 520, tipo: 'perigo',
+      titulo: 'Cancelar o pedido ' + orderSn,
+      botoes: [
+        { texto: 'Voltar', onclick: 'lcModalFechar()' },
+        { texto: 'Cancelar o pedido', id: 'lcCancOk', primario: true,
+          onclick: 'lcCancelarConfirmar(' + JSON.stringify(String(lojaId)) + ','
+            + JSON.stringify(String(orderSn)) + ')' },
+      ],
+    });
+    window._lcCancCtx = { lojaId, orderSn, exigeMotivo: !!info.exigeMotivo,
+      exigeJustificativa: !!info.exigeJustificativa, aoConcluir };
+  }
+  window.lcCancelarPedido = lcCancelarPedido;
+
+  async function lcCancelarConfirmar(lojaId, orderSn) {
+    const ctx = window._lcCancCtx || {};
+    const msg = document.getElementById('lcCancMsg');
+    const dizer = (t) => { if (msg) msg.textContent = t; };
+    const digitado = ((document.getElementById('lcCancConf') || {}).value || '').trim();
+    if (digitado !== String(orderSn)) { dizer('Digite o número do pedido exatamente como está acima.'); return; }
+    const motivo = ((document.getElementById('lcCancMotivo') || {}).value || '').trim();
+    if (ctx.exigeMotivo && !motivo) { dizer('Escolha o motivo do cancelamento.'); return; }
+    const justificativa = ((document.getElementById('lcCancJust') || {}).value || '').trim();
+    // ★ o limite é da SEFAZ. Barrar aqui evita ir até lá para voltar com
+    //   rejeição — e evita cancelar o pedido tendo a nota falhado.
+    if (ctx.exigeJustificativa && justificativa.length < 15) {
+      dizer('A justificativa da NF-e precisa de ao menos 15 caracteres.'); return;
+    }
+
+    const btn = document.getElementById('lcCancOk');
+    if (btn) { btn.disabled = true; btn.textContent = 'Cancelando…'; }
+    const r = await _api('/api/expedicao/cancelamento', {
+      method: 'POST',
+      body: JSON.stringify({ lojaId, orderSn, motivo: motivo || null,
+        justificativa: justificativa || null, confirmado: true }),
+    });
+    if (btn) { btn.disabled = false; btn.textContent = 'Cancelar o pedido'; }
+    if (!r || !r.ok) { dizer((r && r.erro) || 'O marketplace não confirmou o cancelamento.'); return; }
+    lcModalFechar();
+    showToast('Pedido ' + orderSn + ' cancelado.'
+      + ((r.notasCanceladas && r.notasCanceladas.length)
+        ? ' NF-e ' + r.notasCanceladas.join(', ') + ' cancelada.' : ''));
+    try { if (typeof ctx.aoConcluir === 'function') ctx.aoConcluir(); } catch (_) {}
+  }
+  window.lcCancelarConfirmar = lcCancelarConfirmar;
+
   window._dpSalvarCorrecoes = _dpSalvarCorrecoes;
   window._dpSalvarEEmitir = _dpSalvarEEmitir;
   window._reenviarNfShopee = _reenviarNfShopee;
@@ -17062,14 +17204,49 @@ window.LC_SVG = {
     from { opacity: 0; transform: translateY(8px) scale(.97); }
     to   { opacity: 1; transform: translateY(0) scale(1); }
   }
+  /* ═══════════════════════════════════════════════════════════════════════
+     ★★ v33k.2147: O TETO DE ALTURA VALE PRA TODO MODAL, NÃO SÓ PRO "PAINEL".
+     ─────────────────────────────────────────────────────────────────────
+     PRINT DE 30/08 (modal "Editar anúncios de:"): produto com dezenas de
+     anúncios vinculados, a lista desce além da janela e o botão "Abrir
+     editor" fica fora da tela. Não dá pra confirmar a seleção.
+
+     É EXATAMENTE o bug que a v33k.1872 descreveu e consertou pro modal de
+     fotos, no comentário logo abaixo. Ele voltou porque aquele conserto foi
+     OPT-IN: quem chamasse `lcAlert` sem `painel: true` continuava com um
+     cartão sem teto e `overflow:hidden`. Cada modal rico novo tem que
+     lembrar da bandeira — e a segunda vez que alguém esqueceu foi esta.
+
+     ★ Uma proteção que depende de o chamador lembrar não é proteção, é
+       documentação. Agora o teto é do CARTÃO: corpo rola, rodapé fica.
+       `lc-painel` continua existindo, mas só pelo que é cosmético (esconder
+       o ícone, grudar o título, apertar o respiro).
+
+     Modal curto não muda em nada: sem altura pra estourar, o flex-column se
+     comporta igual ao bloco de antes.
+     ═══════════════════════════════════════════════════════════════════════ */
   .lc-modal-card {
     width: 100%; max-width: 440px; background: #fff;
     border-radius: 16px; border: 1px solid #eef0f3;
     box-shadow: 0 20px 60px rgba(0,0,0,.28);
     overflow: hidden; color: #1e2a47;
     animation: lcModalPop .18s cubic-bezier(.2,.8,.25,1);
+    display: flex; flex-direction: column; max-height: calc(100vh - 40px);
   }
   .lc-modal-body { padding: 22px 24px 20px; }
+  /* ★ O SELETOR É `.lc-modal-card > .lc-modal-body`, DE PROPÓSITO.
+     Existem DOIS sistemas de modal no painel e os dois usam a classe
+     `.lc-modal-body`: o genérico (`.lc-modal-overlay` + `.lc-modal`, linha
+     ~16230) e este (`#lcModalOverlay` + `.lc-modal-card`). Uma regra solta em
+     `.lc-modal-body` cairia nos dois, e o genérico não é flex — `overflow:auto`
+     ali mudaria o contexto de formatação de modais que não têm nada a ver com
+     este conserto. O filho direto do CARTÃO é o que pertence a este sistema.
+
+     `min-height:0` é o que permite o corpo encolher dentro do flex: sem ele o
+     flex-item usa a altura do conteúdo e o estouro volta, silencioso. */
+  .lc-modal-card > .lc-modal-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
+  /* o rodapé nunca encolhe nem rola junto: é onde estão Cancelar e Confirmar. */
+  .lc-modal-acoes { flex: 0 0 auto; }
   /* ═══════════════════════════════════════════════════════════════════════
      ★ v33k.1872: MODO PAINEL — modal que é EDITOR, não recado.
      ─────────────────────────────────────────────────────────────────────
@@ -48723,7 +48900,12 @@ Retorne JSON: {"ID": "valor", ...}`;
     anuncios.forEach(a => { _edAnState.marcados[a.chave] = true; });
 
     lcAlert('<div id="edAnCorpo"></div>', {
-      tipo: 'info', html: true, largura: 780,
+      // ★ v33k.2147: `painel: true`. O teto de altura agora é de todo modal
+      //   (ver o CSS), então o botão não some mais nem sem isto — mas esta é
+      //   uma LISTA longa, e no modo painel o título fica grudado no topo
+      //   enquanto se rola, e a coluna do ícone de 42px devolve largura pras
+      //   linhas dos anúncios.
+      tipo: 'info', html: true, largura: 780, painel: true,
       titulo: 'Editar anúncios de: ' + (p.nome || 'produto'),
       botoes: [
         { texto: 'Cancelar', onclick: 'lcModalFechar()' },
@@ -74637,7 +74819,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2146-a-soma-tem-que-fechar';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2157-achar-o-pedido-antes';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -86301,7 +86483,15 @@ ${JSON.stringify(metricas, null, 2)}`
     // a ação humana é real. O tradutor local fica como reserva para linhas
     // antigas, gravadas antes da classificação existir.
     const _errTrad = (ehErro || programandoComErro) && p.erro ? _traduzirErro(p.erro) : null;
-    const _esperando = p.erroCategoria === 'envio_transitorio'
+    // ★★ v33k.2147: as categorias da NF-e entram aqui.
+    // A v33k.1584 tratou só `envio_transitorio`, que é a categoria da ETAPA 2
+    // (programação). A emissão usa outras duas, de `util/nfe-erros.js`:
+    // `transitorio` (rede/SEFAZ fora) e `autocorrigivel` (o sistema conserta o
+    // endereço pelo CEP e reemite). Pedido com retentativa MARCADA aparecia em
+    // vermelho de travamento, do mesmo jeito que o pedido que precisa de mão
+    // humana — e as duas coisas pedem reações opostas de quem olha a tela.
+    const _CATS_ESPERA = ['envio_transitorio', 'transitorio', 'autocorrigivel'];
+    const _esperando = _CATS_ESPERA.includes(p.erroCategoria)
       && p.retryProximaEm && Date.parse(p.retryProximaEm) > Date.now() - 60000;
     const _hhmm = (iso) => { try { return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); } catch (_) { return ''; } };
     const _titulo = p.erroTitulo || (_errTrad && _errTrad.titulo) || null;
@@ -86387,9 +86577,26 @@ ${JSON.stringify(metricas, null, 2)}`
     // Uma tag colorida ao lado da data dá a idade do pedido num relance:
     //   HOJE (verde) · ONTEM (amarelo) · Xd (laranja, quanto mais velho pior)
     // O operador prioriza pela cor sem precisar ler cada data.
+    // ═══════════════════════════════════════════════════════════════════
+    // ★★ v33k.2153: O RELÓGIO COMEÇA NA LIBERAÇÃO, NÃO NA VENDA.
+    // ─────────────────────────────────────────────────────────────────
+    // RELATO DE 30/08: "a pessoa faz o pedido ontem e paga só hoje. O selo
+    // fica de ONTEM, o que dá a ideia que o pedido está atrasado, mas não
+    // está."
+    //
+    // O selo existe pra priorizar separação. Contando do carrinho, ele acusa
+    // atraso em pedido que acabou de chegar — e some com a diferença entre um
+    // pago no ato e um pago três dias depois, que é justamente o que muda a
+    // prioridade.
+    //
+    // ★ Sem liberação registrada, cai na data da venda E DIZ que é a da venda.
+    //   Mostrar uma data com o rótulo da outra seria trocar um número errado
+    //   por outro mais difícil de perceber.
+    const _refEm = p.liberadoEm || p.vendidoEm || null;
+    const _ehLiberacao = !!p.liberadoEm;
     const _tagTempo = (function () {
-      if (!p.vendidoEm) return '';
-      const d = new Date(Number(p.vendidoEm) * 1000);
+      if (!_refEm) return '';
+      const d = new Date(Number(_refEm) * 1000);
       // compara por DIA DE CALENDÁRIO (não por 24h corridas): um pedido das 23h
       // de ontem é "ontem", não "hoje", mesmo com poucas horas de diferença.
       const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
@@ -86408,10 +86615,16 @@ ${JSON.stringify(metricas, null, 2)}`
       ? '<span title="Nº do subpedido: ' + p.subpedidos.join(', ') + '" style="font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;white-space:nowrap;cursor:help">Subpedido' +
         (p.subpedidos.length > 1 ? ' ×' + p.subpedidos.length : '') + '</span>'
       : '';
-    const _dataTxt = p.vendidoEm
-      ? '<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--lc-muted)">' +
-        _tagTempo + '<span>vendido em ' +
-        new Date(Number(p.vendidoEm) * 1000).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) +
+    const _fmtData = (epoch) => new Date(Number(epoch) * 1000)
+      .toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+    // a OUTRA data não se perde: fica no title, pra quem precisar conferir
+    const _titulo = (_ehLiberacao && p.vendidoEm && p.vendidoEm !== p.liberadoEm)
+      ? ' title="Compra feita em ' + _fmtData(p.vendidoEm) + '"'
+      : (!_ehLiberacao ? ' title="Sem pagamento registrado ainda: esta é a data da compra"' : '');
+    const _dataTxt = _refEm
+      ? '<span' + _titulo + ' style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--lc-muted)">' +
+        _tagTempo + '<span>' + (_ehLiberacao ? 'liberado em ' : 'vendido em ') +
+        _fmtData(_refEm) +
         '</span></span>'
       : '';
     // v33k.907: valor e data na MESMA LINHA, centralizados verticalmente com o
@@ -88068,8 +88281,26 @@ ${JSON.stringify(metricas, null, 2)}`
             + ' Este lucro vai <b>diminuir</b> quando a taxa entrar.</div>'
           : '') +
       '</div>' +
+      // ═══════════════════════════════════════════════════════════════════
+      // ★ v33k.2154: CANCELAR PEDIDO, no fim do modal, em vermelho.
+      // ─────────────────────────────────────────────────────────────────
+      // Esta tela não tem "Salvar" (é só leitura), então o botão fica sozinho
+      // no rodapé. Mesma função da tela de Notas Fiscais: a regra é do
+      // backend, e a confirmação por digitação é a mesma. Dois botões
+      // chamando a MESMA função é o que impede as duas telas de divergirem.
+      ((p.lojaIdBanco || p.lojaId) && p.orderSn
+        ? '<div style="display:flex;justify-content:flex-end;margin-top:16px;padding-top:14px;border-top:1px solid var(--lc-border)">' +
+            '<button class="lc-btn" style="background:#dc2626;color:#fff" ' +
+            'onclick="lcCancelarPedido(' + JSON.stringify(String(p.lojaIdBanco || p.lojaId)) + ',' +
+            JSON.stringify(String(p.orderSn)) + ', function(){ var o=document.getElementById(\'pedModalOverlay\'); ' +
+            'if(o) o.remove(); if(typeof pedAplicar===\'function\') pedAplicar(); })" ' +
+            'title="Cancela o pedido no marketplace. Não tem volta.">' +
+            '<span class="lc-ic" data-lucide="ban"></span> Cancelar pedido</button>' +
+          '</div>'
+        : '') +
     '</div>';
     document.body.appendChild(ov);
+    try { if (typeof lcHydrateIcons === 'function') lcHydrateIcons(ov); } catch (_) {}
   }
 
   // Decomposição das deduções do marketplace (v33k.1043).
