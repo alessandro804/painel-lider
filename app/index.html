@@ -74703,7 +74703,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2172-escopo-da-livia';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2176-o-numero-na-tela';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -96164,9 +96164,17 @@ ${JSON.stringify(metricas, null, 2)}`
       // fecha ao clicar fora (o clique no próprio rodapé é tratado pela
       // delegação, que faz toggle e para a propagação)
       document.addEventListener('click', (e) => {
+        // ★ v33k.2175: o AVATAR entrou na lista de excecoes.
+        // Os avatares do topo ja chamavam `abrirMenuUsuario`, e mesmo assim
+        // nao funcionavam: o clique abria o menu e, ao subir ate aqui, este
+        // listener via "clique fora do menu e fora do rodape" e fechava no
+        // mesmo instante. No desktop ninguem notou porque o caminho usado e o
+        // rodape da barra lateral; no celular, onde o rodape nem aparece, o
+        // menu simplesmente nao existia.
         if (menu.classList.contains('aberto') &&
             !menu.contains(e.target) &&
-            !e.target.closest('.sidebar-footer')) {
+            !e.target.closest('.sidebar-footer') &&
+            !e.target.closest('.user-avatar')) {
           menu.classList.remove('aberto');
         }
       });
@@ -96197,6 +96205,17 @@ ${JSON.stringify(metricas, null, 2)}`
         if (e.target.closest('.sidebar-logout')) return; // botão de logout tem ação própria
         e.stopPropagation();
         abrirMenuUsuario(footer);
+      });
+      // ★ v33k.2175: MESMA DELEGACAO PARA O AVATAR DO TOPO.
+      // Sao 29 avatares espalhados pelas telas e só 9 tinham `onclick`. Ligar
+      // um a um deixaria as outras 20 telas sem menu no celular, e a proxima
+      // tela nasceria sem de novo. A delegacao cobre as que existem e as que
+      // ainda nao foram escritas.
+      document.addEventListener('click', (e) => {
+        const av = e.target.closest('.user-avatar');
+        if (!av) return;
+        e.stopPropagation();
+        abrirMenuUsuario(av);
       });
     }
   }
@@ -96252,11 +96271,23 @@ ${JSON.stringify(metricas, null, 2)}`
 
     menu.innerHTML = html;
 
-    // posiciona logo acima do rodapé
+    // ★ v33k.2175: A ANCORA DECIDE O LADO.
+    // A conta antiga (`bottom = innerHeight - top + 8`) coloca o menu ACIMA da
+    // ancora, que é o certo para o rodapé da barra lateral. Para o avatar do
+    // topo ela punha o menu inteiro fora da tela, acima do viewport: o menu
+    // abria e ninguem via. Ancora na metade de cima abre para BAIXO, alinhada
+    // pela direita e presa dentro da janela.
     const r = ancora.getBoundingClientRect();
-    menu.style.left = Math.max(12, r.left) + 'px';
-    menu.style.bottom = (window.innerHeight - r.top + 8) + 'px';
-    menu.style.top = 'auto';
+    const LARG = 300;
+    if (r.top < window.innerHeight / 2) {
+      menu.style.top = (r.bottom + 8) + 'px';
+      menu.style.bottom = 'auto';
+      menu.style.left = Math.max(12, Math.min(r.right - LARG, window.innerWidth - LARG - 12)) + 'px';
+    } else {
+      menu.style.left = Math.max(12, Math.min(r.left, window.innerWidth - LARG - 12)) + 'px';
+      menu.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+      menu.style.top = 'auto';
+    }
     menu.classList.add('aberto');
     try { window.lucide && window.lucide.createIcons(); } catch(e){}
   }
@@ -115523,9 +115554,29 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // (window.LC_SUPORTE_WHATSAPP, formato internacional só com dígitos), e sem
   // ele a opção simplesmente não aparece — melhor não oferecer do que oferecer
   // um link quebrado.
+  // ★★ v33k.2176: O NUMERO MORA AQUI, E APARECE ESCRITO.
+  // A v33k.2175 tirava o numero do `.env`, e o custo disso era alto: sem a
+  // variavel a opcao simplesmente nao existia, e a pessoa que quer falar com
+  // gente ficava sem caminho nenhum. Segurar o telefone atras de configuracao
+  // protege pouco (ele ja esta no painel, em outra tela, e o painel e publico)
+  // e atrapalha muito.
+  //
+  // O `.env` continua valendo como SOBRESCRITA, para o dia em que o numero
+  // mudar sem precisar reentregar o painel. Mas nada depende dele.
+  var WHATS_PADRAO = '5537991960195';        // 55 + DDD + numero, so digitos
+  var WHATS_EXIBICAO = '(37) 99196-0195';    // e como a pessoa le e confere
+
   function whatsapp() {
-    var n = String(window.LC_SUPORTE_WHATSAPP || '').replace(/\D/g, '');
-    return n.length >= 10 ? n : '';
+    var n = String(estado.whatsapp || window.LC_SUPORTE_WHATSAPP || '').replace(/\D/g, '');
+    if (n.length >= 10) return n;
+    return WHATS_PADRAO;
+  }
+  function whatsappEscrito() {
+    var n = whatsapp();
+    if (n === WHATS_PADRAO) return WHATS_EXIBICAO;
+    // numero sobrescrito: mostra formatado a partir dos digitos
+    var d = n.replace(/^55/, '');
+    return d.length >= 10 ? '(' + d.slice(0, 2) + ') ' + d.slice(2, -4) + '-' + d.slice(-4) : n;
   }
 
   var estado = {
@@ -115534,6 +115585,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     aba: 'chat',           // 'chat' | 'chamados'
     podeDireto: false,
     chatDisponivel: true,
+    whatsapp: '',
     chamadosAbertos: 0,
     iniciado: false,
   };
@@ -115623,9 +115675,21 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
           '<button class="lc-ch-enviar" id="lcChatBtnEnviar" title="Enviar">' +
             '<span class="lc-ic" data-lucide="send"></span></button>' +
         '</div>' +
-        '<div class="lc-ch-aviso">A Livia le os dados da sua conta para responder. Ela nao executa acoes: quem clica e voce.</div>' +
+        '<div class="lc-ch-aviso" id="lcChatRodape"></div>' +
       '</div>';
     document.body.appendChild(painel);
+
+    // ★ O caminho humano fica VISIVEL o tempo todo, no rodape do chat. Quem
+    //   nao esta sendo atendido pela Livia nao deveria precisar procurar o
+    //   telefone num menu que ele acabou de fechar.
+    var rod = document.getElementById('lcChatRodape');
+    if (rod) {
+      rod.innerHTML = 'A Livia le os dados da sua conta e nao executa acoes: quem clica e voce.<br>' +
+        'Prefere falar com uma pessoa? WhatsApp <b>' + esc(whatsappEscrito()) + '</b> ' +
+        '<a href="#" id="lcChatWhatsLink" style="color:#15803d;font-weight:700;text-decoration:none">abrir</a>';
+      var lk = document.getElementById('lcChatWhatsLink');
+      if (lk) lk.addEventListener('click', function (e) { e.preventDefault(); abrirWhats(); });
+    }
 
     document.getElementById('lcChatBtnFechar').addEventListener('click', fechar);
     document.getElementById('lcChatBtnChamados').addEventListener('click', function () {
@@ -115669,18 +115733,19 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     var h =
       '<div class="lc-aj-cab">' +
         '<div class="lc-aj-tit">Ajuda</div>' +
-        '<div class="lc-aj-sub">Fale com a Livia aqui dentro, onde ela ve a sua conta, ou chame o suporte no WhatsApp.</div>' +
+        '<div class="lc-aj-sub">A Livia responde na hora e ja enxerga os dados da sua conta. O WhatsApp fala com uma pessoa, e costuma demorar mais.</div>' +
       '</div>';
 
     if (estado.chatDisponivel) {
       h += '<button class="lc-aj-item" data-acao="chat">' +
         '<span class="lc-ic" data-lucide="message-circle"></span>' +
-        '<span>Falar com a Livia aqui<small>Ela ja abre os dados da sua conta</small></span></button>';
+        '<span>Falar com a Livia aqui<small>Resposta na hora, com os seus numeros reais</small></span></button>';
     }
     if (whatsapp()) {
       h += '<button class="lc-aj-item" data-acao="whats">' +
         '<span class="lc-ic" data-lucide="smartphone"></span>' +
-        '<span>Suporte no WhatsApp<small>Atendimento no seu celular</small></span></button>';
+        '<span>Suporte no WhatsApp <b style="color:#15803d">' + esc(whatsappEscrito()) + '</b>' +
+        '<small>Fala com uma pessoa · a resposta pode demorar mais</small></span></button>';
     }
     h += '<div class="lc-aj-sep"></div>';
     h += '<button class="lc-aj-item" data-acao="chamados">' +
@@ -115707,10 +115772,19 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     icones(m);
   }
 
+  // ★ SEM CONFIRMACAO NO CAMINHO. A v33k.2175 punha um modal perguntando "quer
+  //   mesmo ir?" antes de abrir o WhatsApp. A intencao era boa — avisar que la
+  //   demora mais — mas o efeito era outro: um obstaculo entre a pessoa
+  //   irritada e o atendimento humano, que e exatamente a hora em que ela menos
+  //   quer clicar de novo.
+  //
+  //   O aviso continua, escrito na propria opcao do menu, onde ela le ANTES de
+  //   decidir. Informar e uma coisa; atravessar a porta e outra.
   function abrirWhats() {
     var n = whatsapp();
     if (!n) return;
-    window.open('https://wa.me/' + n, '_blank', 'noopener');
+    window.open('https://wa.me/' + n + '?text=' +
+      encodeURIComponent('Ola! Preciso de ajuda com o Lider 10.'), '_blank', 'noopener');
   }
 
   // ── painel ──────────────────────────────────────────────────────────────
@@ -115775,11 +115849,13 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     var lista = r.chamados || [];
     if (!lista.length) {
       corpo('<div class="lc-ch-digitando">Voce ainda nao tem chamado registrado. ' +
-        'Quando a Livia nao resolver algo, ela abre um aqui e voce acompanha por esta tela.</div>');
+        'Quando a Livia nao resolver algo, ela abre um aqui e voce acompanha por esta tela.<br><br>' +
+        'Se preferir falar com uma pessoa agora: WhatsApp <b>' + esc(whatsappEscrito()) + '</b></div>');
       return;
     }
     var h = lista.map(function (c) {
-      return '<div class="lc-ch-chamado">' +
+      return '<div class="lc-ch-chamado"' +
+        (c.conversa_id ? ' data-abrir="' + c.conversa_id + '" style="cursor:pointer"' : '') + '>' +
         '<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">' +
           '<div class="lc-ch-chamado-tit">' + esc(c.titulo) + '</div>' +
           '<span class="lc-st lc-st-' + esc(c.status) + '">' + esc(ROTULO_STATUS[c.status] || c.status) + '</span>' +
@@ -115787,9 +115863,35 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         '<div class="lc-ch-chamado-meta">#' + c.id + ' · aberto em ' + esc(hora(c.criado_em)) +
           (c.urgencia ? ' · urgencia ' + esc(c.urgencia) : '') + '</div>' +
         (c.resposta_time ? '<div class="lc-ch-chamado-resp">' + esc(c.resposta_time) + '</div>' : '') +
+        (c.conversa_id ? '<div style="font-size:11px;color:#64748b;margin-top:7px">Toque para abrir a conversa</div>' : '') +
       '</div>';
     }).join('');
     corpo(h);
+    var cx = document.getElementById('lcChatCorpo');
+    if (cx) {
+      cx.querySelectorAll('[data-abrir]').forEach(function (el) {
+        el.addEventListener('click', function () { abrirFio(el.getAttribute('data-abrir')); });
+      });
+    }
+  }
+
+  // Abre o fio de um chamado: a mesma conversa onde a Livia atendeu e onde o
+  // time responde. E por aqui que a pessoa manda a informacao extra pedida.
+  async function abrirFio(conversaId) {
+    estado.aba = 'chat';
+    estado.conversaId = Number(conversaId);
+    abrirPainel();
+    var pe = document.getElementById('lcChatPe');
+    if (pe) pe.style.display = '';
+    var t = document.getElementById('lcChatTitulo');
+    var sb = document.getElementById('lcChatSub');
+    if (t) t.textContent = 'Chamado · conversa';
+    if (sb) sb.textContent = 'Voce e o time respondem por aqui';
+    corpo('<div class="lc-ch-digitando">Abrindo...</div>');
+    var r = await api('/conversas/' + conversaId);
+    if (!r || !r.ok) { corpo('<div class="lc-ch-digitando">' + esc((r && r.erro) || 'Nao consegui abrir.') + '</div>'); return; }
+    corpo('');
+    (r.mensagens || []).forEach(function (m) { addMensagem(m.autor, m.texto); });
   }
 
   function corpo(html) {
@@ -115887,12 +115989,60 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     else { b.textContent = ''; b.classList.remove('tem'); }
   }
 
+  // ═════════════════════════════════════════════════════════════════════════
+  // O AVATAR DO TOPO, NO CELULAR (v33k.2175)
+  // ─────────────────────────────────────────────────────────────────────────
+  // No celular a barra lateral nao aparece, e com ela some o rodape que abre
+  // Meu perfil / Ajuda / Sair. O avatar do topo cobre isso — mas 11 das 40
+  // telas nao tem avatar nenhum no cabecalho.
+  //
+  // ★ Editar as 11 a mao resolveria hoje e deixaria a proxima tela nascer sem
+  //   de novo. Aqui o botao e INJETADO na tela ativa quando falta, no mesmo
+  //   ciclo que ja roda. `data-lc-user` marca o que foi injetado, para nunca
+  //   duplicar; a classe `.user-avatar` faz a delegacao existente cuidar do
+  //   clique, sem um segundo caminho para manter.
+  // ═════════════════════════════════════════════════════════════════════════
+  function inicialDoNome() {
+    try {
+      var u = JSON.parse(localStorage.getItem('lider_usuario') || 'null');
+      var nome = (u && u.nome) || '';
+      return nome ? nome.trim().charAt(0).toUpperCase() : 'U';
+    } catch (e) { return 'U'; }
+  }
+
+  function garantirAvatarNoTopo() {
+    if (window.innerWidth > 768) return;          // no desktop o rodape resolve
+    if (!logado()) return;
+    var tela = document.querySelector('.screen.active');
+    if (!tela || tela.id === 'loginScreen') return;
+    if (tela.querySelector('.user-avatar')) return;
+
+    var alvo = tela.querySelector('.top-actions')
+      || tela.querySelector('.app-header .header-content')
+      || tela.querySelector('.app-header')
+      || tela.querySelector('.header');
+    if (!alvo) return;
+    if (alvo.querySelector('[data-lc-user]')) return;
+
+    var b = document.createElement('div');
+    b.className = 'user-avatar';
+    b.setAttribute('data-lc-user', '1');
+    b.setAttribute('title', 'Conta');
+    b.style.cssText = 'margin-left:auto;flex:none;cursor:pointer';
+    b.textContent = inicialDoNome();
+    alvo.appendChild(b);
+  }
+
   // ── ciclo de vida ───────────────────────────────────────────────────────
   async function iniciar() {
     if (!logado()) return;
     montar();
     var fab = document.getElementById('lcChatFab');
     if (fab) fab.classList.add('visivel');
+    // ★ No ato, nao no proximo ciclo. Deixar isso so no `setInterval` de 3s
+    //   fazia a pessoa abrir a tela no celular e ficar tres segundos sem o
+    //   botao de conta — tempo suficiente para ela concluir que nao existe.
+    garantirAvatarNoTopo();
     if (estado.iniciado) return;
     estado.iniciado = true;
     var r = await api('/inicio');
@@ -115900,6 +116050,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
       estado.podeDireto = r.podeAbrirDireto === true;
       estado.chatDisponivel = r.chatDisponivel !== false;
       estado.chamadosAbertos = Number(r.chamadosAbertos) || 0;
+      estado.whatsapp = r.whatsapp || '';
       pintarBolha();
     }
   }
@@ -115916,7 +116067,23 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
   window.lcSuporteIniciar = iniciar;
   window.lcSuporteEsconder = esconder;
-  window.lcSuporteAbrirAjuda = function () { montar(); desenharAjuda(); alternarAjuda(); };
+  // ★★ ABRE NO PROXIMO TICK, DE PROPOSITO.
+  // O item "Ajuda" vive DENTRO do menu do usuario. O clique nele sobe ate o
+  // `document`, onde este bloco tem um listener que fecha o menu de Ajuda
+  // quando o clique veio de fora dele. Resultado: o menu abria no `onclick` e
+  // fechava um instante depois, no mesmo clique — parecia botao morto.
+  //
+  // O `setTimeout(0)` poe a abertura DEPOIS que o clique terminou de subir.
+  // Nao e truque: e a ordem certa. Tentar `stopPropagation` no item quebraria
+  // o handler que fecha o menu do usuario, que e o comportamento desejado.
+  window.lcSuporteAbrirAjuda = function () {
+    montar();
+    setTimeout(function () {
+      desenharAjuda();
+      var m = document.getElementById('lcAjudaMenu');
+      if (m) m.classList.add('aberto');
+    }, 0);
+  };
   window.lcSuporteAbrirChat = function () { montar(); abrirChat(); };
   window.lcSuporteMeusChamados = function () { montar(); irParaChamados(); };
 
@@ -115932,6 +116099,8 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // O card de ADM se desenha sozinho quando a tela abre. Enganchar no `goTo`
     // obrigaria a mexer numa função que TODA tela usa: o risco de tocar nela
     // por causa de um card é maior que o ganho.
+    garantirAvatarNoTopo();
+
     var adm = document.getElementById('admScreen');
     var box = document.getElementById('admSuporteBox');
     if (adm && box && adm.classList.contains('active') && !box.getAttribute('data-pronto')) {
@@ -115944,6 +116113,14 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   } else {
     setTimeout(iniciar, 800);
   }
+  // Trocar de tela recria o cabecalho: o avatar precisa ser conferido no ato,
+  // e nao daqui a tres segundos, senao a pessoa ve a tela sem o botao.
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('.nav-item, .lc-side-item, .back-btn, .menu-item')) {
+      setTimeout(garantirAvatarNoTopo, 120);
+    }
+  });
+  window.addEventListener('resize', function () { setTimeout(garantirAvatarNoTopo, 200); });
 
   // ═════════════════════════════════════════════════════════════════════════
   // ADM — conversas e chamados (só superadmin)
@@ -115993,6 +116170,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
             (c.conversa_id ? '<button class="toolbar-btn" data-ver="' + c.conversa_id + '" style="font-size:11px;padding:5px 9px">Ver conversa</button>' : '') +
             '<button class="toolbar-btn" data-st="aberto" data-id="' + c.id + '" style="font-size:11px;padding:5px 9px">Aberto</button>' +
             '<button class="toolbar-btn" data-st="aguardando_humano" data-id="' + c.id + '" style="font-size:11px;padding:5px 9px">Aguardando humano</button>' +
+            '<button class="toolbar-btn" data-msg="' + c.id + '" style="font-size:11px;padding:5px 9px">Responder</button>' +
             '<button class="toolbar-btn" data-resp="' + c.id + '" style="font-size:11px;padding:5px 9px">Responder e fechar</button>' +
           '</div>' +
         '</div>';
@@ -116029,6 +116207,21 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
         admStatus(b.getAttribute('data-id'), b.getAttribute('data-st'), null);
       });
     });
+    // Responder SEM fechar: e assim que se pede informacao extra. O caso segue
+    // com o time (aguardando_humano) ate ele decidir fechar.
+    box.querySelectorAll('[data-msg]').forEach(function (b) {
+      b.addEventListener('click', async function () {
+        var txt = '';
+        try {
+          txt = (typeof lcPrompt === 'function')
+            ? await lcPrompt('O que voce quer dizer ao usuario? Ele le no chat dele.', '',
+                { titulo: 'Responder', multiline: true })
+            : '';
+        } catch (e) { txt = ''; }
+        if (!txt) return;
+        admStatus(b.getAttribute('data-msg'), 'aguardando_humano', txt);
+      });
+    });
     box.querySelectorAll('[data-resp]').forEach(function (b) {
       b.addEventListener('click', async function () {
         var txt = '';
@@ -116045,7 +116238,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
 
   async function admStatus(id, status, resposta) {
     var corpoReq = { status: status };
-    if (resposta) corpoReq.resposta_time = resposta;
+    if (resposta) corpoReq.mensagem = resposta;
     var r = await api('/adm/chamados/' + id, { method: 'PATCH', body: corpoReq });
     if (!r || !r.ok) {
       if (typeof showToast === 'function') showToast((r && r.erro) || 'Nao consegui mudar o status.', true);
