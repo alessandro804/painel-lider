@@ -74555,7 +74555,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2182-cliente-da-agencia';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2189-nota-ja-salva';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -115539,6 +115539,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     chatDisponivel: true,
     whatsapp: '',
     suporteDisponivel: true,
+    desistiu: false,
     chamadosAbertos: 0,
     iniciado: false,
   };
@@ -116335,6 +116336,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   // ── ciclo de vida ───────────────────────────────────────────────────────
   async function iniciar() {
     if (!logado()) return;
+    // O servidor já disse que esta conta não tem suporte próprio. Não se
+    // pergunta de novo até a pessoa recarregar a página.
+    if (estado.desistiu) return;
     montar();
     var fab = document.getElementById('lcChatFab');
     if (fab) fab.classList.add('visivel');
@@ -116350,7 +116354,21 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     // chat e ticket aqui faria ele abrir chamado sobre uma conta que nao
     // configura, e a agencia descobrir o problema do proprio cliente por
     // ultimo. O portao de verdade esta na rota; isto e so nao oferecer.
-    if (r && r.ok && r.suporteDisponivel === false) { esconder(); return; }
+    if (r && r.ok && r.suporteDisponivel === false) {
+      // ★★ v33k.2184: DESISTE DE VEZ, e este `true` é o conserto.
+      // A v33k.2182 chamava só `esconder()`, e `esconder()` zera
+      // `estado.iniciado`. O `setInterval` de 3s vê o botão oculto, chama
+      // `iniciar()` de novo, que pergunta ao servidor de novo, que responde
+      // de novo que não há suporte, que esconde de novo — UMA REQUISIÇÃO A
+      // CADA 3 SEGUNDOS, PARA SEMPRE, e só para o papel `cliente`.
+      //
+      // Ninguém veria isso na tela: o botão fica oculto, que é o esperado. O
+      // custo aparece longe daqui, na lentidão do navegador do cliente e na
+      // carga do servidor — e some no meio de qualquer outra investigação.
+      estado.desistiu = true;
+      esconder();
+      return;
+    }
     if (r && r.ok) {
       estado.podeDireto = r.podeAbrirDireto === true;
       estado.chatDisponivel = r.chatDisponivel !== false;
@@ -116378,6 +116396,9 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
     fechar();
     estado.conversaId = null;
     estado.iniciado = false;
+    // ★ `desistiu` NÃO é limpo aqui de propósito: `esconder()` também é
+    //   chamado no logout, e ali a página recarrega de qualquer forma. Limpar
+    //   aqui reabriria o laço de 3 em 3 segundos.
   }
 
   window.lcSuporteIniciar = iniciar;
@@ -116408,7 +116429,7 @@ Seja objetivo e prático. Máximo 3 itens em cada lista. Se não houver fluxos, 
   setInterval(function () {
     var temFab = document.getElementById('lcChatFab');
     var visivel = temFab && temFab.classList.contains('visivel');
-    if (logado() && !visivel) iniciar();
+    if (logado() && !visivel && !estado.desistiu) iniciar();
     else if (!logado() && visivel) esconder();
 
     // O card de ADM se desenha sozinho quando a tela abre. Enganchar no `goTo`
