@@ -267,6 +267,18 @@
     return saida;
   }
 
+  // ★★ v33k.2219: PREÇO, EAN E PROMOCIONAL VIVEM NA VARIAÇÃO.
+  //   Pedido de 01/09. Antes o preço era um campo só, no nível do produto, o
+  //   que só serve para catálogo onde toda variação custa igual. Chuteira 34 e
+  //   44 não custam igual, e promoção quase nunca é a mesma em toda a grade.
+  function _celulaCombo(chave, campo, valor, largura, dica) {
+    return '<td style="padding:7px 10px;border-top:1px solid #f1f5f9">'
+      + '<input class="lc-an-combo" data-chave="' + esc(chave) + '" data-campo="' + campo + '" '
+      + 'value="' + esc(valor == null ? '' : valor) + '"'
+      + (dica ? ' placeholder="' + esc(dica) + '"' : '')
+      + ' style="width:' + largura + ';padding:5px 7px;border:1px solid var(--lc-border);border-radius:6px"></td>';
+  }
+
   function sincronizarCombinacoes() {
     var atuais = combinacoes().map(rotuloCombinacao);
     if (!estado.dados.combinacoes || typeof estado.dados.combinacoes !== 'object') {
@@ -348,8 +360,12 @@
 
     return '<div class="lc-an-etapa">'
       + identificacao + escolha + blocoVar + termos + descricao
-      + campo('Preço', 'lcAnPreco', d.preco, 'text', 'Um preço só, que vale para todas as lojas de destino. Obrigatório.')
-      + campo('Estoque', 'lcAnEstoque', d.estoque)
+      // ★ Sem variação, preço e estoque continuam aqui, porque não há linha
+      //   onde colocá-los. COM variação, eles saem: dois lugares para o mesmo
+      //   número é a pessoa preencher um e o outro valer.
+      + (comVar ? ''
+        : campo('Preço', 'lcAnPreco', d.preco, 'text', 'Obrigatório.')
+          + campo('Estoque', 'lcAnEstoque', d.estoque))
       + '</div>';
   }
 
@@ -384,6 +400,12 @@
         + '<span style="display:flex;gap:6px;flex-wrap:wrap">'
         + '<button id="lcAnSkuMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Montar SKUs</button>'
+        + '<button id="lcAnEanMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
+        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Gerar EANs</button>'
+        + '<button id="lcAnPrecoMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
+        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Preço para todas</button>'
+        + '<button id="lcAnPromoMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
+        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Promoção para todas</button>'
         + '<button id="lcAnEstoqueMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Estoque para todas</button>'
         + '</span></div>'
@@ -391,13 +413,20 @@
         + '<table style="width:100%;border-collapse:collapse;font-size:13px">'
         + '<thead><tr style="background:#f8fafc"><th style="text-align:left;padding:8px 10px">Variação</th>'
         + '<th style="text-align:left;padding:8px 10px">SKU</th>'
+        + '<th style="text-align:left;padding:8px 10px">Código de barras (EAN)</th>'
+        + '<th style="text-align:left;padding:8px 10px">Preço</th>'
+        + '<th style="text-align:left;padding:8px 10px">Promocional</th>'
         + '<th style="text-align:left;padding:8px 10px">Estoque</th></tr></thead><tbody>'
         + combos.map(function (c) {
           var chave = rotuloCombinacao(c);
           var linha = (estado.dados.combinacoes || {})[chave] || {};
           return '<tr><td style="padding:7px 10px;border-top:1px solid #f1f5f9">' + esc(chave) + '</td>'
-            + '<td style="padding:7px 10px;border-top:1px solid #f1f5f9"><input class="lc-an-combo" data-chave="' + esc(chave) + '" data-campo="sku" value="' + esc(linha.sku || '') + '" style="width:100%;padding:5px 7px;border:1px solid var(--lc-border);border-radius:6px"></td>'
-            + '<td style="padding:7px 10px;border-top:1px solid #f1f5f9"><input class="lc-an-combo" data-chave="' + esc(chave) + '" data-campo="estoque" value="' + esc(linha.estoque || '') + '" style="width:90px;padding:5px 7px;border:1px solid var(--lc-border);border-radius:6px"></td></tr>';
+            + _celulaCombo(chave, 'sku', linha.sku, '100%')
+            + _celulaCombo(chave, 'ean', linha.ean, '150px')
+            + _celulaCombo(chave, 'preco', linha.preco, '90px')
+            + _celulaCombo(chave, 'precoPromo', linha.precoPromo, '90px', 'vazio = sem promoção')
+            + _celulaCombo(chave, 'estoque', linha.estoque, '80px')
+            + '</tr>';
         }).join('')
         + '</tbody></table></div></div>';
     }
@@ -534,6 +563,19 @@
           + '<button class="lc-an-tirar-foto" data-alvo="' + esc(alvo) + '" data-i="' + i + '" '
           + 'style="position:absolute;top:2px;right:2px;border:0;background:rgba(255,255,255,.9);color:var(--lc-danger);'
           + 'border-radius:6px;width:18px;height:18px;cursor:pointer;font-size:12px;line-height:1">x</button>'
+          // ★ v33k.2219: SETAS DE ORDEM. Relato de 01/09: "subi as fotos, mas
+          //   não teve as setinhas para eu poder mudar as posições". A ordem
+          //   não é estética: a PRIMEIRA é a capa, e é ela que a Shopee usa e
+          //   que aparece na busca. Sem reordenar, a única saída era apagar
+          //   tudo e subir de novo na ordem certa.
+          + '<div style="position:absolute;left:0;top:2px;display:flex;gap:1px">'
+          + (i > 0 ? '<button class="lc-an-mover-foto" data-alvo="' + esc(alvo) + '" data-i="' + i + '" data-dir="-1" '
+            + 'style="border:0;background:rgba(255,255,255,.9);color:var(--lc-ink-2);border-radius:4px;'
+            + 'width:16px;height:18px;cursor:pointer;font-size:11px;line-height:1" title="mover para a esquerda">&#8249;</button>' : '')
+          + (i < urls.length - 1 ? '<button class="lc-an-mover-foto" data-alvo="' + esc(alvo) + '" data-i="' + i + '" data-dir="1" '
+            + 'style="border:0;background:rgba(255,255,255,.9);color:var(--lc-ink-2);border-radius:4px;'
+            + 'width:16px;height:18px;cursor:pointer;font-size:11px;line-height:1" title="mover para a direita">&#8250;</button>' : '')
+          + '</div>'
           + '</div>';
       }).join('') + '</div>';
   }
@@ -559,15 +601,27 @@
         + botaoArquivo('geral', true, 'Escolher arquivos')
         + '</div>';
 
+    // ★★ v33k.2219: FOTO É POR VALOR DA PRIMEIRA DIMENSÃO, NÃO POR COMBINAÇÃO.
+    //   Relato de 01/09: "as fotos por variações é apenas para a variação 1 e
+    //   não para variação 1 + variação 2. No meu exemplo a variação 1 = Cor,
+    //   então deveria aparecer apenas 1 com o nome Cor".
+    //
+    //   E é assim que os marketplaces funcionam: a foto é da COR, não do par
+    //   cor+tamanho. Uma chuteira preta 34 e uma preta 44 usam a mesma foto.
+    //   Pedir uma por combinação era pedir 11 vezes a mesma imagem, e foi o
+    //   que a tela fazia.
+    var primeira = (variacoes().filter(function (v) { return v.nome && (v.valores || []).length; }))[0];
+    var gruposFoto = primeira ? primeira.valores.slice() : [];
     var blocoVars = '';
-    if (combos.length) {
+    if (gruposFoto.length) {
       blocoVars = '<div style="margin-top:16px">'
         + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:8px">'
-        + 'Fotos por variação (até ' + r.porVariacaoMax + ' em cada)</div>'
-        + combos.map(function (c) {
-          var fv = ((d.combinacoes || {})[c] || {}).fotos || [];
+        + 'Fotos por ' + esc(primeira.nome) + ' (até ' + r.porVariacaoMax + ' em cada)</div>'
+        + gruposFoto.map(function (c) {
+          var fv = ((d.fotosPorGrupo || {})[c]) || [];
           return '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:12px;margin-bottom:8px">'
-            + '<div style="font-size:13px;font-weight:600;color:var(--lc-ink);margin-bottom:4px">' + esc(c)
+            + '<div style="font-size:13px;font-weight:600;color:var(--lc-ink);margin-bottom:4px">'
+            + esc(primeira.nome) + ': ' + esc(c)
             + ' <span style="font-weight:400;color:var(--lc-muted-2)">(' + fv.length + ' de ' + r.porVariacaoMax + ')</span></div>'
             + tirasDeFoto(fv, c)
             + botaoArquivo(c, r.porVariacaoMax > 1, fv.length ? 'Adicionar mais' : 'Escolher arquivos')
@@ -653,29 +707,53 @@
       porCanal[c].push(l);
     });
     var NOMES = { shopee: 'Shopee', mercadolivre: 'Mercado Livre', tiktok: 'TikTok Shop', shein: 'Shein' };
+    // ★ v33k.2219: as logos que o painel já usa, no mesmo caminho. Pedido de
+    //   01/09: "em destino preciso que tenha a logo de cada marketplace na
+    //   frente do nome e uma barra de pesquisa".
+    var LOGOS = { shopee: 'mkt-shopee.png', mercadolivre: 'mkt-ml.png',
+      tiktok: 'mkt-tiktok.png', shein: 'mkt-shein.png' };
+    var termo = String(estado.buscaLoja || '').trim().toLowerCase();
     var blocos = Object.keys(porCanal).sort().map(function (c) {
       // Ordem alfabética dentro do canal, e não a ordem de integração.
       var doCanal = porCanal[c].slice().sort(function (a, b) {
         return String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR');
       });
+      // A busca filtra por nome da loja E pelo nome do canal, porque quem
+      // digita "shopee" quer ver as lojas dela, não uma loja chamada shopee.
+      if (termo) {
+        doCanal = doCanal.filter(function (l) {
+          return String(l.nome || '').toLowerCase().indexOf(termo) >= 0
+            || String(NOMES[c] || c).toLowerCase().indexOf(termo) >= 0;
+        });
+      }
+      if (!doCanal.length) return '';
       return '<div style="margin-bottom:16px">'
-        + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin-bottom:8px">'
-        + esc(NOMES[c] || c) + '</div>'
+        + '<div style="display:flex;align-items:center;gap:7px;margin-bottom:8px">'
+        + (LOGOS[c] ? '<img src="../assets/' + LOGOS[c] + '" alt="" style="width:18px;height:18px;object-fit:contain">' : '')
+        + '<span style="font-size:12px;font-weight:800;color:var(--lc-ink-2)">' + esc(NOMES[c] || c) + '</span></div>'
         + doCanal.map(function (l) {
           var id = l.lojaId || l.idBanco || l.id;
           return '<label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--lc-border);border-radius:8px;margin-bottom:6px;cursor:pointer">'
             + '<input type="checkbox" class="lc-an-destino" data-loja="' + esc(id) + '"'
             + (marcado(id) ? ' checked' : '') + '>'
+            + (LOGOS[c] ? '<img src="../assets/' + LOGOS[c] + '" alt="" style="width:16px;height:16px;object-fit:contain">' : '')
             + '<span style="font-size:14px;color:var(--lc-ink)">' + esc(l.nome || ('Loja ' + id)) + '</span>'
             + '</label>';
         }).join('')
         + '</div>';
     }).join('');
 
+    var vazioPorBusca = termo && !blocos.replace(/\s/g, '');
     return '<div class="lc-an-etapa">'
-      + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 14px">'
-      + 'Escolha todas as lojas de uma vez. O preço e o estoque são os mesmos para todas.</p>'
-      + blocos
+      + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 12px">'
+      + 'Escolha todas as lojas de uma vez.</p>'
+      + '<input id="lcAnBuscaLoja" value="' + esc(estado.buscaLoja || '') + '" '
+      + 'placeholder="Buscar loja pelo nome ou pelo canal" '
+      + 'style="width:100%;padding:9px 11px;border:1px solid var(--lc-border-2);border-radius:8px;'
+      + 'font-size:13px;margin-bottom:14px">'
+      + (vazioPorBusca
+        ? '<p style="font-size:13px;color:var(--lc-muted-2)">Nenhuma loja com esse nome.</p>'
+        : blocos)
       + '<div style="font-size:12px;color:var(--lc-muted-2);margin-top:6px">'
       + estado.destinos.length + ' loja(s) escolhida(s).</div></div>';
   }
@@ -759,7 +837,19 @@
     } else if (buscandoFicha) {
       corpo = '<p style="font-size:13px;color:var(--lc-muted)">Carregando os campos...</p>';
     } else if (!ficha) {
-      corpo = '<button id="lcAnCarregarFicha" style="border:1px solid var(--lc-primary);background:#fff;color:var(--lc-primary);border-radius:8px;padding:9px 14px;cursor:pointer;font-size:13px;font-weight:700">Carregar os campos deste canal</button>';
+      // ★★ v33k.2219: CARREGA SOZINHA. Pedido de 01/09: "após selecionar uma
+      //   categoria preciso que carregue automaticamente os atributos e não
+      //   precisa de existir esse botão". Um botão que só tem um caminho e é
+      //   obrigatório para seguir não é escolha, é um passo a mais.
+      corpo = '<p style="font-size:13px;color:var(--lc-muted)">Carregando os campos...</p>';
+      if (!buscandoFicha) {
+        buscandoFicha = true;
+        setTimeout(function () {
+          buscarFicha(atual)
+            .catch(function (e) { avisar(e.message); })
+            .then(function () { buscandoFicha = false; desenharEtapa(); });
+        }, 0);
+      }
     } else if (ficha.motivo && !(ficha.campos || []).length) {
       corpo = '<p style="font-size:13px;color:var(--lc-danger)">' + esc(ficha.motivo) + '</p>';
     } else {
@@ -872,6 +962,13 @@
       + '<span style="font-size:13px;color:var(--lc-muted)">em cada uma das '
       + estado.destinos.length + ' loja(s), ou seja ' + (qtd * estado.destinos.length) + ' anúncio(s) no total.</span>'
       + '</div>'
+      // ★★ v33k.2221: AS OPÇÕES DE VARIAÇÃO AUTOMÁTICA VÊM PARA CÁ.
+      //   Pedido de 01/09: elas moravam num modal que aparecia DEPOIS, pedindo
+      //   de novo o que esta tela já perguntou. Ficam cinzas com 1 cópia,
+      //   porque variar existe para diferenciar cópias ENTRE SI: com uma só,
+      //   não há de quem diferenciar, e o único efeito seria trocar o título
+      //   que a pessoa acabou de escrever.
+      + _blocoVariacaoAutomatica(qtd)
       + (estado.envioErro
         ? '<div style="border:1px solid var(--lc-danger-soft);background:#fff;border-radius:8px;padding:10px 12px;margin:10px 0;font-size:13px;color:var(--lc-danger)">'
           + esc(estado.envioErro) + '</div>'
@@ -885,6 +982,34 @@
       + 'Esta tela não publica. Ela cria o produto e leva você para a tela de exportação de sempre, '
       + 'onde você confere anúncio por anúncio antes de qualquer coisa sair daqui.'
       + '</div></div>';
+  }
+
+  var OPCOES_AUTO = [
+    { id: 'variarTitulo', rotulo: 'Gerar um título diferente para cada cópia' },
+    { id: 'variarDescricao', rotulo: 'Gerar uma descrição diferente para cada cópia' },
+    { id: 'rotacionarFotos', rotulo: 'Rotacionar a ordem das fotos entre as cópias' },
+    { id: 'ativarAds', rotulo: 'Ativar no Ads depois de publicar' },
+  ];
+
+  function _blocoVariacaoAutomatica(qtd) {
+    var liberado = qtd > 1;
+    var op = estado.dados.opcoesAuto || {};
+    return '<div style="margin-top:18px;border:1px solid var(--lc-border);border-radius:10px;padding:14px;'
+      + (liberado ? '' : 'opacity:.55') + '">'
+      + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin-bottom:4px">VARIAÇÕES AUTOMÁTICAS</div>'
+      + '<div style="font-size:12px;color:var(--lc-muted-2);margin-bottom:10px">'
+      + (liberado
+        ? 'Cada cópia sai diferente das outras, para não competirem entre si.'
+        : 'Disponível a partir de 2 cópias por loja. Com uma só, não há de quem diferenciar.')
+      + '</div>'
+      + OPCOES_AUTO.map(function (o) {
+        return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;'
+          + 'color:var(--lc-ink-2);cursor:' + (liberado ? 'pointer' : 'not-allowed') + '">'
+          + '<input type="checkbox" class="lc-an-auto" data-op="' + o.id + '"'
+          + (op[o.id] && liberado ? ' checked' : '') + (liberado ? '' : ' disabled') + '>'
+          + esc(o.rotulo) + '</label>';
+      }).join('')
+      + '</div>';
   }
 
   async function garantirProdutoInterno() {
@@ -952,32 +1077,24 @@
         throw new Error('A tela de exportação não está disponível nesta versão do painel.');
       }
 
+      var _qtd = Math.max(1, parseInt(estado.dados.quantidadePorLoja, 10) || 1);
+      var _op = (_qtd > 1 && estado.dados.opcoesAuto) ? estado.dados.opcoesAuto : {};
       fechar();
-      window.abrirDuplicarAnuncio(local.id);
+      // ★ v33k.2221: vai com `auto`, então o modal de duplicar não aparece:
+      //   quantidade, lojas e opções já foram perguntadas aqui.
+      window.abrirDuplicarAnuncio(local.id, {
+        qtd: _qtd,
+        lojas: estado.destinos.map(function (dd) { return dd.lojaId; }),
+        variarTitulo: !!_op.variarTitulo,
+        variarDescricao: !!_op.variarDescricao,
+        rotacionarFotos: !!_op.rotacionarFotos,
+        ativarAds: !!_op.ativarAds,
+      });
 
-      // Marca as lojas escolhidas aqui e leva a quantidade junto. O modal abre
-      // com a loja do produto marcada; a escolha desta tela prevalece.
-      var qtd = Math.max(1, parseInt(estado.dados.quantidadePorLoja, 10) || 1);
-      var alvo = {};
-      estado.destinos.forEach(function (dd) { alvo[String(dd.lojaId)] = true; });
-      setTimeout(function () {
-        var campoQtd = document.getElementById('dupQuantidade');
-        if (campoQtd) campoQtd.value = qtd;
-        var marcou = 0;
-        Array.prototype.forEach.call(document.querySelectorAll('.dup-loja-ck'), function (ck) {
-          var lojaLocal = (window.lojasErp || []).filter(function (l) { return String(l.id) === String(ck.value); })[0];
-          var idBanco = lojaLocal && lojaLocal.idBanco != null ? String(lojaLocal.idBanco) : null;
-          var deve = !!(alvo[String(ck.value)] || (idBanco && alvo[idBanco]));
-          ck.checked = deve;
-          if (deve) marcou++;
-        });
-        if (typeof window.dupAtualizarBotaoMarcar === 'function') window.dupAtualizarBotaoMarcar();
-        // Não achar nenhuma loja é sinal de id que não bate, e ficar calado
-        // faria a pessoa duplicar para a loja errada sem perceber.
-        if (!marcou) {
-          toast('Marque as lojas de destino: não consegui casar as que você escolheu.');
-        }
-      }, 60);
+      // ★ v33k.2221: o `auto` acima já preenche quantidade, lojas e opções
+      //   dentro do próprio modal, antes de disparar. O ajuste por `setTimeout`
+      //   que existia aqui saiu: era uma segunda escrita nos mesmos campos,
+      //   correndo contra a primeira.
     } catch (e) {
       estado.envioErro = e.message;
       estado.enviando = false;
@@ -1005,7 +1122,28 @@
     else alvo.innerHTML = etapaConferencia();
     ligarCampos();
     pintarPassos();
+    pintarAcaoFinal();
     icones(alvo);
+  }
+
+  function pintarAcaoFinal() {
+    var el = document.getElementById('lcAnAcaoFinal');
+    if (!el) return;
+    if (estado.etapa !== 'conferencia') {
+      el.innerHTML = '<span style="font-size:12px;color:var(--lc-muted-2)">Salvo sozinho a cada etapa</span>';
+      return;
+    }
+    el.innerHTML = '<button id="lcAnSalvar" style="border:1px solid var(--lc-border-2);background:#fff;'
+      + 'color:var(--lc-ink-2);border-radius:8px;padding:9px 18px;cursor:pointer;font-size:13px;'
+      + 'font-weight:700">Salvar e fechar</button>';
+    var b = document.getElementById('lcAnSalvar');
+    if (b) {
+      b.addEventListener('click', async function () {
+        estado.sujo = true;
+        await salvar({ forcar: true });
+        if (!estado.erro) { toast('Rascunho salvo.'); fechar(); }
+      });
+    }
   }
 
   function pintarPassos() {
@@ -1039,11 +1177,11 @@
         if (!Array.isArray(estado.dados.fotos)) estado.dados.fotos = [];
         return estado.dados.fotos;
       }
-      if (!estado.dados.combinacoes) estado.dados.combinacoes = {};
-      if (!estado.dados.combinacoes[alvo]) estado.dados.combinacoes[alvo] = {};
-      var c = estado.dados.combinacoes[alvo];
-      if (!Array.isArray(c.fotos)) c.fotos = [];
-      return c.fotos;
+      // As fotos por variação moram em `fotosPorGrupo`, indexadas pelo VALOR
+      // da primeira dimensão ("Preto", "Azul"), e não pela combinação.
+      if (!estado.dados.fotosPorGrupo) estado.dados.fotosPorGrupo = {};
+      if (!Array.isArray(estado.dados.fotosPorGrupo[alvo])) estado.dados.fotosPorGrupo[alvo] = [];
+      return estado.dados.fotosPorGrupo[alvo];
     }
 
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-arquivo'), function (el) {
@@ -1068,6 +1206,20 @@
           }
         } catch (e) { avisar(e.message); }
         el.disabled = false;
+        desenharEtapa();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-mover-foto'), function (el) {
+      el.addEventListener('click', function () {
+        var lista = guardarFotos(el.dataset.alvo);
+        var i = Number(el.dataset.i);
+        var j = i + Number(el.dataset.dir);
+        // Borda: sem isto, mover a primeira para a esquerda jogaria a foto
+        // para o fim da lista pelo índice -1.
+        if (j < 0 || j >= lista.length) return;
+        var t = lista[i]; lista[i] = lista[j]; lista[j] = t;
+        marcarSujo();
         desenharEtapa();
       });
     });
@@ -1144,6 +1296,19 @@
     });
 
     // ── destinos ────────────────────────────────────────────────────────
+    var buscaLoja = document.getElementById('lcAnBuscaLoja');
+    if (buscaLoja) {
+      buscaLoja.addEventListener('input', function () {
+        // A busca é só da TELA: não entra no rascunho, e não desmarca nada.
+        // Loja marcada que sai do filtro continua marcada.
+        estado.buscaLoja = buscaLoja.value;
+        var pos = buscaLoja.selectionStart;
+        desenharEtapa();
+        var novo = document.getElementById('lcAnBuscaLoja');
+        if (novo) { novo.focus(); try { novo.setSelectionRange(pos, pos); } catch (e) {} }
+      });
+    }
+
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-destino'), function (el) {
       el.addEventListener('change', function () {
         var loja = (cacheLojas || []).filter(function (l) {
@@ -1160,6 +1325,14 @@
       el.addEventListener('click', function () {
         estado.canalAba = el.dataset.canal;
         desenharEtapa();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-auto'), function (el) {
+      el.addEventListener('change', function () {
+        if (!estado.dados.opcoesAuto) estado.dados.opcoesAuto = {};
+        estado.dados.opcoesAuto[el.dataset.op] = el.checked;
+        marcarSujo();
       });
     });
 
@@ -1186,17 +1359,6 @@
       porTitulo.addEventListener('click', function () {
         if (!estado.dados.nome) { avisar('Preencha o nome do anúncio primeiro.'); return; }
         procurarCategoria(null, estado.dados.nome);
-      });
-    }
-    var carregarFicha = document.getElementById('lcAnCarregarFicha');
-    if (carregarFicha) {
-      carregarFicha.addEventListener('click', async function () {
-        buscandoFicha = true;
-        desenharEtapa();
-        try { await buscarFicha(estado.canalAba); }
-        catch (e) { avisar(e.message); }
-        buscandoFicha = false;
-        desenharEtapa();
       });
     }
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-attr'), function (el) {
@@ -1293,6 +1455,8 @@
         if (!estado.dados.categoriasPorCanal) estado.dados.categoriasPorCanal = {};
         estado.dados.categoriasPorCanal[estado.canalAba] = el.dataset.cat;
         // Categoria nova, ficha velha não serve: os campos são os da categoria.
+        // O `desenharEtapa` dispara a carga sozinho, porque a ficha some do
+        // cache e o ramo de "sem ficha" busca.
         delete cacheFichas[estado.canalAba];
         marcarSujo();
         desenharEtapa();
@@ -1323,6 +1487,79 @@
         toast(n ? (n + ' SKU(s) preenchido(s).') : 'Todas as combinações já tinham SKU.');
         marcarSujo();
         desenharEtapa();
+      });
+    }
+
+    // ★ Preenche em massa SÓ O QUE ESTÁ VAZIO nos campos que a pessoa costuma
+    //   variar (EAN), e SOBRESCREVE nos que ela costuma igualar (preço,
+    //   promoção, estoque). A diferença não é capricho: EAN é código único por
+    //   variação, e sobrescrever destruiria códigos reais já digitados.
+    async function _massa(rotulo, padrao, campo, soVazios, filtro) {
+      var q = padrao;
+      if (typeof window.lcPrompt === 'function') {
+        q = await window.lcPrompt(rotulo, padrao);
+        if (q === null) return;
+      }
+      var valor = filtro ? filtro(q) : String(q == null ? '' : q).trim();
+      if (valor === null || valor === '') { avisar('Digite um valor.'); return; }
+      var mapa = estado.dados.combinacoes || {};
+      var n = 0;
+      combinacoes().map(rotuloCombinacao).forEach(function (c) {
+        if (!mapa[c]) mapa[c] = {};
+        if (soVazios && String(mapa[c][campo] || '').trim()) return;
+        mapa[c][campo] = valor;
+        n++;
+      });
+      toast(n + ' linha(s) preenchida(s).');
+      marcarSujo();
+      desenharEtapa();
+    }
+
+    var precoMassa = document.getElementById('lcAnPrecoMassa');
+    if (precoMassa) {
+      precoMassa.addEventListener('click', function () {
+        _massa('Preço para TODAS as combinações:', estado.dados.preco || '', 'preco', false);
+      });
+    }
+
+    var promoMassa = document.getElementById('lcAnPromoMassa');
+    if (promoMassa) {
+      promoMassa.addEventListener('click', function () {
+        _massa('Preço promocional para TODAS (vazio tira a promoção):', '', 'precoPromo', false,
+          function (v) { return String(v == null ? '' : v).trim() || ' '; });
+      });
+    }
+
+    // ★ EAN é gerado, não digitado: cada variação precisa do SEU. O gerador é
+    //   o mesmo determinístico do painel quando ele está disponível.
+    var eanMassa = document.getElementById('lcAnEanMassa');
+    if (eanMassa) {
+      eanMassa.addEventListener('click', function () {
+        var mapa = estado.dados.combinacoes || {};
+        var combos = combinacoes().map(rotuloCombinacao);
+        var n = 0;
+        // EAN repetido entre variações é anúncio recusado: guarda os que já
+        // existem para não colidir.
+        var usados = {};
+        combos.forEach(function (c) { if (mapa[c] && mapa[c].ean) usados[mapa[c].ean] = true; });
+        combos.forEach(function (c, i) {
+          if (!mapa[c]) mapa[c] = {};
+          if (String(mapa[c].ean || '').trim()) return;   // não mexe no que já existe
+          // ★ `gerarEAN13Brasil(seed)` é o gerador do painel, DETERMINÍSTICO
+          //   por semente: o mesmo produto gera sempre o mesmo código, e é o
+          //   mesmo que a edição de variações usa. Semente com SKU pai, a
+          //   combinação e o índice, igual ao `gerarEansVariacoesSomenteVazios`.
+          if (typeof window.gerarEAN13Brasil !== 'function') return;
+          var seed = [estado.dados.sku || 'X', c, i].join('|');
+          var novo = window.gerarEAN13Brasil(seed);
+          var t = 0;
+          while (usados[novo] && t < 50) { t++; novo = window.gerarEAN13Brasil(seed + '|retry' + t); }
+          usados[novo] = true;
+          mapa[c].ean = novo;
+          n++;
+        });
+        if (!n) toast('Nada a gerar: as combinações já têm EAN, ou o gerador do painel não está nesta tela.');
+        else { toast(n + ' EAN(s) gerado(s).'); marcarSujo(); desenharEtapa(); }
       });
     }
 
@@ -1565,7 +1802,13 @@
       + (ETAPAS_FUTURAS.length ? 'Ainda vem: ' + ETAPAS_FUTURAS.join(', ') + '.' : '') + '</div>'
       + '<div style="display:flex;gap:10px">'
       + '<button id="lcAnDescartar" style="border:1px solid var(--lc-danger-soft);background:#fff;color:var(--lc-danger);border-radius:8px;padding:9px 14px;cursor:pointer;font-size:13px">Descartar</button>'
-      + '<button id="lcAnSalvar" style="border:0;background:var(--lc-primary);color:#fff;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:13px;font-weight:700">Salvar rascunho</button>'
+      // ★★ v33k.2219: O BOTÃO DE FECHAR SÓ NA ÚLTIMA ETAPA.
+      //   Relato de 01/09: "cliquei sem querer em salvar rascunho". Ele ficava
+      //   no rodapé em TODAS as etapas, colado no "Descartar", competindo com
+      //   o fluxo de preencher. Agora só aparece na conferência, que é onde a
+      //   decisão de encerrar existe. Nas outras, o rodapé conta o autosave,
+      //   que é o que já protege o trabalho.
+      + '<span id="lcAnAcaoFinal"></span>'
       + '</div></div></div></div>';
   }
 
@@ -1616,11 +1859,6 @@
     document.getElementById('lcAnFechar').addEventListener('click', function () {
       salvar({ forcar: estado.sujo });
       fechar();
-    });
-    document.getElementById('lcAnSalvar').addEventListener('click', async function () {
-      estado.sujo = true;
-      await salvar({ forcar: true });
-      if (!estado.erro) { toast('Rascunho salvo.'); fechar(); }
     });
     document.getElementById('lcAnDescartar').addEventListener('click', descartar);
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-passo'), function (b) {
