@@ -21634,6 +21634,11 @@ window.LC_SVG = {
            `+ Novo Produto` existia só na `produtosScreen`, que não está no
            menu — ou seja, era inalcançável. -->
       <button onclick="abrirNovoProduto()" title="Cadastrar um produto novo e publicá-lo nos marketplaces" style="padding:9px 14px;border:1px solid #0f766e;background:#0f766e;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">+ Novo anúncio</button>
+      <!-- v33k.2199: entrada da TELA NOVA de criação de anúncio. Nasce
+           escondida e só aparece para quem o portão do backend liberar
+           (`ANUNCIO_NOVO_USUARIOS` no .env). O botão antigo continua ao lado
+           até a Onda 8, que é quando ele sai. -->
+      <button id="anBtnCriarNovo" onclick="abrirCriarAnuncio()" title="Criar anúncio na tela nova" style="display:none;padding:9px 14px;border:1px solid var(--lc-primary);background:var(--lc-primary);color:var(--lc-primary-text);border-radius:var(--lc-radius);cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap">Criar anúncio (novo)</button>
       <button id="btnRecalcularKits" onclick="_recalcularTodosKits()" title="Recalcular a disponibilidade dos kits a partir do estoque das bases e empurrar aos anúncios (kit = base ÷ N)" style="padding:9px 12px;border:1px solid #0d9488;background:#0d9488;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap;display:none">🔗 Recalcular kits</button>
     </div>
 
@@ -44252,6 +44257,60 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   
   // === Modal de produto ===
+  // ══════════════════════════════════════════════════════════════════════
+  // TELA NOVA DE CRIAÇÃO DE ANÚNCIO (v33k.2199)
+  // ──────────────────────────────────────────────────────────────────────
+  // O código dela mora em `assets/anuncio-novo.js`, FORA deste arquivo, e é
+  // baixado só quando alguém abre a tela. O painel estava com 237 KB de folga
+  // até o teto de 7 MB; uma tela de sete etapas não cabe nisso com margem.
+  //
+  // ★ O ARQUIVO EXTERNO ENTROU NA REGRA DE OURO JUNTO. O `qa_sintaxe_painel`
+  //   parseia os dois e FALHA se o arquivo não estiver ao lado do painel.
+  //   Checagem que pode ser pulada em silêncio é como o sistema caiu em 30/08.
+  //
+  // ★ O BOTÃO NASCE ESCONDIDO. Quem libera é o backend (`ANUNCIO_NOVO_USUARIOS`),
+  //   e a mesma função guarda a rota: botão escondido não é permissão.
+  let _anNovoCarregando = null;
+  function _carregarTelaAnuncioNovo() {
+    if (window.lcAnuncioNovo) return Promise.resolve(true);
+    if (_anNovoCarregando) return _anNovoCarregando;
+    _anNovoCarregando = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = '../assets/anuncio-novo.js?v=' + encodeURIComponent(_DIAG_VERSAO_PAINEL);
+      s.onload = () => resolve(true);
+      // Falha de rede não pode virar botão que não faz nada em silêncio.
+      s.onerror = () => { _anNovoCarregando = null; reject(new Error('Não consegui carregar a tela de criação.')); };
+      document.head.appendChild(s);
+    });
+    return _anNovoCarregando;
+  }
+
+  async function abrirCriarAnuncio(rascunhoId) {
+    try {
+      await _carregarTelaAnuncioNovo();
+      await window.lcAnuncioNovo.abrir(rascunhoId);
+    } catch (e) {
+      lcAlert('Não consegui abrir a tela de criação de anúncio. ' + (e.message || ''));
+    }
+  }
+
+  // Pergunta ao backend se este usuário já vê a tela nova. Falha FECHANDO: sem
+  // resposta, o botão continua escondido.
+  async function _anPrepararBotaoCriarNovo() {
+    const b = document.getElementById('anBtnCriarNovo');
+    if (!b) return;
+    b.style.display = 'none';
+    try {
+      const r = await (await fetch(BACKEND_URL + '/api/anuncio-rascunhos/permissao', {
+        headers: { 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      })).json();
+      if (r && r.ok && r.liberado) b.style.display = '';
+    } catch (e) {
+      console.warn('[anuncio-novo] nao consegui conferir a liberacao:', e.message);
+    }
+  }
+
   function abrirNovoProduto() {
     _produtoEditandoId = null;
     _fotosProdutoSessao = [];
@@ -65618,6 +65677,12 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
   window.toggleVariacoesEstoque = toggleVariacoesEstoque;
 
   function renderEstoque() {
+    // v33k.2199: pergunta uma vez por sessão se este usuário já vê a tela
+    // nova. Falha fechando, então sem resposta o botão fica escondido.
+    if (window._anCriarNovoConferido == null && typeof _anPrepararBotaoCriarNovo === 'function') {
+      window._anCriarNovoConferido = true;
+      _anPrepararBotaoCriarNovo();
+    }
     // ═══════════════════════════════════════════════════════════════════════
     // v33k.1631: PROCURAR POR TÍTULO EXIGE OS TÍTULOS NA MEMÓRIA.
     // ─────────────────────────────────────────────────────────────────────
@@ -74555,7 +74620,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2198-a-categoria-tem-endereco';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2203-nada-preso-a-calcado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
