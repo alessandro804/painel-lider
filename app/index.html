@@ -47270,7 +47270,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       '<div onclick="emFotoAdicionar(\'' + chave + '\',' + (cheio ? 'true' : 'false') + ')" ' +
         'ondragover="event.preventDefault()" ' +
         'ondrop="emFotoSoltar(' + destino + ',\'' + chave + '\')" ' +
-        'title="' + (cheio ? 'no limite: a nova entra no lugar da última' : 'adicionar foto por link') + '" ' +
+        'title="' + (cheio ? 'no limite: a nova entra no lugar da última' : 'escolher arquivo do computador') + '" ' +
         'style="width:104px;height:104px;border:2px dashed ' + (cheio ? '#fcd34d' : '#cbd5e1') + ';' +
         'border-radius:8px;cursor:pointer;background:' + (cheio ? '#fffbeb' : 'transparent') + ';' +
         'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;' +
@@ -47286,7 +47286,12 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   `grid` com `auto-fill` usa a largura que existir, seja qual for a
     //   janela, e não depende de eu adivinhar quantos cabem.
     const GRADE = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:12px';
-    let h = '';
+    // ★ O seletor de arquivo mora AQUI, dentro do corpo do modal, e é UM só
+    //   para o modal inteiro. O painel esconde todo `input[type=file]` no CSS
+    //   global, então quem abre o seletor é o clique programático do ladrilho.
+    const _inputArquivo = '<input type="file" id="emFotoArquivo" accept="image/*" multiple '
+      + 'onchange="emFotoArquivoEscolhido(this)">';
+    let h = _inputArquivo + '';
 
     // ═══════════════════════════════════════════════════════════════════
     // ★ v33k.2037: REGERAR A CAPA, UMA DE CADA VEZ.
@@ -47545,20 +47550,80 @@ Retorne JSON: {"ID": "valor", ...}`;
   //   recusar ("remova uma foto antes"), a nova entra NO LUGAR da última —
   //   que é a que ia ser cortada de qualquer jeito na exportação. Duas ações
   //   viram uma, e a que sai é a que o canal já ia descartar.
-  async function emFotoAdicionar(chave, cheio) {
+  // ★★ v33k.2211: ARQUIVO, NÃO LINK.
+  // ──────────────────────────────────────────────────────────────────────
+  // Relato de 31/08: "nunca subi uma foto por link no sistema, isso não estava
+  // operando anteriormente". O modal pedia URL desde que nasceu, e pedir link
+  // é pedir que a pessoa hospede a imagem em outro lugar antes — ninguém
+  // trabalha assim.
+  //
+  // ★ UM input escondido para o modal inteiro, e não um por ladrilho: o
+  //   painel tem `input[type="file"] { display: none; }` no CSS global, então
+  //   quem abre o seletor é o clique programático. Um input por bloco criaria
+  //   dezenas de elementos para um seletor que só abre um de cada vez.
+  //
+  // ★ O TETO DE 2 MB é o mesmo do `/api/upload-foto`, conferido aqui antes de
+  //   mandar para a pessoa saber QUAL arquivo passou do limite.
+  //
+  // ★ `cheio` mantém o comportamento da v33k.1872: no limite, a nova entra no
+  //   lugar da última, que é a que ia ser cortada na exportação de qualquer
+  //   jeito.
+  var _emUploadAlvo = null;
+
+  function emFotoAdicionar(chave, cheio) {
     const lista = _emListaFotos(chave); if (!lista) return;
-    const url = await lcPrompt('Link da imagem:', '', {
-      titulo: cheio ? 'Trocar a última imagem' : 'Adicionar imagem',
-      msg: cheio ? 'O limite do canal já foi atingido. A imagem nova entra no lugar da última da fila.' : '',
-      placeholder: 'https://…' });
-    const limpo = String(url || '').trim();
-    if (!limpo) return;
-    if (!/^https?:\/\//i.test(limpo)) { showToast('O link precisa começar com http:// ou https://', true); return; }
-    if (cheio && lista.length) lista.pop();
-    lista.push(limpo);
-    emFotosDesenhar();
+    _emUploadAlvo = { chave: chave, cheio: !!cheio };
+    const inp = document.getElementById('emFotoArquivo');
+    if (!inp) { showToast('Não achei o seletor de arquivos. Recarregue a tela.', true); return; }
+    inp.value = '';
+    inp.click();
   }
   window.emFotoAdicionar = emFotoAdicionar;
+
+  async function emFotoArquivoEscolhido(inp) {
+    const alvo = _emUploadAlvo;
+    _emUploadAlvo = null;
+    if (!alvo) return;
+    const lista = _emListaFotos(alvo.chave); if (!lista) return;
+    const arquivos = Array.prototype.slice.call(inp.files || []);
+    if (!arquivos.length) return;
+
+    const LIMITE = 2 * 1024 * 1024;
+    const recusados = [];
+    let subidas = 0;
+    showToast('Subindo ' + arquivos.length + ' imagem(ns)…');
+    for (const f of arquivos) {
+      if (f.size > LIMITE) { recusados.push(f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)'); continue; }
+      try {
+        const dataUrl = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(fr.result);
+          fr.onerror = () => rej(new Error('não consegui ler ' + f.name));
+          fr.readAsDataURL(f);
+        });
+        const r = await fetch(BACKEND_URL + '/api/upload-foto', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+            'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+          body: JSON.stringify({ dataUrl }),
+        }).then(x => x.json());
+        if (!r || !r.ok || !r.url) throw new Error((r && r.erro) || ('falha ao subir ' + f.name));
+        // Só a PRIMEIRA respeita o `cheio`: as seguintes entram na fila e a
+        // exportação corta o excedente, como já corta hoje.
+        if (alvo.cheio && !subidas && lista.length) lista.pop();
+        lista.push(r.url);
+        subidas++;
+      } catch (e) {
+        showToast('Erro em ' + f.name + ': ' + e.message, true);
+      }
+    }
+    if (recusados.length) {
+      lcAlert('Acima de 2 MB, não subiram:\n\n' + recusados.join('\n') + '\n\nReduza e tente de novo.');
+    }
+    if (subidas) showToast(subidas + ' imagem(ns) adicionada(s).');
+    emFotosDesenhar();
+  }
+  window.emFotoArquivoEscolhido = emFotoArquivoEscolhido;
 
   function emFotoFechar() {
     // ★ v33k.2039: solta a marca do overlay. Presa, o próximo `lcAlert`
@@ -74698,7 +74763,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2209-o-botao-no-padrao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2211-foto-por-arquivo-na-exportacao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
