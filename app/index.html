@@ -47973,19 +47973,43 @@ Retorne JSON: {"ID": "valor", ...}`;
       try { emMarcarAlterados(); } catch (e) {}
       return 0;
     }
-    // v33k.1812: a coluna dinâmica já traz a obrigatoriedade que a categoria
-    // declarou, então não há mais dois caminhos pra decidir isso.
-    const cols = emColunasVisiveis().filter(c => c.obrig);
-    let faltam = 0;
+    // ═══════════════════════════════════════════════════════════════════
+    // ★★ v33k.2216: UM CRITÉRIO SÓ PARA CONTAR E PARA LISTAR.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 31/08, com print: o cabeçalho dizia "2 campo(s) a preencher",
+    // o "ver quais" respondia "Tudo preenchido", e o botão de exportar ficava
+    // travado. Os dois estavam certos pelo próprio critério — e os critérios
+    // eram DOIS:
+    //
+    //   contar  varria o DOM da aba ABERTA, com `emColunasVisiveis` e
+    //           `_emObrigatorio`
+    //   listar  varria o MODELO de TODAS as abas, com `_emColunasDoCanal` e
+    //           `_emCelulaVazia`
+    //
+    // Duas varreduras respondendo "o que falta?" divergem no primeiro dia em
+    // que uma delas ganha uma regra que a outra não tem. Foi o que aconteceu.
+    //
+    // ★ AGORA A LISTA É A FONTE, e a varredura do DOM só PINTA o que ela
+    //   apontou. O número e a lista passam a ser a mesma coisa por construção:
+    //   não dá mais para o contador ver algo que o "ver quais" não mostra.
+    //
+    // ★ `emColetarTela` antes de listar: o modelo só sabe o que foi digitado
+    //   depois da coleta, e sem ela o número atrasaria uma tecla.
+    emColetarTela();
+    let _pend = [];
+    try { _pend = emListarPendencias({ coletar: false }); } catch (e) { _pend = []; }
+    const _chave = (li, vi, colId) => li + '|' + (vi == null ? '' : vi) + '|' + colId;
+    const _faltando = new Set(_pend.map(p => _chave(p.li, p.vi, p.colId)));
+    const faltam = _pend.filter(p => p.abaIdx === st.abaIdx).length;
+
     document.querySelectorAll('[data-emcol]').forEach(el => {
-      const col = cols.find(c => c.id === el.getAttribute('data-emcol'));
-      if (!col) return;
-      const linhaEl = (st.linhas || [])[Number(el.getAttribute('data-emli'))];
-      if (!_emObrigatorio(linhaEl, col)) return;
-      const vazio = !String(el.value || '').trim();
+      const viAttr = el.getAttribute('data-emvi');
+      const vazio = _faltando.has(_chave(
+        Number(el.getAttribute('data-emli')),
+        viAttr == null ? null : Number(viAttr),
+        el.getAttribute('data-emcol')));
       el.style.borderColor = vazio ? '#f87171' : 'var(--lc-border)';
       el.style.background = vazio ? '#fef2f2' : '#fff';
-      if (vazio) faltam++;
     });
     // ═══════════════════════════════════════════════════════════════════
     // ★ v33k.1869: A CONTAGEM OLHA O TIPO, NÃO A FLAG DE MASSA.
@@ -47998,21 +48022,12 @@ Retorne JSON: {"ID": "valor", ...}`;
     // ★ UMA FLAG SERVINDO A DUAS PERGUNTAS quebra quando uma delas muda.
     //   "Tem edição em massa?" e "tem campo de digitação?" são perguntas
     //   diferentes; agora cada uma é respondida pelo que lhe diz respeito.
-    const SEM_CAMPO = ['categoria', 'fotos', 'atributos', 'imagem'];
-    (st.linhas || []).forEach(linha => {
-      cols.forEach(c => {
-        if (SEM_CAMPO.indexOf(c.tipo) < 0) return;
-        const v = _emValor(linha, c, null);
-        let vazio = c.tipo === 'fotos' ? !(Array.isArray(v) && v.length) : !v;
-        // ★ v33k.1869: o guia de tamanhos que a exportação GERA sozinha não
-        //   é pendência. O TikTok exige a imagem, e o adaptador a monta a
-        //   partir das variações quando há tamanhos (tiktok.js:406). Contar
-        //   como faltando bloqueava o botão de uma exportação que sairia —
-        //   o mesmo erro da categoria, corrigido na v33k.1865.
-        if (vazio && c.campo === 'guiaTamanhos' && _emPodeGerarGuia(linha)) vazio = false;
-        if (vazio) faltam++;
-      });
-    });
+    // ★ v33k.2216: o laço que contava categoria, fotos, atributos e imagem
+    //   SAIU daqui. Ele era o segundo critério: somava por cima da varredura
+    //   do DOM, e o "ver quais" nunca o conhecia. Quem cobre esses tipos agora
+    //   é o `emListarPendencias`, que já os percorre pelo modelo — inclusive a
+    //   regra do guia que a exportação gera sozinha (v33k.1869), que precisa
+    //   valer nos dois lugares e antes valia só aqui.
     // ═══════════════════════════════════════════════════════════════════
     // ★ v33k.1874: O CONTADOR VIROU ENDEREÇO.
     // ───────────────────────────────────────────────────────────────────
@@ -48021,11 +48036,9 @@ Retorne JSON: {"ID": "valor", ...}`;
     // Shopee estava na tela — o botão liberava e a exportação falhava lá.
     // Agora as outras abas entram pelo MODELO, e o número vira um botão que
     // leva até o campo.
-    let _outras = 0;
-    try {
-      _outras = emListarPendencias({ coletar: false })
-        .filter(x => x.abaIdx !== st.abaIdx).length;
-    } catch (e) { _outras = 0; }
+    // As outras abas saem da MESMA lista: o DOM só tem a aba aberta, e com
+    // destino em dois canais a pendência do outro não entraria na conta.
+    const _outras = _pend.filter(x => x.abaIdx !== st.abaIdx).length;
     const total = faltam + _outras;
 
     const cont = document.getElementById('emContador');
@@ -74763,7 +74776,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2211-foto-por-arquivo-na-exportacao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2216-um-criterio-so';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
