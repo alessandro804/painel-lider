@@ -43857,7 +43857,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         ? `<div class="prod-card-foto" style="background-image: url('${escapeHtml(fotoUrl)}');position:relative">${badgeHtml}${seloMlHtml}</div>`
         : `<div class="prod-card-foto-empty" style="position:relative">📦${badgeHtml}${seloMlHtml}</div>`;
       
-      return `<div class="prod-card-v2" data-prod-id="${p.id}" onclick="abrirEditarProduto('${p.id}')" style="${selecionado ? 'border-color:#1e2a47;box-shadow:0 0 0 2px #1e2a47' : ''}">
+      return `<div class="prod-card-v2" data-prod-id="${p.id}" onclick="abrirProdutoParaEditar('${p.id}')" style="${selecionado ? 'border-color:#1e2a47;box-shadow:0 0 0 2px #1e2a47' : ''}">
         ${checkHtml}
         ${fotoHtml}
         <div class="prod-card-body">
@@ -44285,6 +44285,43 @@ Retorne JSON: {"ID": "valor", ...}`;
     return _anNovoCarregando;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2221: EDITAR ABRE A TELA NOVA, quando ela está liberada.
+  // ───────────────────────────────────────────────────────────────────────
+  // Pedido de 01/09: "ao clicar em editar está abrindo esse modal, mas deveria
+  // ser o novo que criamos para podermos continuar de onde paramos".
+  //
+  // ★ COM RASCUNHO ABERTO, RETOMA ELE. É o ponto do pedido: continuar de onde
+  //   parou, e não recomeçar do produto salvo.
+  //
+  // ★ E CAI NO MODAL ANTIGO em três casos, todos reais: tela nova não
+  //   liberada para a conta, produto que já tem anúncio no ar (a tela nova é
+  //   de CRIAÇÃO, não sabe editar publicado), e qualquer falha ao procurar o
+  //   rascunho. Deixar alguém sem nenhuma forma de abrir o produto seria pior
+  //   que abrir o modal antigo.
+  async function abrirProdutoParaEditar(produtoId) {
+    try {
+      if (!window._anCriarNovoLiberado) return abrirEditarProduto(produtoId);
+      const p = (produtosErp || []).find(x => String(x.id) === String(produtoId));
+      if (!p) return abrirEditarProduto(produtoId);
+      const temAnuncio = (p.variacoes || []).some(v => (v.vinculos || []).length);
+      if (temAnuncio) return abrirEditarProduto(produtoId);
+
+      const r = await (await fetch(BACKEND_URL + '/api/anuncio-rascunhos', {
+        headers: { 'x-api-token': getApiToken(),
+          'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+      })).json();
+      const doProduto = ((r && r.rascunhos) || [])
+        .filter(x => String(x.produtoId) === String(p.idBanco || p.id))[0];
+      if (!doProduto) return abrirEditarProduto(produtoId);
+      return abrirCriarAnuncio(doProduto.id);
+    } catch (e) {
+      console.warn('[editar] tela nova indisponível, caindo no modal:', e.message);
+      return abrirEditarProduto(produtoId);
+    }
+  }
+  window.abrirProdutoParaEditar = abrirProdutoParaEditar;
+
   async function abrirCriarAnuncio(rascunhoId) {
     try {
       await _carregarTelaAnuncioNovo();
@@ -44305,7 +44342,8 @@ Retorne JSON: {"ID": "valor", ...}`;
         headers: { 'x-api-token': getApiToken(),
           'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
       })).json();
-      if (r && r.ok && r.liberado) {
+      window._anCriarNovoLiberado = !!(r && r.ok && r.liberado);
+      if (window._anCriarNovoLiberado) {
         b.style.display = '';
       }
     } catch (e) {
@@ -45137,7 +45175,13 @@ Retorne JSON: {"ID": "valor", ...}`;
       //   "sem promoção"; o que estiver aqui é o que vai pro marketplace.
       { id: 'precoPromo', nome: 'Preço promocional (R$)', tipo: 'numero', escopo: 'variacao',
         campo: 'precoPromo', obrig: false, ajuda: 'vazio = sem promoção' },
-      { id: 'ean',       nome: 'GTIN',       tipo: 'texto',   escopo: 'variacao', campo: 'ean',       obrig: false, oculta: true },
+      // ★★ v33k.2217: "GTIN" e "Código universal de produto" eram A MESMA
+      //   COISA em duas colunas. A primeira é esta, fixa; a segunda nascia
+      //   dinâmica, do atributo GTIN que o ML devolve como campo de variação
+      //   (medido em 01/09: aparece nas 25 categorias). Duas colunas para o
+      //   mesmo dado é a pessoa preenchendo uma e a outra continuar vermelha.
+      //   Ficou esta, com o nome que quem vende reconhece.
+      { id: 'ean',       nome: 'Código de barras (EAN)', tipo: 'texto', escopo: 'variacao', campo: 'ean', obrig: false, oculta: true },
     ] },
     { id: 'envio', nome: 'Informação de Envio', colunas: [
       { id: 'peso',      nome: 'Peso do Pacote (kg)',      tipo: 'numero', escopo: 'anuncio', campo: 'peso',   obrig: true },
@@ -45207,11 +45251,26 @@ Retorne JSON: {"ID": "valor", ...}`;
     const vistas = {};
     const out = [];
 
+    // ★★ v33k.2217: O QUE JÁ TEM COLUNA FIXA NÃO GANHA UMA DINÂMICA.
+    // ──────────────────────────────────────────────────────────────────
+    // Print de 01/09: a tabela tinha "Código universal de produto" E "GTIN",
+    // lado a lado, gravando no MESMO campo. A primeira nascia aqui, do
+    // atributo que o ML devolve como de variação (medido: aparece nas 25
+    // categorias); a segunda é a coluna fixa `ean`.
+    //
+    // Duas colunas para o mesmo dado é a pessoa preencher uma e a outra
+    // continuar vermelha, e o contador contando a que ela não viu.
+    //
+    // ★ Só o par comprovado entra aqui. A lista é curta de propósito: cada
+    //   linha precisa de um caso real, não de suspeita de sinônimo.
+    const JA_TEM_COLUNA_FIXA = { GTIN: 'ean' };
+
     (st.linhas || []).forEach(linha => {
       const f = (linha.fichas || {})[mkt];
       (f && f.variacoes ? f.variacoes : []).forEach(v => {
         (v.campos || []).forEach(c => {
           if (!c || !c.id || vistas[c.id]) return;
+          if (JA_TEM_COLUNA_FIXA[String(c.id).toUpperCase()]) { vistas[c.id] = true; return; }
           vistas[c.id] = true;
           out.push({
             id: 'dv_' + c.id, campoId: c.id, nome: c.nome || c.id,
@@ -45221,11 +45280,43 @@ Retorne JSON: {"ID": "valor", ...}`;
           });
         });
       });
+      // ═══════════════════════════════════════════════════════════════
       // dimensões que o produto já usa e a categoria não declarou
+      //
+      // ★★ v33k.2222: O QUE É CAMPO DE OUTRO CANAL NÃO ENTRA AQUI.
+      // ───────────────────────────────────────────────────────────────
+      // Relato de 01/09: "aparece para vincular ID de guia de tamanhos... mas
+      // aparece isso também no anúncio Shopee e no TikTok, deveria estar em
+      // cinza e sem ser obrigatório, apenas no Mercado Livre".
+      //
+      // A coluna da ficha é por canal e não vaza. Esta fonte É que vaza: ela
+      // varre as chaves de `variacao.valores`, que é um mapa COMPARTILHADO
+      // entre canais. Bastava um valor gravado pela aba do ML para a chave
+      // aparecer como "dimensão livre" em todas as outras.
+      //
+      // A regra que conserta é simples: chave que É campo de algum canal
+      // pertence à ficha daquele canal, e não é dimensão livre de ninguém.
+      const _camposDeQualquerCanal = {};
+      Object.keys(linha.fichas || {}).forEach(mk => {
+        const fx = (linha.fichas || {})[mk];
+        (fx && fx.variacoes ? fx.variacoes : []).forEach(vv => {
+          (vv.campos || []).forEach(cc => {
+            if (!cc) return;
+            if (cc.id) _camposDeQualquerCanal[String(cc.id).toUpperCase()] = mk;
+            if (cc.nome) _camposDeQualquerCanal[String(cc.nome).toUpperCase()] = mk;
+          });
+        });
+      });
+
       (linha.variacoes || []).forEach(v => {
         Object.keys((v && v.valores) || {}).forEach(k => {
           const id = 'dim:' + k;
           if (vistas[id]) return;
+          // ★ Se a chave é campo de OUTRO canal, ela já tem coluna lá e não
+          //   pode virar dimensão livre aqui. Do canal ABERTO também não
+          //   entra: ali ela já veio pela ficha, acima.
+          const _dono = _camposDeQualquerCanal[String(k).toUpperCase()];
+          if (_dono) { vistas[id] = true; return; }
           vistas[id] = true;
           out.push({
             id: 'dv_' + id, campoId: id, nome: k, tipo: 'texto', valores: [],
@@ -45464,6 +45555,15 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.emDesenharAviso = emDesenharAviso;
 
+  // As mesmas imagens que o resto do painel usa, no mesmo caminho.
+  function _emLogoCanal(mkt) {
+    const LOGOS = { shopee: 'mkt-shopee.png', mercadolivre: 'mkt-ml.png',
+      tiktok: 'mkt-tiktok.png', shein: 'mkt-shein.png' };
+    const arq = LOGOS[String(mkt || '').toLowerCase()];
+    if (!arq) return '';
+    return '<img src="../assets/' + arq + '" alt="" style="width:16px;height:16px;object-fit:contain">';
+  }
+
   function emDesenharAbas() {
     const st = _emEstado;
     const el = document.getElementById('emAbas');
@@ -45471,10 +45571,17 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!st.destinos || st.destinos.length < 2) { el.innerHTML = ''; return; }
     el.innerHTML = '<div style="display:flex;gap:4px;border-bottom:1px solid var(--lc-border)">' +
       st.destinos.map((d, i) =>
-        '<button onclick="emTrocarAba(' + i + ')" style="padding:9px 16px;border:0;background:none;cursor:pointer;' +
+        '<button onclick="emTrocarAba(' + i + ')" style="display:flex;align-items:center;gap:6px;' +
+          'padding:9px 16px;border:0;background:none;cursor:pointer;' +
           'font-size:13px;font-weight:' + (i === st.abaIdx ? '800' : '500') + ';' +
           'color:' + (i === st.abaIdx ? '#2563eb' : '#64748b') + ';' +
           'border-bottom:2px solid ' + (i === st.abaIdx ? '#2563eb' : 'transparent') + '">' +
+          // ★★ v33k.2221: A LOGO DO CANAL NA ABA. Relato de 01/09: "senti falta
+          //   de ter a logo do marketplace que será exportado para facilitar no
+          //   entendimento". No teste dele as três abas se chamavam CALCENTER,
+          //   CALCENTER e Calcenter, uma por canal: sem a logo, escolher a aba
+          //   certa era adivinhação, e cada aba tem regras diferentes.
+          _emLogoCanal(d.marketplace) +
           escapeHtml(d.nome || d.marketplace) + '</button>').join('') +
       '</div>';
   }
@@ -50195,7 +50302,21 @@ Retorne JSON: {"ID": "valor", ...}`;
   let _dupProdutoIds = null;
   let _dupCancelar = false;
   
-  function abrirDuplicarAnuncio(produtoId) {
+  // ★★ v33k.2221: `auto` PULA O MODAL.
+  // ─────────────────────────────────────────────────────────────────────
+  // Pedido de 01/09: "esse modal antes de começar a exportação podemos
+  // eliminar ele de aparecer, esses dados a gente já pergunta ao usuário na
+  // última subpágina".
+  //
+  // A tela nova já pergunta quantidade, lojas e as opções de variação. Mostrar
+  // o modal depois é pedir duas vezes a mesma coisa, e abre espaço para os
+  // dois discordarem.
+  //
+  // ★ O MODAL CONTINUA INTEIRO para quem duplica um anúncio existente pela
+  //   lista, que é o caminho antigo e não mudou. `auto` só preenche os mesmos
+  //   campos que a pessoa preencheria e segue direto — nada de um segundo
+  //   caminho de duplicação.
+  function abrirDuplicarAnuncio(produtoId, auto) {
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) { showToast('Produto não encontrado', true); return; }
     
@@ -50262,6 +50383,42 @@ Retorne JSON: {"ID": "valor", ...}`;
       // renderiza capa/preços e variações do anúncio default (mais antigo).
       // ★ v33k.2070: POR PADRÃO, sem clique — era o pedido.
       setTimeout(() => { dupRenderCartaoAnuncio(String(p.id)); dupRenderVariacoesDoAnuncio(String(p.id)); }, 0);
+    }
+
+    // ★★ v33k.2221: com `auto`, preenche e segue sem mostrar o modal.
+    if (auto) {
+      const _q = document.getElementById('dupQuantidade');
+      if (_q) _q.value = Math.max(1, parseInt(auto.qtd, 10) || 1);
+
+      const _alvo = {};
+      (auto.lojas || []).forEach(x => { _alvo[String(x)] = true; });
+      let _marcou = 0;
+      document.querySelectorAll('.dup-loja-ck').forEach(ck => {
+        const l = (lojasErp || []).find(x => String(x.id) === String(ck.value));
+        const idb = l && l.idBanco != null ? String(l.idBanco) : null;
+        const deve = !!(_alvo[String(ck.value)] || (idb && _alvo[idb]));
+        ck.checked = deve;
+        if (deve) _marcou++;
+      });
+      if (typeof dupAtualizarBotaoMarcar === 'function') dupAtualizarBotaoMarcar();
+
+      const _set = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+      _set('dupVariarTitulo', auto.variarTitulo);
+      _set('dupVariarDescricao', auto.variarDescricao);
+      _set('dupRotacionarFotos', auto.rotacionarFotos);
+      _set('dupAtivarAds', auto.ativarAds);
+      window._ativarAdsPosExport = !!auto.ativarAds;
+
+      // ★ SEM LOJA CASADA, MOSTRA O MODAL. Seguir no automático mandaria para
+      //   a loja que o modal marcou sozinho, e a pessoa só descobriria pelo
+      //   anúncio publicado no lugar errado.
+      if (!_marcou) {
+        showToast('Não consegui casar as lojas escolhidas. Confira aqui antes de exportar.', true);
+        document.getElementById('dupConfigOverlay').classList.add('active');
+        return;
+      }
+      iniciarDuplicacaoMultiLoja();
+      return;
     }
 
     document.getElementById('dupConfigOverlay').classList.add('active');
@@ -51869,18 +52026,40 @@ REGRAS DURAS:
         return;
       }
       // publica o que foi aprovado, grupo por grupo
+      // ★★ v33k.2218: O RESULTADO VEM DE QUEM PUBLICOU.
+      //   Antes: `ok: true` sempre que a chamada não estourava. Recusa de
+      //   marketplace não estoura, então o resumo dizia "CALCENTER: 2 ·
+      //   Calcenter: 1" com ZERO anúncio no ar (medido em 01/09).
+      const _pendentes = [];
       for (const g of _lote) {
         if (_dupCancelar) break;
         try {
-          await iniciarDuplicacaoComAgendamento({
+          const r = await iniciarDuplicacaoComAgendamento({
             produtoId: g.produtoId, lojaDestinoId: g.lojaDestino.id, qtd: g.preparadas.length, optsBase,
             _preparadasProntas: g.preparadas, _jaConferido: true,
           });
-          feitas.push({ loja: g.lojaDestino.nome, produto: g.produtoId, ok: true });
+          // Sem retorno (chamada antiga), assume o pior: contar sucesso sem
+          // prova foi exatamente o defeito que esta versão conserta.
+          const _pub = r && typeof r.publicadas === 'number' ? r.publicadas : 0;
+          const _fal = r && typeof r.falhas === 'number' ? r.falhas : g.preparadas.length;
+          for (let n = 0; n < _pub; n++) feitas.push({ loja: g.lojaDestino.nome, produto: g.produtoId, ok: true });
+          for (let n = 0; n < _fal; n++) feitas.push({ loja: g.lojaDestino.nome, produto: g.produtoId, ok: false });
+          (r && r.pendentes ? r.pendentes : []).forEach(pd => _pendentes.push(pd));
         } catch (e) {
           console.warn('[dup-multi] publicação falhou:', g.produtoId, e.message);
-          feitas.push({ loja: g.lojaDestino.nome, produto: g.produtoId, ok: false });
+          g.preparadas.forEach(() => feitas.push({ loja: g.lojaDestino.nome, produto: g.produtoId, ok: false }));
         }
+      }
+
+      // ★★ QUEM FALHOU VOLTA PARA A CONFERÊNCIA, E SÓ QUEM FALHOU.
+      //   Decisão do Alessandro em 01/09: "se eu mandei 1 anúncio por
+      //   plataforma e 2 deram certo e 1 não, deverá me mostrar apenas aquele
+      //   que deu erro, pois os outros estão todos ok".
+      //
+      //   ★ Os que publicaram NÃO voltam: reenviar um anúncio que já subiu
+      //     cria duplicado, que é pior que a falha original.
+      if (_pendentes.length && !_dupCancelar) {
+        await _dupRetomarRecusadas(_pendentes, optsBase);
       }
     }
 
@@ -51940,6 +52119,98 @@ REGRAS DURAS:
   window.iniciarDuplicacaoMultiLoja = iniciarDuplicacaoMultiLoja;
 
   // Decide: duplicar agora (fluxo normal) ou criar cópias como rascunho + agendar exportação.
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2218: A CONFERÊNCIA REABRE COM O QUE FALHOU
+  //
+  // ★ NOME sem "Conferencia": o `qa_opcoes_atravessam` varre o orquestrador
+  //   procurando chaves de `opts` pelo padrão `_...Conferencia`, e uma função
+  //   com esse final entrava na varredura como se fosse opção perdida. A
+  //   suíte está certa e já pegou defeito real em 19/08; quem tinha que mudar
+  //   era o meu nome.
+  // ───────────────────────────────────────────────────────────────────────
+  // Decisão do Alessandro em 01/09, entre "esperar ali" e "ficar pendente":
+  // ESPERAR ALI. A tela volta na hora, com as cópias recusadas e o motivo de
+  // cada uma, ele corrige e reenvia sem sair do lugar.
+  //
+  // ★ SÓ AS RECUSADAS. As que publicaram não voltam: reenviar anúncio que já
+  //   subiu cria duplicado, que é pior que a falha original.
+  //
+  // ★ E O PRODUTO DE CADA UMA CONTINUA VIVO. O rollback deixou de apagá-lo
+  //   justamente porque ele volta aqui para ser corrigido — apagar jogaria
+  //   fora título, descrição e fotos que a IA levou minutos montando.
+  //
+  // ★ DESISTIR TAMBÉM É RESPOSTA. Fechando a conferência sem reenviar, aí sim
+  //   os produtos das cópias recusadas são removidos: é o único momento em que
+  //   sabemos que ninguém vai corrigi-los.
+  async function _dupRetomarRecusadas(pendentes, optsBase) {
+    if (!Array.isArray(pendentes) || !pendentes.length) return;
+    const _linhas = pendentes.map(p => p.novo);
+    const _papeis = pendentes.map(p => ({
+      texto: 'RECUSADO', tom: 'vermelho',
+      nota: (p.loja && p.loja.nome ? p.loja.nome : '') + ' · ' + String(p.motivo || '').slice(0, 60),
+    }));
+    const _destinos = [];
+    for (const p of pendentes) {
+      const idb = await garantirLojaNoBanco(p.loja);
+      if (idb && !_destinos.some(d => String(d.lojaIdBanco) === String(idb))) {
+        _destinos.push({ lojaIdBanco: idb, marketplace: p.loja.marketplace, nome: p.loja.nome });
+      }
+    }
+
+    dupLogStep('');
+    dupLogStep('↻ ' + pendentes.length + ' cópia(s) recusada(s) voltaram para a conferência.', 'err');
+
+    let _ok = false;
+    try {
+      _ok = await emPortaoLiberado(_destinos, _linhas, {
+        papeis: _papeis,
+        aviso: pendentes.length + ' anúncio(s) foram recusados e voltaram para você corrigir. '
+          + 'Os que já publicaram não estão nesta lista e não serão reenviados. '
+          + 'Motivo do primeiro: ' + String(pendentes[0].motivo || 'sem detalhe').slice(0, 160),
+      });
+    } catch (e) {
+      console.warn('[dup-retry] conferência não abriu:', e.message);
+      return;
+    }
+
+    if (!_ok) {
+      // Desistiu: agora sim o produto sem anúncio vira lixo, e sai.
+      dupLogStep('↶ Você fechou sem reenviar. Removendo as cópias recusadas...', 'err');
+      for (const p of pendentes) {
+        try {
+          if (p.novo && p.novo.idBanco) {
+            await fetch(BACKEND_URL + '/api/produtos/' + p.novo.idBanco, {
+              method: 'DELETE', headers: { 'x-api-token': getApiToken() },
+            });
+          }
+          const idx = produtosErp.findIndex(x => String(x.id) === String(p.novo.id));
+          if (idx >= 0) produtosErp.splice(idx, 1);
+        } catch (e) { console.warn('[dup-retry] limpeza falhou:', e.message); }
+      }
+      saveProdutos();
+      dupLogStep('  ✓ Removidas.', 'ok');
+      return;
+    }
+
+    // Reenvia só as recusadas, uma loja por vez, com o que ela corrigiu.
+    let _ok2 = 0, _err2 = 0;
+    for (const p of pendentes) {
+      try {
+        const r = await iniciarDuplicacaoComAgendamento({
+          produtoId: p.novo.id, lojaDestinoId: p.loja.id, qtd: 1, optsBase,
+          _preparadasProntas: [{ novo: p.novo }], _jaConferido: true,
+        });
+        if (r && r.publicadas > 0) _ok2++; else _err2++;
+      } catch (e) {
+        console.warn('[dup-retry] reenvio falhou:', e.message);
+        _err2++;
+      }
+    }
+    dupLogStep('↻ Reenvio: ' + _ok2 + ' publicada(s) · ' + _err2 + ' ainda com erro.',
+      _err2 ? 'err' : 'ok');
+    showToast('Reenvio: ' + _ok2 + ' OK · ' + _err2 + ' erro(s)', _err2 > 0);
+  }
+
   async function iniciarDuplicacaoComAgendamento(ctx) {
     // v33k.597: `ctx` vem do loop multi-loja com a loja/produto/qtd JÁ FIXADOS
     // nesta iteração. Sem ele (chamada direta de tela antiga), cai no DOM como
@@ -52179,6 +52450,10 @@ REGRAS DURAS:
     
     const isShopee = lojaDestino.marketplace === 'shopee';
     let okCopias = 0, errCopias = 0, canceladasCopias = 0;
+    // ★ v33k.2218: quem falhou fica guardado para voltar à conferência. Sem
+    //   isso, a única notícia da recusa era uma linha de log que some quando a
+    //   janela fecha, e o trabalho da pessoa ia junto.
+    const _falharam = [];
     
     // v33k.279: acumula títulos já gerados nesta sessão de duplicação pra a IA NÃO
     // repetir. Antes cada cópia mandava o MESMO produto pai e a IA devolvia quase
@@ -52200,8 +52475,35 @@ REGRAS DURAS:
       try {
         dupLogStep(`\n- Cópia ${k}/${qtd} -`);
         
-        // 1. Clone profundo do produto
-        const novo = JSON.parse(JSON.stringify(p));
+        // ═══════════════════════════════════════════════════════════════
+        // ★★ v33k.2220: UMA CÓPIA DE PRODUTO NOVO USA O PRÓPRIO PRODUTO.
+        // ───────────────────────────────────────────────────────────────
+        // MEDIDO em 01/09: o Alessandro criou o produto 23586 na tela nova,
+        // mandou 1 anúncio por loja, e nasceram produtos IRMÃOS. Os anúncios
+        // ficaram nos irmãos, e o 23586 — o que ele acabou de cadastrar —
+        // ficou vazio. Ele foi procurar o id e não achou em lugar nenhum.
+        //
+        // Clonar existe para criar VARIANTES do mesmo produto, com títulos
+        // diferentes, a partir de um anúncio que já está no ar. Com UMA cópia
+        // de um produto que ainda não tem anúncio nenhum, clonar não cria
+        // variante: cria lixo, e esconde o trabalho da pessoa num registro
+        // que ela não sabe que existe.
+        //
+        // ★ A GUARDA É ESTREITA DE PROPÓSITO, e as três condições importam:
+        //     qtd === 1        com 2+, clonar é o certo: são variantes
+        //     sem vínculo      produto já publicado em qualquer loja segue
+        //                      clonando, senão duplicar para uma loja nova
+        //                      mexeria no anúncio que já está no ar
+        //     não é massa      na duplicação em massa o original tem que
+        //                      ficar intacto, é o comportamento esperado
+        const _semAnuncio = !(p.variacoes || []).some(v => (v.vinculos || []).length);
+        const _usarOProprio = qtd === 1 && _semAnuncio && !ehMassa;
+
+        // 1. Clone profundo do produto, OU o próprio quando é o caso acima
+        const novo = _usarOProprio ? p : JSON.parse(JSON.stringify(p));
+        if (_usarOProprio) {
+          dupLogStep('  ⓘ Uma cópia de produto sem anúncio: o próprio produto vai, sem clonar.');
+        } else {
         delete novo.id; // novo ID será atribuído
         delete novo.idBanco; // CRITICO: senão sobrescreve o original no banco!
         delete novo.itemIdMarketplace;
@@ -52210,6 +52512,7 @@ REGRAS DURAS:
         novo.origem = 'duplicado';
         novo.duplicadoDeId = p.id; // VINCULO ao pai: aparece agrupado no card
         novo.duplicadoDeIdBanco = p.idBanco || null;
+        }
 
         // REFERÊNCIA = ANÚNCIO ESCOLHIDO pelo usuário (seletor do modal). Se o
         // produto pai acumulou vínculos de vários anúncios (ex: "Rosa" de um,
@@ -52616,7 +52919,11 @@ REGRAS DURAS:
         }
         
         // 2. Título via IA
-        if (opts.variarTitulo) {
+        // ★ v33k.2220: com o PRÓPRIO produto indo (uma cópia, sem anúncio),
+        //   variar título e descrição RENOMEARIA o que a pessoa acabou de
+        //   escrever na tela de criação. Variar existe para diferenciar
+        //   cópias entre si; com uma só, não há de quem diferenciar.
+        if (opts.variarTitulo && !_usarOProprio) {
           passoAtual++;
           dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: gerando título com IA...`);
           novo.nome = await gerarTituloVariadoIA(p, lojaDestino.marketplace, _titulosUsadosDup);
@@ -52630,7 +52937,7 @@ REGRAS DURAS:
         }
         
         // 3. Descrição via IA
-        if (opts.variarDescricao) {
+        if (opts.variarDescricao && !_usarOProprio) {
           passoAtual++;
           dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: refazendo descrição com IA...`);
           novo.descricao = await gerarDescricaoVariadaIA(p);
@@ -53260,24 +53567,29 @@ REGRAS DURAS:
                 'Anúncio não exportado: ' + (novo.nome || novo.skuPai || 'produto'),
                 'Falha ao exportar: ' + erroMsg, { skuPai: novo.skuPai });
             }
-            // ROLLBACK: produto duplicado nao exportou -> deleta do banco e local
-            // (evita poluir a tela com produtos "fantasma" sem anuncio)
-            dupLogStep(`  ↶ Rollback: removendo produto duplicado do sistema...`);
-            try {
-              if (novo.idBanco) {
-                await fetch(BACKEND_URL + '/api/produtos/' + novo.idBanco, {
-                  method: 'DELETE',
-                  headers: { 'x-api-token': getApiToken() }
-                });
-              }
-              // Remove do array local (busca por id local que setamos)
-              const idx = produtosErp.findIndex(x => String(x.id) === String(novo.id));
-              if (idx >= 0) produtosErp.splice(idx, 1);
-              dupLogStep(`  ✓ Rollback OK`, 'ok');
-            } catch(eR) {
-              dupLogStep(`  ⚠ Rollback falhou: ${eR.message}, produto pode ter ficado na lixeira`, 'err');
-            }
+            // ★★ v33k.2218: A CÓPIA QUE FALHOU VOLTA PARA A CONFERÊNCIA.
+            //   Decisão do Alessandro em 01/09: "ao dar erro para publicar
+            //   deverá voltar para a conferência do humano para ele corrigir e
+            //   não sumir, ficar por isso mesmo e pronto".
+            _falharam.push({
+              novo: novo,
+              loja: lojaDestino,
+              motivo: erroMsg,
+              detalhes: Array.isArray(data.detalhes) ? data.detalhes.slice(0, 5) : [],
+            });
+
+            // ★ E O ROLLBACK NÃO ACONTECE MAIS AQUI. Ele existia para não
+            //   deixar produto fantasma sem anúncio, o que fazia sentido
+            //   quando a falha era o fim da linha. Agora a cópia VAI SER
+            //   CORRIGIDA: apagar o produto jogaria fora exatamente o que a
+            //   pessoa vai consertar, junto com título, descrição e fotos que
+            //   a IA levou minutos para montar.
+            //
+            //   O produto fantasma volta a ser risco só se ela desistir, e aí
+            //   quem limpa é o descarte da conferência, não este ponto.
+            dupLogStep('  ⏸ Guardado para você corrigir na conferência.', 'err');
             errCopias++;
+            continue;
           }
         } catch(e) {
           dupLogStep(`  ✗ Erro de rede: ${e.message}`, 'err');
@@ -53324,6 +53636,26 @@ REGRAS DURAS:
       _houveProblema);
     showToast(`Duplicação concluída: ${okCopias} OK · ${errCopias} erro(s)` +
       (canceladasCopias ? ` · ${canceladasCopias} cancelada(s)` : ''));
+
+    // ★★ v33k.2218: O DESFECHO VOLTA PARA QUEM CHAMOU.
+    // ────────────────────────────────────────────────────────────────────
+    // O laço multi-loja contava `ok: true` sempre que esta função não
+    // ESTOURAVA. Só que recusa de marketplace não estoura: ela vira log
+    // vermelho, rollback, e retorno normal. Resultado, medido em 01/09: o
+    // resumo dizia "CALCENTER: 2 · Calcenter: 1" com ZERO anúncio publicado
+    // em qualquer loja.
+    //
+    // O contador estava medindo "não deu exceção", não "publicou". Agora quem
+    // sabe o que aconteceu devolve o número, e quem conta usa o número.
+    return {
+      ok: okCopias > 0 && errCopias === 0,
+      publicadas: okCopias,
+      falhas: errCopias,
+      canceladas: canceladasCopias,
+      loja: lojaDestino,
+      // as cópias que falharam, para a conferência reabrir só com elas
+      pendentes: _falharam,
+    };
   }
 
   // ============================================================
@@ -56197,6 +56529,12 @@ REGRAS DURAS:
     return doze + dv;
   }
   
+  // ★ v33k.2219: exposto em `window` para a tela nova de criação alcançar. Ela
+  //   mora em `assets/anuncio-novo.js`, fora deste arquivo, e sem isto teria
+  //   que duplicar o gerador — dois algoritmos de EAN é código de barras
+  //   diferente para o mesmo produto dependendo de onde foi gerado.
+  window.gerarEAN13Brasil = gerarEAN13Brasil;
+
   function validarEAN13(ean) {
     const s = String(ean || '').replace(/\D/g, '');
     if (s.length !== 13) return false;
@@ -59879,7 +60217,7 @@ São o mesmo produto?`;
       });
       
       return `
-        <div class="cat-prod" onclick="abrirEditarProduto('${p.id}')">
+        <div class="cat-prod" onclick="abrirProdutoParaEditar('${p.id}')">
           ${foto}
           <div class="cat-prod-info">
             <div class="cat-prod-nome">${escapeHtml(p.nome||'(sem nome)')}</div>
@@ -74776,7 +75114,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2216-um-criterio-so';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2222-cada-campo-no-seu-canal';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
