@@ -29,8 +29,13 @@
 
   var API = '/api/anuncio-rascunhos';
   var ETAPAS = [
+    // ★★ v33k.2210: VARIAÇÕES DEIXOU DE SER ETAPA. Pedido de 31/08: a escolha
+    //   "com variações" ou "sem variação" e a montagem delas passam para a
+    //   PRIMEIRA etapa, ANTES da descrição. O motivo não é arrumação: a IA
+    //   escrevia guia de tamanhos em centímetros para um pneu, porque gerava a
+    //   descrição sem saber se o produto tem variação. O dado precisa existir
+    //   antes de a descrição ser gerada.
     { id: 'produto', titulo: 'Produto' },
-    { id: 'variacoes', titulo: 'Variações' },
     // ★ v33k.2205: DESTINOS VEM ANTES DE FOTOS, e não é preferência de ordem.
     //   As regras de foto dependem do canal: o Mercado Livre publica foto por
     //   variação e não usa foto geral; a Shopee usa foto geral e aceita
@@ -183,6 +188,10 @@
   }
 
   function combinacoes() {
+    // ★ Produto marcado como SEM variação não tem matriz, mesmo que sobrem
+    //   dimensões montadas antes da troca. Senão o anúncio sairia com
+    //   variações que a pessoa disse não ter.
+    if (estado.dados.temVariacoes === false) return [];
     var vs = variacoes().filter(function (v) { return v.nome && (v.valores || []).length; });
     if (!vs.length) return [];
     var saida = [[]];
@@ -292,26 +301,59 @@
 
   function etapaProduto() {
     var d = estado.dados;
-    return '<div class="lc-an-etapa">'
-      + campo('Nome do anúncio', 'lcAnNome', d.nome, 'text', 'É o título que o comprador vê.', botaoIA('titulo'))
+    var comVar = d.temVariacoes === true;
+    var escolheu = d.temVariacoes === true || d.temVariacoes === false;
+
+    // ★★ A ESCOLHA VEM ANTES DE TUDO QUE A IA ESCREVE. Sem ela, a descrição
+    //   saía com guia de tamanhos em centímetros para um pneu: a IA não tinha
+    //   como saber que aquele produto não tem grade.
+    var escolha = '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:14px;margin-bottom:16px">'
+      + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:8px">Este anúncio tem variações?</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      + ['sim', 'nao'].map(function (op) {
+        var ativo = (op === 'sim') === comVar && escolheu;
+        return '<button class="lc-an-temvar" data-op="' + op + '" style="border:1px solid '
+          + (ativo ? 'var(--lc-primary)' : 'var(--lc-border-2)') + ';background:'
+          + (ativo ? 'var(--lc-primary)' : '#fff') + ';color:' + (ativo ? '#fff' : 'var(--lc-ink-2)')
+          + ';border-radius:8px;padding:9px 16px;cursor:pointer;font-size:13px;font-weight:700">'
+          + (op === 'sim' ? 'Anúncio com variações' : 'Anúncio sem variação') + '</button>';
+      }).join('')
+      + '</div>'
+      + (escolheu ? '' : '<div style="font-size:12px;color:var(--lc-muted-2);margin-top:8px">'
+        + 'Escolha para liberar a descrição. A IA precisa saber disso antes de escrever.</div>')
+      + '</div>';
+
+    var identificacao = campo('Nome do anúncio', 'lcAnNome', d.nome, 'text', 'É o título que o comprador vê.', botaoIA('titulo'))
       + sugestaoDoCampo('titulo')
       + campo('SKU pai', 'lcAnSku', d.sku)
       + campo('Marca', 'lcAnMarca', d.marca)
-      + campo('EAN ou GTIN', 'lcAnEan', d.ean, 'text', 'Deixe vazio se o produto não tiver código de barras.')
-      + '<label style="display:block;margin-bottom:14px">'
+      + campo('EAN ou GTIN', 'lcAnEan', d.ean, 'text', 'Deixe vazio se o produto não tiver código de barras.');
+
+    var blocoVar = comVar ? blocoVariacoes() : '';
+
+    // ★ Termos de busca ANTES da descrição, e eles entram no fim dela quando
+    //   a descrição é gerada: é o que ajuda o comprador a achar o anúncio.
+    var termos = campo('Termos de busca', 'lcAnPalavras', d.palavrasChave, 'text',
+      'Separados por vírgula. Quando você gerar a descrição, eles entram no fim dela.',
+      botaoIA('palavrasChave'))
+      + sugestaoDoCampo('palavrasChave');
+
+    var descricao = '<label style="display:block;margin-bottom:14px">'
       + '<span style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:5px">'
-      + 'Descrição' + botaoIA('descricao') + '</span>'
-      + '<textarea id="lcAnDescricao" rows="7" style="width:100%;padding:9px 11px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px;resize:vertical">' + esc(d.descricao || '') + '</textarea>'
+      + 'Descrição' + (escolheu ? botaoIA('descricao') : '') + '</span>'
+      + '<textarea id="lcAnDescricao" rows="7" style="width:100%;padding:9px 11px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px;resize:vertical">'
+      + esc(d.descricao || '') + '</textarea>'
       + '</label>'
-      + sugestaoDoCampo('descricao')
-      + campo('Termos de busca', 'lcAnPalavras', d.palavrasChave, 'text', 'Separados por vírgula. Ajudam o comprador a achar o anúncio.', botaoIA('palavrasChave'))
-      + sugestaoDoCampo('palavrasChave')
-      + campo('Preço', 'lcAnPreco', d.preco, 'text', 'Um preço só, que vale para todas as lojas de destino.')
-      + campo('Estoque', 'lcAnEstoque', d.estoque, 'text')
+      + sugestaoDoCampo('descricao');
+
+    return '<div class="lc-an-etapa">'
+      + identificacao + escolha + blocoVar + termos + descricao
+      + campo('Preço', 'lcAnPreco', d.preco, 'text', 'Um preço só, que vale para todas as lojas de destino. Obrigatório.')
+      + campo('Estoque', 'lcAnEstoque', d.estoque)
       + '</div>';
   }
 
-  function etapaVariacoes() {
+  function blocoVariacoes() {
     var vs = variacoes();
     if (sincronizarCombinacoes()) marcarSujo();
     var linhas = vs.map(function (v, i) {
@@ -360,9 +402,9 @@
         + '</tbody></table></div></div>';
     }
 
-    return '<div class="lc-an-etapa">'
-      + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 14px">Você decide quais variações existem. '
-      + 'Sem variação nenhuma, o anúncio é simples.</p>'
+    return '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:14px;margin-bottom:16px">'
+      + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 14px">Você decide quais variações existem, '
+      + 'e com que nome. Nada aqui é fixo em cor ou tamanho.</p>'
       + linhas
       + '<button id="lcAnAddVar" style="border:1px solid var(--lc-primary);background:#fff;color:var(--lc-primary);border-radius:8px;padding:9px 14px;cursor:pointer;font-size:13px;font-weight:700">Adicionar variação</button>'
       + tabela
@@ -390,7 +432,14 @@
   function regrasDeFoto() {
     var canais = canaisDosDestinos();
     if (!canais.length) return null;
-    var soML = canais.length === 1 && canais[0] === 'mercadolivre';
+    // ★★ SEM VARIAÇÃO, O MERCADO LIVRE USA A FOTO GERAL. Relato de 31/08:
+    //   "se o anúncio no Mercado Livre não tiver variação as fotos são
+    //   gerais". A regra "só ML, geral desligada" nasceu certa e incompleta:
+    //   ela vale porque o ML publica a foto DA VARIAÇÃO. Num produto simples
+    //   não existe variação para carregar foto, e a tela bloqueava o único
+    //   lugar que havia, deixando o anúncio sem imagem nenhuma.
+    var temVariacao = combinacoes().length > 0;
+    var soML = canais.length === 1 && canais[0] === 'mercadolivre' && temVariacao;
     var TETO_VAR = { mercadolivre: 10, shopee: 1, tiktok: 9, shein: 9 };
     var maiorPorVariacao = 1;
     canais.forEach(function (c) { maiorPorVariacao = Math.max(maiorPorVariacao, TETO_VAR[c] || 1); });
@@ -403,14 +452,18 @@
       geralMax: soML ? 0 : 9,
       porVariacaoMax: maiorPorVariacao,
       capaUnica: capaUnica,
+      temVariacao: temVariacao,
       canais: canais,
     };
   }
 
   function textoDasRegras(r) {
     if (r.geralBloqueada) {
-      return 'Só Mercado Livre nos destinos: ele publica a foto de cada variação, '
-        + 'então a foto geral fica desligada. Até ' + r.porVariacaoMax + ' por variação.';
+      return 'Só Mercado Livre nos destinos, e o produto tem variações: ele publica a foto de cada '
+        + 'variação, então a foto geral fica desligada. Até ' + r.porVariacaoMax + ' por variação.';
+    }
+    if (!r.temVariacao) {
+      return 'Produto sem variação: as fotos são gerais. Até ' + r.geralMax + '.';
     }
     if (r.porVariacaoMax === 1) {
       return 'Até ' + r.geralMax + ' fotos gerais, e exatamente 1 por variação, que é a capa dela.';
@@ -452,6 +505,25 @@
     return urls;
   }
 
+  // ★★ O PAINEL ESCONDE TODO `input[type=file]` NO CSS GLOBAL (linha 14024:
+  //   `input[type="file"] { display: none; }`). O resto do sistema convive com
+  //   isso porque usa um BOTÃO visível que clica no input escondido.
+  //
+  //   A primeira versão desta tela desenhou o input cru: ele estava lá, no DOM,
+  //   e simplesmente não aparecia. Relato de 31/08 com print: "não apareceu o
+  //   local de subir as fotos". Não era render, era CSS de casa que eu não
+  //   conhecia. Agora segue o mesmo padrão dos outros.
+  function botaoArquivo(alvo, varias, rotulo) {
+    var id = 'lcAnArq_' + String(alvo).replace(/[^A-Za-z0-9]/g, '_');
+    return '<label for="' + id + '" '
+      + 'style="display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--lc-primary);'
+      + 'color:var(--lc-primary);background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;'
+      + 'font-size:13px;font-weight:700;margin-top:6px">'
+      + esc(rotulo || 'Escolher arquivos') + '</label>'
+      + '<input id="' + id + '" type="file" class="lc-an-arquivo" data-alvo="' + esc(alvo) + '" '
+      + 'accept="image/*"' + (varias ? ' multiple' : '') + '>';
+  }
+
   function tirasDeFoto(urls, alvo) {
     if (!urls.length) return '<div style="font-size:12px;color:var(--lc-muted-2);padding:6px 0">Nenhuma foto ainda.</div>';
     return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">'
@@ -484,8 +556,7 @@
         + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:6px">'
         + 'Fotos do anúncio (' + geral.length + ' de ' + r.geralMax + ')</div>'
         + tirasDeFoto(geral, 'geral')
-        + '<input type="file" class="lc-an-arquivo" data-alvo="geral" accept="image/*" multiple '
-        + 'style="font-size:12px;margin-top:6px">'
+        + botaoArquivo('geral', true, 'Escolher arquivos')
         + '</div>';
 
     var blocoVars = '';
@@ -499,8 +570,7 @@
             + '<div style="font-size:13px;font-weight:600;color:var(--lc-ink);margin-bottom:4px">' + esc(c)
             + ' <span style="font-weight:400;color:var(--lc-muted-2)">(' + fv.length + ' de ' + r.porVariacaoMax + ')</span></div>'
             + tirasDeFoto(fv, c)
-            + '<input type="file" class="lc-an-arquivo" data-alvo="' + esc(c) + '" accept="image/*" '
-            + (r.porVariacaoMax > 1 ? 'multiple ' : '') + 'style="font-size:12px;margin-top:4px">'
+            + botaoArquivo(c, r.porVariacaoMax > 1, fv.length ? 'Adicionar mais' : 'Escolher arquivos')
             + '</div>';
         }).join('') + '</div>';
     }
@@ -921,7 +991,6 @@
     var alvo = document.getElementById('lcAnCorpo');
     if (!alvo) return;
     if (estado.etapa === 'produto') alvo.innerHTML = etapaProduto();
-    else if (estado.etapa === 'variacoes') alvo.innerHTML = etapaVariacoes();
     else if (estado.etapa === 'fotos') alvo.innerHTML = etapaFotos();
     else if (estado.etapa === 'embalagem') alvo.innerHTML = etapaEmbalagem();
     else if (estado.etapa === 'destinos') {
@@ -1007,6 +1076,20 @@
       el.addEventListener('click', function () {
         var lista = guardarFotos(el.dataset.alvo);
         lista.splice(Number(el.dataset.i), 1);
+        marcarSujo();
+        desenharEtapa();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-temvar'), function (el) {
+      el.addEventListener('click', function () {
+        var sim = el.dataset.op === 'sim';
+        estado.dados.temVariacoes = sim;
+        // Escolher "com variações" e não haver nenhuma ainda: começa uma, para
+        // a pessoa não ter que caçar o botão.
+        if (sim && !variacoes().length) variacoes().push({ nome: '', valores: [] });
+        // Escolher "sem variação" NÃO apaga o que já foi montado: se ela
+        // trocar sem querer, o trabalho continua ali ao voltar.
         marcarSujo();
         desenharEtapa();
       });
@@ -1156,7 +1239,15 @@
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-usar'), function (el) {
       el.addEventListener('click', function () {
         var campo = el.dataset.campo;
-        estado.dados[campo === 'titulo' ? 'nome' : campo] = el.dataset.valor;
+        var valor = el.dataset.valor;
+        // ★ Pedido de 31/08: os termos de busca entram NO FIM da descrição,
+        //   para ajudar o comprador a achar o anúncio. Só quando existem, e
+        //   sem repetir se já estiverem lá.
+        if (campo === 'descricao' && estado.dados.palavrasChave) {
+          var t = String(estado.dados.palavrasChave).trim();
+          if (t && valor.indexOf(t) < 0) valor = valor + '\n\n' + t;
+        }
+        estado.dados[campo === 'titulo' ? 'nome' : campo] = valor;
         delete estado.sugestoes[campo];
         marcarSujo();
         desenharEtapa();
@@ -1326,12 +1417,22 @@
   //   busca e o preenchimento dos atributos da ficha do canal.
   function produtoParaGerador() {
     var d = estado.dados;
+    // ★★ AS VARIAÇÕES VÃO JUNTO, e é isto que impede o guia de tamanhos em
+    //   centímetros num pneu. O gerador de descrição da duplicação já usa as
+    //   variações do produto quando elas existem; sem mandá-las, ele escrevia
+    //   no escuro e completava com o que costuma aparecer em calçado.
+    var vs = (d.temVariacoes === true) ? variacoes()
+      .filter(function (v) { return v.nome && (v.valores || []).length; })
+      .map(function (v) { return { nome: v.nome, valores: v.valores.slice() }; }) : [];
     return {
       nome: d.nome || '',
       categoria: d.categoriaInterna || '',
       marca: d.marca || '',
       descricao: d.descricao || '',
       atributosMl: (d.atributosPorCanal || {}).mercadolivre || {},
+      temVariacoes: d.temVariacoes === true,
+      dimensoesDeVariacao: vs,
+      variacoes: combinacoes().map(rotuloCombinacao).map(function (c) { return { nome: c }; }),
     };
   }
 
@@ -1497,7 +1598,11 @@
         estado.rascunhoId = r.rascunho.id;
         estado.dados = r.rascunho.dados || {};
         estado.destinos = Array.isArray(r.rascunho.destinos) ? r.rascunho.destinos : [];
-        estado.etapa = r.rascunho.etapa || 'produto';
+        // Rascunho salvo antes da v33k.2210 pode apontar para a etapa
+        // 'variacoes', que deixou de existir: cai no produto, onde elas moram
+        // agora, em vez de abrir numa etapa que não desenha nada.
+        estado.etapa = ETAPAS.some(function (e) { return e.id === r.rascunho.etapa; })
+          ? r.rascunho.etapa : 'produto';
       } catch (e) {
         avisar('Não consegui abrir o rascunho: ' + e.message);
         return;
