@@ -31,9 +31,14 @@
   var ETAPAS = [
     { id: 'produto', titulo: 'Produto' },
     { id: 'variacoes', titulo: 'Variações' },
+    // ★ v33k.2205: DESTINOS VEM ANTES DE FOTOS, e não é preferência de ordem.
+    //   As regras de foto dependem do canal: o Mercado Livre publica foto por
+    //   variação e não usa foto geral; a Shopee usa foto geral e aceita
+    //   exatamente UMA por variação, que é a capa. Pedir as fotos antes de
+    //   saber para onde vai é pedir para a pessoa subir o que não serve.
+    { id: 'destinos', titulo: 'Destinos' },
     { id: 'fotos', titulo: 'Fotos' },
     { id: 'embalagem', titulo: 'Embalagem' },
-    { id: 'destinos', titulo: 'Destinos' },
     { id: 'ficha', titulo: 'Ficha por canal' },
     { id: 'conferencia', titulo: 'Conferência e envio' },
   ];
@@ -137,6 +142,7 @@
     pintarStatus();
     try {
       var corpo = { dados: estado.dados, etapa: estado.etapa, destinos: estado.destinos };
+      if (Array.isArray(estado.dados.fotosStorage)) corpo.fotosStorage = estado.dados.fotosStorage;
       if (!estado.rascunhoId) {
         var criado = await chamar('', { metodo: 'POST', corpo: corpo });
         estado.rascunhoId = criado.rascunho.id;
@@ -212,6 +218,46 @@
   // as chaves que deixaram de existir são PODADAS: tirar uma variação não pode
   // deixar combinação fantasma que ninguém vê e o marketplace publica.
   // ═════════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
+  // SKU E ESTOQUE EM MASSA (Onda 10)
+  // ───────────────────────────────────────────────────────────────────────
+  // Mesma normalização do gerador que o painel já usa (`gerarSkusEansProduto`):
+  // sem acento, maiúscula, hífen entre os pedaços, e desempate por sufixo
+  // numérico quando o SKU repetiria.
+  //
+  // ★ A DIFERENÇA: o do painel monta `SKU-COR-TAMANHO`, porque nasceu para
+  //   calçado. Este monta `PREFIXO-<valor de cada dimensão>`, qualquer que
+  //   seja o nome delas. Em "Voltagem / Potência" sai `AQ-110V-1500W`, e não
+  //   um SKU com dois campos vazios.
+  //
+  // ★ NÃO SOBRESCREVE O QUE JÁ ESTÁ PREENCHIDO, igual ao do painel: quem
+  //   digitou um SKU à mão tem motivo, e o botão é de preencher o que falta.
+  function _pedacoSku(v) {
+    return String(v == null ? '' : v)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase().replace(/[^A-Z0-9\s.\-\/]/g, '').trim().replace(/[\s-]+/g, '-');
+  }
+
+  function skusEmMassa(prefixo, combos, jaPreenchidos) {
+    var base = String(prefixo == null ? '' : prefixo).replace(/^[.,;\s-]+|[.,;\s-]+$/g, '').trim();
+    var usados = {};
+    (jaPreenchidos || []).forEach(function (x) { if (x) usados[String(x).trim()] = true; });
+    var saida = {};
+    (combos || []).forEach(function (chave) {
+      var pedacos = String(chave).split(' / ').map(_pedacoSku).filter(Boolean);
+      var sku = [base].concat(pedacos).filter(Boolean).join('-');
+      if (!sku) return;
+      if (usados[sku]) {
+        var n = 2;
+        while (usados[sku + '-' + n]) n++;
+        sku = sku + '-' + n;
+      }
+      usados[sku] = true;
+      saida[chave] = sku;
+    });
+    return saida;
+  }
+
   function sincronizarCombinacoes() {
     var atuais = combinacoes().map(rotuloCombinacao);
     if (!estado.dados.combinacoes || typeof estado.dados.combinacoes !== 'object') {
@@ -231,9 +277,13 @@
   // ═════════════════════════════════════════════════════════════════════════
   // DESENHO
   // ═════════════════════════════════════════════════════════════════════════
-  function campo(rotulo, id, valor, tipo, dica) {
+  // A ação de IA fica NO CAMPO que ela preenche, ao lado do rótulo. Barra de
+  // botões no topo da etapa obriga a pessoa a adivinhar qual botão mexe em
+  // qual campo.
+  function campo(rotulo, id, valor, tipo, dica, acao) {
     return '<label style="display:block;margin-bottom:14px">'
-      + '<span style="display:block;font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:5px">' + esc(rotulo) + '</span>'
+      + '<span style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:5px">'
+      + '<span>' + esc(rotulo) + '</span>' + (acao || '') + '</span>'
       + '<input id="' + id + '" type="' + (tipo || 'text') + '" value="' + esc(valor || '') + '" '
       + 'style="width:100%;padding:9px 11px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px">'
       + (dica ? '<span style="display:block;font-size:11px;color:var(--lc-muted-2);margin-top:4px">' + esc(dica) + '</span>' : '')
@@ -243,20 +293,18 @@
   function etapaProduto() {
     var d = estado.dados;
     return '<div class="lc-an-etapa">'
-      + '<div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:10px">'
-      + botaoIA('titulo', 'Sugerir títulos') + botaoIA('descricao', 'Sugerir descrição')
-      + botaoIA('palavrasChave', 'Sugerir termos de busca') + '</div>'
-      + campo('Nome do anúncio', 'lcAnNome', d.nome, 'text', 'É o título que o comprador vê.')
+      + campo('Nome do anúncio', 'lcAnNome', d.nome, 'text', 'É o título que o comprador vê.', botaoIA('titulo'))
       + sugestaoDoCampo('titulo')
       + campo('SKU pai', 'lcAnSku', d.sku)
       + campo('Marca', 'lcAnMarca', d.marca)
       + campo('EAN ou GTIN', 'lcAnEan', d.ean, 'text', 'Deixe vazio se o produto não tiver código de barras.')
       + '<label style="display:block;margin-bottom:14px">'
-      + '<span style="display:block;font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:5px">Descrição</span>'
+      + '<span style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:5px">'
+      + 'Descrição' + botaoIA('descricao') + '</span>'
       + '<textarea id="lcAnDescricao" rows="7" style="width:100%;padding:9px 11px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px;resize:vertical">' + esc(d.descricao || '') + '</textarea>'
       + '</label>'
       + sugestaoDoCampo('descricao')
-      + campo('Termos de busca', 'lcAnPalavras', d.palavrasChave, 'text', 'Separados por vírgula. Ajudam o comprador a achar o anúncio.')
+      + campo('Termos de busca', 'lcAnPalavras', d.palavrasChave, 'text', 'Separados por vírgula. Ajudam o comprador a achar o anúncio.', botaoIA('palavrasChave'))
       + sugestaoDoCampo('palavrasChave')
       + campo('Preço', 'lcAnPreco', d.preco, 'text', 'Um preço só, que vale para todas as lojas de destino.')
       + campo('Estoque', 'lcAnEstoque', d.estoque, 'text')
@@ -289,8 +337,14 @@
     var tabela = '';
     if (combos.length) {
       tabela = '<div style="margin-top:18px">'
-        + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:8px">'
-        + combos.length + ' combinação(ões)</div>'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
+        + '<span style="font-size:12px;font-weight:700;color:var(--lc-ink-2)">' + combos.length + ' combinação(ões)</span>'
+        + '<span style="display:flex;gap:6px;flex-wrap:wrap">'
+        + '<button id="lcAnSkuMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
+        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Montar SKUs</button>'
+        + '<button id="lcAnEstoqueMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
+        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Estoque para todas</button>'
+        + '</span></div>'
         + '<div style="max-height:260px;overflow:auto;border:1px solid var(--lc-border);border-radius:10px">'
         + '<table style="width:100%;border-collapse:collapse;font-size:13px">'
         + '<thead><tr style="background:#f8fafc"><th style="text-align:left;padding:8px 10px">Variação</th>'
@@ -315,21 +369,146 @@
       + '</div>';
   }
 
+  // ═════════════════════════════════════════════════════════════════════════
+  // FOTOS (Onda 10)
+  // ───────────────────────────────────────────────────────────────────────
+  // ★ AS REGRAS SAEM DOS DESTINOS, não de um padrão fixo:
+  //     só Mercado Livre     foto geral BLOQUEADA (ele não usa), até 10 por variação
+  //     só Shopee ou TikTok  geral até 9, e EXATAMENTE 1 por variação, que é a capa
+  //     misturado            geral até 9, até 10 por variação, e a PRIMEIRA de
+  //                          cada variação é a capa que a Shopee e o TikTok usam
+  //
+  //   Por que o teto por variação é o MAIOR e não o menor no caso misturado: a
+  //   exportação já corta as fotos por marketplace (`prepararProdutoParaExport`).
+  //   Limitar a 1 aqui obrigaria a pessoa a subir de novo para o ML depois.
+  //
+  // ★ ARQUIVO, NÃO URL. Sobe pelo `/api/upload-foto`, que já existe e já
+  //   recusa acima de 2 MB no servidor. A checagem também é feita aqui, antes
+  //   de mandar, para a pessoa saber na hora qual arquivo passou do limite.
+  var LIMITE_ARQUIVO = 2 * 1024 * 1024;
+
+  function regrasDeFoto() {
+    var canais = canaisDosDestinos();
+    if (!canais.length) return null;
+    var soML = canais.length === 1 && canais[0] === 'mercadolivre';
+    var TETO_VAR = { mercadolivre: 10, shopee: 1, tiktok: 9, shein: 9 };
+    var maiorPorVariacao = 1;
+    canais.forEach(function (c) { maiorPorVariacao = Math.max(maiorPorVariacao, TETO_VAR[c] || 1); });
+    // ★ Quem aceita EXATAMENTE UMA por variação é a Shopee. O TikTok aceita
+    //   nove. Dizer "Shopee e TikTok" na tela seria informação errada, e é o
+    //   tipo de erro que faz a pessoa subir de menos por precaução.
+    var capaUnica = canais.indexOf('shopee') >= 0;
+    return {
+      geralBloqueada: soML,
+      geralMax: soML ? 0 : 9,
+      porVariacaoMax: maiorPorVariacao,
+      capaUnica: capaUnica,
+      canais: canais,
+    };
+  }
+
+  function textoDasRegras(r) {
+    if (r.geralBloqueada) {
+      return 'Só Mercado Livre nos destinos: ele publica a foto de cada variação, '
+        + 'então a foto geral fica desligada. Até ' + r.porVariacaoMax + ' por variação.';
+    }
+    if (r.porVariacaoMax === 1) {
+      return 'Até ' + r.geralMax + ' fotos gerais, e exatamente 1 por variação, que é a capa dela.';
+    }
+    return 'Até ' + r.geralMax + ' fotos gerais e até ' + r.porVariacaoMax + ' por variação. '
+      + (r.capaUnica ? 'A Shopee usa só a PRIMEIRA de cada variação, que é a capa dela.' : '');
+  }
+
+  async function subirArquivos(arquivos, limite, atuais) {
+    var restam = limite - (atuais || []).length;
+    if (restam <= 0) { avisar('Este bloco já está no limite de fotos.'); return []; }
+    var urls = [];
+    var recusados = [];
+    for (var i = 0; i < arquivos.length && urls.length < restam; i++) {
+      var f = arquivos[i];
+      if (f.size > LIMITE_ARQUIVO) {
+        recusados.push(f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)');
+        continue;
+      }
+      var dataUrl = await new Promise(function (res, rej) {
+        var fr = new FileReader();
+        fr.onload = function () { res(fr.result); };
+        fr.onerror = function () { rej(new Error('Não consegui ler ' + f.name)); };
+        fr.readAsDataURL(f);
+      });
+      var r = await fetch(base() + '/api/upload-foto', {
+        method: 'POST', headers: cabecalhos(), body: JSON.stringify({ dataUrl: dataUrl }),
+      });
+      var j = await r.json();
+      if (!j || !j.ok || !j.url) throw new Error((j && j.erro) || ('Falha ao subir ' + f.name));
+      urls.push(j.url);
+    }
+    if (recusados.length) {
+      avisar('Acima de 2 MB, não subiram: ' + recusados.join(', ') + '. Reduza e tente de novo.');
+    }
+    if (arquivos.length > restam) {
+      toast('Subi ' + urls.length + '. O limite deste bloco é ' + limite + '.');
+    }
+    return urls;
+  }
+
+  function tirasDeFoto(urls, alvo) {
+    if (!urls.length) return '<div style="font-size:12px;color:var(--lc-muted-2);padding:6px 0">Nenhuma foto ainda.</div>';
+    return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">'
+      + urls.map(function (u, i) {
+        return '<div style="position:relative;width:64px;height:64px;border:1px solid var(--lc-border);border-radius:8px;overflow:hidden">'
+          + '<img src="' + esc(u) + '" style="width:100%;height:100%;object-fit:cover">'
+          + (i === 0 ? '<span style="position:absolute;left:0;bottom:0;background:var(--lc-primary);color:var(--lc-primary-text);font-size:9px;padding:1px 4px">capa</span>' : '')
+          + '<button class="lc-an-tirar-foto" data-alvo="' + esc(alvo) + '" data-i="' + i + '" '
+          + 'style="position:absolute;top:2px;right:2px;border:0;background:rgba(255,255,255,.9);color:var(--lc-danger);'
+          + 'border-radius:6px;width:18px;height:18px;cursor:pointer;font-size:12px;line-height:1">x</button>'
+          + '</div>';
+      }).join('') + '</div>';
+  }
+
   function etapaFotos() {
-    var fotos = Array.isArray(estado.dados.fotos) ? estado.dados.fotos : [];
+    var r = regrasDeFoto();
+    if (!r) {
+      return '<div class="lc-an-etapa"><p style="font-size:13px;color:var(--lc-muted)">'
+        + 'Escolha os destinos primeiro. As regras de foto mudam conforme o canal: '
+        + 'o Mercado Livre usa foto por variação, a Shopee usa foto geral e uma capa por variação.</p></div>';
+    }
+    var d = estado.dados;
+    var geral = Array.isArray(d.fotos) ? d.fotos : [];
+    var combos = combinacoes().map(rotuloCombinacao);
+
+    var blocoGeral = r.geralBloqueada
+      ? '<div style="border:1px dashed var(--lc-border-2);border-radius:10px;padding:14px;color:var(--lc-muted-2);font-size:13px">'
+        + 'Foto geral desligada para este destino.</div>'
+      : '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:14px">'
+        + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:6px">'
+        + 'Fotos do anúncio (' + geral.length + ' de ' + r.geralMax + ')</div>'
+        + tirasDeFoto(geral, 'geral')
+        + '<input type="file" class="lc-an-arquivo" data-alvo="geral" accept="image/*" multiple '
+        + 'style="font-size:12px;margin-top:6px">'
+        + '</div>';
+
+    var blocoVars = '';
+    if (combos.length) {
+      blocoVars = '<div style="margin-top:16px">'
+        + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:8px">'
+        + 'Fotos por variação (até ' + r.porVariacaoMax + ' em cada)</div>'
+        + combos.map(function (c) {
+          var fv = ((d.combinacoes || {})[c] || {}).fotos || [];
+          return '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:12px;margin-bottom:8px">'
+            + '<div style="font-size:13px;font-weight:600;color:var(--lc-ink);margin-bottom:4px">' + esc(c)
+            + ' <span style="font-weight:400;color:var(--lc-muted-2)">(' + fv.length + ' de ' + r.porVariacaoMax + ')</span></div>'
+            + tirasDeFoto(fv, c)
+            + '<input type="file" class="lc-an-arquivo" data-alvo="' + esc(c) + '" accept="image/*" '
+            + (r.porVariacaoMax > 1 ? 'multiple ' : '') + 'style="font-size:12px;margin-top:4px">'
+            + '</div>';
+        }).join('') + '</div>';
+    }
+
     return '<div class="lc-an-etapa">'
-      + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 12px">Cole a URL das imagens, uma por linha. '
-      + 'O envio direto de arquivo entra junto com os destinos, na próxima onda.</p>'
-      + '<textarea id="lcAnFotos" rows="8" placeholder="https://..." '
-      + 'style="width:100%;padding:9px 11px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:13px;resize:vertical">'
-      + esc(fotos.join('\n')) + '</textarea>'
-      + '<div style="margin-top:14px;font-size:12px;color:var(--lc-muted);line-height:1.7">'
-      + '<div style="font-weight:700;color:var(--lc-ink-2);margin-bottom:4px">Limites de cada canal</div>'
-      + '<div>Shopee: 9 no produto e exatamente 1 por variação.</div>'
-      + '<div>Mercado Livre: até 10 por variação, sem teto no produto.</div>'
-      + '<div>TikTok Shop e Shein: 9 no produto.</div>'
-      + '<div style="margin-top:6px">Você tem ' + fotos.length + ' no momento.</div>'
-      + '</div></div>';
+      + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 12px">' + esc(textoDasRegras(r)) + '</p>'
+      + '<p style="font-size:12px;color:var(--lc-muted-2);margin:0 0 12px">Cada arquivo até 2 MB.</p>'
+      + blocoGeral + blocoVars + '</div>';
   }
 
   function etapaEmbalagem() {
@@ -337,6 +516,9 @@
     return '<div class="lc-an-etapa">'
       + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 14px">Peso e medidas da caixa fechada. '
       + 'Nenhum marketplace pede isso como atributo de categoria, e é o dado que mais falta no catálogo hoje.</p>'
+      + '<div style="display:flex;justify-content:flex-end;margin-bottom:8px">'
+      + botaoIA('embalagem', 'Estimar com IA') + '</div>'
+      + sugestaoDoCampo('embalagem')
       + campo('Peso em gramas', 'lcAnPeso', d.peso)
       + campo('Comprimento em cm', 'lcAnComprimento', d.comprimento)
       + campo('Largura em cm', 'lcAnLargura', d.largura)
@@ -607,11 +789,19 @@
     }
 
     var podeEnviar = estado.destinos.length && d.nome && !estado.enviando;
+    var qtd = estado.dados.quantidadePorLoja || 1;
     return '<div class="lc-an-etapa">'
       + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin-bottom:8px">O ANÚNCIO</div>'
       + resumo
       + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin:18px 0 8px">PARA ONDE VAI</div>'
       + destinos
+      + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin:18px 0 8px">QUANTOS ANÚNCIOS EM CADA LOJA</div>'
+      + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      + '<input id="lcAnQtd" type="number" min="1" max="50" value="' + esc(qtd) + '" '
+      + 'style="width:90px;padding:8px 10px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px">'
+      + '<span style="font-size:13px;color:var(--lc-muted)">em cada uma das '
+      + estado.destinos.length + ' loja(s), ou seja ' + (qtd * estado.destinos.length) + ' anúncio(s) no total.</span>'
+      + '</div>'
       + (estado.envioErro
         ? '<div style="border:1px solid var(--lc-danger-soft);background:#fff;border-radius:8px;padding:10px 12px;margin:10px 0;font-size:13px;color:var(--lc-danger)">'
           + esc(estado.envioErro) + '</div>'
@@ -620,9 +810,10 @@
       + ' style="margin-top:14px;border:0;background:' + (podeEnviar ? 'var(--lc-primary)' : 'var(--lc-border-2)')
       + ';color:var(--lc-primary-text);border-radius:8px;padding:11px 20px;'
       + (podeEnviar ? 'cursor:pointer' : 'cursor:not-allowed') + ';font-size:14px;font-weight:700">'
-      + (estado.enviando ? 'Enviando...' : 'Publicar nos destinos') + '</button>'
+      + (estado.enviando ? 'Preparando...' : 'Continuar para a exportação') + '</button>'
       + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:8px">'
-      + 'Campo que o canal exige e está em branco não trava o envio. A recusa fica registrada aqui, com o motivo.'
+      + 'Esta tela não publica. Ela cria o produto e leva você para a tela de exportação de sempre, '
+      + 'onde você confere anúncio por anúncio antes de qualquer coisa sair daqui.'
       + '</div></div>';
   }
 
@@ -646,61 +837,84 @@
     return j.produto.id;
   }
 
-  async function publicar() {
+  // ═════════════════════════════════════════════════════════════════════════
+  // ENTREGA PARA A EXPORTAÇÃO QUE JÁ EXISTE (Onda 11)
+  // ───────────────────────────────────────────────────────────────────────
+  // ★★ ESTA TELA NÃO PUBLICA MAIS NADA, e é decisão de 31/08. O caminho é
+  //   sempre o da DUPLICAÇÃO: `abrirDuplicarAnuncio` já tem quantidade por
+  //   loja, seleção de várias lojas, título novo por cópia, rotação de fotos,
+  //   ativação de Ads, e termina no portão de conferência anúncio por anúncio.
+  //
+  //   A versão anterior desta tela exportava direto, loja a loja. Funcionava,
+  //   mas era um SEGUNDO caminho de publicação: dois lugares para corrigir o
+  //   mesmo bug, e um deles sem a página de revisão que já é boa. Saiu inteiro.
+  //
+  // ★ MESMO COM UM ANÚNCIO SÓ EM UM MARKETPLACE a pessoa passa pela página de
+  //   conferência. Foi o pedido, e é o que impede exportação no escuro.
+  //
+  // ★ O QUE ESTA TELA AINDA FAZ: cria o produto interno pela rota de sempre,
+  //   marca as lojas escolhidas e preenche a quantidade. Daí em diante, quem
+  //   manda é o fluxo antigo.
+  async function entregarParaExportacao() {
     estado.enviando = true;
     estado.envioErro = null;
     desenharEtapa();
     try {
       await salvar({ forcar: true });
-      var produtoId = await garantirProdutoInterno();
+      var produtoIdBanco = await garantirProdutoInterno();
 
-      for (var i = 0; i < estado.destinos.length; i++) {
-        var dest = estado.destinos[i];
-        if (dest.resultado === 'publicado') continue;   // não republica o que já foi
-        var resultado = 'recusado';
-        var idExterno = null;
-        var motivo = null;
-        try {
-          var r = await fetch(base() + '/api/marketplaces/loja/' + dest.lojaId + '/exportar/' + produtoId,
-            { method: 'POST', headers: cabecalhos(), body: JSON.stringify({}) });
-          var j = await r.json();
-          if (j && j.ok) {
-            resultado = 'publicado';
-            idExterno = (j.dados && (j.dados.itemId || j.dados.id || j.dados.item_id)) || String(produtoId);
-          } else {
-            motivo = (j && j.erro) || ('O canal respondeu ' + r.status + '.');
-            if (j && Array.isArray(j.detalhes) && j.detalhes.length) motivo += ' ' + j.detalhes.join(' ');
-          }
-        } catch (e) {
-          motivo = e.message;
-        }
-        // ★ grava ANTES de seguir para a próxima loja
-        try {
-          var res = await chamar('/' + estado.rascunhoId + '/resultado', {
-            metodo: 'POST',
-            corpo: { lojaId: dest.lojaId, resultado: resultado, idExterno: idExterno, motivo: motivo },
-          });
-          estado.destinos = res.rascunho.destinos || estado.destinos;
-        } catch (e) {
-          // Não conseguir gravar o resultado é grave: sem ele o rascunho não
-          // sabe o que já foi publicado e uma nova tentativa duplicaria.
-          estado.envioErro = 'Publiquei em ' + dest.nome + ' mas não consegui registrar aqui: ' + e.message
-            + '. Não tente de novo sem conferir a loja.';
-          break;
-        }
-        desenharEtapa();
+      // O modal da duplicação lê o cache do painel (`produtosErp`), não o
+      // banco. Sem recarregar, o produto recém-criado não existe para ele.
+      if (typeof window.carregarProdutosDoBackend === 'function') {
+        await window.carregarProdutosDoBackend();
+      }
+      var lista = window.produtosErp || [];
+      var local = lista.filter(function (p) {
+        return String(p.idBanco) === String(produtoIdBanco) || String(p.id) === String(produtoIdBanco);
+      })[0];
+      // ★ FALHA ALTO. Sem achar o produto, abrir a duplicação mostraria
+      //   "produto não encontrado" e a pessoa não saberia que ele foi criado.
+      if (!local) {
+        throw new Error('Criei o produto (id ' + produtoIdBanco + ') mas ele ainda não apareceu na lista. '
+          + 'Recarregue a tela de Anúncios e duplique a partir dele.');
+      }
+      if (typeof window.abrirDuplicarAnuncio !== 'function') {
+        throw new Error('A tela de exportação não está disponível nesta versão do painel.');
       }
 
-      var publicados = estado.destinos.filter(function (x) { return x.resultado === 'publicado'; }).length;
-      var recusados = estado.destinos.filter(function (x) { return x.resultado === 'recusado'; }).length;
-      if (publicados && !recusados) toast('Publicado em ' + publicados + ' loja(s).');
-      else if (publicados && recusados) toast('Publicado em ' + publicados + ', recusado em ' + recusados + '.');
-      else if (recusados) toast('Nenhuma loja aceitou. Os motivos estão na lista.');
+      fechar();
+      window.abrirDuplicarAnuncio(local.id);
+
+      // Marca as lojas escolhidas aqui e leva a quantidade junto. O modal abre
+      // com a loja do produto marcada; a escolha desta tela prevalece.
+      var qtd = Math.max(1, parseInt(estado.dados.quantidadePorLoja, 10) || 1);
+      var alvo = {};
+      estado.destinos.forEach(function (dd) { alvo[String(dd.lojaId)] = true; });
+      setTimeout(function () {
+        var campoQtd = document.getElementById('dupQuantidade');
+        if (campoQtd) campoQtd.value = qtd;
+        var marcou = 0;
+        Array.prototype.forEach.call(document.querySelectorAll('.dup-loja-ck'), function (ck) {
+          var lojaLocal = (window.lojasErp || []).filter(function (l) { return String(l.id) === String(ck.value); })[0];
+          var idBanco = lojaLocal && lojaLocal.idBanco != null ? String(lojaLocal.idBanco) : null;
+          var deve = !!(alvo[String(ck.value)] || (idBanco && alvo[idBanco]));
+          ck.checked = deve;
+          if (deve) marcou++;
+        });
+        if (typeof window.dupAtualizarBotaoMarcar === 'function') window.dupAtualizarBotaoMarcar();
+        // Não achar nenhuma loja é sinal de id que não bate, e ficar calado
+        // faria a pessoa duplicar para a loja errada sem perceber.
+        if (!marcou) {
+          toast('Marque as lojas de destino: não consegui casar as que você escolheu.');
+        }
+      }, 60);
     } catch (e) {
       estado.envioErro = e.message;
+      estado.enviando = false;
+      desenharEtapa();
+      return;
     }
     estado.enviando = false;
-    desenharEtapa();
   }
 
   function desenharEtapa() {
@@ -751,14 +965,52 @@
       });
     });
 
-    var fotosEl = document.getElementById('lcAnFotos');
-    if (fotosEl) {
-      fotosEl.addEventListener('input', function () {
-        estado.dados.fotos = fotosEl.value.split('\n')
-          .map(function (x) { return x.trim(); }).filter(Boolean);
-        marcarSujo();
-      });
+    function guardarFotos(alvo) {
+      if (alvo === 'geral') {
+        if (!Array.isArray(estado.dados.fotos)) estado.dados.fotos = [];
+        return estado.dados.fotos;
+      }
+      if (!estado.dados.combinacoes) estado.dados.combinacoes = {};
+      if (!estado.dados.combinacoes[alvo]) estado.dados.combinacoes[alvo] = {};
+      var c = estado.dados.combinacoes[alvo];
+      if (!Array.isArray(c.fotos)) c.fotos = [];
+      return c.fotos;
     }
+
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-arquivo'), function (el) {
+      el.addEventListener('change', async function () {
+        var arquivos = Array.prototype.slice.call(el.files || []);
+        if (!arquivos.length) return;
+        var r = regrasDeFoto();
+        if (!r) return;
+        var alvo = el.dataset.alvo;
+        var atuais = guardarFotos(alvo);
+        var limite = alvo === 'geral' ? r.geralMax : r.porVariacaoMax;
+        el.disabled = true;
+        try {
+          var urls = await subirArquivos(arquivos, limite, atuais);
+          if (urls.length) {
+            Array.prototype.push.apply(atuais, urls);
+            // As fotos que ESTA tela subiu ficam registradas: é por elas que a
+            // faxina de 72h sabe o que apagar se o rascunho for abandonado.
+            if (!Array.isArray(estado.dados.fotosStorage)) estado.dados.fotosStorage = [];
+            Array.prototype.push.apply(estado.dados.fotosStorage, urls);
+            marcarSujo();
+          }
+        } catch (e) { avisar(e.message); }
+        el.disabled = false;
+        desenharEtapa();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-tirar-foto'), function (el) {
+      el.addEventListener('click', function () {
+        var lista = guardarFotos(el.dataset.alvo);
+        lista.splice(Number(el.dataset.i), 1);
+        marcarSujo();
+        desenharEtapa();
+      });
+    });
 
     var add = document.getElementById('lcAnAddVar');
     if (add) {
@@ -828,6 +1080,16 @@
       });
     });
 
+    var campoQtd = document.getElementById('lcAnQtd');
+    if (campoQtd) {
+      campoQtd.addEventListener('input', function () {
+        var n = Math.max(1, Math.min(50, parseInt(campoQtd.value, 10) || 1));
+        estado.dados.quantidadePorLoja = n;
+        marcarSujo();
+      });
+      campoQtd.addEventListener('change', function () { desenharEtapa(); });
+    }
+
     var buscaCat = document.getElementById('lcAnBuscaCat');
     if (buscaCat) {
       buscaCat.addEventListener('keydown', function (ev) {
@@ -865,7 +1127,7 @@
     });
 
     var enviar = document.getElementById('lcAnEnviar');
-    if (enviar && !enviar.disabled) enviar.addEventListener('click', publicar);
+    if (enviar && !enviar.disabled) enviar.addEventListener('click', entregarParaExportacao);
 
     // ── IA ──────────────────────────────────────────────────────────────
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-ia'), function (el) {
@@ -896,6 +1158,19 @@
         var campo = el.dataset.campo;
         estado.dados[campo === 'titulo' ? 'nome' : campo] = el.dataset.valor;
         delete estado.sugestoes[campo];
+        marcarSujo();
+        desenharEtapa();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-usar-embalagem'), function (el) {
+      el.addEventListener('click', function () {
+        var e = estado.sugestoes.embalagem || {};
+        if (e.peso) estado.dados.peso = String(e.peso);
+        if (e.comprimento) estado.dados.comprimento = String(e.comprimento);
+        if (e.largura) estado.dados.largura = String(e.largura);
+        if (e.altura) estado.dados.altura = String(e.altura);
+        delete estado.sugestoes.embalagem;
         marcarSujo();
         desenharEtapa();
       });
@@ -933,6 +1208,53 @@
       });
     });
 
+    var skuMassa = document.getElementById('lcAnSkuMassa');
+    if (skuMassa) {
+      skuMassa.addEventListener('click', async function () {
+        // O prefixo é escolha dela: o SKU pai do produto ou uma referência
+        // digitada. Foi o pedido de 29/08 para a coluna SKU da edição em massa.
+        var padrao = estado.dados.sku || '';
+        var prefixo = padrao;
+        if (typeof window.lcPrompt === 'function') {
+          prefixo = await window.lcPrompt('Prefixo dos SKUs (deixe o SKU pai ou digite outra referência):', padrao);
+          if (prefixo === null) return;
+        }
+        var combos = combinacoes().map(rotuloCombinacao);
+        var mapa = estado.dados.combinacoes || {};
+        var jaTem = Object.keys(mapa).map(function (k) { return mapa[k] && mapa[k].sku; }).filter(Boolean);
+        var vazios = combos.filter(function (c) { return !(mapa[c] && mapa[c].sku); });
+        var novos = skusEmMassa(prefixo, vazios, jaTem);
+        Object.keys(novos).forEach(function (c) {
+          if (!mapa[c]) mapa[c] = {};
+          mapa[c].sku = novos[c];
+        });
+        var n = Object.keys(novos).length;
+        toast(n ? (n + ' SKU(s) preenchido(s).') : 'Todas as combinações já tinham SKU.');
+        marcarSujo();
+        desenharEtapa();
+      });
+    }
+
+    var estoqueMassa = document.getElementById('lcAnEstoqueMassa');
+    if (estoqueMassa) {
+      estoqueMassa.addEventListener('click', async function () {
+        var q = '10';
+        if (typeof window.lcPrompt === 'function') {
+          q = await window.lcPrompt('Estoque para TODAS as combinações:', '10');
+          if (q === null) return;
+        }
+        var limpo = String(q).replace(/\D/g, '');
+        if (!limpo) { avisar('Digite um número.'); return; }
+        var mapa = estado.dados.combinacoes || {};
+        combinacoes().map(rotuloCombinacao).forEach(function (c) {
+          if (!mapa[c]) mapa[c] = {};
+          mapa[c].estoque = limpo;
+        });
+        marcarSujo();
+        desenharEtapa();
+      });
+    }
+
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-combo'), function (el) {
       el.addEventListener('input', function () {
         if (!estado.dados.combinacoes) estado.dados.combinacoes = {};
@@ -963,11 +1285,18 @@
       }
       alvo.innerHTML = lista.slice(0, 12).map(function (c) {
         var id = c.id || c.category_id || c.categoryId;
-        var nome = c.caminho || c.nome || c.name || id;
+        // A TRILHA é o que distingue: cinco categorias podem se chamar
+        // "Tênis", e só o caminho até elas diz qual é qual.
+        var folha = c.nome || c.name || id;
+        var trilha = c.caminho && c.caminho !== folha ? c.caminho : null;
         return '<button class="lc-an-escolher-cat" data-cat="' + esc(id) + '" '
           + 'style="display:block;width:100%;text-align:left;border:1px solid var(--lc-border);background:#fff;'
           + 'border-radius:8px;padding:7px 10px;margin-bottom:5px;cursor:pointer;font-size:13px;color:var(--lc-ink)">'
-          + esc(nome) + '</button>';
+          + (trilha
+            ? '<span style="display:block;font-size:11px;color:var(--lc-muted-2)">' + esc(trilha) + '</span>'
+              + '<span style="font-weight:700">' + esc(folha) + '</span>'
+            : esc(folha))
+          + '</button>';
       }).join('');
       ligarCampos();
     } catch (e) {
@@ -982,7 +1311,61 @@
   //   para o outro. Enquanto não move, nada é salvo no rascunho: o autosave
   //   grava `dados`, e a sugestão não está lá.
   // ═════════════════════════════════════════════════════════════════════════
+  // ★★ TÍTULO E DESCRIÇÃO USAM O GERADOR QUE JÁ EXISTE.
+  //   `gerarTituloVariadoIA` e `gerarDescricaoVariadaIA` são os MESMOS que a
+  //   duplicação chama. Eles já sabem o limite por marketplace (60 no ML, 100
+  //   na Shopee), os sinônimos regionais e a lista de títulos proibidos para
+  //   não repetir entre anúncios do mesmo produto.
+  //
+  //   A primeira versão desta tela escreveu um prompt novo para a mesma
+  //   coisa. Era a segunda verdade de sempre: dois prompts para o mesmo campo
+  //   divergem na primeira correção, e o da tela nova nasceria pior, porque o
+  //   outro já pagou meses de ajuste.
+  //
+  //   Sobra para a rota `/sugerir` o que NÃO existe em lugar nenhum: termos de
+  //   busca e o preenchimento dos atributos da ficha do canal.
+  function produtoParaGerador() {
+    var d = estado.dados;
+    return {
+      nome: d.nome || '',
+      categoria: d.categoriaInterna || '',
+      marca: d.marca || '',
+      descricao: d.descricao || '',
+      atributosMl: (d.atributosPorCanal || {}).mercadolivre || {},
+    };
+  }
+
+  function canalPrincipal() {
+    var c = canaisDosDestinos();
+    return c.length ? c[0] : null;
+  }
+
   async function sugerir(campo, extra) {
+    if (campo === 'titulo') {
+      if (typeof window.gerarTituloVariadoIA !== 'function') {
+        throw new Error('O gerador de títulos do painel não está disponível nesta tela.');
+      }
+      var usados = [];
+      if (estado.dados.nome) usados.push(estado.dados.nome);
+      var opcoes = [];
+      for (var i = 0; i < 3; i++) {
+        var t = await window.gerarTituloVariadoIA(produtoParaGerador(), canalPrincipal(), usados);
+        if (t && usados.indexOf(t) < 0) { opcoes.push(t); usados.push(t); }
+      }
+      if (!opcoes.length) throw new Error('Não consegui gerar título agora.');
+      estado.sugestoes.titulo = { opcoes: opcoes };
+      return { sugestao: estado.sugestoes.titulo };
+    }
+    if (campo === 'descricao') {
+      if (typeof window.gerarDescricaoVariadaIA !== 'function') {
+        throw new Error('O gerador de descrição do painel não está disponível nesta tela.');
+      }
+      var texto = await window.gerarDescricaoVariadaIA(produtoParaGerador());
+      if (!texto) throw new Error('Não consegui gerar a descrição agora.');
+      estado.sugestoes.descricao = { texto: texto };
+      return { sugestao: estado.sugestoes.descricao };
+    }
+
     if (!estado.rascunhoId) await salvar({ forcar: true });
     if (!estado.rascunhoId) throw new Error('Salve o rascunho antes de pedir sugestão.');
     var corpo = { campo: campo };
@@ -1027,6 +1410,20 @@
         + '<button class="lc-an-descartar-ia" data-campo="descricao" '
         + 'style="margin-left:8px;border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px">Descartar</button>');
+    }
+    if (campo === 'embalagem') {
+      var e = sg;
+      return caixaSugestao(campo,
+        '<div style="font-size:13px;color:var(--lc-ink)">'
+        + (e.peso ? e.peso + ' g' : 'peso não estimado')
+        + (e.comprimento ? ' · ' + e.comprimento + ' x ' + (e.largura || '?') + ' x ' + (e.altura || '?') + ' cm' : '')
+        + '</div>'
+        + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:4px">'
+        + 'Estimativa. Peso a menos faz o frete ser cobrado a menos em toda venda, então confira antes de usar.</div>'
+        + '<button class="lc-an-usar-embalagem" style="margin-top:8px;border:0;background:var(--lc-primary);color:var(--lc-primary-text);'
+        + 'border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px;font-weight:700">Usar esta estimativa</button>'
+        + '<button class="lc-an-descartar-ia" data-campo="embalagem" style="margin-left:8px;border:1px solid var(--lc-border-2);'
+        + 'background:#fff;color:var(--lc-ink-2);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px">Descartar</button>');
     }
     if (campo === 'palavrasChave') {
       var termos = (sg.termos || []).join(', ');
@@ -1139,6 +1536,7 @@
     listar: listar,
     // exposto para a suíte medir a regra sem navegador
     _combinacoes: combinacoes,
+    _skusEmMassa: skusEmMassa,
     _estado: function () { return estado; },
     ETAPAS: ETAPAS,
   };
