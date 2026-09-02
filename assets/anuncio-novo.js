@@ -1024,6 +1024,9 @@
       throw new Error(((j && j.erro) || 'Não consegui criar o produto interno.') + det);
     }
     estado.dados.produtoIdCriado = j.produto.id;
+    // v33k.2230: guarda a resposta INTEIRA para entrar no cache do painel
+    // (ver `entregarParaExportacao`). Fica fora do que vai ao rascunho.
+    estado._produtoCriado = j.produto;
     // Grava o vínculo no rascunho na hora: se o envio falhar depois, o produto
     // já criado não vira órfão sem nada apontando para ele.
     await chamar('/' + estado.rascunhoId, {
@@ -1058,15 +1061,56 @@
       await salvar({ forcar: true });
       var produtoIdBanco = await garantirProdutoInterno();
 
+      // ═══════════════════════════════════════════════════════════════════
+      // ★★ v33k.2230: O PRODUTO ENTRA NO CACHE INTEIRO, SEM VARRER O CATÁLOGO.
+      // ───────────────────────────────────────────────────────────────────
       // O modal da duplicação lê o cache do painel (`produtosErp`), não o
-      // banco. Sem recarregar, o produto recém-criado não existe para ele.
-      if (typeof window.carregarProdutosDoBackend === 'function') {
-        await window.carregarProdutosDoBackend();
-      }
+      // banco. Até a v33k.2229 isto chamava `carregarProdutosDoBackend()`,
+      // que faz DUAS coisas erradas para este momento:
+      //   1. varre o catálogo INTEIRO, página a página, com 120 ms entre
+      //      elas: num catálogo de 14 mil produtos são ~280 requisições e
+      //      mais de meio minuto de espera antes de a exportação abrir;
+      //   2. carrega tudo com `leve=1`, que NÃO traz descrição, atributos
+      //      do ML nem guia de tamanhos. O produto que a pessoa acabou de
+      //      digitar chegava na conferência SEM a descrição dela.
+      // MEDIDO em 02/09, executando este caminho: a descrição sumia
+      // exatamente aqui.
+      //
+      // `garantirProdutoInterno` já tem o produto inteiro na resposta do
+      // POST. É ele que entra no cache, na forma que o painel usa (`idBanco`
+      // = id do banco, `id` = o mesmo id como texto). Se já havia uma cópia
+      // leve dele no cache (rascunho retomado), ela é completada no lugar.
       var lista = window.produtosErp || [];
       var local = lista.filter(function (p) {
         return String(p.idBanco) === String(produtoIdBanco) || String(p.id) === String(produtoIdBanco);
       })[0];
+      var cheio = estado._produtoCriado || null;
+      if (!cheio) {
+        // Produto criado numa tentativa anterior (rascunho retomado): a
+        // resposta do POST já não existe. Busca a linha inteira, nunca a leve.
+        try {
+          var rp = await fetch(base() + '/api/produtos/' + encodeURIComponent(produtoIdBanco), { headers: cabecalhos() });
+          var jp = await rp.json();
+          cheio = (jp && jp.ok && jp.produto) || null;
+        } catch (eP) { cheio = null; }
+      }
+      if (cheio) {
+        if (local) {
+          Object.keys(cheio).forEach(function (k) {
+            if (k === 'id' || k === 'idBanco') return;
+            local[k] = cheio[k];
+          });
+        } else {
+          local = {};
+          Object.keys(cheio).forEach(function (k) { local[k] = cheio[k]; });
+          local.idBanco = cheio.id;
+          local.id = String(cheio.id);
+          lista.push(local);
+        }
+        if (typeof window.renderProdutos === 'function') {
+          try { window.renderProdutos(); } catch (eR) { /* a lista redesenha na próxima abertura */ }
+        }
+      }
       // ★ FALHA ALTO. Sem achar o produto, abrir a duplicação mostraria
       //   "produto não encontrado" e a pessoa não saberia que ele foi criado.
       if (!local) {
@@ -1893,6 +1937,9 @@
     _combinacoes: combinacoes,
     _skusEmMassa: skusEmMassa,
     _estado: function () { return estado; },
+    // v33k.2230: a suíte que atravessa o caminho inteiro (tela -> produto ->
+    // duplicação -> conferência) dispara a entrega por aqui, sem clicar.
+    _entregar: entregarParaExportacao,
     ETAPAS: ETAPAS,
   };
 })();
