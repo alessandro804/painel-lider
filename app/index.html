@@ -37914,6 +37914,17 @@ Retorne JSON: {"ID": "valor", ...}`;
       (fotosDaCor || []).forEach(u => {
         if (u && !seen.has(u)) { seen.add(u); out.push(u); }
       });
+      // ★★ v33k.2234: A FOTO GERAL É RESERVA, NÃO COMPLEMENTO.
+      // ─────────────────────────────────────────────────────────────────
+      // A regra de v32j.8 (somar sempre) nasceu quando NINGUÉM tinha foto por
+      // cor: somar era a única forma de o anúncio não sair com uma foto só.
+      // Com as fotos por cor chegando de verdade (2232), a soma passou de 10
+      // por variação e a conferência avisava "6 da cor + 9 geral(is) = 15 de
+      // 10 · 5 não serão enviadas" — e as cortadas eram as da cor, que são as
+      // que importam. Relatado em 02/09.
+      // Cor COM foto própria vai só com elas; cor SEM foto continua usando a
+      // geral, que é o caso do catálogo antigo.
+      if (out.length) return out;
       // 2º: fotos gerais que ainda não foram incluídas
       gerais.forEach(u => {
         if (u && !seen.has(u)) { seen.add(u); out.push(u); }
@@ -45484,6 +45495,32 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   // Onde uma dimensão de variação mora. Um lugar só, usado pela leitura e
   // pela gravação — se divergirem, a tela mostra um valor e grava outro.
+  // ★★ v33k.2234: o que o canal DERIVOU também aparece na linha.
+  // ─────────────────────────────────────────────────────────────────────
+  // A ficha traz, por variação, os atributos que o canal deriva do cadastro —
+  // no ML, "Cor principal" (MAIN_COLOR) sai da cor da variação. A coluna lia
+  // só `v.atributos`, onde esse valor nunca esteve, e a conferência mostrava
+  // a coluna sempre em branco (relatado em 02/09). Aqui o valor derivado entra
+  // em `v.atributos` quando a variação ainda não tem nada gravado ali. Nunca
+  // sobrescreve o que a pessoa preencheu, e ignora os campos com papel (cor e
+  // tamanho já moram em `v.cor` e `v.tamanho`).
+  function _emSemearAtributosDaFicha(linha, f) {
+    if (!linha || !f || !Array.isArray(f.variacoes)) return;
+    f.variacoes.forEach((fv, i) => {
+      const v = (linha.variacoes || [])[i];
+      if (!v || !fv || !Array.isArray(fv.campos)) return;
+      if (!Array.isArray(v.atributos)) v.atributos = [];
+      fv.campos.forEach(c => {
+        if (!c || !c.id || c.papel) return;
+        const valor = c.valor == null ? '' : String(c.valor).trim();
+        if (!valor) return;
+        const ja = v.atributos.find(a => a && String(a.id) === String(c.id));
+        if (ja) { if (!String(ja.valor == null ? '' : ja.valor).trim()) ja.valor = valor; return; }
+        v.atributos.push({ id: String(c.id), valor: valor });
+      });
+    });
+  }
+
   function _emCampoDinamico(v, col, valor, gravar) {
     if (!v) return '';
     if (col.papel === 'cor') {
@@ -45784,8 +45821,17 @@ Retorne JSON: {"ID": "valor", ...}`;
       // Com papel: as opções valem pelo nome, o valor atual casa por nome (sem
       // diferenciar maiúscula), e se ele não estiver na lista da categoria
       // entra como opção própria, para não ser apagado no confirmar.
-      const _porNome = !!col.papel;
       const _n = (t) => String(t == null ? '' : t).trim().toLowerCase();
+      // ★★ v33k.2234: o valor guardado pode ser o NOME mesmo sem papel.
+      //   "Cor principal" (MAIN_COLOR) é atributo do ML separado da dimensão
+      //   Cor, e o que chega nele é o nome da cor que a pessoa digitou
+      //   ("Preto"), não o id da lista ("52049"). O select casava só por id e
+      //   abria em branco — relatado em 02/09. Quando o valor atual bate com o
+      //   NOME de uma opção e não com nenhum id, a coluna inteira passa a
+      //   trabalhar por nome, para o confirmar não gravar um id por cima.
+      const _porNome = !!col.papel || (!!String(valor == null ? '' : valor).trim()
+        && !col.valores.some(o => String(o.id != null ? o.id : o) === String(valor).trim())
+        && col.valores.some(o => _n(o.nome != null ? o.nome : o) === _n(valor)));
       let _casou = false;
       let h = '<select id="' + id + '"' + marca + ' style="' + base + '">' +
         '<option value="">—</option>' +
@@ -46964,6 +47010,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (!f) return;
       linha.fichas = linha.fichas || {};
       linha.fichas[mkt] = f;
+      _emSemearAtributosDaFicha(linha, f);
       const mapa = {};
       let pendentes = 0;
       (f.campos || []).forEach(c => { if (c.valor) mapa[c.id] = c.valor; if (c.pendente) pendentes++; });
@@ -47602,16 +47649,19 @@ Retorne JSON: {"ID": "valor", ...}`;
       //   da cor era descartada em silêncio na exportação.
       const cores = Array.isArray(linha.cores) ? linha.cores : [];
       h += '<div style="font-size:12.5px;color:#475569;margin-bottom:10px">' +
-        'No ' + escapeHtml(mkt) + ', cada variação leva as fotos da <strong>cor dela</strong> mais as gerais, ' +
-        'até <strong>' + porVariacao + ' por variação</strong>. Arraste para trocar a ordem.</div>';
+        'No ' + escapeHtml(mkt) + ', cada variação leva as fotos da <strong>cor dela</strong>, ' +
+        'até <strong>' + porVariacao + ' por variação</strong>. As gerais entram só nas cores ' +
+        'que não têm foto própria. Arraste para trocar a ordem.</div>';
 
-      const vagasRestantes = Math.max(0, porVariacao - gerais.length);
+      // v33k.2234: a geral é reserva, então ela não come vaga de quem tem foto
+      const _coresSemFoto = cores.filter(c => !((c.fotos || []).length)).length;
       h += '<div style="background:#f8fafc;border:1px solid var(--lc-border);border-radius:10px;padding:12px;margin-bottom:14px">' +
         '<div style="font-size:12px;font-weight:700;color:#334155;margin-bottom:2px">Fotos gerais</div>' +
-        '<div style="font-size:11.5px;color:' + (vagasRestantes ? '#64748b' : '#b45309') + ';margin-bottom:10px">' +
-          'Vão para <strong>todas</strong> as variações. ' + gerais.length + ' geral(is) ocupa(m) ' + gerais.length +
-          ' das ' + porVariacao + ' vagas de cada cor' +
-          (vagasRestantes ? (' — sobram ' + vagasRestantes + ' por cor.') : ' — não sobra vaga para foto de cor.') +
+        '<div style="font-size:11.5px;color:' + (_coresSemFoto ? '#64748b' : '#64748b') + ';margin-bottom:10px">' +
+          'Reserva: entram só nas cores <strong>sem foto própria</strong>. ' +
+          (_coresSemFoto
+            ? _coresSemFoto + ' cor(es) sem foto própria vão usar estas ' + gerais.length + ' de ' + porVariacao + '.'
+            : 'Todas as cores têm foto própria, então estas não vão para nenhuma variação.') +
         '</div>' +
         '<div style="' + GRADE + '">' +
           gerais.map((f, i) => ladrilho(f, i, 'g', gerais.length, null, '1ª')).join('') +
@@ -47624,13 +47674,16 @@ Retorne JSON: {"ID": "valor", ...}`;
       }
       cores.forEach((c, k) => {
         const lista = Array.isArray(c.fotos) ? c.fotos : [];
-        const total = lista.length + gerais.length;
+        // v33k.2234: a geral é RESERVA, não soma (ver `fotosDaVariação`)
+        const total = lista.length ? lista.length : gerais.length;
         const excede = total > porVariacao;
         h += '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:12px;margin-bottom:10px">' +
           '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px">' +
             '<div style="font-size:12.5px;font-weight:700;color:#1e293b">' + escapeHtml(c.nome || ('cor ' + (k + 1))) + '</div>' +
             '<div style="font-size:11.5px;color:' + (excede ? '#b45309' : '#64748b') + '">' +
-              lista.length + ' da cor + ' + gerais.length + ' geral(is) = <strong>' + total + '</strong> de ' + porVariacao +
+              (lista.length
+                ? lista.length + ' da cor = <strong>' + total + '</strong> de ' + porVariacao
+                : 'sem foto própria: usa as ' + gerais.length + ' geral(is) = <strong>' + total + '</strong> de ' + porVariacao) +
               (excede ? ' · ' + (total - porVariacao) + ' não serão enviadas' : '') + '</div>' +
           '</div>' +
           '<div style="' + GRADE + '">' +
@@ -49995,6 +50048,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         linha.atributos[mkt] = mapa;
         linha.fichas = linha.fichas || {};
         linha.fichas[mkt] = f;
+        _emSemearAtributosDaFicha(linha, f);
         linha.atributosPendentes = pendentes;
       });
     }
@@ -53969,16 +54023,35 @@ REGRAS DURAS:
                       + 'promoção: nada a aplicar agora (degraus futuros, se houver, seguem).', 'info');
                   }
                   if (itensPromo.length > 0) {
-                    await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+                    const _rt = await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
                       tipo:'aplicar_preco_promocional',
                       descricao:'Promoção imediata (régua, cópia) item '+itemId,
                       rodar_em:new Date(Date.now()-1000).toISOString(),
                       params:{ lojaIdBanco: lojaIdBanco, marketplace: lojaDestino.marketplace, itens: itensPromo }
-                    }) });
+                    }) }).then(r => r.json()).catch(() => null);
+                    // ★★ v33k.2236: A PROMOÇÃO NÃO ESPERA A FILA.
+                    // ───────────────────────────────────────────────────────
+                    // O agendador roda um ciclo por minuto e uma tarefa por
+                    // vez. Com um `sincronizar_vendas` de dez minutos na
+                    // frente, o desconto do anúncio recém-criado esperava os
+                    // dez minutos. RELATADO em 02/09: "entrou na promoção, só
+                    // demorou demais; até eu, que sei que demora, achei que era
+                    // bug". Dispara ESTA tarefa fora da fila; falha aberta, que
+                    // o cron pega no próximo minuto de qualquer jeito.
+                    const _tid = _rt && _rt.ok && _rt.tarefa && _rt.tarefa.id;
+                    if (_tid) {
+                      fetch(BACKEND_URL + '/api/tarefas/' + _tid + '/rodar-agora', {
+                        method:'POST', headers:{'x-api-token':getApiToken()},
+                      }).catch(() => {});
+                    }
                     const _nSku = Object.keys(_mapaPromo.porSku || {}).length;
                     dupLogStep(`  💰 Promoção enviada pro ${lojaDestino.marketplace}` +
                       (_nSku ? ` em ${_nSku} variação(ões) pelo preço de cada uma` : '') +
                       ` (reserva R$ ${Number(itensPromo[0].preco).toFixed(2)})`, 'ok');
+                    // ★ o aviso diz a verdade: desconto é campanha do canal, e
+                    //   leva alguns minutos para aparecer no anúncio.
+                    dupLogStep('  ⏳ O desconto entra na campanha do marketplace em alguns minutos — '
+                      + 'é normal o anúncio aparecer sem ele por um tempo.', 'info');
                   }
                   // Degraus futuros (mudanças de preço programadas): cria UMA tarefa
                   // por degrau, na data correspondente (hoje + dias).
@@ -54002,13 +54075,22 @@ REGRAS DURAS:
                   }
                   if (promoCopia != null && itemId && itemId !== '?') {
                     // mesmo mapa por SKU do caminho da régua
-                    await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+                    const _rt2 = await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
                       tipo:'aplicar_preco_promocional',
                       descricao:'Promoção automática (cópia, R$ '+promoCopia.toFixed(2)+') item '+itemId,
                       rodar_em:new Date(Date.now()-1000).toISOString(),
                       params:{ lojaIdBanco: lojaIdBanco, marketplace: lojaDestino.marketplace, itens:[{ itemId, preco: promoCopia, porSku: _mapaPromo.porSku }] }
-                    }) });
+                    }) }).then(r => r.json()).catch(() => null);
+                    // ★ v33k.2236: fora da fila (o porquê está no ramo da régua)
+                    const _tid2 = _rt2 && _rt2.ok && _rt2.tarefa && _rt2.tarefa.id;
+                    if (_tid2) {
+                      fetch(BACKEND_URL + '/api/tarefas/' + _tid2 + '/rodar-agora', {
+                        method:'POST', headers:{'x-api-token':getApiToken()},
+                      }).catch(() => {});
+                    }
                     dupLogStep(`  💰 Promoção do pai replicada (R$ ${promoCopia.toFixed(2)})`, 'ok');
+                    dupLogStep('  ⏳ O desconto entra na campanha do marketplace em alguns minutos — '
+                      + 'é normal o anúncio aparecer sem ele por um tempo.', 'info');
                   }
                 }
               } catch(ePromo) { console.warn('[dup promo auto]', ePromo); dupLogStep('  ⚠ Falha ao aplicar preço/promoção: '+ePromo.message, 'err'); }
@@ -58566,13 +58648,32 @@ REGRAS DURAS:
           if (promos.length) {
             const precoPromo = Math.min(...promos);
             const lojaIdReg = lojaIdBanco || (lojasErp.find(l => l.marketplace === mkBackend) || {}).idBanco;
-            await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
+            const _rt = await fetch(BACKEND_URL + '/api/tarefas', { method:'POST', headers:{'x-api-token':getApiToken(),'Content-Type':'application/json'}, body: JSON.stringify({
               tipo:'aplicar_preco_promocional',
               descricao:'Promoção automática (R$ '+precoPromo.toFixed(2)+') item '+itemIdCriado,
               rodar_em:new Date(Date.now()-1000).toISOString(),
               params:{ lojaIdBanco: lojaIdReg, marketplace: mkBackend, itens:[{ itemId: itemIdCriado, preco: precoPromo }] }
-            }) });
-            if (!opts.silencioso) showToast('💰 Anúncio criado e colocado em promoção (R$ '+precoPromo.toFixed(2)+')');
+            }) }).then(r => r.json()).catch(() => null);
+            // ★★ v33k.2236: A PROMOÇÃO NÃO ESPERA A FILA.
+            // ─────────────────────────────────────────────────────────────
+            // O agendador roda um ciclo por minuto, uma tarefa por vez. Com um
+            // `sincronizar_vendas` de dez minutos na frente, o desconto do
+            // anúncio recém-criado esperava os dez minutos. RELATADO em 02/09:
+            // "entrou na promoção, só demorou demais; até eu, que sei que
+            // demora, achei que era bug".
+            // Dispara ESTA tarefa fora da fila. Falha aberta: se não der, ela
+            // continua na fila e o cron pega no próximo minuto.
+            const _tid = _rt && _rt.ok && _rt.tarefa && _rt.tarefa.id;
+            if (_tid) {
+              fetch(BACKEND_URL + '/api/tarefas/' + _tid + '/rodar-agora', {
+                method:'POST', headers:{'x-api-token':getApiToken()},
+              }).catch(() => {});
+            }
+            // ★ E o aviso diz a verdade: o desconto é campanha do marketplace,
+            //   e leva alguns minutos para aparecer no anúncio. Dizer "colocado
+            //   em promoção" fazia a pessoa conferir na hora e achar que
+            //   quebrou.
+            if (!opts.silencioso) showToast('💰 Anúncio criado. O desconto (R$ '+precoPromo.toFixed(2)+') entra na campanha do marketplace em alguns minutos.');
           }
         } catch(ePromo) { console.warn('[promo auto export]', ePromo); }
       }
@@ -75650,7 +75751,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2233-o-log-num-botao';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2236-o-desconto-sem-fila';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
