@@ -45890,7 +45890,15 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   Básica. Agora toda linha tem 1 + cols.length células, sempre, e o
     //   rótulo acompanha a rolagem horizontal junto do produto.
     const _tdVazio = '<td style="padding:7px 10px;color:#cbd5e1">—</td>';
+    let _linhasDesenhadas = 0;
     (st.linhas || []).forEach((linha, li) => {
+      // ★★ v33k.2231: CADA ABA MOSTRA SÓ O QUE VAI PARA AQUELE CANAL.
+      //   Sem isto, a aba do Mercado Livre pedia Cor principal e ID da guia
+      //   de tamanhos das cópias que iam para Shopee e TikTok — campos que
+      //   esses canais não têm. `_emLinhaDoCanal` já existia e já era usado
+      //   pelas pendências; a tabela é que desenhava tudo em toda aba.
+      if (typeof _emLinhaDoCanal === 'function' && !_emLinhaDoCanal(linha, st.abaAtual)) return;
+      _linhasDesenhadas++;
       const capa = (linha.fotos || [])[0];
       const capaUrl = capa ? (typeof capa === 'string' ? capa : (capa.url || capa.src)) : null;
       const nVars = (linha.variacoes || []).length;
@@ -45903,9 +45911,12 @@ Retorne JSON: {"ID": "valor", ...}`;
         verde: { bg: '#dcfce7', fg: '#166534', bd: '#bbf7d0' },
       };
       const tom = TONS[(pap && pap.tom) || 'roxo'] || TONS.roxo;
+      // ★ v33k.2231: o canal de destino ao lado do selo da cópia, para ele ver
+      //   qual anúncio vai para onde sem contar linhas.
+      const seloCanal = (typeof _emSeloCanal === 'function') ? _emSeloCanal(linha._marketplace, linha._lojaNome) : '';
       const selo = pap ? '<div style="margin-bottom:5px"><span style="display:inline-block;font-size:9.5px;font-weight:800;' +
           'padding:1px 7px;border-radius:20px;background:' + tom.bg + ';color:' + tom.fg + ';border:1px solid ' + tom.bd + '">' +
-          escapeHtml(pap.texto || '') + '</span>' +
+          escapeHtml(pap.texto || '') + '</span>' + seloCanal +
           (pap.nota ? '<div style="font-size:10.5px;color:#94a3b8;margin-top:2px">' + escapeHtml(pap.nota) + '</div>' : '') +
         '</div>' : '';
       h += '<tr style="border-top:1px solid var(--lc-border)">' +
@@ -46775,6 +46786,24 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   // linha pertence a este canal? Numa conferência de lote há linhas de lojas
   // diferentes, e a aba é o recorte de canal.
+  // Selo do canal de destino: a cor da marca e o nome, ao lado do "CÓPIA 1/1".
+  // Sem imagem: logo de marketplace é arquivo, e o painel já paga caro em peso.
+  // A cor + o nome resolvem o que ele pediu (saber qual vai para onde).
+  const _EM_CANAIS = {
+    mercadolivre: { rot: 'Mercado Livre', bg: '#fff159', fg: '#2d3277' },
+    shopee:       { rot: 'Shopee',        bg: '#ee4d2d', fg: '#ffffff' },
+    tiktok:       { rot: 'TikTok Shop',   bg: '#010101', fg: '#ffffff' },
+    shein:        { rot: 'Shein',         bg: '#000000', fg: '#ffffff' },
+  };
+  function _emSeloCanal(mkt, lojaNome) {
+    const c = _EM_CANAIS[String(mkt || '').toLowerCase()];
+    if (!c) return '';
+    return '<span style="display:inline-block;margin-left:5px;font-size:9.5px;font-weight:800;' +
+      'padding:1px 7px;border-radius:20px;background:' + c.bg + ';color:' + c.fg + '">' +
+      escapeHtml(c.rot) + (lojaNome ? ' · ' + escapeHtml(String(lojaNome).slice(0, 18)) : '') + '</span>';
+  }
+  window._emSeloCanal = _emSeloCanal;
+
   function _emLinhaDoCanal(linha, mkt) {
     if (!linha) return false;
     const st = _emEstado;
@@ -46782,6 +46811,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     // sem marcação de canal na linha, ela vale pra aba atual (comportamento
     // anterior): melhor aplicar de mais do que deixar linha órfã sem edição
     const dela = linha._marketplace || (linha._produto && linha._produto._marketplaceDestino) || null;
+    // ★ v33k.2231: canal marcado que não tem aba nenhuma (a loja não entrou nos
+    //   destinos) continua aparecendo — sumir da tela é pior que aparecer na
+    //   aba errada, porque a pessoa não vê que existe.
+    if (dela && !st.destinos.some(d => String(d.marketplace) === String(dela))) return true;
     return !dela || String(dela) === String(mkt);
   }
   window._emLinhaDoCanal = _emLinhaDoCanal;
@@ -47159,6 +47192,13 @@ Retorne JSON: {"ID": "valor", ...}`;
       return true;
     }
     if (!linhas || !linhas.length) return true;
+    // ★ v33k.2231: o canal de cada linha vem do papel (uma linha = uma cópia
+    //   para uma loja). É o que faz cada aba mostrar só o que vai para ela.
+    (opcoes.papeis || []).forEach((pp, i) => {
+      if (!pp || !pp.marketplace || !linhas[i]) return;
+      linhas[i]._marketplace = pp.marketplace;
+      linhas[i]._lojaNome = pp.lojaNome || '';
+    });
     linhas.forEach(l => { l._assinaturaInicial = _emAssinaturaLinha(l); });
 
     const confirmadas = await emAbrir({
@@ -52268,6 +52308,7 @@ REGRAS DURAS:
         _papeis.push({
           texto: 'CÓPIA ' + (i + 1) + '/' + g.preparadas.length, tom: 'roxo',
           nota: String(g.produtoNome || '').slice(0, 28) + ' → ' + (g.lojaDestino.nome || ''),
+          marketplace: g.lojaDestino.marketplace, lojaNome: g.lojaDestino.nome || '',
         });
       }));
       let _okConf = true;
@@ -53436,6 +53477,11 @@ REGRAS DURAS:
           }
         }
 
+        // ★★ v33k.2231: O CANAL VIAJA NO PAPEL DA LINHA, NÃO NO PRODUTO.
+        //   Com "o próprio produto vai, sem clonar", as três cópias SÃO o
+        //   mesmo objeto: marcar o canal nele fazia a última loja apagar a
+        //   marca das outras duas (medido: as três linhas viravam "tiktok").
+        //   Quem é por linha é o `papel`, e é por lá que a conferência recebe.
         _dupPreparadas.push({ novo: novo, k: k });
 
       } catch (eGeral) {
@@ -53500,6 +53546,7 @@ REGRAS DURAS:
           const _papeis = _dupPreparadas.map((_, i) => ({
             texto: 'CÓPIA ' + (i + 1) + '/' + _nCopias, tom: 'roxo',
             nota: 'será criada em ' + (lojaDestino.nome || ''),
+            marketplace: lojaDestino.marketplace, lojaNome: lojaDestino.nome || '',
           }));
           const _ok = await emPortaoLiberado(
             [{ lojaIdBanco: _lojaIdPv, marketplace: lojaDestino.marketplace, nome: lojaDestino.nome }],
@@ -53539,6 +53586,31 @@ REGRAS DURAS:
         // ★ v33k.2230: o próprio produto já mora em `produtosErp`; empurrar de
         //   novo faria o mesmo objeto aparecer duas vezes na lista.
         if (produtosErp.indexOf(novo) < 0) produtosErp.push(novo);
+        // ★★ v33k.2231: OS VÍNCULOS REAIS, ANTES DE SALVAR.
+        // ───────────────────────────────────────────────────────────────
+        // MEDIDO em 02/09, executando a fase 2 com três lojas: a primeira
+        // exporta, o painel recarrega o catálogo logo depois (é o refresh da
+        // tela de Anúncios) e essa carga vem com `vincCompacto=1`, que
+        // reconstrói os vínculos e marca `_vincSintetico = true` NO MESMO
+        // objeto que está sendo publicado. Na segunda e na terceira loja, a
+        // trava do `salvarProdutoNoBackend` disparava:
+        //   "Os vínculos deste anúncio ainda não foram carregados por
+        //    completo... (vínculos sintéticos)"
+        // e o relatório fechava com "CALCENTER: 1 · 2 falha(s)". Foi isso que
+        // ele viu em 02/09 com a 2230 no ar: a fase 1 já entregava as três
+        // linhas, mas só uma virava anúncio.
+        //
+        // A trava está certa e continua de pé: salvar com vínculo sintético
+        // re-inflaria o catálogo. O que faltava era o que ela mesma manda
+        // fazer — carregar os vínculos de verdade antes de escrever.
+        if (novo._vincSintetico) {
+          try {
+            await garantirVinculosReais(novo, 'Carregando os vínculos antes de salvar a cópia…');
+            dupLogStep('  ⓘ Vínculos recarregados do banco antes de salvar (o catálogo recarregou no meio).', 'ok');
+          } catch (eVinc) {
+            dupLogStep('  ✗ Não consegui carregar os vínculos: ' + eVinc.message, 'err');
+          }
+        }
         const salvoResp = await salvarProdutoNoBackend(novo);
         // Backend retorna o produto com `id` = id do banco. Guarda como idBanco.
         if (salvoResp && (salvoResp.id || salvoResp.idBanco)) {
@@ -75504,7 +75576,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2230-o-caminho-executado';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2231-o-canal-de-cada-linha';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
