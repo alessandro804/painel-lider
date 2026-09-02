@@ -75751,7 +75751,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2237-o-painel-certo';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2238-so-do-cliente';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -81912,7 +81912,7 @@ REGRAS DE OURO:
           method:'POST', headers:{'Content-Type':'application/json','x-api-token':getApiToken(),'Authorization':'Bearer '+(localStorage.getItem('lider_token_login')||'')},
           body: JSON.stringify({ numero: telefone, texto: textoWa, perfil: 'financeiro' }),
         });
-        const _an = await _analistaBlocoConsolidado();
+        const _an = await _analistaBlocoDoCliente(f.cliente);
         const pdf = _gerarPdfFechamento(f, { retornarBase64: true, analista: _an });
         if (pdf && pdf.dataUri) {
           const up = await fetch(BACKEND_URL + '/api/upload-foto/pdf', {
@@ -82000,7 +82000,7 @@ REGRAS DE OURO:
           });
           // 2) Anexa o PDF: faz upload pro Storage (URL pública) e envia por URL
           //    (a Evolution lida melhor com URL do que com base64 grande).
-          const _an = await _analistaBlocoConsolidado();
+          const _an = await _analistaBlocoDoCliente(f.cliente);
           const pdf = _gerarPdfFechamento(f, { retornarBase64: true, analista: _an });
           if (pdf && pdf.dataUri) {
             try {
@@ -82108,10 +82108,20 @@ REGRAS DE OURO:
   }
   window.cancelarFechamento = cancelarFechamento;
 
-  // Busca o resumo consolidado do analista para as lojas do usuário (ou as selecionadas).
+  // Busca o resumo consolidado do analista.
+  // ★ v33k.2238: quem passa um array recebe SÓ aquele array. Array vazio devolve
+  //   null e NUNCA cai na seleção global nem em "todas as minhas lojas". Sem
+  //   argumento (uso legado do Lucro) vale a seleção global. Era esse fallback
+  //   que punha loja de terceiro no PDF de fechamento de um cliente.
   async function _analistaBlocoConsolidado(lojasArg) {
     try {
-      let lojas = (Array.isArray(lojasArg) && lojasArg.length) ? lojasArg.slice() : ((typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || []);
+      let lojas;
+      if (Array.isArray(lojasArg)) {
+        lojas = lojasArg.slice();
+        if (!lojas.length) return null;
+      } else {
+        lojas = ((typeof getLojasSelGlobal === 'function' ? getLojasSelGlobal() : []) || []);
+      }
       if (!lojas.length) {
         const r = await fetch(BACKEND_URL + '/api/lucro/minhas-lojas', { headers: { 'x-api-token': getApiToken(), 'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') } }).then(x => x.json());
         const ls = (r && (r.lojas || r.minhasLojas)) || (Array.isArray(r) ? r : []);
@@ -82124,16 +82134,39 @@ REGRAS DE OURO:
   }
   window._analistaBlocoConsolidado = _analistaBlocoConsolidado;
 
+  // Ids (idBanco) das lojas vinculadas ao cliente do fechamento. MESMO critério
+  // do preenchimento automático (_fechPreencherDoCliente) e da tela de
+  // Estratégia: lojasErp + clienteVinculado.
+  function _lojasIdsDoClienteFech(nomeCliente) {
+    const nome = String(nomeCliente || '').trim();
+    if (!nome) return [];
+    return (typeof lojasErp !== 'undefined' && Array.isArray(lojasErp) ? lojasErp : [])
+      .filter(l => l && l.idBanco && l.clienteVinculado === nome)
+      .map(l => l.idBanco);
+  }
+  window._lojasIdsDoClienteFech = _lojasIdsDoClienteFech;
+
+  // ★ v33k.2238: o bloco do analista que vai no PDF DO FECHAMENTO é só das
+  //   lojas do cliente. Cliente sem loja vinculada => null (a página de análise
+  //   não entra). Nunca usa a seleção global: em 02/09 o fechamento da Alexia
+  //   saiu com o resumo da Grazi Store e de outra loja de terceiro.
+  async function _analistaBlocoDoCliente(nomeCliente) {
+    const ids = _lojasIdsDoClienteFech(nomeCliente);
+    if (!ids.length) return null;
+    return _analistaBlocoConsolidado(ids);
+  }
+  window._analistaBlocoDoCliente = _analistaBlocoDoCliente;
+
   async function gerarPdfFechamento() {
     const f = _coletarFechamento();
     if (!f.cliente) { showToast('Selecione um cliente primeiro', true); return; }
-    const analista = await _analistaBlocoConsolidado();
+    const analista = await _analistaBlocoDoCliente(f.cliente);
     _gerarPdfFechamento(f, { analista: analista });
   }
   window.gerarPdfFechamento = gerarPdfFechamento;
   async function gerarPdfFechamentoSalvo(id) {
     const f = fechamentos.find(x => x.id === id);
-    if (f) { const analista = await _analistaBlocoConsolidado(); _gerarPdfFechamento(f, { analista: analista }); }
+    if (f) { const analista = await _analistaBlocoDoCliente(f.cliente); _gerarPdfFechamento(f, { analista: analista }); }
   }
   window.gerarPdfFechamentoSalvo = gerarPdfFechamentoSalvo;
 
@@ -82330,7 +82363,7 @@ REGRAS DE OURO:
       doc.setTextColor(...ESCURO); doc.setFont('helvetica','bold'); doc.setFontSize(15);
       doc.text('Acesse o sistema:', 28, 150);
       doc.setTextColor(...VERDE); doc.setFontSize(18);
-      doc.textWithLink('app.lidercommerce.com.br', 28, 160, { url: 'https://app.lidercommerce.com.br' });
+      doc.textWithLink('lider10.com.br', 28, 160, { url: 'https://lider10.com.br' });
       doc.setTextColor(...CINZA); doc.setFont('helvetica','normal'); doc.setFontSize(12);
       doc.text('Você tem acesso direto ao nosso sistema com seu usuário para conferir o lucro', 28, 175);
       doc.text('por venda e o status de cada pedido em tempo real. Até o próximo mês!', 28, 182);
