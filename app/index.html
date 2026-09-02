@@ -20958,7 +20958,9 @@ window.LC_SVG = {
          saber se ainda está preparando ou se já está publicando. -->
     <div class="dup-progress-fase" id="dupProgressFase" style="font-size:12px;color:#475569;margin-top:4px"></div>
     <div class="dup-step-log" id="dupStepLog"></div>
+    <!-- v33k.2233: "Copiar log" — o porquê está em `dupCopiarLog`. -->
     <div style="display:flex;gap:8px;margin-top:14px">
+      <button type="button" id="dupBtnCopiarLog" onclick="dupCopiarLog()" style="padding:8px 14px;background:#f8fafc;color:#334155;border:1px solid var(--lc-border-2);border-radius:8px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px" title="Copia o log inteiro desta duplicação para colar no suporte"><span class="lc-ic" data-lucide="copy" style="width:14px;height:14px"></span>Copiar log</button>
       <button type="button" id="dupBtnCancelar" onclick="cancelarDuplicacao()" style="flex:1;padding:8px 16px;background:#fffbeb;color:#92400e;border:1px solid #f59e0b;border-radius:8px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px"><span class="lc-ic" data-lucide="pause" style="width:14px;height:14px"></span>Cancelar próximas</button>
       <!-- ★ v33k.1851: este "Fechar" NÃO é secundário. Num modal de progresso
            ele é a saída afirmativa — a pessoa aperta quando terminou, e o
@@ -38356,6 +38358,7 @@ Retorne JSON: {"ID": "valor", ...}`;
             //   atributos ML e guia como vazios, não ausentes. O que a memória
             //   já tinha cheio não pode virar vazio por causa de uma recarga
             //   que nem pediu esses campos.
+            if (existente._publicando) return existente;   // ★ v33k.2233: publicando, ninguém mexe
             const guardado = { descricao: existente.descricao, atributosMl: existente.atributosMl, guiaTamanhos: existente.guiaTamanhos };
             Object.assign(existente, p, { id: existente.id, idBanco: p.id });
             if (!String(p.descricao || '').trim() && String(guardado.descricao || '').trim()) existente.descricao = guardado.descricao;
@@ -42935,6 +42938,7 @@ Retorne JSON: {"ID": "valor", ...}`;
           // ★ E esta página é LEVE (`leve=1`): descrição, atributos ML e guia
           //   vêm vazios, não ausentes. O que a memória já tinha cheio fica.
           const atual = produtosErp[idx];
+          if (atual._publicando) return;   // ★ v33k.2233: publicando, ninguém mexe
           const guardado = { id: atual.id, descricao: atual.descricao, atributosMl: atual.atributosMl, guiaTamanhos: atual.guiaTamanhos };
           Object.assign(atual, np);
           atual.id = guardado.id;
@@ -50927,6 +50931,42 @@ Retorne JSON: {"ID": "valor", ...}`;
   //   cópias encheria a memória da aba sem ninguém perceber.
   window._dupLog = window._dupLog || [];
 
+  // ★★ v33k.2233: COPIAR O LOG SEM PASSAR PELO CONSOLE.
+  // ─────────────────────────────────────────────────────────────────────
+  // O log da duplicação é o instrumento que resolveu quase tudo desde 31/08,
+  // e pegá-lo custava abrir o console e rodar `copy(_dupLog.join('\n'))` —
+  // que devolve `undefined` (é o normal do `copy`) e faz parecer que não
+  // funcionou. Em 02/09 isso custou uma leva inteira: o log estava na área de
+  // transferência e o que veio colado foi o console. Agora é um botão.
+  // Leva a versão do painel junto, porque a primeira pergunta de todo
+  // diagnóstico é qual versão estava no ar.
+  async function dupCopiarLog() {
+    // `_DIAG_VERSAO_PAINEL` é `const` do bloco, não vive em `window`
+    const _v = (typeof _DIAG_VERSAO_PAINEL !== 'undefined') ? _DIAG_VERSAO_PAINEL
+      : (window._DIAG_VERSAO_PAINEL || '(sem carimbo)');
+    const txt = 'painel: ' + _v + '\n'
+      + 'em: ' + new Date().toISOString() + '\n\n'
+      + ((window._dupLog || []).join('\n') || '(o log está vazio)');
+    let ok = false;
+    try { await navigator.clipboard.writeText(txt); ok = true; }
+    catch (e) {
+      // clipboard bloqueado (http, permissão): cai para o modo antigo, que
+      // funciona em qualquer navegador
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (e2) { ok = false; }
+    }
+    if (typeof showToast === 'function') {
+      showToast(ok ? ('✓ Log copiado (' + (window._dupLog || []).length + ' linha(s)). É só colar.')
+                   : 'Não consegui copiar. O log está no console em _dupLog.', !ok);
+    }
+  }
+  window.dupCopiarLog = dupCopiarLog;
+
   function dupLogStep(msg, tipo) {
     // Fora do `if (!log)`: sem isto, o log some justamente quando a janela não
     // está montada, que é quando mais falta.
@@ -53619,15 +53659,32 @@ REGRAS DURAS:
         // A trava está certa e continua de pé: salvar com vínculo sintético
         // re-inflaria o catálogo. O que faltava era o que ela mesma manda
         // fazer — carregar os vínculos de verdade antes de escrever.
-        if (novo._vincSintetico) {
-          try {
-            await garantirVinculosReais(novo, 'Carregando os vínculos antes de salvar a cópia…');
-            dupLogStep('  ⓘ Vínculos recarregados do banco antes de salvar (o catálogo recarregou no meio).', 'ok');
-          } catch (eVinc) {
-            dupLogStep('  ✗ Não consegui carregar os vínculos: ' + eVinc.message, 'err');
+        // ★★ v33k.2233: `_publicando` — ENQUANTO PUBLICA, NINGUÉM MEXE.
+        // ───────────────────────────────────────────────────────────────
+        // A 2231 checava `_vincSintetico` uma vez, antes de salvar. A carga do
+        // catálogo é ASSÍNCRONA e pode cair entre a checagem e a trava lá
+        // dentro (ainda há o upload das fotos no meio). Enquanto a marca está
+        // de pé, as três cargas de catálogo deixam este produto em paz; e se a
+        // corrida ainda vencer, a segunda tentativa resolve.
+        novo._publicando = true;
+        let salvoResp = null;
+        try {
+          for (let _tent = 1; _tent <= 2; _tent++) {
+            if (novo._vincSintetico) {
+              try {
+                await garantirVinculosReais(novo, 'Carregando os vínculos antes de salvar a cópia…');
+                dupLogStep('  ⓘ Vínculos recarregados do banco antes de salvar (o catálogo recarregou no meio).', 'ok');
+              } catch (eVinc) {
+                dupLogStep('  ✗ Não consegui carregar os vínculos: ' + eVinc.message, 'err');
+              }
+            }
+            try { salvoResp = await salvarProdutoNoBackend(novo); break; }
+            catch (eSave) {
+              if (_tent === 2 || !/sintétic/i.test(eSave.message || '')) throw eSave;
+              dupLogStep('  ⚠ O catálogo recarregou no meio do salvamento; tentando de novo.', 'err');
+            }
           }
-        }
-        const salvoResp = await salvarProdutoNoBackend(novo);
+        } finally { delete novo._publicando; }
         // Backend retorna o produto com `id` = id do banco. Guarda como idBanco.
         if (salvoResp && (salvoResp.id || salvoResp.idBanco)) {
           novo.idBanco = salvoResp.idBanco || salvoResp.id;
@@ -64077,6 +64134,7 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     return (novos || []).map(np => {
       const ex = np && np.idBanco != null ? porBanco[String(np.idBanco)] : null;
       if (!ex || ex._resumo) return np;   // resumo é só para ver: o completo o substitui
+      if (ex._publicando) return ex;      // ★ v33k.2233: publicando, ninguém mexe
       const guardado = { id: ex.id, descricao: ex.descricao, atributosMl: ex.atributosMl, guiaTamanhos: ex.guiaTamanhos };
       Object.assign(ex, np);
       ex.id = guardado.id;
@@ -75592,7 +75650,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2232-a-foto-da-cor';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2233-o-log-num-botao';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
