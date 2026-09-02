@@ -138,6 +138,13 @@
     timerSalvar = setTimeout(function () { salvar(); }, 1200);
   }
 
+  // Gramas -> quilos, no formato brasileiro que o campo aceita ("0,500").
+  function _gramasParaKg(g) {
+    var n = Number(g);
+    if (!isFinite(n) || n <= 0) return '';
+    return String(Math.round(n) / 1000).replace('.', ',');
+  }
+
   async function salvar(opts) {
     var o = opts || {};
     if (estado.salvando) return;
@@ -643,7 +650,10 @@
       + '<div style="display:flex;justify-content:flex-end;margin-bottom:8px">'
       + botaoIA('embalagem', 'Estimar com IA') + '</div>'
       + sugestaoDoCampo('embalagem')
-      + campo('Peso em gramas', 'lcAnPeso', d.peso)
+      // ★ v33k.2231: PESO EM QUILOS, como o marketplace pede.
+      //   A tela pedia gramas e a exportação manda o número direto para o
+      //   campo "Peso do Pacote (kg)": 500 g viravam 500 kg na conferência.
+      + campo('Peso (kg)', 'lcAnPeso', d.peso, 'text', 'ex.: 0,500 para 500 g')
       + campo('Comprimento em cm', 'lcAnComprimento', d.comprimento)
       + campo('Largura em cm', 'lcAnLargura', d.largura)
       + campo('Altura em cm', 'lcAnAltura', d.altura)
@@ -928,7 +938,7 @@
       + linha('Preço', d.preco) + linha('Estoque', d.estoque)
       + linha('Fotos', (Array.isArray(d.fotos) ? d.fotos.length : 0) + ' imagem(ns)')
       + linha('Variações', combos.length ? combos.length + ' combinação(ões)' : 'produto simples')
-      + linha('Peso e medidas', [d.peso ? d.peso + ' g' : '', [d.comprimento, d.largura, d.altura].filter(Boolean).join(' x ')].filter(Boolean).join(' · '));
+      + linha('Peso e medidas', [d.peso ? d.peso + ' kg' : '', [d.comprimento, d.largura, d.altura].filter(Boolean).join(' x ')].filter(Boolean).join(' · '));
 
     var destinos = estado.destinos.map(function (dd) {
       var cor = dd.resultado === 'publicado' ? 'var(--lc-primary)'
@@ -1463,7 +1473,8 @@
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-usar-embalagem'), function (el) {
       el.addEventListener('click', function () {
         var e = estado.sugestoes.embalagem || {};
-        if (e.peso) estado.dados.peso = String(e.peso);
+        // a IA estima em GRAMAS (é onde ela erra menos); a tela guarda em kg
+        if (e.peso) estado.dados.peso = _gramasParaKg(e.peso);
         if (e.comprimento) estado.dados.comprimento = String(e.comprimento);
         if (e.largura) estado.dados.largura = String(e.largura);
         if (e.altura) estado.dados.altura = String(e.altura);
@@ -1809,7 +1820,7 @@
       var e = sg;
       return caixaSugestao(campo,
         '<div style="font-size:13px;color:var(--lc-ink)">'
-        + (e.peso ? e.peso + ' g' : 'peso não estimado')
+        + (e.peso ? _gramasParaKg(e.peso) + ' kg' : 'peso não estimado')
         + (e.comprimento ? ' · ' + e.comprimento + ' x ' + (e.largura || '?') + ' x ' + (e.altura || '?') + ' cm' : '')
         + '</div>'
         + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:4px">'
