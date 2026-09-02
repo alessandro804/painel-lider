@@ -20833,9 +20833,22 @@ window.LC_SVG = {
          do anúncio escolhido, evitando cores duplicadas (Rosa/Rose). -->
     <div id="dupAnuncioRefBox" style="margin-bottom:12px"></div>
 
-    <div style="margin-bottom:12px">
-      <label style="font-size:11px;font-weight:700;color:#374151">Quantidade de cópias</label>
-      <input type="number" id="dupQuantidade" class="form-input" value="3" min="1" max="50" style="font-size:14px">
+    <div style="margin-bottom:12px;display:flex;gap:12px;align-items:flex-end">
+      <div style="flex:1">
+        <label style="font-size:11px;font-weight:700;color:#374151">Quantidade de cópias</label>
+        <input type="number" id="dupQuantidade" class="form-input" value="3" min="1" max="50" style="font-size:14px">
+      </div>
+      <!-- ★ v33k.2238: quantas cópias a IA prepara ao mesmo tempo -->
+      <div style="flex:1">
+        <label style="font-size:11px;font-weight:700;color:#374151">Gerações simultâneas</label>
+        <select id="dupParalelo" class="form-input" style="font-size:14px" onchange="dupSalvarParalelo(this.value)">
+          <option value="1">1 (uma por vez)</option>
+          <option value="2">2</option>
+          <option value="4" selected>4 (padrão)</option>
+          <option value="6">6</option>
+          <option value="8">8 (máximo)</option>
+        </select>
+      </div>
     </div>
     
     <div style="margin-bottom:12px">
@@ -38202,6 +38215,32 @@ Retorne JSON: {"ID": "valor", ...}`;
   // CRITICAL: garante que TODAS as fotos do produto são URLs públicas (não base64).
   // Chamar antes de qualquer operação que envia produto pra backend/ML.
   // Sobe base64 pro Storage e substitui pela URL retornada.
+  // ★★ v33k.2238: A MESMA FOTO SOBE UMA VEZ SÓ.
+  // ─────────────────────────────────────────────────────────────────────
+  // Cada cópia da duplicação nasce de um clone do produto, e o clone traz
+  // as fotos em base64 do original. Sem cache, 50 cópias de um produto com
+  // 9 fotos eram 450 uploads da MESMA imagem, um atrás do outro. A chave é
+  // o próprio dataUrl e o valor é a PROMESSA do upload: duas cópias em
+  // paralelo pedindo a mesma foto dividem um upload, em vez de dois.
+  const _fotosHospedadas = new Map();
+  async function _hospedarFotoUmaVez(dataUrl) {
+    const chave = String(dataUrl || '');
+    if (!_fotosHospedadas.has(chave)) {
+      _fotosHospedadas.set(chave, (async () => {
+        const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken() },
+          body: JSON.stringify({ dataUrl: chave })
+        });
+        const data = await resp.json();
+        if (data && data.ok && data.url) return data.url;
+        throw new Error((data && data.erro) || 'upload falhou');
+      })().catch(e => { _fotosHospedadas.delete(chave); throw e; }));
+    }
+    return _fotosHospedadas.get(chave);
+  }
+  window._hospedarFotoUmaVez = _hospedarFotoUmaVez;
+
   async function garantirFotosUrlsPublicas(produto) {
     if (!produto) return 0;
     let subiu = 0;
@@ -38213,23 +38252,10 @@ Retorne JSON: {"ID": "valor", ...}`;
         for (let i = 0; i < cor.fotos.length; i++) {
           if (String(cor.fotos[i] || '').startsWith('data:image')) {
             try {
-              const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
-                method: 'POST',
-                headers: { 
-                  'Content-Type': 'application/json',
-                  'x-api-token': getApiToken()
-                },
-                body: JSON.stringify({ dataUrl: cor.fotos[i] })
-              });
-              const data = await resp.json();
-              if (data.ok && data.url) {
-                cor.fotos[i] = data.url;
-                subiu++;
-              } else {
-                console.warn('[garantirFotosUrls] falha cor', cor.nome, ':', data.erro);
-              }
+              cor.fotos[i] = await _hospedarFotoUmaVez(cor.fotos[i]);
+              subiu++;
             } catch(e) {
-              console.warn('[garantirFotosUrls] erro:', e.message);
+              console.warn('[garantirFotosUrls] falha cor', cor.nome, ':', e.message);
             }
           }
         }
@@ -38241,19 +38267,8 @@ Retorne JSON: {"ID": "valor", ...}`;
       for (let i = 0; i < produto.fotos.length; i++) {
         if (String(produto.fotos[i] || '').startsWith('data:image')) {
           try {
-            const resp = await fetch(BACKEND_URL + '/api/upload-foto', {
-              method: 'POST',
-              headers: { 
-                'Content-Type': 'application/json',
-                'x-api-token': getApiToken()
-              },
-              body: JSON.stringify({ dataUrl: produto.fotos[i] })
-            });
-            const data = await resp.json();
-            if (data.ok && data.url) {
-              produto.fotos[i] = data.url;
-              subiu++;
-            }
+            produto.fotos[i] = await _hospedarFotoUmaVez(produto.fotos[i]);
+            subiu++;
           } catch(_) {}
         }
       }
@@ -47248,12 +47263,14 @@ Retorne JSON: {"ID": "valor", ...}`;
   // ★ FALHA ABERTA: erro montando as linhas não pode impedir uma exportação
   //   que funcionaria. O pré-voo do backend segue como rede de trás.
   async function emPortaoLiberado(destinos, produtos, opcoes) {
+    // ★ v33k.2238: `opcoes.aoProgredir(feitas, total, texto)` recebe o andamento
+    //   do preparo da conferência (fichas, categorias, preenchimento por IA).
     if (!Array.isArray(destinos) || !destinos.length) return true;
     if (!Array.isArray(produtos) || !produtos.length) return true;
     opcoes = opcoes || {};
     let linhas = null;
     try {
-      linhas = await emMontarLinhas(produtos, destinos);
+      linhas = await emMontarLinhas(produtos, destinos, opcoes && opcoes.aoProgredir);
     } catch (e) {
       console.warn('[portão] seguindo sem conferir:', e.message);
       return true;
@@ -50022,8 +50039,34 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Monta as linhas e enriquece com as fichas de CADA destino.
   // Falha aberta: destino que não responde entra sem campo, e a tela mostra a
   // categoria como pendente em vez de travar tudo.
-  async function emMontarLinhas(produtos, destinos) {
+  // ★★ v33k.2238: PARALELO COM TETO, para a conferência de lotes grandes.
+  // ─────────────────────────────────────────────────────────────────────
+  // `emMontarLinhas` fazia, EM FILA, uma sugestão de categoria por linha e
+  // depois uma estimativa de embalagem e uma sugestão de atributos por linha
+  // e canal. Com 200 anúncios eram centenas de chamadas antes de a tela
+  // aparecer: o relato de 02/09 foi "não carregou a tela". Agora as chamadas
+  // correm `EM_PARALELO` por vez (4), e quem chamou recebe o progresso.
+  const EM_PARALELO = 4;
+  async function _emEmParalelo(itens, fn, paralelo) {
+    const lista = Array.isArray(itens) ? itens : [];
+    const n = Math.max(1, Math.min(DUP_PARALELO_MAX || 8, paralelo || EM_PARALELO));
+    let prox = 0;
+    const trab = async () => {
+      while (prox < lista.length) {
+        const i = prox++;
+        try { await fn(lista[i], i); } catch (_) {}
+      }
+    };
+    const ws = [];
+    for (let w = 0; w < Math.min(n, lista.length); w++) ws.push(trab());
+    await Promise.all(ws);
+  }
+  window._emEmParalelo = _emEmParalelo;
+
+  async function emMontarLinhas(produtos, destinos, aoProgredir) {
     const linhas = (produtos || []).map(emLinhaDeProduto);
+    const _prog = (typeof aoProgredir === 'function') ? aoProgredir : () => {};
+    _prog(0, 1, 'lendo as fichas dos canais');
     for (const d of (destinos || [])) {
       const mkt = String(d.marketplace || '').toLowerCase();
       if (!d.lojaIdBanco) continue;
@@ -50083,22 +50126,39 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   só entrega metade do trabalho sem dizer que entregou metade.
     const TETO_SUGESTAO = 300;
     const PAUSA_MS = 120;
-    let pedidas = 0;
+    // ★ v33k.2238: os pares (canal, linha) sem categoria viram uma lista e
+    //   correm EM_PARALELO por vez, cada trabalhador com o mesmo respiro de
+    //   120 ms entre as SUAS chamadas. A pausa continua protegendo o canal;
+    //   o que mudou é que quatro linhas andam juntas em vez de uma.
+    // ★ v33k.2238: A MESMA PERGUNTA NÃO É FEITA DUAS VEZES. Cinquenta cópias
+    //   com título parecido pediam cinquenta sugestões iguais; a chave
+    //   (loja, título) responde as repetidas sem ir ao canal.
+    const _pedidos = [];
     for (const d of (destinos || [])) {
       const mkt = d.marketplace;
       if (!d.lojaIdBanco) continue;
       for (const linha of linhas) {
-        if (pedidas >= TETO_SUGESTAO) break;
+        if (_pedidos.length >= TETO_SUGESTAO) break;
         if (((linha.categoria || {})[mkt] || {}).id) continue;   // já tem
-        pedidas++;
-        try {
-          const r = await fetch(BACKEND_URL + '/api/marketplaces/loja/' + d.lojaIdBanco +
+        _pedidos.push({ d, mkt, linha });
+      }
+    }
+    const _sugCache = new Map();
+    let _feitas = 0;
+    if (_pedidos.length) _prog(0, _pedidos.length, 'sugerindo categoria');
+    await _emEmParalelo(_pedidos, async ({ d, mkt, linha }) => {
+      try {
+        const chave = d.lojaIdBanco + '|' + String(linha.nome || '').trim().toLowerCase();
+        if (!_sugCache.has(chave)) {
+          _sugCache.set(chave, fetch(BACKEND_URL + '/api/marketplaces/loja/' + d.lojaIdBanco +
               '/categorias/buscar?titulo=' + encodeURIComponent(linha.nome || ''), {
             headers: { 'x-api-token': getApiToken(),
               'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
-          }).then(x => x.json());
-          const sug = ((r && r.categorias) || []).find(c => c.origem === 'sugestao');
-          if (!sug) continue;
+          }).then(x => x.json()).catch(() => null));
+        }
+        const r = await _sugCache.get(chave);
+        const sug = ((r && r.categorias) || []).find(c => c.origem === 'sugestao');
+        if (sug) {
           linha.categoria = linha.categoria || {};
           linha.categoria[mkt] = { id: String(sug.id), nome: sug.caminho || sug.nome, caminho: sug.caminho || sug.nome };
           linha.categoriaSugerida = linha.categoriaSugerida || {};
@@ -50108,14 +50168,15 @@ Retorne JSON: {"ID": "valor", ...}`;
           //   título contra a árvore, e chamar isso de sugestão do canal é a
           //   mesma mentira do id que se apresentava como nome (v33k.1866).
           linha.categoriaSugerida[mkt] = (sug.fonte === 'titulo') ? 'titulo' : 'canal';
-        } catch (e) {
-          // falha aberta: sem sugestão, a tela volta a pedir — como antes
-          console.warn('[conferência] sugestão de categoria falhou:', e.message);
         }
-        // respiro entre chamadas: é isto que protege o canal, não o corte
-        await new Promise(res => setTimeout(res, PAUSA_MS));
+      } catch (e) {
+        // falha aberta: sem sugestão, a tela volta a pedir — como antes
+        console.warn('[conferência] sugestão de categoria falhou:', e.message);
       }
-    }
+      _feitas++; _prog(_feitas, _pedidos.length, 'sugerindo categoria');
+      // respiro entre chamadas: é isto que protege o canal, não o corte
+      await new Promise(res => setTimeout(res, PAUSA_MS));
+    });
 
     // ═══════════════════════════════════════════════════════════════════
     // ★★ v33k.2207: CHEGAR AQUI 100% PREENCHIDO (Onda 12)
@@ -50145,7 +50206,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     // ★ FALHA ABERTA. Nada aqui pode impedir uma exportação que funcionaria: o
     //   preenchimento é conveniência, não requisito.
     try {
-      await emPreencherOQueFaltou(linhas, destinos);
+      await emPreencherOQueFaltou(linhas, destinos, _prog);
     } catch (e) {
       console.warn('[conferência] preenchimento automático falhou:', e.message);
     }
@@ -50154,8 +50215,15 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
 
   // Preenche o que ficou em branco e devolve o que preencheu, marcado.
-  async function emPreencherOQueFaltou(linhas, destinos) {
-    for (const linha of (linhas || [])) {
+  // ★ v33k.2238: uma linha por vez virou EM_PARALELO linhas por vez, com o
+  //   progresso saindo para quem chamou (a janela da duplicação mostra
+  //   "preenchendo o que faltou 37/200").
+  async function emPreencherOQueFaltou(linhas, destinos, aoProgredir) {
+    const _prog = (typeof aoProgredir === 'function') ? aoProgredir : () => {};
+    const _total = (linhas || []).length;
+    let _feitas = 0;
+    if (_total) _prog(0, _total, 'preenchendo o que faltou');
+    await _emEmParalelo(linhas || [], async (linha) => {
       linha.preenchidoPelaIA = linha.preenchidoPelaIA || {};
       const p = linha._produto || {};
 
@@ -50226,7 +50294,8 @@ Retorne JSON: {"ID": "valor", ...}`;
           });
         } catch (e) { console.warn('[conferência] atributos automáticos falharam:', e.message); }
       }
-    }
+      _feitas++; _prog(_feitas, _total, 'preenchendo o que faltou');
+    });
     return linhas;
   }
   window.emPreencherOQueFaltou = emPreencherOQueFaltou;
@@ -50559,6 +50628,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     
     document.getElementById('dupProdutoNome').textContent = '"' + p.nome + '"';
     document.getElementById('dupQuantidade').value = 3;
+    dupRestaurarParalelo();
     
     // Popula select de loja destino (default: mesma loja do produto)
     const sel = document.getElementById('dupLojaDestino');
@@ -50698,6 +50768,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     const nomeEl = document.getElementById('dupProdutoNome');
     if (nomeEl) nomeEl.textContent = lista.length + ' produto(s) selecionado(s), cada um vira cópia(s) nas lojas marcadas';
     document.getElementById('dupQuantidade').value = 1; // default 1 cópia por produto no massa
+    dupRestaurarParalelo();
 
     // Lojas (multi), default: nenhuma marcada (no massa os produtos vêm de lojas diferentes)
     const boxLojas = document.getElementById('dupLojasDestino');
@@ -51072,6 +51143,95 @@ Retorne JSON: {"ID": "valor", ...}`;
     else if (window.lcHydrateIcons) window.lcHydrateIcons(linha);
     log.scrollTop = log.scrollHeight;
   }
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2238: PREPARO DE CÓPIAS EM PARALELO (ver iniciarDuplicacao)
+  // ───────────────────────────────────────────────────────────────────────
+  // Quantas cópias preparar ao mesmo tempo. Vem do seletor do modal de
+  // duplicação quando ele está na tela; senão do que ficou salvo; senão 4.
+  // Teto 8: o backend enfileira acima disso e o rate limit da IA não estoura.
+  const DUP_PARALELO_PADRAO = 4, DUP_PARALELO_MAX = 8;
+  function dupParaleloAtual() {
+    let n = 0;
+    try { const sel = document.getElementById('dupParalelo'); if (sel && sel.value) n = parseInt(sel.value, 10); } catch (_) {}
+    if (!n) { try { n = parseInt(localStorage.getItem('lider_dup_paralelo') || '', 10); } catch (_) {} }
+    if (!Number.isInteger(n) || n < 1) n = DUP_PARALELO_PADRAO;
+    return Math.min(DUP_PARALELO_MAX, n);
+  }
+  window.dupParaleloAtual = dupParaleloAtual;
+  function dupSalvarParalelo(v) {
+    const n = Math.min(DUP_PARALELO_MAX, Math.max(1, parseInt(v, 10) || DUP_PARALELO_PADRAO));
+    try { localStorage.setItem('lider_dup_paralelo', String(n)); } catch (_) {}
+    return n;
+  }
+  window.dupSalvarParalelo = dupSalvarParalelo;
+  // ao abrir o modal, o seletor mostra o que ficou salvo da última vez
+  function dupRestaurarParalelo() {
+    try {
+      const sel = document.getElementById('dupParalelo'); if (!sel) return;
+      const v = parseInt(localStorage.getItem('lider_dup_paralelo') || '', 10);
+      if (Number.isInteger(v) && v >= 1) sel.value = String(Math.min(DUP_PARALELO_MAX, v));
+      if (!sel.value) sel.value = String(DUP_PARALELO_PADRAO);
+    } catch (_) {}
+  }
+  window.dupRestaurarParalelo = dupRestaurarParalelo;
+
+  // Corre `prepararCopia(k)` para k = 1..qtd em ondas de `paralelo`. Espera a
+  // onda inteira antes da próxima (é isso que deixa a lista de títulos usados
+  // crescer entre ondas) e chama `aoFimDaOnda(ks)` com os k da onda.
+  async function _dupPrepararEmOndas(qtd, prepararCopia, o) {
+    const paralelo = Math.max(1, Math.min(DUP_PARALELO_MAX, (o && o.paralelo) || 1));
+    const cancelado = (o && typeof o.cancelado === 'function') ? o.cancelado : () => false;
+    for (let k0 = 1; k0 <= qtd; k0 += paralelo) {
+      if (cancelado()) break;
+      const ks = [];
+      for (let k = k0; k < k0 + paralelo && k <= qtd; k++) ks.push(k);
+      await Promise.all(ks.map(k => Promise.resolve().then(() => prepararCopia(k))));
+      if (o && typeof o.aoFimDaOnda === 'function') { try { await o.aoFimDaOnda(ks); } catch (_) {} }
+    }
+  }
+  window._dupPrepararEmOndas = _dupPrepararEmOndas;
+
+  // Log de UMA cópia: guarda as linhas e despeja em bloco no fim. Sem isto,
+  // quatro cópias em paralelo escrevem no mesmo log linha por linha e ninguém
+  // sabe de qual cópia é o "✓ Título".
+  function _dupLogDaCopia(k) {
+    const buf = [];
+    const f = function (msg, tipo) { buf.push([msg, tipo]); };
+    f.despejar = function () {
+      const linhas = buf.splice(0, buf.length);
+      linhas.forEach(([m, t]) => { try { dupLogStep(m, t); } catch (_) {} });
+    };
+    f.k = k;
+    return f;
+  }
+  window._dupLogDaCopia = _dupLogDaCopia;
+
+  // Títulos iguais entre cópias (mesma onda não se via): refaz com a lista
+  // completa de usados. Duas tentativas; se ainda bater, fica e a conferência
+  // mostra. Só mexe em CLONE (novo !== p): o próprio produto não se renomeia.
+  const _dupNormTitulo = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+  async function _dupDesempatarTitulos(daOnda, todas, p, marketplace, usados) {
+    let refeitos = 0;
+    for (const it of (daOnda || [])) {
+      if (!it || !it.novo || it.novo === p) continue;
+      const iguais = (todas || []).filter(x => x !== it && x.novo && _dupNormTitulo(x.novo.nome) === _dupNormTitulo(it.novo.nome));
+      if (!iguais.length) continue;
+      for (let tent = 0; tent < 2; tent++) {
+        const lista = (todas || []).map(x => x.novo && x.novo.nome).filter(Boolean).concat(usados || []);
+        let n = await gerarTituloVariadoIA(p, marketplace, lista);
+        if (n && typeof tituloTitleCase === 'function') n = tituloTitleCase(n);
+        if (!n) break;
+        const bate = (todas || []).some(x => x !== it && x.novo && _dupNormTitulo(x.novo.nome) === _dupNormTitulo(n));
+        it.novo.nome = n;
+        if (Array.isArray(usados)) usados.push(n);
+        if (!bate) { refeitos++; break; }
+      }
+    }
+    if (refeitos) dupLogStep('  ✓ ' + refeitos + ' título(s) repetido(s) entre cópias da mesma onda foram refeitos', 'ok');
+    return refeitos;
+  }
+  window._dupDesempatarTitulos = _dupDesempatarTitulos;
+
   function dupAtualizarProgress(atual, total, textoLinha) {
     const pct = total > 0 ? Math.round((atual / total) * 100) : 0;
     const fill = document.getElementById('dupProgressFill');
@@ -52434,6 +52594,7 @@ REGRAS DURAS:
           produtosAlvo.length + ' produto(s).');
         _okConf = await emPortaoLiberado(_destinos, _linhas, {
           papeis: _papeis,
+          aoProgredir: (f, t, txt) => dupAtualizarProgress(f, t, 'preparando a conferência: ' + (txt || '')),
           // ★ v33k.2227: se o lote encolheu, a conferência DIZ. Antes ela
           //   informava só o que sobrou, e "em 1 loja" com três marcadas
           //   parecia acerto do sistema em vez de duas falhas silenciosas.
@@ -52915,9 +53076,29 @@ REGRAS DURAS:
     // o que a IA deduziu em qualquer cópia, pra a tela marcar "confira"
     const _dupIdsIA = {};
     const _pularPreparo = _dupPreparadas.length > 0;
-    for (let k = 1; !_pularPreparo && k <= qtd; k++) {
-      if (_dupCancelar) break;
-      
+    // ═══════════════════════════════════════════════════════════════════
+    // ★★ v33k.2238: AS CÓPIAS SÃO PREPARADAS EM PARALELO, EM ONDAS.
+    // ───────────────────────────────────────────────────────────────────
+    // RELATO DE 02/09: 1 anúncio x 50 cópias em 4 lojas (200 anúncios)
+    // "demorou demais e travou". Cada cópia fazia, EM FILA, título por IA,
+    // descrição por IA, hospedagem de fotos, categoria, guia de tamanhos e
+    // atributos por IA. Duzentas cópias eram centenas de chamadas uma
+    // atrás da outra.
+    //
+    // Agora o corpo de cada cópia é `_prepararCopia(k)` e roda em ondas de
+    // `dupParaleloAtual()` cópias (4 por padrão, até 8). O que continua
+    // em ordem:
+    //   · `_dupPreparadas` é reordenado por `k` no fim, para a conferência
+    //     e a fase 2 verem as cópias na ordem de sempre;
+    //   · o log de cada cópia é guardado e despejado em bloco quando ela
+    //     termina, para as linhas de quatro cópias não se misturarem;
+    //   · os títulos gerados na mesma onda não se viam: ao fim de cada
+    //     onda, título repetido é refeito com a lista completa de usados.
+    // O teto de chamadas simultâneas à IA fica também no backend
+    // (`util/ia-portao.js`), que enfileira e refaz em 429.
+    const _prepararCopia = async function (k) {
+      if (_dupCancelar) return;
+      const dupLogStep = _dupLogDaCopia(k);
       try {
         dupLogStep(`\n- Cópia ${k}/${qtd} -`);
         
@@ -53576,7 +53757,7 @@ REGRAS DURAS:
             try {
               if (typeof garantirFotosUrlsPublicas === 'function') await garantirFotosUrlsPublicas(novo);
             } catch (eF) { dupLogStep('  ⚠ Falha hospedando fotos: ' + eF.message, 'err'); }
-            await dupCompletarCamposObjeto(novo, lojaDestino);
+            await dupCompletarCamposObjeto(novo, lojaDestino, dupLogStep);
             novo._lcCompletado = true;
             Object.keys((novo.atributosMl) || {}).forEach(k2 => {
               if (_antesIA.indexOf(k2) < 0) _dupIdsIA[k2] = true;
@@ -53597,7 +53778,22 @@ REGRAS DURAS:
       } catch (eGeral) {
         dupLogStep(`✗ Cópia ${k} falhou ao preparar: ${eGeral.message}`, 'err');
         errCopias++;
+      } finally {
+        dupLogStep.despejar();
       }
+    };
+    if (!_pularPreparo) {
+      await _dupPrepararEmOndas(qtd, _prepararCopia, {
+        paralelo: dupParaleloAtual(),
+        cancelado: () => _dupCancelar,
+        // ★ títulos iguais dentro da mesma onda: refaz com a lista completa
+        aoFimDaOnda: async (ks) => {
+          if (!opts.variarTitulo) return;
+          await _dupDesempatarTitulos(_dupPreparadas.filter(x => ks.indexOf(x.k) >= 0),
+            _dupPreparadas, p, lojaDestino.marketplace, _titulosUsadosDup);
+        },
+      });
+      _dupPreparadas.sort((a, b) => a.k - b.k);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -53663,6 +53859,7 @@ REGRAS DURAS:
             _dupPreparadas.map(x => x.novo),
             {
               papeis: _papeis,
+              aoProgredir: (f, t, txt) => dupAtualizarProgress(f, t, 'preparando a conferência: ' + (txt || '')),
               aviso: 'Esta duplicação vai criar ' + _nCopias + ' anúncio(s) em ' + (lojaDestino.nome || '') +
                 '. O anúncio de origem não entra na lista: ele não é recriado aqui.',
             });
@@ -54467,9 +54664,10 @@ REGRAS DURAS:
     }
   }
 
-  async function dupCompletarCamposObjeto(novo, lojaDestino) {
+  async function dupCompletarCamposObjeto(novo, lojaDestino, logger) {
     const mkt = lojaDestino && lojaDestino.marketplace;
-    const log = (msg, tipo) => { try { dupLogStep(msg, tipo); } catch(_) {} };
+    // ★ v33k.2238: em paralelo, cada cópia manda o SEU log (bloco por cópia)
+    const log = (msg, tipo) => { try { (typeof logger === 'function' ? logger : dupLogStep)(msg, tipo); } catch(_) {} };
 
     // ---- 1. SKUs vazios (mesma lógica de acaoGerarSKUs) ----
     try {
@@ -75751,7 +75949,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2238-so-do-cliente';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2239-em-ondas';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
