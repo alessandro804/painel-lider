@@ -20833,37 +20833,6 @@ window.LC_SVG = {
          do anúncio escolhido, evitando cores duplicadas (Rosa/Rose). -->
     <div id="dupAnuncioRefBox" style="margin-bottom:12px"></div>
 
-    <!-- ★★ v33k.2241: USAR OS ANÚNCIOS QUE JÁ EXISTEM COMO BASE.
-         Pedido do Alessandro em 02/09: ele já tem 100 anúncios do mesmo
-         produto na Shopee, cada um com título, descrição e fotos que a IA
-         fez. Levar esses 100 para o TikTok não precisa de IA nenhuma: são
-         marketplaces diferentes, ficar igual não é problema. Marcando aqui,
-         cada anúncio marcado vira UM anúncio no destino, como está. -->
-    <div id="dupFontesBox" style="display:none;margin-bottom:12px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:10px;padding:10px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
-        <div style="font-size:11.5px;font-weight:700;color:#1d4ed8;display:flex;align-items:center;gap:6px">
-          <span class="lc-ic" data-lucide="layers" style="width:14px;height:14px"></span>
-          Anúncios que já existem deste produto
-        </div>
-        <button type="button" id="dupBtnMarcarFontes" onclick="dupMarcarTodasFontes()"
-          style="padding:6px 10px;background:#fff;color:var(--lc-ink);border:1px solid var(--lc-border-2);border-radius:8px;font-size:11.5px;font-weight:600;cursor:pointer">marcar todos</button>
-      </div>
-      <div style="font-size:11px;color:#1e40af;margin-bottom:6px">
-        Marque para exportar os que já existem, do jeito que estão. Cada marcado vira um anúncio em cada loja de destino, sem refazer título, descrição nem foto.
-      </div>
-      <div style="position:relative;margin-bottom:6px">
-        <span class="lc-ic" data-lucide="search" style="position:absolute;left:9px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:#94a3b8"></span>
-        <input id="dupFonteBusca" type="text" placeholder="buscar pelo nome do anúncio ou da loja" oninput="dupFiltrarFontes(this.value)"
-          style="width:100%;padding:7px 10px 7px 30px;border:1px solid var(--lc-border);border-radius:8px;font-size:12px;box-sizing:border-box">
-      </div>
-      <div id="dupFontesLista" style="max-height:210px;overflow-y:auto;border:1px solid var(--lc-border);border-radius:8px;padding:6px;background:#fff"></div>
-      <div id="dupFonteVazio" style="display:none;font-size:11.5px;color:#94a3b8;padding:6px 2px">Nenhum anúncio com esse nome.</div>
-      <div style="display:flex;justify-content:space-between;gap:8px;font-size:10.5px;color:#1e40af;margin-top:5px">
-        <span id="dupFonteAviso">Nada marcado: a duplicação usa só este produto como modelo, com IA.</span>
-        <span id="dupFonteContador" style="font-weight:700;white-space:nowrap">nenhum marcado</span>
-      </div>
-    </div>
-
     <div style="margin-bottom:12px;display:flex;gap:12px;align-items:flex-end">
       <div style="flex:1">
         <label style="font-size:11px;font-weight:700;color:#374151">Quantidade de cópias</label>
@@ -37597,12 +37566,81 @@ Retorne JSON: {"ID": "valor", ...}`;
 
   // Monta o HTML de UM seletor de anúncio de referência (select + variações).
   // Usado tanto na individual (1) quanto na massa (1 por produto).
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2242: UMA LISTA SÓ, COM MARCAÇÃO MÚLTIPLA.
+  // ───────────────────────────────────────────────────────────────────────
+  // RELATO DE 02/09, com print: "não seria aqui para eu selecionar os
+  // anúncios que quero? Seleciono 50 aqui e duplica 50; se eu colocar 2
+  // cópias, seria 2x cada um, ou seja 100."
+  //
+  // Ele está certo, e a v33k.2241 tinha errado o lugar: pôs uma segunda
+  // caixa (a da família) e ainda a escondia no caminho de massa, que é
+  // justamente o do print. Agora é ESTA lista, e ela junta as duas fontes:
+  //   · os anúncios do próprio produto (os vínculos dele nos canais);
+  //   · os anúncios das CÓPIAS do produto (a família por `duplicadoDeId`),
+  //     que é onde moram os 100 que a IA já gerou, cada um com título,
+  //     descrição e fotos próprios.
+  //
+  // Regra de leitura, para chute não virar decisão (v33k.1887):
+  //   · nada marcado  = como sempre foi: referência automática, IA como ele
+  //     deixou, quantidade de cópias do produto;
+  //   · 1 marcado     = igual ao seletor antigo: aquele anúncio é a
+  //     referência das variações;
+  //   · 2 ou mais     = cada marcado vira uma origem, a quantidade
+  //     multiplica (50 marcados x 2 = 100) e as variações por IA saem, que é
+  //     a economia de token pedida em 02/09.
+  //
+  // O cartão de capa e preços continua sendo o do PRIMEIRO (pedido dele:
+  // "sempre mostrar a foto do primeiro, manter esse padrão").
+  function _dupFontesDoProduto(p) {
+    const fora = [];
+    const vistos = new Set();
+    const familia = (typeof _dupFamiliaDeProduto === 'function') ? _dupFamiliaDeProduto(p) : [p];
+    // o próprio produto primeiro, depois as cópias
+    const ordem = [p].concat(familia.filter(x => String(x.id) !== String(p.id)));
+    ordem.forEach(prod => {
+      const ehCopia = String(prod.id) !== String(p.id);
+      const lista = listarAnunciosDoProduto(prod);
+      lista.forEach(a => {
+        const chave = String(prod.id) + '|' + String(a.anuncioId);
+        if (vistos.has(chave)) return;
+        vistos.add(chave);
+        fora.push({ produtoId: String(prod.id), produtoNome: prod.nome || '', ehCopia: ehCopia,
+          anuncioId: String(a.anuncioId), marketplace: a.marketplace || '', lojaNome: a.lojaNome || '',
+          criadoEm: a.criadoEm || null, membros: a.membros || null, familiaML: a.familiaML || null,
+          nVars: (a.variacoes || []).length });
+      });
+      // cópia que ainda não foi exportada continua servindo de origem
+      if (ehCopia && !lista.length) {
+        const chave = String(prod.id) + '|';
+        if (!vistos.has(chave)) {
+          vistos.add(chave);
+          fora.push({ produtoId: String(prod.id), produtoNome: prod.nome || '', ehCopia: true,
+            anuncioId: '', marketplace: '', lojaNome: '', criadoEm: prod.criadoEm || null, nVars: 0, semAnuncio: true });
+        }
+      }
+    });
+    return fora;
+  }
+  window._dupFontesDoProduto = _dupFontesDoProduto;
+
+  // dd/mm/aaaa, ou o aviso de que a data não veio. Sem data, dizer "novo" ou
+  // "antigo" seria palpite — e é justamente isso que ele quer saber.
+  function _dupDataCurta(v) {
+    if (!v) return 'data não registrada';
+    const d = new Date(v);
+    if (isNaN(d.getTime())) return 'data não registrada';
+    return d.toLocaleDateString('pt-BR');
+  }
+  window._dupDataCurta = _dupDataCurta;
+
   function montarSeletorAnuncioRef(p, opts) {
     opts = opts || {};
     const anuncios = listarAnunciosDoProduto(p);
+    const fontes = _dupFontesDoProduto(p);
     const pid = String(p.id);
-    // sem anúncios vinculados → nada a escolher (cópia usa o produto como está)
-    if (!anuncios.length) {
+    // sem anúncios vinculados (nem no produto nem nas cópias) → nada a escolher
+    if (!fontes.length) {
       return `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;font-size:12px;color:#6b7280">
         ${opts.comprimido ? '<strong>' + escapeHtml(p.nome) + '</strong>, ' : ''}Sem anúncios vinculados, a cópia usará as variações do produto como estão.</div>`;
     }
@@ -37640,21 +37678,37 @@ Retorne JSON: {"ID": "valor", ...}`;
       return ta - tb;                                      // empate: mais antigo
     });
     const jaEscolhido = _dupAnuncioRefEscolhido[pid];
-    const escolhido = jaEscolhido || (_ordenados[0] && _ordenados[0].anuncioId) || anuncios[0].anuncioId;
+    // ★ v33k.2242: a lista pode existir só por causa das CÓPIAS (produto sem
+    //   vínculo próprio). Aí não há referência automática, e tudo bem: o
+    //   cartão fica vazio até ele marcar alguma.
+    const escolhido = jaEscolhido || (_ordenados[0] && _ordenados[0].anuncioId) || (anuncios[0] && anuncios[0].anuncioId) || '';
     _dupAnuncioRefEscolhido[pid] = escolhido;
     // marca a procedência: sem isto, chute e decisão viram a mesma coisa
     if (!jaEscolhido) _dupAnuncioRefAuto[pid] = true;
     const mkLabel = (mk) => mk === 'shopee' ? '🛒 Shopee' : (mk && /mercado/i.test(mk) ? '💛 ML' : (mk || ''));
-    const options = anuncios.map((a, i) => {
-      const sel = String(a.anuncioId) === String(escolhido) ? 'selected' : '';
-      const tag = i === 0 ? ' (mais antigo)' : '';
-      // ★ v33k.1873: a família não se apresenta pelo MLB de um dos pedaços
-      const lbl = a.membros
-        ? (mkLabel(a.marketplace) + ' · ' + (a.lojaNome || '') + ' · Catálogo' +
-           ((a.familiaML && a.familiaML.nome) ? (' · ' + a.familiaML.nome) : '') +
-           ' · ' + a.membros.length + ' anúncios')
-        : (mkLabel(a.marketplace) + ' · ' + (a.lojaNome || '') + ' · #' + a.anuncioId + tag);
-      return `<option value="${escapeHtml(a.anuncioId)}" ${sel}>${escapeHtml(lbl)}</option>`;
+    const linhas = fontes.map((a, i) => {
+      const tag = (!a.ehCopia && i === 0) ? ' (mais antigo)' : '';
+      // ★ v33k.1873: a família do catálogo não se apresenta pelo MLB de um pedaço
+      const lbl = a.semAnuncio
+        ? ('ainda sem anúncio publicado · usa o produto como está')
+        : (a.membros
+          ? (mkLabel(a.marketplace) + ' · ' + (a.lojaNome || '') + ' · Catálogo' +
+             ((a.familiaML && a.familiaML.nome) ? (' · ' + a.familiaML.nome) : '') +
+             ' · ' + a.membros.length + ' anúncios')
+          : (mkLabel(a.marketplace) + ' · ' + (a.lojaNome || '') + ' · #' + a.anuncioId + tag));
+      const nomeCopia = a.ehCopia
+        ? '<span style="font-size:10.5px;color:#7c3aed;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">cópia: ' + escapeHtml(a.produtoNome) + '</span>'
+        : '';
+      const busca = ((a.produtoNome || '') + ' ' + lbl + ' ' + _dupDataCurta(a.criadoEm)).toLowerCase();
+      return '<label class="dup-fonte-item" data-lista="' + escapeHtml(pid) + '" data-pid="' + escapeHtml(a.produtoId) + '" data-busca="' + escapeHtml(busca) + '"' +
+        ' style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--lc-border);cursor:pointer">' +
+        '<input type="checkbox" class="dup-fonte-ck" data-lista="' + escapeHtml(pid) + '" data-pid="' + escapeHtml(a.produtoId) + '" data-aid="' + escapeHtml(a.anuncioId) + '"' +
+          ' value="' + escapeHtml(a.produtoId + '|' + a.anuncioId) + '" onchange="dupOnMarcarFonte(\'' + escapeHtml(pid) + '\')">' +
+        '<span style="flex:1;min-width:0;font-size:12px;color:#1e293b">' +
+          '<span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(lbl) + '</span>' + nomeCopia +
+        '</span>' +
+        '<span style="font-size:10.5px;color:#64748b;white-space:nowrap">criado em ' + escapeHtml(_dupDataCurta(a.criadoEm)) + '</span>' +
+        '</label>';
     }).join('');
     const tituloProd = opts.comprimido ? `<div style="font-weight:700;font-size:12px;color:#1e2a47;margin-bottom:4px">${escapeHtml(p.nome)}</div>` : '';
     // ★ v33k.1870: o cartão de referência na paleta da casa. O índigo aqui era
@@ -37664,8 +37718,22 @@ Retorne JSON: {"ID": "valor", ...}`;
       ${tituloProd}
       <label style="font-size:11px;font-weight:700;color:var(--lc-primary-text);display:flex;align-items:center;gap:5px;margin-bottom:5px">
         <span class="lc-ic" data-lucide="pin" style="width:12px;height:12px"></span>
-        Anúncio de referência <span style="font-weight:600;opacity:.85">— a cópia usa só as variações dele</span></label>
-      <select class="form-input dup-anuncio-ref-select" data-pid="${pid}" onchange="dupOnEscolherAnuncio('${pid}', this.value)" style="font-size:13px;width:100%">${options}</select>
+        Anúncios deste produto <span style="font-weight:600;opacity:.85">— marque os que quer duplicar, a quantidade abaixo multiplica cada um</span></label>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
+        <div style="position:relative;flex:1">
+          <span class="lc-ic" data-lucide="search" style="position:absolute;left:9px;top:50%;transform:translateY(-50%);width:13px;height:13px;color:#94a3b8"></span>
+          <input type="text" class="dup-fonte-busca" data-pid="${pid}" placeholder="buscar por loja, canal ou data" oninput="dupFiltrarFontes('${pid}', this.value)"
+            style="width:100%;padding:6px 10px 6px 29px;border:1px solid var(--lc-border);border-radius:8px;font-size:12px;box-sizing:border-box">
+        </div>
+        <button type="button" class="dup-fonte-btn" data-pid="${pid}" onclick="dupMarcarTodasFontes('${pid}')"
+          style="padding:6px 10px;background:#fff;color:var(--lc-ink);border:1px solid var(--lc-border-2);border-radius:8px;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap">marcar todos</button>
+      </div>
+      <div class="dup-fonte-lista" data-pid="${pid}" style="max-height:200px;overflow-y:auto;border:1px solid var(--lc-border);border-radius:8px;padding:4px 6px;background:#fff">${linhas}</div>
+      <div class="dup-fonte-vazio" data-pid="${pid}" style="display:none;font-size:11.5px;color:#94a3b8;padding:5px 2px">Nenhum anúncio com esse termo.</div>
+      <div class="dup-fonte-rodape" data-pid="${pid}" style="display:flex;justify-content:space-between;gap:8px;font-size:10.5px;color:var(--lc-primary-text);margin-top:4px">
+        <span class="dup-fonte-aviso" data-pid="${pid}">Nada marcado: a cópia usa a referência automática, como sempre.</span>
+        <span class="dup-fonte-contador" data-pid="${pid}" style="font-weight:700;white-space:nowrap">nenhum marcado</span>
+      </div>
       <!-- v33k.2070: o cartao do anuncio escolhido (capa + precos). Enche
            sozinho, sem clique, a partir da MESMA leitura que ja busca as
            variacoes — e cacheada, entao nao custa chamada nenhuma a mais. -->
@@ -50832,7 +50900,6 @@ Retorne JSON: {"ID": "valor", ...}`;
     document.getElementById('dupProdutoNome').textContent = '"' + p.nome + '"';
     document.getElementById('dupQuantidade').value = 3;
     dupRestaurarParalelo();
-    dupRenderFontes(p);                     // ★ v33k.2241
     
     // Popula select de loja destino (default: mesma loja do produto)
     const sel = document.getElementById('dupLojaDestino');
@@ -50974,10 +51041,6 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (nomeEl) nomeEl.textContent = lista.length + ' produto(s) selecionado(s), cada um vira cópia(s) nas lojas marcadas';
     document.getElementById('dupQuantidade').value = 1; // default 1 cópia por produto no massa
     dupRestaurarParalelo();
-    // ★ v33k.2241: no massa ele já escolheu os produtos na lista; a família
-    //   de um só não faz sentido aqui.
-    { const bx = document.getElementById('dupFontesBox'); if (bx) bx.style.display = 'none'; }
-    { const lt = document.getElementById('dupFontesLista'); if (lt) lt.innerHTML = ''; }
 
     // Lojas (multi), default: nenhuma marcada (no massa os produtos vêm de lojas diferentes)
     const boxLojas = document.getElementById('dupLojasDestino');
@@ -51399,85 +51462,76 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window._dupFamiliaDeProduto = _dupFamiliaDeProduto;
 
-  // Onde cada membro da família está hoje (loja e canal), para ele saber
-  // quais são "os 100 da Shopee" sem abrir um por um.
-  function _dupLojaDoProduto(x) {
-    const l = lojasErp.find(l => String(l.id) === String(x && x.lojaId));
-    return l ? { nome: l.nome, marketplace: l.marketplace } : { nome: '', marketplace: '' };
+  // ── marcação múltipla no seletor de anúncios (v33k.2242) ───────────────
+  // Escopo por produto: no massa há uma lista por produto na mesma tela, e
+  // "marcar todos" de um não pode marcar a do vizinho.
+  function _dupFontesSelecionadas() {
+    return [...document.querySelectorAll('.dup-fonte-ck:checked')].map(c => ({
+      produtoId: c.getAttribute('data-pid'),
+      anuncioId: c.getAttribute('data-aid') || null,
+    }));
   }
-  function dupRenderFontes(p) {
-    const box = document.getElementById('dupFontesBox');
-    const lista = document.getElementById('dupFontesLista');
-    if (!box || !lista) return;
-    const familia = _dupFamiliaDeProduto(p).filter(x => String(x.id) !== String(p.id));
-    if (!familia.length) { box.style.display = 'none'; lista.innerHTML = ''; dupContarFontes(); return; }
-    box.style.display = '';
-    lista.innerHTML = familia.map(x => {
-      const lj = _dupLojaDoProduto(x);
-      return '<label class="dup-fonte-item" data-busca="' + escapeHtml(((x.nome || '') + ' ' + lj.nome + ' ' + lj.marketplace).toLowerCase()) + '"' +
-        ' style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--lc-border);cursor:pointer">' +
-        '<input type="checkbox" class="dup-fonte-ck" value="' + escapeHtml(String(x.id)) + '" onchange="dupContarFontes()">' +
-        '<span style="flex:1;font-size:12px;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(x.nome || 'sem nome') + '</span>' +
-        (lj.nome ? '<span style="font-size:10.5px;color:#64748b;white-space:nowrap">' + escapeHtml(lj.nome) + '</span>' : '') +
-        (lj.marketplace ? '<span class="mk mk-' + escapeHtml(lj.marketplace) + '">' + escapeHtml(lj.marketplace) + '</span>' : '') +
-        '</label>';
-    }).join('');
-    const b = document.getElementById('dupFonteBusca'); if (b) b.value = '';
-    dupFiltrarFontes('');
-    dupContarFontes();
-    if (window._hidratarIcones) window._hidratarIcones(box);
-    else if (window.lcHydrateIcons) window.lcHydrateIcons(box);
+  window._dupFontesSelecionadas = _dupFontesSelecionadas;
+  function _dupMarcadasDoProduto(pid) {
+    return [...document.querySelectorAll('.dup-fonte-ck[data-lista="' + pid + '"]:checked')];
   }
-  window.dupRenderFontes = dupRenderFontes;
-  function dupFiltrarFontes(termo) {
+  function dupFiltrarFontes(pid, termo) {
     const t = String(termo || '').trim().toLowerCase();
-    const itens = [...document.querySelectorAll('#dupFontesLista .dup-fonte-item')];
+    const itens = [...document.querySelectorAll('.dup-fonte-item[data-lista="' + pid + '"]')];
     let vis = 0;
     itens.forEach(el => {
       const bate = !t || (el.getAttribute('data-busca') || '').indexOf(t) >= 0;
       el.style.display = bate ? '' : 'none';
       if (bate) vis++;
     });
-    const vazio = document.getElementById('dupFonteVazio');
+    const vazio = document.querySelector('.dup-fonte-vazio[data-pid="' + pid + '"]');
     if (vazio) vazio.style.display = (itens.length && !vis) ? '' : 'none';
   }
   window.dupFiltrarFontes = dupFiltrarFontes;
-  function _dupFontesSelecionadas() {
-    return [...document.querySelectorAll('.dup-fonte-ck:checked')].map(c => c.value);
-  }
-  window._dupFontesSelecionadas = _dupFontesSelecionadas;
-  // ★ Marcar um anúncio existente DESLIGA as variações por IA: o pedido é
-  //   justamente não gastar token refazendo o que já está pronto. Ficam
-  //   destravadas, então dá para religar uma delas de propósito.
-  function dupContarFontes() {
-    const n = _dupFontesSelecionadas().length;
-    const cont = document.getElementById('dupFonteContador');
-    if (cont) cont.textContent = n ? (n + ' marcado(s)') : 'nenhum marcado';
-    const aviso = document.getElementById('dupFonteAviso');
-    if (aviso) {
-      aviso.textContent = n
-        ? ('Os ' + n + ' marcados vão como estão, sem IA de título, descrição ou foto.')
-        : 'Nada marcado: a duplicação usa só este produto como modelo, com IA.';
-    }
-    if (n) ['dupVariarTitulo', 'dupVariarDescricao', 'dupRotacionarFotos', 'dupVariarPreco']
-      .forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
-    const q = document.getElementById('dupQuantidade');
-    if (n && q) q.value = 1;                     // um anúncio de destino por anúncio marcado
-    const btn = document.getElementById('dupBtnMarcarFontes');
-    const total = document.querySelectorAll('#dupFontesLista .dup-fonte-ck').length;
-    if (btn) btn.textContent = (n && n === total) ? 'desmarcar todos' : 'marcar todos';
-    return n;
-  }
-  window.dupContarFontes = dupContarFontes;
-  function dupMarcarTodasFontes() {
-    const cks = [...document.querySelectorAll('#dupFontesLista .dup-fonte-item')]
+  function dupMarcarTodasFontes(pid) {
+    const cks = [...document.querySelectorAll('.dup-fonte-item[data-lista="' + pid + '"]')]
       .filter(el => el.style.display !== 'none')
       .map(el => el.querySelector('.dup-fonte-ck')).filter(Boolean);
     const marcarTudo = cks.some(c => !c.checked);
     cks.forEach(c => { c.checked = marcarTudo; });
-    dupContarFontes();
+    dupOnMarcarFonte(pid);
   }
   window.dupMarcarTodasFontes = dupMarcarTodasFontes;
+  // Marcar mexe em três coisas: o contador, o cartão de capa (que segue sempre
+  // o PRIMEIRO, pedido dele em 02/09) e as variações por IA.
+  function dupOnMarcarFonte(pid) {
+    const marcadas = _dupMarcadasDoProduto(pid);
+    const n = marcadas.length;
+    const cont = document.querySelector('.dup-fonte-contador[data-pid="' + pid + '"]');
+    if (cont) cont.textContent = n ? (n + ' marcado(s)') : 'nenhum marcado';
+    const btn = document.querySelector('.dup-fonte-btn[data-pid="' + pid + '"]');
+    const total = document.querySelectorAll('.dup-fonte-ck[data-lista="' + pid + '"]').length;
+    if (btn) btn.textContent = (n && n === total) ? 'desmarcar todos' : 'marcar todos';
+
+    // o cartão e as variações seguem o PRIMEIRO marcado; sem marcação, fica a
+    // referência automática que o seletor já tinha escolhido
+    const primeiro = n ? (marcadas[0].getAttribute('data-aid') || '') : '';
+    if (primeiro && String(_dupAnuncioRefEscolhido[pid] || '') !== primeiro) {
+      if (typeof dupOnEscolherAnuncio === 'function') dupOnEscolherAnuncio(pid, primeiro);
+      else _dupAnuncioRefEscolhido[pid] = primeiro;
+    }
+    if (n) _dupAnuncioRefAuto[pid] = false;      // marcado é decisão, não chute
+
+    const totalGeral = _dupFontesSelecionadas().length;
+    const aviso = document.querySelector('.dup-fonte-aviso[data-pid="' + pid + '"]');
+    if (aviso) {
+      aviso.textContent = !n
+        ? 'Nada marcado: a cópia usa a referência automática, como sempre.'
+        : (n === 1
+          ? 'Um marcado: ele é a referência das variações, como antes.'
+          : ('Os ' + n + ' marcados viram origens e vão como estão, sem IA de título, descrição ou foto.'));
+    }
+    // ★ 2 ou mais = "como está": a IA sai, porque o pedido é não refazer o que
+    //   já está pronto. Ficam DESTRAVADAS, para religar uma de propósito.
+    if (totalGeral > 1) ['dupVariarTitulo', 'dupVariarDescricao', 'dupRotacionarFotos', 'dupVariarPreco']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
+  }
+  window.dupOnMarcarFonte = dupOnMarcarFonte;
 
   const DUP_PARALELO_PADRAO = 8, DUP_PARALELO_MAX = 8;
   function dupParaleloAtual() {
@@ -52808,11 +52862,35 @@ REGRAS DURAS:
     // o título, a descrição e as fotos que ele já tem. É o caminho de massa
     // que já existe (prepara tudo, confere uma vez, publica tudo), com as
     // variações por IA desligadas — daí a economia de token que ele pediu.
-    const _fontes = (typeof _dupFontesSelecionadas === 'function') ? _dupFontesSelecionadas() : [];
-    window._dupComoEsta = _fontes.length > 0;
-    if (window._dupComoEsta) {
-      _dupProdutoIds = _fontes.slice();
-      _dupProdutoId = _fontes[0];
+    // ★ v33k.2242: cada marcado é um PAR (produto, anúncio). Produto da lista
+    //   sem nada marcado continua com a referência automática — marcar dois
+    //   anúncios de um produto não pode fazer os outros sumirem do lote.
+    const _marcadas = (typeof _dupFontesSelecionadas === 'function') ? _dupFontesSelecionadas() : [];
+    window._dupComoEsta = _marcadas.length > 1;
+    window._dupPares = null;
+    if (_marcadas.length) {
+      // ★ v33k.2242: no MASSA a lista de produtos foi escolhida por ele na tela
+      //   e nenhum pode sumir do lote. No INDIVIDUAL o "base" é só o produto em
+      //   que ele abriu o modal: se marcou anúncios, são eles que valem, e o
+      //   produto só entra se ele o tiver marcado.
+      const _base = (Array.isArray(_dupProdutoIds) && _dupProdutoIds.length) ? _dupProdutoIds.slice() : [];
+      const _porProduto = new Map();
+      _marcadas.forEach(m => {
+        const k = String(m.produtoId);
+        if (!_porProduto.has(k)) _porProduto.set(k, []);
+        _porProduto.get(k).push(m);
+      });
+      const _pares = [];
+      _base.forEach(pid => {
+        const marc = _porProduto.get(String(pid));
+        if (marc && marc.length) { marc.forEach(m => _pares.push(m)); _porProduto.delete(String(pid)); }
+        else _pares.push({ produtoId: String(pid), anuncioId: null });
+      });
+      // marcados fora da lista base são cópias da família: entram também
+      _porProduto.forEach(arr => arr.forEach(m => _pares.push(m)));
+      window._dupPares = _pares;
+      _dupProdutoIds = _pares.map(x => String(x.produtoId));
+      _dupProdutoId = _dupProdutoIds[0];
     }
     // ★ v33k.2230: um produto só — busca a linha inteira antes de qualquer
     //   loja. Em massa a lista continua leve (o caminho de massa reescreve
@@ -52856,8 +52934,8 @@ REGRAS DURAS:
       : [_dupProdutoId];
     const ehMassa = produtosAlvo.length > 1;
     if (window._dupComoEsta) {
-      dupLogStep('Modo "como está": ' + produtosAlvo.length + ' anúncio(s) existente(s) vão para ' +
-        marcadas.length + ' loja(s), sem refazer título, descrição nem foto.', 'ok');
+      dupLogStep('Modo "como está": ' + produtosAlvo.length + ' origem(ns) marcada(s) x ' + qtdBase +
+        ' cópia(s) para ' + marcadas.length + ' loja(s), sem refazer título, descrição nem foto.', 'ok');
     }
 
     const feitas = [];   // [{loja, produto, ok}], pro relatório final
@@ -52881,6 +52959,13 @@ REGRAS DURAS:
       if (_dupCancelar) break;
       const produtoIdAtual = produtosAlvo[pIdx];
       _dupProdutoId = produtoIdAtual;
+      // ★ v33k.2242: o MESMO produto pode aparecer duas vezes no lote, uma por
+      //   anúncio marcado. Como o laço é sequencial, a referência daquela volta
+      //   é fixada aqui, antes de qualquer preparo.
+      if (window._dupPares && window._dupPares[pIdx] && window._dupPares[pIdx].anuncioId) {
+        _dupAnuncioRefEscolhido[produtoIdAtual] = String(window._dupPares[pIdx].anuncioId);
+        _dupAnuncioRefAuto[produtoIdAtual] = false;
+      }
       const pAlvo = produtosErp.find(x => String(x.id) === String(produtoIdAtual));
       if (ehMassa) showToast(`Preparando ${pIdx + 1}/${produtosAlvo.length}: ${pAlvo ? (pAlvo.nome || '').slice(0, 40) : produtoIdAtual}`);
       for (const lojaId of marcadas) {
@@ -53022,6 +53107,13 @@ REGRAS DURAS:
       if (_dupCancelar) { showToast('Duplicação cancelada', true); break; }
       const produtoIdAtual = produtosAlvo[pIdx];
       _dupProdutoId = produtoIdAtual; // compat: telas antigas ainda leem daqui
+      // ★ v33k.2242: o MESMO produto pode aparecer duas vezes no lote, uma por
+      //   anúncio marcado. Como o laço é sequencial, a referência daquela volta
+      //   é fixada aqui, antes de qualquer preparo.
+      if (window._dupPares && window._dupPares[pIdx] && window._dupPares[pIdx].anuncioId) {
+        _dupAnuncioRefEscolhido[produtoIdAtual] = String(window._dupPares[pIdx].anuncioId);
+        _dupAnuncioRefAuto[produtoIdAtual] = false;
+      }
       const pAlvo = produtosErp.find(x => String(x.id) === String(produtoIdAtual));
       if (ehMassa) showToast(`📦 Produto ${pIdx+1}/${produtosAlvo.length}: ${pAlvo ? (pAlvo.nome||'').slice(0,40) : produtoIdAtual}`);
 
@@ -76312,7 +76404,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2241-como-esta';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2242-marcar-varios';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
