@@ -50319,6 +50319,10 @@ Retorne JSON: {"ID": "valor", ...}`;
   function abrirDuplicarAnuncio(produtoId, auto) {
     const p = produtosErp.find(x => String(x.id) === String(produtoId));
     if (!p) { showToast('Produto não encontrado', true); return; }
+    // ★ Zera na ENTRADA. Sem isto, uma criação deixaria o modo ligado e a
+    //   próxima duplicação de verdade, feita pela lista, herdaria o
+    //   comportamento errado — o oposto do defeito, e igualmente calado.
+    window._dupModoCriacao = false;
     
     window._ativarAdsPosExport = true; // default marcado (checkbox reflete e pode desmarcar)
     _dupProdutoId = produtoId;
@@ -50408,6 +50412,31 @@ Retorne JSON: {"ID": "valor", ...}`;
       _set('dupRotacionarFotos', auto.rotacionarFotos);
       _set('dupAtivarAds', auto.ativarAds);
       window._ativarAdsPosExport = !!auto.ativarAds;
+
+      // ★★★ v33k.2227: MODO CRIAÇÃO. COPIAR E TRANSPORTAR SÃO COISAS
+      //     DIFERENTES, e misturá-las custou seis defeitos de uma vez.
+      // ────────────────────────────────────────────────────────────────
+      // Relato de 01/09, com print: o Alessandro digitou preço 99,90, estoque
+      // 999, promoção 69,90, Cor, Tamanho, descrição e TRÊS lojas. Chegou na
+      // conferência: 99,91, estoque 10, promoção vazia, Cor e Tamanho vazios,
+      // descrição vazia, UMA loja.
+      //
+      // Nenhum desses valores era aleatório. A duplicação nasceu para copiar
+      // um anúncio JÁ NO AR, e para isso ela:
+      //   · soma R$0,01 por cópia, para as cópias não competirem entre si
+      //   · aplica padrões e régua de preço
+      //   · herda categoria, atributos e caixa de um anúncio de REFERÊNCIA
+      //
+      // Todas certas para COPIAR. Todas erradas para TRANSPORTAR um cadastro
+      // que a pessoa acabou de digitar: ali não há com quem competir, não há
+      // referência para herdar, e cada valor foi escolhido a mão.
+      //
+      // ★ A régua sai SEMPRE no modo criação, e não é opção da tela: mesmo com
+      //   várias cópias, quem manda no preço é quem cadastrou. Variar título e
+      //   foto continua fazendo sentido entre cópias; variar PREÇO por cima do
+      //   que foi digitado, não.
+      window._dupModoCriacao = true;
+      _set('dupVariarPreco', false);
 
       // ★ SEM LOJA CASADA, MOSTRA O MODAL. Seguir no automático mandaria para
       //   a loja que o modal marcou sozinho, e a pessoa só descobriria pelo
@@ -52002,13 +52031,44 @@ REGRAS DURAS:
         const loja = lojasErp.find(l => String(l.id) === String(lojaId));
         if (!loja) continue;
         if (selHidden) selHidden.value = lojaId;
+        // ★★ v33k.2227: O `catch` NÃO ERA SUFICIENTE, e foi por isso que as
+        //   duas lojas sumiram sem deixar rastro. A preparação tem saídas que
+        //   RETORNAM sem estourar — "Selecione uma loja destino", "Não
+        //   consegui resolver a loja de destino", "Produto não encontrado".
+        //   Nesses casos não há exceção, o `catch` fica quieto, e a loja
+        //   simplesmente não entra no lote.
+        //
+        //   A única prova confiável é a AUSÊNCIA DO GRUPO: se o lote não
+        //   cresceu, aquela loja não vai sair, tendo estourado ou não.
+        const _antesDoLote = _lote.length;
         try {
           await iniciarDuplicacaoComAgendamento({
             produtoId: produtoIdAtual, lojaDestinoId: lojaId, qtd: qtdBase, optsBase,
             _adiarConferencia: _lote,
           });
+          if (_lote.length === _antesDoLote) {
+            dupLogStep('  ✗ ' + (loja.nome || 'loja') + ': não entrou no lote. '
+              + 'O aviso do motivo apareceu como mensagem rápida na tela.', 'err');
+            feitas.push({ loja: loja.nome, produto: produtoIdAtual, ok: false });
+          }
         } catch (e) {
+          // ★★ v33k.2227: A FALHA DE PREPARO PRECISA APARECER.
+          // ──────────────────────────────────────────────────────────────
+          // MEDIDO em 01/09: o Alessandro marcou TRÊS lojas e a conferência
+          // abriu com UMA. Rodei o caminho inteiro e ele está correto até
+          // aqui: a tela manda as três, o modal casa as três, o laço chama as
+          // três. Duas caíram NESTE catch.
+          //
+          // E ninguém ficou sabendo. A mensagem ia para o console do
+          // navegador, que ninguém abre, e o lote seguia com um grupo só. A
+          // tela então dizia "vai criar 1 anúncio, em 1 loja" — e estava
+          // dizendo a verdade sobre o lote, o que fez o defeito parecer
+          // "sumiram as lojas" em vez de "duas falharam".
+          //
+          // ★ Agora vai para o LOG DA JANELA, com o nome da loja e o motivo.
+          //   Erro que só existe no console é erro que ninguém corrige.
           console.warn('[dup-multi] preparo falhou:', produtoIdAtual, loja.nome, e.message);
+          dupLogStep('  ✗ ' + (loja.nome || 'loja') + ': não consegui preparar — ' + e.message, 'err');
           feitas.push({ loja: loja.nome, produto: produtoIdAtual, ok: false });
         }
       }
@@ -52039,8 +52099,16 @@ REGRAS DURAS:
           produtosAlvo.length + ' produto(s).');
         _okConf = await emPortaoLiberado(_destinos, _linhas, {
           papeis: _papeis,
+          // ★ v33k.2227: se o lote encolheu, a conferência DIZ. Antes ela
+          //   informava só o que sobrou, e "em 1 loja" com três marcadas
+          //   parecia acerto do sistema em vez de duas falhas silenciosas.
           aviso: 'Esta duplicação vai criar ' + _totalCopias + ' anúncio(s), de ' +
             produtosAlvo.length + ' produto(s), em ' + _destinos.length + ' loja(s). ' +
+            (marcadas.length > _destinos.length
+              ? '⚠ VOCÊ MARCOU ' + marcadas.length + ' LOJA(S) e só ' + _destinos.length
+                + ' chegou(aram) aqui: ' + (marcadas.length - _destinos.length)
+                + ' falhou(aram) ao preparar. O motivo está no log da janela de progresso. '
+              : '') +
             'Os anúncios de origem não entram na lista: eles não são recriados aqui.',
         });
       } catch (ePv) {
@@ -52728,6 +52796,26 @@ REGRAS DURAS:
             if (auto.filtrou) { ref = { variacoes: auto.variacoes, cores: auto.cores }; fonte = 'vinculo'; }
           }
 
+          // ★★★ v33k.2227: NO MODO CRIAÇÃO, NÃO EXISTE REFERÊNCIA A HERDAR.
+          // ──────────────────────────────────────────────────────────────
+          // Esta linha SUBSTITUI as variações da cópia pelas de um anúncio
+          // que já está no ar. Faz todo sentido ao duplicar: a cópia tem que
+          // sair igual ao anúncio de origem, não igual ao cadastro interno.
+          //
+          // Num cadastro que a pessoa acabou de digitar é destruição: as
+          // variações que ela montou, com preço, estoque, promoção e EAN de
+          // cada uma, são trocadas pelas de outro anúncio. Foi assim que Cor,
+          // Tamanho e promoção chegaram vazios na conferência de 01/09, com o
+          // banco do produto 23722 gravado CERTO.
+          //
+          // ★ E a busca por referência nem deveria ter achado nada: o produto
+          //   era novo. Ela achou porque procura por SKU e nome parecidos, e
+          //   o Alessandro testou várias vezes o mesmo produto — os testes
+          //   anteriores viraram referência para o teste seguinte.
+          if (ref && window._dupModoCriacao) {
+            dupLogStep('  ⓘ Cadastro novo: mantive as suas variações, sem herdar de outro anúncio.');
+            ref = null;
+          }
           if (ref) {
             novo.variacoes = JSON.parse(JSON.stringify(ref.variacoes));
             novo.cores = JSON.parse(JSON.stringify(ref.cores));
@@ -75156,7 +75244,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2226-a-variavel-na-funcao-certa';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2228-a-coluna-que-ja-sabia-ler';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
