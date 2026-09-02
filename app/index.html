@@ -50069,6 +50069,22 @@ Retorne JSON: {"ID": "valor", ...}`;
   }
   window.preVooTabelaLiberado = preVooTabelaLiberado;
 
+  // ★★ v33k.2229: `_atrCache` E `ATR_CACHE_TTL` NUNCA EXISTIRAM.
+  // ──────────────────────────────────────────────────────────────────────
+  // A função usa as duas e nenhuma era declarada em lugar nenhum do painel.
+  // Ela estourava `ReferenceError` na PRIMEIRA linha útil, sempre, desde que
+  // foi escrita — e ninguém viu porque quem a chama trata a falha e segue.
+  //
+  // Apareceu em 01/09 no log da duplicação: "preenchimento de atributos ML
+  // falhou: _atrCache is not defined". É por isso que os atributos chegavam
+  // vazios na conferência mesmo com o produto tendo os seis gravados.
+  //
+  // ★ Mesma família dos meus `ehMassa` e `ehMassaAtual`: `ReferenceError` não
+  //   aparece no parse, só quando a linha executa. Aqui executava sempre, e
+  //   mesmo assim durou, porque o erro era engolido por quem chamava.
+  const _atrCache = new Map();
+  const ATR_CACHE_TTL = 30 * 60 * 1000;   // 30 min: categoria muda pouco
+
   async function carregarAtributosCategoria(categoryId) {
     if (!categoryId) return [];
     
@@ -50741,7 +50757,30 @@ Retorne JSON: {"ID": "valor", ...}`;
     [/^\s*-\s+Cópia/, 'copy',      '#4338ca'],
   ];
 
+  // ★★ v33k.2229: O LOG SOBREVIVE À JANELA.
+  // ──────────────────────────────────────────────────────────────────────
+  // Em 01/09 o Alessandro precisou do log três vezes e não conseguiu: ele
+  // aparece durante o processo e some ao fechar, rápido demais para copiar ou
+  // fotografar. Sem ele eu fiquei teorizando, e errei duas vezes seguidas.
+  //
+  // Agora cada linha também vai para `window._dupLog`, que fica na memória da
+  // aba. Depois de qualquer duplicação, no console:
+  //
+  //     copy(_dupLog.join('\n'))       cola o log inteiro
+  //     _dupLog.join('\n')             só ver
+  //
+  // ★ Guarda no máximo 500 linhas: uma duplicação em massa com centenas de
+  //   cópias encheria a memória da aba sem ninguém perceber.
+  window._dupLog = window._dupLog || [];
+
   function dupLogStep(msg, tipo) {
+    // Fora do `if (!log)`: sem isto, o log some justamente quando a janela não
+    // está montada, que é quando mais falta.
+    try {
+      window._dupLog.push((tipo === 'err' ? '[ERRO] ' : '') + String(msg == null ? '' : msg));
+      if (window._dupLog.length > 500) window._dupLog.splice(0, window._dupLog.length - 500);
+    } catch (_) { /* log nunca derruba o fluxo */ }
+
     const log = document.getElementById('dupStepLog');
     if (!log) return;
     let texto = String(msg == null ? '' : msg);
@@ -52427,7 +52466,23 @@ REGRAS DURAS:
     let lojaIdBanco = null;
     try { lojaIdBanco = await garantirLojaNoBanco(lojaDestino); } catch(_){}
     if (!lojaIdBanco && lojaDestino && lojaDestino.idBanco) lojaIdBanco = lojaDestino.idBanco;
-    if (!lojaIdBanco) { showToast('Não consegui resolver a loja de destino', true); return; }
+    // ★★ v33k.2229: DIZER QUAL LOJA E POR QUÊ.
+    //   Print de 01/09: duas lojas não entraram no lote e a única pista era
+    //   "não entrou no lote". Este `return` é um dos caminhos, e ele avisava
+    //   com um toast genérico que some em segundos — sem nome de loja, sem
+    //   motivo, e o Alessandro tem TRÊS lojas chamadas CALCENTER.
+    if (!lojaIdBanco) {
+      const _porque = String(lojaDestino && lojaDestino.id || '').indexOf('conta_') === 0
+        ? 'é um espelho de conta, não uma loja'
+        : (!String((lojaDestino || {}).nome || '').trim()
+          ? 'está sem nome no painel'
+          : 'não tem id no banco e o cadastro automático falhou');
+      const _nome = (lojaDestino && lojaDestino.nome) || lojaDestinoId;
+      dupLogStep('  ✗ ' + _nome + ' (' + ((lojaDestino || {}).marketplace || '?') + '): ' + _porque
+        + '. Abra Lojas & Conexões e confira essa loja.', 'err');
+      showToast('Não consegui resolver a loja ' + _nome + ': ' + _porque, true);
+      return;
+    }
 
     // 3. cria UMA tarefa que exporta todas as cópias na data marcada
     try {
@@ -75244,7 +75299,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2228-a-coluna-que-ja-sabia-ler';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2229-o-log-que-contou';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
