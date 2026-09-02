@@ -20833,6 +20833,37 @@ window.LC_SVG = {
          do anúncio escolhido, evitando cores duplicadas (Rosa/Rose). -->
     <div id="dupAnuncioRefBox" style="margin-bottom:12px"></div>
 
+    <!-- ★★ v33k.2241: USAR OS ANÚNCIOS QUE JÁ EXISTEM COMO BASE.
+         Pedido do Alessandro em 02/09: ele já tem 100 anúncios do mesmo
+         produto na Shopee, cada um com título, descrição e fotos que a IA
+         fez. Levar esses 100 para o TikTok não precisa de IA nenhuma: são
+         marketplaces diferentes, ficar igual não é problema. Marcando aqui,
+         cada anúncio marcado vira UM anúncio no destino, como está. -->
+    <div id="dupFontesBox" style="display:none;margin-bottom:12px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:10px;padding:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+        <div style="font-size:11.5px;font-weight:700;color:#1d4ed8;display:flex;align-items:center;gap:6px">
+          <span class="lc-ic" data-lucide="layers" style="width:14px;height:14px"></span>
+          Anúncios que já existem deste produto
+        </div>
+        <button type="button" id="dupBtnMarcarFontes" onclick="dupMarcarTodasFontes()"
+          style="padding:6px 10px;background:#fff;color:var(--lc-ink);border:1px solid var(--lc-border-2);border-radius:8px;font-size:11.5px;font-weight:600;cursor:pointer">marcar todos</button>
+      </div>
+      <div style="font-size:11px;color:#1e40af;margin-bottom:6px">
+        Marque para exportar os que já existem, do jeito que estão. Cada marcado vira um anúncio em cada loja de destino, sem refazer título, descrição nem foto.
+      </div>
+      <div style="position:relative;margin-bottom:6px">
+        <span class="lc-ic" data-lucide="search" style="position:absolute;left:9px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:#94a3b8"></span>
+        <input id="dupFonteBusca" type="text" placeholder="buscar pelo nome do anúncio ou da loja" oninput="dupFiltrarFontes(this.value)"
+          style="width:100%;padding:7px 10px 7px 30px;border:1px solid var(--lc-border);border-radius:8px;font-size:12px;box-sizing:border-box">
+      </div>
+      <div id="dupFontesLista" style="max-height:210px;overflow-y:auto;border:1px solid var(--lc-border);border-radius:8px;padding:6px;background:#fff"></div>
+      <div id="dupFonteVazio" style="display:none;font-size:11.5px;color:#94a3b8;padding:6px 2px">Nenhum anúncio com esse nome.</div>
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:10.5px;color:#1e40af;margin-top:5px">
+        <span id="dupFonteAviso">Nada marcado: a duplicação usa só este produto como modelo, com IA.</span>
+        <span id="dupFonteContador" style="font-weight:700;white-space:nowrap">nenhum marcado</span>
+      </div>
+    </div>
+
     <div style="margin-bottom:12px;display:flex;gap:12px;align-items:flex-end">
       <div style="flex:1">
         <label style="font-size:11px;font-weight:700;color:#374151">Quantidade de cópias</label>
@@ -20844,9 +20875,9 @@ window.LC_SVG = {
         <select id="dupParalelo" class="form-input" style="font-size:14px" onchange="dupSalvarParalelo(this.value)">
           <option value="1">1 (uma por vez)</option>
           <option value="2">2</option>
-          <option value="4" selected>4 (padrão)</option>
+          <option value="4">4</option>
           <option value="6">6</option>
-          <option value="8">8 (máximo)</option>
+          <option value="8" selected>8 (padrão)</option>
         </select>
       </div>
     </div>
@@ -45699,9 +45730,127 @@ Retorne JSON: {"ID": "valor", ...}`;
     emColetarTela();                       // não perde o que está digitado
     st.abaIdx = i;
     st.abaAtual = String(st.destinos[i].marketplace || '').toLowerCase();
+    st.pagina = 0;                         // outra aba, outra lista: começa da primeira página
     emDesenharAbas(); emDesenharAviso(); emDesenharSeletor(); emDesenharTabela();
   }
   window.emTrocarAba = emTrocarAba;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2239: A TABELA É PAGINADA. O MODELO É A FONTE, O DOM É A PÁGINA.
+  // ───────────────────────────────────────────────────────────────────────
+  // MEDIDO em 02/09 (`medir_conferencia_grande.js 200 6`): 200 anúncios com 6
+  // variações davam 700 linhas e 3.600 campos POR ABA, 1,6 MB de HTML, 4,4 s
+  // para desenhar e 0,75 s de `emRecontar` a cada tecla. Era o "esta página
+  // não está respondendo" do relato de 02/09 (1 anúncio x 50 x 4 lojas).
+  //
+  // Agora a tabela desenha EM_LINHAS_POR_PAGINA anúncios por vez. O que
+  // muda de verdade não é o desenho, é quem manda: as ferramentas de coluna
+  // (aplicar, desfazer, limpar, editar em massa, montar SKU) liam e
+  // escreviam NO DOM (`querySelectorAll('[data-emcol=...]')`). Com página,
+  // o DOM só tem 25 anúncios; elas passaram a andar sobre o MODELO
+  // (`st.linhas`, via `_emCamposDaColuna` / `_emGravarCampos`) e o DOM é
+  // redesenhado depois. `emColetarTela`, `emRecontar` e `emListarPendencias`
+  // já eram de modelo e não mudaram.
+  //
+  // ★ Com até 25 anúncios no canal, o desenho é IDÊNTICO ao anterior: sem
+  //   paginador, mesmas células, mesmos `data-emli`. É o que mantém o
+  //   `qa_caminho_criacao_real` lendo a mesma tela.
+  const EM_LINHAS_POR_PAGINA = 25;
+  // índices (li) das linhas do canal da aba atual, na ordem do modelo
+  function _emLinhasDoCanalIdx() {
+    const st = _emEstado; if (!st) return [];
+    const out = [];
+    (st.linhas || []).forEach((linha, li) => {
+      if (typeof _emLinhaDoCanal === 'function' && !_emLinhaDoCanal(linha, st.abaAtual)) return;
+      out.push(li);
+    });
+    return out;
+  }
+  function _emPaginaAtual(total) {
+    const st = _emEstado; if (!st) return 0;
+    const n = Math.max(1, Math.ceil((total || 0) / EM_LINHAS_POR_PAGINA));
+    let pg = Number(st.pagina) || 0;
+    if (pg < 0) pg = 0;
+    if (pg > n - 1) pg = n - 1;
+    st.pagina = pg;
+    return pg;
+  }
+  // página em que a linha `li` está (ou -1 se ela não é deste canal)
+  function _emPaginaDe(li) {
+    const pos = _emLinhasDoCanalIdx().indexOf(Number(li));
+    return pos < 0 ? -1 : Math.floor(pos / EM_LINHAS_POR_PAGINA);
+  }
+  function _emPaginadorHTML(total, pg, onde) {
+    if (total <= EM_LINHAS_POR_PAGINA) return '';
+    const n = Math.ceil(total / EM_LINHAS_POR_PAGINA);
+    const ini = pg * EM_LINHAS_POR_PAGINA + 1, fim = Math.min(total, (pg + 1) * EM_LINHAS_POR_PAGINA);
+    const btn = (rot, delta, off) => '<button type="button" onclick="emIrPagina(' + delta + ')"' + (off ? ' disabled' : '') +
+      ' style="padding:6px 12px;border:1px solid var(--lc-border);border-radius:8px;background:#fff;font-size:12px;font-weight:600;' +
+      'cursor:' + (off ? 'default' : 'pointer') + ';color:' + (off ? '#cbd5e1' : '#1e293b') + '">' + rot + '</button>';
+    return '<div class="em-paginador" data-onde="' + onde + '" style="display:flex;justify-content:space-between;align-items:center;gap:10px;' +
+      'padding:8px 4px;font-size:12.5px;color:#475569">' +
+      '<span>Anúncios <b>' + ini + '</b> a <b>' + fim + '</b> de <b>' + total + '</b> neste canal · página ' + (pg + 1) + ' de ' + n +
+        ' · as edições em massa valem para todas as páginas</span>' +
+      '<div style="display:flex;gap:6px">' + btn('Anterior', -1, pg <= 0) + btn('Próxima', 1, pg >= n - 1) + '</div></div>';
+  }
+  function emIrPagina(delta) {
+    const st = _emEstado; if (!st) return;
+    emColetarTela();                       // o que está digitado nesta página vai para o modelo
+    const total = _emLinhasDoCanalIdx().length;
+    const n = Math.max(1, Math.ceil(total / EM_LINHAS_POR_PAGINA));
+    st.pagina = Math.max(0, Math.min(n - 1, (Number(st.pagina) || 0) + (Number(delta) || 0)));
+    emDesenharTabela(); emRecontar();
+    try { const el = document.getElementById('emTabela'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' }); } catch (_) {}
+  }
+  window.emIrPagina = emIrPagina;
+  window._emPaginaDe = _emPaginaDe;
+  window._emLinhasDoCanalIdx = _emLinhasDoCanalIdx;
+
+  // Campos "virtuais" de uma coluna, para TODAS as linhas do canal (todas as
+  // páginas), na ordem em que o DOM os desenharia: linha a linha, e dentro da
+  // linha variação a variação. Mesma cara dos inputs (`value`, `getAttribute`)
+  // para o código das ferramentas continuar igual. Coluna sem campo digitável
+  // (fotos, categoria, atributos, guia) devolve vazio, como o DOM devolvia.
+  function _emCamposDaColuna(colId) {
+    const st = _emEstado; if (!st) return [];
+    const col = emColunasVisiveis().find(c => c.id === colId);
+    if (!col) return [];
+    if (col.tipo === 'fotos' || col.tipo === 'categoria' || col.tipo === 'atributos' || col.tipo === 'imagem' || col.tipo === 'guia') return [];
+    const subs = col.tipo === 'dims' ? ['comprimento', 'largura', 'altura'] : [null];
+    const out = [];
+    const mk = (linha, li, vi, sub) => {
+      const v = _emValor(linha, col, vi);
+      const val = sub ? ((v && typeof v === 'object') ? v[sub] : '') : v;
+      return {
+        value: val == null ? '' : String(val), li, vi, sub, col,
+        getAttribute: (k) => k === 'data-emsub' ? sub : (k === 'data-emli' ? String(li) : (k === 'data-emvi' ? (vi == null ? null : String(vi)) : (k === 'data-emcol' ? col.id : null))),
+      };
+    };
+    _emLinhasDoCanalIdx().forEach(li => {
+      const linha = st.linhas[li];
+      if (col.escopo === 'variacao') (linha.variacoes || []).forEach((v, vi) => subs.forEach(sub => out.push(mk(linha, li, vi, sub))));
+      else subs.forEach(sub => out.push(mk(linha, li, null, sub)));
+    });
+    return out;
+  }
+  // devolve os campos virtuais ao modelo (o oposto do `mk` acima)
+  function _emGravarCampos(campos) {
+    const st = _emEstado; if (!st) return;
+    (campos || []).forEach(c => {
+      if (!c || !c.col) return;
+      const linha = (st.linhas || [])[c.li]; if (!linha) return;
+      if (c.sub) {
+        const atual = _emValor(linha, c.col, c.vi);
+        const novo = Object.assign({}, (atual && typeof atual === 'object') ? atual : {});
+        novo[c.sub] = c.value;
+        _emGravar(linha, c.col, c.vi, novo);
+      } else {
+        _emGravar(linha, c.col, c.vi, c.value);
+      }
+    });
+  }
+  window._emCamposDaColuna = _emCamposDaColuna;
+  window._emGravarCampos = _emGravarCampos;
 
   // ─── a tabela ─────────────────────────────────────────────────────────
   // Linha por anúncio; sub-linha por variação quando há coluna de variação
@@ -45972,13 +46121,19 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   rótulo acompanha a rolagem horizontal junto do produto.
     const _tdVazio = '<td style="padding:7px 10px;color:#cbd5e1">—</td>';
     let _linhasDesenhadas = 0;
-    (st.linhas || []).forEach((linha, li) => {
-      // ★★ v33k.2231: CADA ABA MOSTRA SÓ O QUE VAI PARA AQUELE CANAL.
-      //   Sem isto, a aba do Mercado Livre pedia Cor principal e ID da guia
-      //   de tamanhos das cópias que iam para Shopee e TikTok — campos que
-      //   esses canais não têm. `_emLinhaDoCanal` já existia e já era usado
-      //   pelas pendências; a tabela é que desenhava tudo em toda aba.
-      if (typeof _emLinhaDoCanal === 'function' && !_emLinhaDoCanal(linha, st.abaAtual)) return;
+    // ★★ v33k.2231: CADA ABA MOSTRA SÓ O QUE VAI PARA AQUELE CANAL.
+    //   Sem isto, a aba do Mercado Livre pedia Cor principal e ID da guia
+    //   de tamanhos das cópias que iam para Shopee e TikTok — campos que
+    //   esses canais não têm. `_emLinhaDoCanal` já existia e já era usado
+    //   pelas pendências; a tabela é que desenhava tudo em toda aba.
+    // ★★ v33k.2239: E SÓ A PÁGINA ATUAL. `li` continua sendo o índice do
+    //   modelo (é o que `data-emli` carrega), só a fatia desenhada mudou.
+    const _idxCanal = _emLinhasDoCanalIdx();
+    const _pg = _emPaginaAtual(_idxCanal.length);
+    const _visiveis = _idxCanal.slice(_pg * EM_LINHAS_POR_PAGINA, (_pg + 1) * EM_LINHAS_POR_PAGINA);
+    h = _emPaginadorHTML(_idxCanal.length, _pg, 'topo') + h;
+    _visiveis.forEach((li) => {
+      const linha = st.linhas[li];
       _linhasDesenhadas++;
       const capa = (linha.fotos || [])[0];
       const capaUrl = capa ? (typeof capa === 'string' ? capa : (capa.url || capa.src)) : null;
@@ -46037,6 +46192,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     });
 
     h += '</tbody></table></div>';
+    h += _emPaginadorHTML(_idxCanal.length, _pg, 'rodape');
     el.innerHTML = h;
     if (window._hidratarIcones) window._hidratarIcones(el);
     else if (window.lcHydrateIcons) window.lcHydrateIcons(el);
@@ -46073,9 +46229,14 @@ Retorne JSON: {"ID": "valor", ...}`;
   window.emColetarTela = emColetarTela;
 
   // ─── edição em massa por coluna ───────────────────────────────────────
+  // ★ v33k.2239: as três ferramentas de coluna andam sobre o MODELO (todas as
+  //   páginas do canal), não sobre o DOM (só a página aberta). A ordem é:
+  //   coletar o que está digitado -> campos virtuais -> mexer -> gravar ->
+  //   redesenhar -> recontar.
   function emAplicarColuna(colId) {
     const st = _emEstado; if (!st) return;
-    const campos = [...document.querySelectorAll('[data-emcol="' + colId + '"]')];
+    emColetarTela();
+    const campos = _emCamposDaColuna(colId);
     const origem = campos.find(c => String(c.value || '').trim());
     if (!origem) { showToast('Preencha uma linha primeiro, depois use o lápis.', true); return; }
     // ★ guarda o estado ANTES pra o desfazer existir de verdade. Aplicar em
@@ -46084,7 +46245,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     st.desfazer[colId] = campos.map(c => c.value);
     let n = 0;
     campos.forEach(c => { if (c !== origem && !String(c.value || '').trim()) { c.value = origem.value; n++; } });
-    emColetarTela(); emRecontar();
+    _emGravarCampos(campos); emDesenharTabela(); emRecontar();
     showToast(n ? ('Valor repetido em ' + n + ' linha(s). Dá pra desfazer.') : 'Nada vazio nesta coluna.');
   }
   window.emAplicarColuna = emAplicarColuna;
@@ -46093,22 +46254,24 @@ Retorne JSON: {"ID": "valor", ...}`;
     const st = _emEstado; if (!st || !st.desfazer || !st.desfazer[colId]) {
       showToast('Não há o que desfazer nesta coluna.', true); return;
     }
-    const campos = [...document.querySelectorAll('[data-emcol="' + colId + '"]')];
+    emColetarTela();
+    const campos = _emCamposDaColuna(colId);
     const antes = st.desfazer[colId];
     campos.forEach((c, i) => { if (i < antes.length) c.value = antes[i]; });
     delete st.desfazer[colId];
-    emColetarTela(); emRecontar();
+    _emGravarCampos(campos); emDesenharTabela(); emRecontar();
     showToast('Desfeito.');
   }
   window.emDesfazerColuna = emDesfazerColuna;
 
   function emLimparColuna(colId) {
     const st = _emEstado; if (!st) return;
-    const campos = [...document.querySelectorAll('[data-emcol="' + colId + '"]')];
+    emColetarTela();
+    const campos = _emCamposDaColuna(colId);
     st.desfazer = st.desfazer || {};
     st.desfazer[colId] = campos.map(c => c.value);
     campos.forEach(c => { c.value = ''; });
-    emColetarTela(); emRecontar();
+    _emGravarCampos(campos); emDesenharTabela(); emRecontar();
   }
   window.emLimparColuna = emLimparColuna;
 
@@ -46152,7 +46315,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     const passo = col.tipo === 'inteiro' ? '1' : '0.01';
 
     let h = '<div style="font-size:12.5px;color:#475569;margin-bottom:12px">' +
-      'Vale para <strong>todas as linhas visíveis</strong> desta coluna. Dá pra desfazer depois.</div>';
+      'Vale para <strong>todas as linhas deste canal</strong>, em todas as páginas. Dá pra desfazer depois.</div>';
 
     // ═══════════════════════════════════════════════════════════════════
     // v33k.1836: O MODAL TEM A CARA DA COLUNA.
@@ -46355,7 +46518,15 @@ Retorne JSON: {"ID": "valor", ...}`;
     const itens = [];
     const semPrefixo = [];
 
-    (st.linhas || []).forEach((l, li) => {
+    // ★ v33k.2239: lê o MODELO (todas as páginas do canal), não o DOM. A
+    //   coluna escondida continua não inventando: sem ela visível, nada.
+    emColetarTela();
+    const colSku = emColunasVisiveis().find(c => c.id === 'sku');
+    if (!colSku) return { itens, semPrefixo };
+    const porChave = {};
+    _emCamposDaColuna('sku').forEach(c => { porChave[c.li + '|' + c.vi] = c; });
+    _emLinhasDoCanalIdx().forEach((li) => {
+      const l = st.linhas[li];
       const rotulo = (l._anuncio ? ((l._anuncio.nomeLoja || '') + ' #' + l._anuncio.anuncioId)
                                  : (l.nome || ('linha ' + (li + 1))));
       // ★ o prefixo é POR LINHA quando vem do SKU pai. É isso que faz dois
@@ -46364,13 +46535,13 @@ Retorne JSON: {"ID": "valor", ...}`;
       if (!base) { semPrefixo.push(rotulo); return; }
       const gerados = lcMontarSkusDasVariacoes(base, l.variacoes || []);
       (l.variacoes || []).forEach((v, vi) => {
-        const el = document.querySelector('[data-emcol="sku"][data-emli="' + li + '"][data-emvi="' + vi + '"]');
-        if (!el) return;                       // coluna escondida: não inventa
+        const campo = porChave[li + '|' + vi];
+        if (!campo) return;
         const para = gerados[vi];
         if (!para) return;
-        const de = String(el.value == null ? '' : el.value).trim();
+        const de = String(campo.value == null ? '' : campo.value).trim();
         if (de === para) return;               // já está como a regra geraria
-        itens.push({ el, li, vi, de, para, rotulo,
+        itens.push({ campo, li, vi, de, para, rotulo,
           variacao: v.nome || [v.cor, v.tamanho].filter(Boolean).join(' / ') || ('var ' + (vi + 1)) });
       });
     });
@@ -46444,8 +46615,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     const modoEl = document.querySelector('input[name="emMassaModo"]:checked');
     const modo = modoEl ? modoEl.value : 'valor';
     const soVazio = !!(document.getElementById('emMassaSoVazio') || {}).checked;
-    const campos = [...document.querySelectorAll('[data-emcol="' + col.id + '"]')];
-    if (!campos.length) { showToast('Nenhuma linha visível nesta coluna.', true); return; }
+    // ★ v33k.2239: campos virtuais do MODELO, todas as páginas do canal
+    emColetarTela();
+    const campos = _emCamposDaColuna(col.id);
+    if (!campos.length) { showToast('Nenhuma linha neste canal para esta coluna.', true); return; }
 
     // ★ o antes, sempre, antes de qualquer escrita
     st.desfazer = st.desfazer || {};
@@ -46473,7 +46646,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         if (soVazio && String(c.value || '').trim()) return;
         c.value = pedido[sub]; nd++;
       });
-      emColetarTela(); emRecontar();
+      _emGravarCampos(campos); emDesenharTabela(); emRecontar();
       if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
       // ★ v33k.2026: mesmo defeito do ramo de baixo — zero saía verde.
       if (nd) showToast(nd + ' medida(s) alterada(s). Dá pra desfazer no ícone ao lado.');
@@ -46494,11 +46667,12 @@ Retorne JSON: {"ID": "valor", ...}`;
         return;
       }
       let nm = 0;
+      const _mudados = [];
       prev.itens.forEach(x => {
-        if (soVazio && String(x.el.value || '').trim()) return;
-        x.el.value = x.para; nm++;
+        if (soVazio && String(x.campo.value || '').trim()) return;
+        x.campo.value = x.para; nm++; _mudados.push(x.campo);
       });
-      emColetarTela(); emRecontar();
+      _emGravarCampos(_mudados); emDesenharTabela(); emRecontar();
       if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
       if (nm) {
         showToast(nm + ' SKU(s) montado(s)' +
@@ -46547,7 +46721,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         c.value = atual.split(de).join(para); n++;
       }
     });
-    emColetarTela(); emRecontar();
+    _emGravarCampos(campos); emDesenharTabela(); emRecontar();
     if (typeof lcModalFechar === 'function') { try { lcModalFechar(); } catch (e) {} }
     // ★ v33k.2026: ZERO NÃO SAI VERDE, E DIZ ONDE FOI PARAR.
     //   `showToast(msg)` com um argumento só desenha ✓ e fundo de sucesso.
@@ -48183,6 +48357,8 @@ Retorne JSON: {"ID": "valor", ...}`;
     const st = _emEstado; if (!st || !p) return;
     if (p.abaIdx !== st.abaIdx && typeof emTrocarAba === 'function') emTrocarAba(p.abaIdx);
     if (p.oculta) { st.ocultas[p.colId] = false; emDesenharSeletor(); emDesenharTabela(); }
+    // ★ v33k.2239: a linha pode estar em outra página
+    { const _pg = _emPaginaDe(p.li); if (_pg >= 0 && _pg !== st.pagina) { emColetarTela(); st.pagina = _pg; emDesenharTabela(); } }
     await new Promise(r => setTimeout(r, 60));
 
     const SEM_CAMPO = { categoria: 'emAbrirCategoria', atributos: 'emAbrirAtributos',
@@ -48425,6 +48601,7 @@ Retorne JSON: {"ID": "valor", ...}`;
         abaAtual: String((destinos && destinos[0] && destinos[0].marketplace) || '').toLowerCase(),
         ocultas: {},
         desfazer: {},
+        pagina: 0,                 // ★ v33k.2239: página da tabela (EM_LINHAS_POR_PAGINA anúncios)
         voltarPara: voltarPara || 'estoqueScreen',
         resolve: resolve,
       };
@@ -50223,6 +50400,21 @@ Retorne JSON: {"ID": "valor", ...}`;
     const _total = (linhas || []).length;
     let _feitas = 0;
     if (_total) _prog(0, _total, 'preenchendo o que faltou');
+    // ═══════════════════════════════════════════════════════════════════
+    // ★★ v33k.2241: A MESMA PERGUNTA NÃO VAI DUAS VEZES PARA A IA.
+    // ───────────────────────────────────────────────────────────────────
+    // Cem cópias do MESMO produto pediam cem vezes o peso e as medidas da
+    // caixa, e cem vezes os atributos do canal — respostas idênticas, porque
+    // o produto físico é um só. `duplicadoDeId || id` dá a raiz da família:
+    // as cópias apontam para o original e o original aponta para si mesmo,
+    // então todas caem na mesma chave. O valor é a PROMESSA, para duas
+    // linhas em paralelo dividirem uma chamada em vez de fazerem duas.
+    const _raizDaLinha = (l) => {
+      const pp = (l && l._produto) || {};
+      return String(pp.duplicadoDeId || pp.id || l.nome || '');
+    };
+    const _cacheEmbalagem = new Map();
+    const _cacheAtributos = new Map();
     await _emEmParalelo(linhas || [], async (linha) => {
       linha.preenchidoPelaIA = linha.preenchidoPelaIA || {};
       const p = linha._produto || {};
@@ -50244,12 +50436,16 @@ Retorne JSON: {"ID": "valor", ...}`;
       const faltaDim = !linha.dims || !linha.dims.comprimento || !linha.dims.largura || !linha.dims.altura;
       if (faltaPeso || faltaDim) {
         try {
-          const r = await fetch(BACKEND_URL + '/api/anuncio-rascunhos/estimar-embalagem', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
-              'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
-            body: JSON.stringify({ nome: linha.nome, descricao: linha.descricao }),
-          }).then(x => x.json());
+          const _ch = _raizDaLinha(linha);
+          if (!_cacheEmbalagem.has(_ch)) {
+            _cacheEmbalagem.set(_ch, fetch(BACKEND_URL + '/api/anuncio-rascunhos/estimar-embalagem', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+                'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+              body: JSON.stringify({ nome: linha.nome, descricao: linha.descricao }),
+            }).then(x => x.json()).catch(e => { _cacheEmbalagem.delete(_ch); throw e; }));
+          }
+          const r = await _cacheEmbalagem.get(_ch);
           if (r && r.ok && r.estimativa) {
             const e = r.estimativa;
             if (faltaPeso && e.peso) { linha.peso = e.peso; linha.preenchidoPelaIA.peso = true; }
@@ -50274,15 +50470,21 @@ Retorne JSON: {"ID": "valor", ...}`;
         });
         if (!vazios.length) continue;
         try {
-          const r = await fetch(BACKEND_URL + '/api/anuncio-rascunhos/sugerir-atributos', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
-              'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
-            body: JSON.stringify({
-              produto: { nome: linha.nome, marca: p.marca, descricao: linha.descricao },
-              campos: vazios.map(c => ({ id: c.id, nome: c.nome, obrigatorio: c.obrigatorio, valores: c.valores })),
-            }),
-          }).then(x => x.json());
+          // a chave inclui o canal e QUAIS campos estão vazios: outra lista de
+          // campos é outra pergunta, e a resposta de uma não serve para a outra
+          const _ch = _raizDaLinha(linha) + '|' + mkt + '|' + vazios.map(c => c.id).sort().join(',');
+          if (!_cacheAtributos.has(_ch)) {
+            _cacheAtributos.set(_ch, fetch(BACKEND_URL + '/api/anuncio-rascunhos/sugerir-atributos', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-api-token': getApiToken(),
+                'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '') },
+              body: JSON.stringify({
+                produto: { nome: linha.nome, marca: p.marca, descricao: linha.descricao },
+                campos: vazios.map(c => ({ id: c.id, nome: c.nome, obrigatorio: c.obrigatorio, valores: c.valores })),
+              }),
+            }).then(x => x.json()).catch(e => { _cacheAtributos.delete(_ch); throw e; }));
+          }
+          const r = await _cacheAtributos.get(_ch);
           const vals = (r && r.ok && r.valores) || null;
           if (!vals) continue;
           linha.atributos[mkt] = linha.atributos[mkt] || {};
@@ -50620,6 +50822,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   próxima duplicação de verdade, feita pela lista, herdaria o
     //   comportamento errado — o oposto do defeito, e igualmente calado.
     window._dupModoCriacao = false;
+    window._dupComoEsta = false;     // ★ v33k.2241
     
     window._ativarAdsPosExport = true; // default marcado (checkbox reflete e pode desmarcar)
     _dupProdutoId = produtoId;
@@ -50629,6 +50832,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     document.getElementById('dupProdutoNome').textContent = '"' + p.nome + '"';
     document.getElementById('dupQuantidade').value = 3;
     dupRestaurarParalelo();
+    dupRenderFontes(p);                     // ★ v33k.2241
     
     // Popula select de loja destino (default: mesma loja do produto)
     const sel = document.getElementById('dupLojaDestino');
@@ -50760,6 +50964,7 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!lista.length) { showToast('Selecione produtos primeiro', true); return; }
     if (!lojasErp.length) { lcAlert('Nenhuma loja cadastrada. Vá em 🏪 Lojas & Conexões pra adicionar.'); return; }
 
+    window._dupComoEsta = false;     // ★ v33k.2241
     _dupProdutoIds = lista.map(p => String(p.id));
     _dupProdutoId = _dupProdutoIds[0]; // referência base (a régua usa preço do 1º como base)
     _dupCancelar = false;
@@ -50769,6 +50974,10 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (nomeEl) nomeEl.textContent = lista.length + ' produto(s) selecionado(s), cada um vira cópia(s) nas lojas marcadas';
     document.getElementById('dupQuantidade').value = 1; // default 1 cópia por produto no massa
     dupRestaurarParalelo();
+    // ★ v33k.2241: no massa ele já escolheu os produtos na lista; a família
+    //   de um só não faz sentido aqui.
+    { const bx = document.getElementById('dupFontesBox'); if (bx) bx.style.display = 'none'; }
+    { const lt = document.getElementById('dupFontesLista'); if (lt) lt.innerHTML = ''; }
 
     // Lojas (multi), default: nenhuma marcada (no massa os produtos vêm de lojas diferentes)
     const boxLojas = document.getElementById('dupLojasDestino');
@@ -51149,7 +51358,128 @@ Retorne JSON: {"ID": "valor", ...}`;
   // Quantas cópias preparar ao mesmo tempo. Vem do seletor do modal de
   // duplicação quando ele está na tela; senão do que ficou salvo; senão 4.
   // Teto 8: o backend enfileira acima disso e o rate limit da IA não estoura.
-  const DUP_PARALELO_PADRAO = 4, DUP_PARALELO_MAX = 8;
+  // ★ v33k.2240: 8 é o PADRÃO. Ele testou 100 anúncios a 8x em 02/09 sem um
+  //   erro, e o backend segura o resto: teto por usuário de 8 e orçamento
+  //   medido contra os limites da conta (util/ia-portao.js).
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2241: A FAMÍLIA DE UM PRODUTO (o original e as cópias dele).
+  // ───────────────────────────────────────────────────────────────────────
+  // Toda cópia guarda `duplicadoDeId` apontando para quem a gerou (é o que
+  // já agrupa as cópias no card e as esconde da lista). A família é o fecho
+  // transitivo disso: sobe até a raiz e desce pegando tudo. Cópia de cópia
+  // entra; o guarda de ciclo existe porque um dado torto no banco não pode
+  // virar laço infinito na cara de quem abriu o modal.
+  function _dupRaizDaFamilia(p) {
+    let atual = p, voltas = 0;
+    while (atual && atual.duplicadoDeId && voltas++ < 50) {
+      const pai = produtosErp.find(x => String(x.id) === String(atual.duplicadoDeId));
+      if (!pai || pai === atual) break;
+      atual = pai;
+    }
+    return atual || p;
+  }
+  function _dupFamiliaDeProduto(p) {
+    if (!p) return [];
+    const raiz = _dupRaizDaFamilia(p);
+    const vistos = new Set([String(raiz.id)]);
+    const fila = [raiz], fora = [];
+    let voltas = 0;
+    while (fila.length && voltas++ < 5000) {
+      const atual = fila.shift();
+      fora.push(atual);
+      produtosErp.forEach(x => {
+        if (!x || x.status === 'excluido') return;
+        if (String(x.duplicadoDeId || '') !== String(atual.id)) return;
+        if (vistos.has(String(x.id))) return;
+        vistos.add(String(x.id));
+        fila.push(x);
+      });
+    }
+    return fora;
+  }
+  window._dupFamiliaDeProduto = _dupFamiliaDeProduto;
+
+  // Onde cada membro da família está hoje (loja e canal), para ele saber
+  // quais são "os 100 da Shopee" sem abrir um por um.
+  function _dupLojaDoProduto(x) {
+    const l = lojasErp.find(l => String(l.id) === String(x && x.lojaId));
+    return l ? { nome: l.nome, marketplace: l.marketplace } : { nome: '', marketplace: '' };
+  }
+  function dupRenderFontes(p) {
+    const box = document.getElementById('dupFontesBox');
+    const lista = document.getElementById('dupFontesLista');
+    if (!box || !lista) return;
+    const familia = _dupFamiliaDeProduto(p).filter(x => String(x.id) !== String(p.id));
+    if (!familia.length) { box.style.display = 'none'; lista.innerHTML = ''; dupContarFontes(); return; }
+    box.style.display = '';
+    lista.innerHTML = familia.map(x => {
+      const lj = _dupLojaDoProduto(x);
+      return '<label class="dup-fonte-item" data-busca="' + escapeHtml(((x.nome || '') + ' ' + lj.nome + ' ' + lj.marketplace).toLowerCase()) + '"' +
+        ' style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--lc-border);cursor:pointer">' +
+        '<input type="checkbox" class="dup-fonte-ck" value="' + escapeHtml(String(x.id)) + '" onchange="dupContarFontes()">' +
+        '<span style="flex:1;font-size:12px;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(x.nome || 'sem nome') + '</span>' +
+        (lj.nome ? '<span style="font-size:10.5px;color:#64748b;white-space:nowrap">' + escapeHtml(lj.nome) + '</span>' : '') +
+        (lj.marketplace ? '<span class="mk mk-' + escapeHtml(lj.marketplace) + '">' + escapeHtml(lj.marketplace) + '</span>' : '') +
+        '</label>';
+    }).join('');
+    const b = document.getElementById('dupFonteBusca'); if (b) b.value = '';
+    dupFiltrarFontes('');
+    dupContarFontes();
+    if (window._hidratarIcones) window._hidratarIcones(box);
+    else if (window.lcHydrateIcons) window.lcHydrateIcons(box);
+  }
+  window.dupRenderFontes = dupRenderFontes;
+  function dupFiltrarFontes(termo) {
+    const t = String(termo || '').trim().toLowerCase();
+    const itens = [...document.querySelectorAll('#dupFontesLista .dup-fonte-item')];
+    let vis = 0;
+    itens.forEach(el => {
+      const bate = !t || (el.getAttribute('data-busca') || '').indexOf(t) >= 0;
+      el.style.display = bate ? '' : 'none';
+      if (bate) vis++;
+    });
+    const vazio = document.getElementById('dupFonteVazio');
+    if (vazio) vazio.style.display = (itens.length && !vis) ? '' : 'none';
+  }
+  window.dupFiltrarFontes = dupFiltrarFontes;
+  function _dupFontesSelecionadas() {
+    return [...document.querySelectorAll('.dup-fonte-ck:checked')].map(c => c.value);
+  }
+  window._dupFontesSelecionadas = _dupFontesSelecionadas;
+  // ★ Marcar um anúncio existente DESLIGA as variações por IA: o pedido é
+  //   justamente não gastar token refazendo o que já está pronto. Ficam
+  //   destravadas, então dá para religar uma delas de propósito.
+  function dupContarFontes() {
+    const n = _dupFontesSelecionadas().length;
+    const cont = document.getElementById('dupFonteContador');
+    if (cont) cont.textContent = n ? (n + ' marcado(s)') : 'nenhum marcado';
+    const aviso = document.getElementById('dupFonteAviso');
+    if (aviso) {
+      aviso.textContent = n
+        ? ('Os ' + n + ' marcados vão como estão, sem IA de título, descrição ou foto.')
+        : 'Nada marcado: a duplicação usa só este produto como modelo, com IA.';
+    }
+    if (n) ['dupVariarTitulo', 'dupVariarDescricao', 'dupRotacionarFotos', 'dupVariarPreco']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
+    const q = document.getElementById('dupQuantidade');
+    if (n && q) q.value = 1;                     // um anúncio de destino por anúncio marcado
+    const btn = document.getElementById('dupBtnMarcarFontes');
+    const total = document.querySelectorAll('#dupFontesLista .dup-fonte-ck').length;
+    if (btn) btn.textContent = (n && n === total) ? 'desmarcar todos' : 'marcar todos';
+    return n;
+  }
+  window.dupContarFontes = dupContarFontes;
+  function dupMarcarTodasFontes() {
+    const cks = [...document.querySelectorAll('#dupFontesLista .dup-fonte-item')]
+      .filter(el => el.style.display !== 'none')
+      .map(el => el.querySelector('.dup-fonte-ck')).filter(Boolean);
+    const marcarTudo = cks.some(c => !c.checked);
+    cks.forEach(c => { c.checked = marcarTudo; });
+    dupContarFontes();
+  }
+  window.dupMarcarTodasFontes = dupMarcarTodasFontes;
+
+  const DUP_PARALELO_PADRAO = 8, DUP_PARALELO_MAX = 8;
   function dupParaleloAtual() {
     let n = 0;
     try { const sel = document.getElementById('dupParalelo'); if (sel && sel.value) n = parseInt(sel.value, 10); } catch (_) {}
@@ -52471,6 +52801,19 @@ REGRAS DURAS:
   async function iniciarDuplicacaoMultiLoja() {
     const marcadas = Array.from(document.querySelectorAll('.dup-loja-ck:checked')).map(c => c.value);
     if (!marcadas.length) { showToast('Marque ao menos uma loja destino', true); return; }
+    // ═══════════════════════════════════════════════════════════════════
+    // ★★ v33k.2241: ANÚNCIOS JÁ EXISTENTES COMO ORIGEM ("cópia como está").
+    // ───────────────────────────────────────────────────────────────────
+    // Marcados na lista da família, cada um vira UM anúncio no destino, com
+    // o título, a descrição e as fotos que ele já tem. É o caminho de massa
+    // que já existe (prepara tudo, confere uma vez, publica tudo), com as
+    // variações por IA desligadas — daí a economia de token que ele pediu.
+    const _fontes = (typeof _dupFontesSelecionadas === 'function') ? _dupFontesSelecionadas() : [];
+    window._dupComoEsta = _fontes.length > 0;
+    if (window._dupComoEsta) {
+      _dupProdutoIds = _fontes.slice();
+      _dupProdutoId = _fontes[0];
+    }
     // ★ v33k.2230: um produto só — busca a linha inteira antes de qualquer
     //   loja. Em massa a lista continua leve (o caminho de massa reescreve
     //   descrição e atributos por IA e nunca dependeu deles).
@@ -52478,6 +52821,22 @@ REGRAS DURAS:
       const _pHid = produtosErp.find(x => String(x.id) === String(_dupProdutoId));
       try { await _dupHidratarProduto(_pHid); }
       catch (eH) { dupLogStep('  ⚠ Não consegui completar o produto pelo banco (' + eH.message + '); seguindo com o que está na memória.', 'err'); }
+    } else if (window._dupComoEsta) {
+      // ★★ v33k.2241: no massa comum a descrição não importava, porque a IA a
+      //   reescrevia. Aqui ela é JUSTAMENTE o que vai ser copiado — se o
+      //   produto em memória vier sem descrição (a lista é leve), o anúncio
+      //   sairia vazio no destino. Então completa todas as origens pelo banco,
+      //   em ondas, antes de preparar qualquer cópia.
+      const _origens = _dupProdutoIds
+        .map(id => produtosErp.find(x => String(x.id) === String(id)))
+        .filter(Boolean);
+      let _falhas = 0;
+      dupLogStep('Completando ' + _origens.length + ' anúncio(s) de origem pelo banco...');
+      await _dupPrepararEmOndas(_origens.length, async (k) => {
+        try { await _dupHidratarProduto(_origens[k - 1]); }
+        catch (_) { _falhas++; }
+      }, { paralelo: dupParaleloAtual(), cancelado: () => _dupCancelar });
+      if (_falhas) dupLogStep('  ⚠ ' + _falhas + ' origem(ns) seguiram com o que estava na memória.', 'err');
     }
     const selHidden = document.getElementById('dupLojaDestino');
 
@@ -52496,6 +52855,10 @@ REGRAS DURAS:
       ? _dupProdutoIds.slice()
       : [_dupProdutoId];
     const ehMassa = produtosAlvo.length > 1;
+    if (window._dupComoEsta) {
+      dupLogStep('Modo "como está": ' + produtosAlvo.length + ' anúncio(s) existente(s) vão para ' +
+        marcadas.length + ' loja(s), sem refazer título, descrição nem foto.', 'ok');
+    }
 
     const feitas = [];   // [{loja, produto, ok}], pro relatório final
 
@@ -75949,7 +76312,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2239-em-ondas';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2241-como-esta';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
@@ -80425,15 +80788,30 @@ REGRAS DE OURO:
     }
     if (Array.isArray(imagens) && imagens.length > 0) body.imagens = imagens;
     
+    // ★ v33k.2240: vai o token do LOGIN junto. O x-api-token é o mesmo para
+    //   todo mundo (token mestre do app), então sozinho ele não diz QUEM está
+    //   pedindo — e é por isso que a fila do portão ficava injusta: um lote de
+    //   200 cópias empurrava todo mundo para o fim. Com o Bearer, o backend
+    //   identifica o usuário e a fila roda por vez.
     const resp = await fetch(BACKEND_URL + '/api/ia', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-token': getApiToken()
+        'x-api-token': getApiToken(),
+        'Authorization': 'Bearer ' + (localStorage.getItem('lider_token_login') || '')
       },
       body: JSON.stringify(body)
     });
-    const data = await resp.json();
+    // ★ v33k.2240: quando o proxy corta (504) ou o backend cai, a resposta é
+    //   HTML — e `resp.json()` estourava com erro de leitura, que não diz nada
+    //   a quem está olhando o log da duplicação.
+    let data = null;
+    try { data = await resp.json(); } catch (_) { data = null; }
+    if (!data) {
+      throw new Error(resp.status === 504
+        ? 'A IA demorou mais que o limite do servidor. Tente com menos gerações simultâneas.'
+        : ('A IA respondeu de forma inesperada (HTTP ' + resp.status + ').'));
+    }
     if (!data.ok) {
       throw new Error(data.erro || 'Erro ao chamar a IA');
     }
