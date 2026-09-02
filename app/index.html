@@ -38331,7 +38331,21 @@ Retorne JSON: {"ID": "valor", ...}`;
           const existente = porIdBanco[String(p.id)];
           if (existente) {
             // Mantém id local + merge campos do backend (banco é fonte de verdade)
-            return { ...existente, ...p, id: existente.id, idBanco: p.id };
+            // ★ v33k.2230: ATUALIZA O OBJETO EXISTENTE, NÃO O TROCA. Fluxos em
+            //   andamento seguram o objeto (a duplicação com o próprio
+            //   produto, por exemplo); trocar por uma cópia deixava o fluxo
+            //   com um objeto e a lista com outro, e o produto aparecia duas
+            //   vezes. MEDIDO em 02/09.
+            // ★ E esta carga é LEVE (`leve=1`): o backend devolve descrição,
+            //   atributos ML e guia como vazios, não ausentes. O que a memória
+            //   já tinha cheio não pode virar vazio por causa de uma recarga
+            //   que nem pediu esses campos.
+            const guardado = { descricao: existente.descricao, atributosMl: existente.atributosMl, guiaTamanhos: existente.guiaTamanhos };
+            Object.assign(existente, p, { id: existente.id, idBanco: p.id });
+            if (!String(p.descricao || '').trim() && String(guardado.descricao || '').trim()) existente.descricao = guardado.descricao;
+            if (!Object.keys(p.atributosMl || {}).length && Object.keys(guardado.atributosMl || {}).length) existente.atributosMl = guardado.atributosMl;
+            if (!p.guiaTamanhos && guardado.guiaTamanhos) existente.guiaTamanhos = guardado.guiaTamanhos;
+            return existente;
           }
           // Produto que NÃO está no cache local, usa idBanco como id também
           return { ...p, idBanco: p.id, id: String(p.id) };
@@ -42895,8 +42909,23 @@ Retorne JSON: {"ID": "valor", ...}`;
       window._prodPaginaLista = pagina; // a página inteira (objetos) pra renderizar
       pagina.forEach(np => {
         const idx = produtosErp.findIndex(p => String(p.idBanco||p.id) === String(np.idBanco||np.id));
-        if (idx >= 0) produtosErp[idx] = { ...produtosErp[idx], ...np };
-        else produtosErp.push(np);
+        if (idx >= 0) {
+          // ★★ v33k.2230: ATUALIZA O OBJETO, NÃO O TROCA. Esta página chega
+          //   no meio de fluxos que seguram o objeto do produto (a duplicação
+          //   com "o próprio produto vai" é um deles). Trocar o objeto da
+          //   lista por uma cópia deixava o fluxo com um produto e a lista com
+          //   outro: na fase de publicação, o produto era empurrado de novo e
+          //   a lista ficava com DOIS iguais. MEDIDO em 02/09.
+          // ★ E esta página é LEVE (`leve=1`): descrição, atributos ML e guia
+          //   vêm vazios, não ausentes. O que a memória já tinha cheio fica.
+          const atual = produtosErp[idx];
+          const guardado = { id: atual.id, descricao: atual.descricao, atributosMl: atual.atributosMl, guiaTamanhos: atual.guiaTamanhos };
+          Object.assign(atual, np);
+          atual.id = guardado.id;
+          if (!String(np.descricao || '').trim() && String(guardado.descricao || '').trim()) atual.descricao = guardado.descricao;
+          if (!Object.keys(np.atributosMl || {}).length && Object.keys(guardado.atributosMl || {}).length) atual.atributosMl = guardado.atributosMl;
+          if (!np.guiaTamanhos && guardado.guiaTamanhos) atual.guiaTamanhos = guardado.guiaTamanhos;
+        } else produtosErp.push(np);
       });
       
       // v32j.4 FIX: migra produtos pro modelo cores[] após carregar do backend.
@@ -45364,10 +45393,17 @@ Retorne JSON: {"ID": "valor", ...}`;
     EM_GRUPOS.forEach(g => {
       g.colunas.forEach(c => {
         if (Array.isArray(c.mkts) && c.mkts.indexOf(mkt) < 0) return;   // não é deste canal
-        if (st.ocultas[c.id]) return;
-        out.push(Object.assign({ grupo: g.id, grupoNome: g.nome }, c));
-        // as dinâmicas entram logo depois do SKU, no grupo de venda, que é
-        // onde o print da Shopee coloca "Variantes"
+        // ★★ v33k.2230: AS DIMENSÕES NÃO SÃO FILHAS DA COLUNA SKU.
+        // ─────────────────────────────────────────────────────────────
+        // As colunas de variação (Cor, Tamanho, Voltagem...) entram logo
+        // depois da coluna SKU. Só que o `return` da coluna oculta vinha
+        // ANTES dessa inserção, e a SKU nasce oculta (`oculta: true`). Ou
+        // seja: com a SKU escondida — o padrão — nenhuma dimensão era
+        // desenhada. MEDIDO em 02/09 com a tabela renderizada: as colunas
+        // eram calculadas certas (Cor e Tamanho, com papel) e a tabela saía
+        // sem elas; bastava mostrar a SKU para as duas aparecerem. Era isto
+        // que fazia "cor e tamanho não deram certo" na conferência.
+        if (!st.ocultas[c.id]) out.push(Object.assign({ grupo: g.id, grupoNome: g.nome }, c));
         if (c.id === 'sku') {
           emColunasVariacaoDinamicas().forEach(d => {
             if (st.ocultas[d.id]) return;
@@ -45714,14 +45750,38 @@ Retorne JSON: {"ID": "valor", ...}`;
     //   garantida do outro lado — a SEFAZ não aceita "nacional" onde espera 0.
     if (col.tipo === 'lista' && Array.isArray(col.valores) && col.valores.length) {
       const atual = String(valor == null ? '' : valor);
-      return '<select id="' + id + '"' + marca + ' style="' + base + '">' +
+      // ★★ v33k.2230: COR E TAMANHO SÃO NOMES, NÃO IDS.
+      // ───────────────────────────────────────────────────────────────
+      // A coluna com `papel` (cor/tamanho) lê e grava `v.cor` / `v.tamanho`,
+      // e o que mora ali é o NOME ("Preto"): é o que a criação grava, o que o
+      // pré-voo devolve e o que o payload do ML manda (`value_name`). O
+      // select, porém, casava o valor atual pelo ID da lista da categoria
+      // ("52049") e gravava o ID de volta. MEDIDO em 02/09 com a tabela
+      // desenhada: variação com `cor: "Preto"` abria com o select vazio — a
+      // coluna existia e parecia não ter dado. E confirmar escreveria "" (ou
+      // o id) por cima de "Preto".
+      //
+      // Com papel: as opções valem pelo nome, o valor atual casa por nome (sem
+      // diferenciar maiúscula), e se ele não estiver na lista da categoria
+      // entra como opção própria, para não ser apagado no confirmar.
+      const _porNome = !!col.papel;
+      const _n = (t) => String(t == null ? '' : t).trim().toLowerCase();
+      let _casou = false;
+      let h = '<select id="' + id + '"' + marca + ' style="' + base + '">' +
         '<option value="">—</option>' +
         col.valores.map(o => {
-          const ov = String(o.id != null ? o.id : o);
-          const on = String(o.nome != null ? o.nome : ov);
-          return '<option value="' + escapeHtml(ov) + '"' + (atual === ov ? ' selected' : '') + '>' +
+          const oid = String(o.id != null ? o.id : o);
+          const on = String(o.nome != null ? o.nome : oid);
+          const ov = _porNome ? on : oid;
+          const sel = _porNome ? (_n(atual) === _n(on) || atual === oid) : (atual === oid);
+          if (sel) _casou = true;
+          return '<option value="' + escapeHtml(ov) + '"' + (sel ? ' selected' : '') + '>' +
             escapeHtml(on) + '</option>';
-        }).join('') + '</select>';
+        }).join('');
+      if (_porNome && atual && !_casou) {
+        h += '<option value="' + escapeHtml(atual) + '" selected>' + escapeHtml(atual) + '</option>';
+      }
+      return h + '</select>';
     }
     const tipoInput = (col.tipo === 'numero' || col.tipo === 'inteiro') ? 'number' : 'text';
     // ★ soDigitos: o NCM tem 8 dígitos e nada além disso. Deixar digitar ponto
@@ -46028,9 +46088,11 @@ Retorne JSON: {"ID": "valor", ...}`;
           'border-radius:7px;font-size:13px;margin-bottom:14px">' +
           '<option value="">—</option>' +
           col.valores.map(o => {
-            const ov = String(o.id != null ? o.id : o);
-            return '<option value="' + escapeHtml(ov) + '">' +
-              escapeHtml(String(o.nome != null ? o.nome : ov)) + '</option>';
+            const oid = String(o.id != null ? o.id : o);
+            const on = String(o.nome != null ? o.nome : oid);
+            // v33k.2230: dimensão com papel grava o NOME (ver o select da célula)
+            const ov = col.papel ? on : oid;
+            return '<option value="' + escapeHtml(ov) + '">' + escapeHtml(on) + '</option>';
           }).join('') +
         '</select>';
     } else {
@@ -47097,6 +47159,7 @@ Retorne JSON: {"ID": "valor", ...}`;
       return true;
     }
     if (!linhas || !linhas.length) return true;
+    linhas.forEach(l => { l._assinaturaInicial = _emAssinaturaLinha(l); });
 
     const confirmadas = await emAbrir({
       titulo: opcoes.titulo || 'Confira antes de exportar',
@@ -47109,10 +47172,35 @@ Retorne JSON: {"ID": "valor", ...}`;
     if (!confirmadas) return false;              // cancelou: nada sai
     // ★ o que foi editado só existe no modelo: devolve pro produto antes de
     // qualquer exportação, senão o backend lê a versão antiga
-    confirmadas.forEach(l => { try { emAplicarNoProduto(l); } catch (e) {} });
+    // ★★ v33k.2230: VÁRIAS LINHAS PODEM SER O MESMO PRODUTO.
+    // ───────────────────────────────────────────────────────────────────
+    // Na criação, o próprio produto vai para cada loja: três linhas, um
+    // objeto. Aplicar linha por linha fazia a ÚLTIMA vencer, mesmo intocada:
+    // a promoção mudada na primeira linha era desfeita pela terceira, que
+    // ainda tinha o valor antigo. MEDIDO em 02/09 (69,90 -> 59,90 na tela,
+    // 69,90 no produto). As linhas que a pessoa NÃO mexeu aplicam primeiro;
+    // as mexidas, por último. Com produtos distintos a ordem não muda nada.
+    const _mudou = l => l._assinaturaInicial != null && _emAssinaturaLinha(l) !== l._assinaturaInicial;
+    confirmadas.slice()
+      .sort((a, b) => (_mudou(a) ? 1 : 0) - (_mudou(b) ? 1 : 0))
+      .forEach(l => { try { emAplicarNoProduto(l); } catch (e) {} });
     return true;
   }
   window.emPortaoLiberado = emPortaoLiberado;
+  // A "foto" de uma linha da conferência: o que a pessoa vê e edita. Números
+  // viram texto porque a coleta da tela devolve texto; sem isso toda linha
+  // pareceria mexida só por ter sido desenhada.
+  function _emAssinaturaLinha(l) {
+    const FORA = { _produto: 1, fichas: 1, _assinaturaInicial: 1, preenchidoPelaIA: 1, categoriaSugerida: 1 };
+    try {
+      return JSON.stringify(l, (k, v) => {
+        if (FORA[k]) return undefined;
+        if (typeof v === 'number') return String(v);
+        if (v === null) return '';
+        return v;
+      });
+    } catch (e) { return null; }
+  }
 
   // ══════════════════════════════════════════════════════════════════════
   // MODAL DE IMAGENS (v33k.1815)
@@ -49717,7 +49805,15 @@ Retorne JSON: {"ID": "valor", ...}`;
         estoque: v.estoque != null ? v.estoque : '',
         ean: v.ean || '',
         // promoção vigente daquela variação (o cron grava em `_promo.min`)
-        precoPromo: (v._promo && parseFloat(v._promo.min) > 0) ? parseFloat(v._promo.min) : '',
+        // ★★ v33k.2230: E A QUE A CRIAÇÃO GRAVOU. A tela nova grava
+        //   `precoPromo` na variação (é o nome do rascunho e do banco); a
+        //   conferência só olhava `_promo.min`. MEDIDO em 02/09: variação com
+        //   `precoPromo: 69.9` chegava aqui como promoção vazia, e como nada
+        //   no caminho da exportação lê `precoPromo`, a promoção NUNCA ia
+        //   para o marketplace. Duas grafias para o mesmo dado; a linha lê as
+        //   duas e o aplicar grava as duas.
+        precoPromo: (v._promo && parseFloat(v._promo.min) > 0) ? parseFloat(v._promo.min)
+          : (parseFloat(v.precoPromo) > 0 ? parseFloat(v.precoPromo) : ''),
         corShein: {},
         // dimensões livres do cadastro e atributos de variação viajam junto:
         // sem eles a coluna dinâmica abriria vazia e a gravação apagaria o
@@ -49796,8 +49892,10 @@ Retorne JSON: {"ID": "valor", ...}`;
       const pp = _emNum(lv.precoPromo);
       if (pp !== '' && pp > 0) {
         v._promo = Object.assign({}, v._promo || {}, { min: pp, max: pp });
+        v.precoPromo = pp;   // v33k.2230: as duas grafias andam juntas
       } else if (String(lv.precoPromo == null ? '' : lv.precoPromo).trim() === '') {
         delete v._promo;
+        delete v.precoPromo;   // v33k.2230
       }
       if (lv.ean) v.ean = lv.ean;
       if (lv.valores && Object.keys(lv.valores).length) {
@@ -52021,9 +52119,56 @@ REGRAS DURAS:
   // Correção: a loja vira PARÂMETRO EXPLÍCITO, ponta a ponta. Nenhum passo do
   // fluxo lê mais o campo global durante a iteração. O campo continua sendo
   // escrito só por compatibilidade com telas antigas, mas ninguém depende dele.
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2230: A LISTA É LEVE; A DUPLICAÇÃO PRECISA DO PRODUTO INTEIRO.
+  // ───────────────────────────────────────────────────────────────────────
+  // `produtosErp` é carregado com `leve=1`, que não traz `descricao`,
+  // `atributos_ml` nem `guia_tamanhos` — e o `paraPainel` do backend devolve
+  // esses três como VAZIOS (`''`, `{}`, `null`), não ausentes. Qualquer
+  // recarga do catálogo sobrescreve o produto cheio pelo leve.
+  //
+  // A duplicação sempre pegou o produto daqui. No caminho antigo isso ficava
+  // escondido: a IA reescrevia a descrição e o completar refazia os
+  // atributos. No modo criação nada disso roda — e a descrição que a pessoa
+  // escreveu chegava vazia na conferência (MEDIDO em 02/09, executando o
+  // caminho com o produto leve).
+  //
+  // Antes de duplicar um produto só, busca a linha inteira no backend e
+  // preenche o que está vazio na memória. Só preenche o vazio: edição local
+  // ainda não salva não é sobrescrita. Falha aberta: sem resposta, segue como
+  // antes, e diz no log que seguiu.
+  async function _dupHidratarProduto(p) {
+    if (!p || p.idBanco == null) return false;
+    const r = await fetch(BACKEND_URL + '/api/produtos/' + encodeURIComponent(p.idBanco), {
+      headers: { 'x-api-token': getApiToken() },
+    }).then(x => x.json());
+    const cheio = r && r.ok && r.produto;
+    if (!cheio) throw new Error((r && r.erro) || 'o backend não devolveu o produto');
+    const preencheu = [];
+    if (!String(p.descricao || '').trim() && String(cheio.descricao || '').trim()) {
+      p.descricao = cheio.descricao; preencheu.push('descrição');
+    }
+    if (!Object.keys(p.atributosMl || {}).length && Object.keys(cheio.atributosMl || {}).length) {
+      p.atributosMl = cheio.atributosMl; preencheu.push('atributos ML');
+    }
+    if (!p.guiaTamanhos && cheio.guiaTamanhos) {
+      p.guiaTamanhos = cheio.guiaTamanhos; preencheu.push('guia de tamanhos');
+    }
+    if (preencheu.length) dupLogStep('  ⓘ Produto completado do banco: ' + preencheu.join(', ') + '.', 'ok');
+    return true;
+  }
+
   async function iniciarDuplicacaoMultiLoja() {
     const marcadas = Array.from(document.querySelectorAll('.dup-loja-ck:checked')).map(c => c.value);
     if (!marcadas.length) { showToast('Marque ao menos uma loja destino', true); return; }
+    // ★ v33k.2230: um produto só — busca a linha inteira antes de qualquer
+    //   loja. Em massa a lista continua leve (o caminho de massa reescreve
+    //   descrição e atributos por IA e nunca dependeu deles).
+    if (!(Array.isArray(_dupProdutoIds) && _dupProdutoIds.length > 1)) {
+      const _pHid = produtosErp.find(x => String(x.id) === String(_dupProdutoId));
+      try { await _dupHidratarProduto(_pHid); }
+      catch (eH) { dupLogStep('  ⚠ Não consegui completar o produto pelo banco (' + eH.message + '); seguindo com o que está na memória.', 'err'); }
+    }
     const selHidden = document.getElementById('dupLojaDestino');
 
     // Lê as opções UMA VEZ, ANTES do loop. Se lidas dentro (como era), qualquer
@@ -53044,6 +53189,22 @@ REGRAS DURAS:
           dupLogStep('  ⚠ não consegui ler o anúncio de referência: ' + eHer.message, 'err');
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // ★★ v33k.2230: A LIMPEZA DE CLONE SÓ VALE PARA CLONE.
+        // ───────────────────────────────────────────────────────────────
+        // MEDIDO em 02/09, executando este caminho inteiro em Node: com
+        // `_usarOProprio`, `novo === p`. O bloco abaixo então reescrevia o
+        // PRODUTO ORIGINAL em `produtosErp`: `novo.id = gerarId()` trocava o
+        // id dele. Na segunda e na terceira loja, `produtosErp.find(...)` não
+        // achava mais nada, `showToast('Produto não encontrado')` retornava
+        // sem exceção, e a loja "não entrava no lote". Foi assim que TRÊS
+        // lojas marcadas viraram UMA na conferência de 01/09 — e o toast
+        // sumia antes de alguém ler.
+        //
+        // Tudo daqui até `novo.lojaId` existe para desligar a CÓPIA do
+        // original (id novo, sem vínculos, sem status de exportação). No
+        // próprio produto nada disso se aplica: ele já é ele mesmo.
+        if (!_usarOProprio) {
         // Limpa vínculos pra forçar nova exportação
         (novo.variacoes || []).forEach(v => { 
           v.vinculos = []; 
@@ -53067,6 +53228,7 @@ REGRAS DURAS:
         novo.id = gerarId();
         // Atribui à loja destino
         novo.lojaId = lojaDestino.id;
+        }
         
         // MANTÉM SKU pai e SKUs das variações IGUAIS ao original.
         // Isso permite que múltiplos anúncios (em contas diferentes) compartilhem
@@ -53374,7 +53536,9 @@ REGRAS DURAS:
         // 6. Salva no backend (retorna o produto com id do banco)
         passoAtual++;
         dupAtualizarProgress(passoAtual, totalPassos, `cópia ${k}: salvando produto...`);
-        produtosErp.push(novo);
+        // ★ v33k.2230: o próprio produto já mora em `produtosErp`; empurrar de
+        //   novo faria o mesmo objeto aparecer duas vezes na lista.
+        if (produtosErp.indexOf(novo) < 0) produtosErp.push(novo);
         const salvoResp = await salvarProdutoNoBackend(novo);
         // Backend retorna o produto com `id` = id do banco. Guarda como idBanco.
         if (salvoResp && (salvoResp.id || salvoResp.idBanco)) {
@@ -63798,12 +63962,42 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
     try {
       if (typeof carregarTodosProdutos === 'function') {
         const todos = await carregarTodosProdutos();
-        if (todos && todos.length) produtosErp = todos;
+        // ★★ v33k.2230: ATUALIZA OS OBJETOS, NÃO TROCA A LISTA INTEIRA.
+        // ─────────────────────────────────────────────────────────────
+        // `produtosErp = todos` trocava TODOS os objetos do cache por cópias
+        // novas, leves (`leve=1`) e com id numérico. Este refresh roda no
+        // meio da publicação da duplicação (a conferência volta para esta
+        // tela e o salvar dispara o refresh): o fluxo ficava com o objeto
+        // antigo, a lista com o novo, e no fim o produto entrava duas vezes.
+        // MEDIDO em 02/09: a lista com duas entradas do 23722, uma delas sem
+        // descrição. A lista continua sendo o que o backend diz (o que sumiu
+        // sai), mas quem já existia é atualizado no lugar.
+        if (todos && todos.length) produtosErp = _anMesclarCatalogo(produtosErp, todos);
       }
     } catch (_) {}
     try { renderEstoque(); } catch (_) {}
   }
   window._anRefreshSeAtiva = _anRefreshSeAtiva;
+
+  // Mescla a lista nova do backend no cache: mesma ordem e mesmo conteúdo de
+  // `novos`, mas cada produto que já existia continua sendo O MESMO objeto,
+  // atualizado. E a carga é leve: descrição, atributos ML e guia vazios não
+  // apagam o que a memória já tinha cheio.
+  function _anMesclarCatalogo(atuais, novos) {
+    const porBanco = {};
+    (atuais || []).forEach(p => { if (p && p.idBanco != null) porBanco[String(p.idBanco)] = p; });
+    return (novos || []).map(np => {
+      const ex = np && np.idBanco != null ? porBanco[String(np.idBanco)] : null;
+      if (!ex || ex._resumo) return np;   // resumo é só para ver: o completo o substitui
+      const guardado = { id: ex.id, descricao: ex.descricao, atributosMl: ex.atributosMl, guiaTamanhos: ex.guiaTamanhos };
+      Object.assign(ex, np);
+      ex.id = guardado.id;
+      if (!String(np.descricao || '').trim() && String(guardado.descricao || '').trim()) ex.descricao = guardado.descricao;
+      if (!Object.keys(np.atributosMl || {}).length && Object.keys(guardado.atributosMl || {}).length) ex.atributosMl = guardado.atributosMl;
+      if (!np.guiaTamanhos && guardado.guiaTamanhos) ex.guiaTamanhos = guardado.guiaTamanhos;
+      return ex;
+    });
+  }
 
   // v33k.915: força a sincronização de ANÚNCIOS agora (busca listagens novas nos
   // marketplaces e casa por SKU, via sincronizarConta → importarAnunciosAutomatico).
@@ -66248,7 +66442,11 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
       let _jaPintou = false;
       const pCompleto = carregarTodosProdutos().then(todos => {
         if (todos && todos.length) {
-          produtosErp = todos;
+          // ★ v33k.2230: atualiza no lugar, não troca os objetos. A conferência
+          //   da duplicação volta para esta tela e a publicação segue segurando
+          //   o objeto do produto; trocar a lista inteira deixava o produto
+          //   duplicado no cache (medido em 02/09). Ver `_anMesclarCatalogo`.
+          produtosErp = _anMesclarCatalogo(produtosErp, todos);
           _jaPintou = true;
           renderEstoque();
           const ldF = document.getElementById('estoqueLoadingFull');
@@ -66261,7 +66459,14 @@ O usuário vai pedir ajustes. Responda com um JSON válido:
         // se o completo já pintou, o resumo não tem mais o que fazer:
         // sobrescrever com dado parcial seria andar pra trás
         if (_jaPintou || !resumo || !resumo.length) return;
-        produtosErp = resumo;
+        // ★ v33k.2230: o resumo é para VER; quem já está inteiro no cache não
+        //   pode ser trocado por um resumo (as variações do resumo são
+        //   sintéticas). Produto novo entra como resumo até o completo chegar.
+        {
+          const _porBanco = {};
+          (produtosErp || []).forEach(p => { if (p && !p._resumo && p.idBanco != null) _porBanco[String(p.idBanco)] = p; });
+          produtosErp = resumo.map(r => (r && r.idBanco != null && _porBanco[String(r.idBanco)]) || r);
+        }
         window._anCatalogoCompleto = true;   // o resumo cobre o catálogo TODO
         window._anCatalogoTotal = resumo.length;
         renderEstoque();
@@ -75299,7 +75504,7 @@ Responda APENAS com JSON válido (sem markdown), formato:
   // Botão "copiar" deixa o usuário compartilhar o estado em segundos.
   // ============================================================
   
-  const _DIAG_VERSAO_PAINEL = 'v33k.2229-o-log-que-contou';
+  const _DIAG_VERSAO_PAINEL = 'v33k.2230-o-caminho-executado';
   
   async function rodarDiagnostico() {
     const el = document.getElementById('diagConteudo');
