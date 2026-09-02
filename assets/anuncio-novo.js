@@ -1566,9 +1566,21 @@
     var estoqueMassa = document.getElementById('lcAnEstoqueMassa');
     if (estoqueMassa) {
       estoqueMassa.addEventListener('click', async function () {
-        var q = '10';
+        // ★★ v33k.2227: SEM VALOR SUGERIDO. Eu tinha posto '10' aqui como
+        //   exemplo, na v33k.2205. Num campo assim, o exemplo VIRA o valor:
+        //   em 01/09 o Alessandro abriu o "Estoque para todas", encontrou o 10
+        //   já preenchido, confirmou, e as seis variações foram para o
+        //   marketplace com estoque 10 em vez de 999.
+        //
+        //   Ele passou horas achando que havia sobrescrita no meio do caminho.
+        //   Não havia: o rascunho já tinha o 10, gravado por mim.
+        //
+        // ★ E VAZIO NÃO PASSA. Sem valor digitado, não escreve nada: estoque é
+        //   número que decide venda, e chutar por conveniência é o que causou
+        //   o problema.
+        var q = '';
         if (typeof window.lcPrompt === 'function') {
-          q = await window.lcPrompt('Estoque para TODAS as combinações:', '10');
+          q = await window.lcPrompt('Estoque para TODAS as combinações:', '');
           if (q === null) return;
         }
         var limpo = String(q).replace(/\D/g, '');
