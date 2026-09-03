@@ -138,13 +138,6 @@
     timerSalvar = setTimeout(function () { salvar(); }, 1200);
   }
 
-  // Gramas -> quilos, no formato brasileiro que o campo aceita ("0,500").
-  function _gramasParaKg(g) {
-    var n = Number(g);
-    if (!isFinite(n) || n <= 0) return '';
-    return String(Math.round(n) / 1000).replace('.', ',');
-  }
-
   async function salvar(opts) {
     var o = opts || {};
     if (estado.salvando) return;
@@ -1473,8 +1466,12 @@
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-usar-embalagem'), function (el) {
       el.addEventListener('click', function () {
         var e = estado.sugestoes.embalagem || {};
-        // a IA estima em GRAMAS (é onde ela erra menos); a tela guarda em kg
-        if (e.peso) estado.dados.peso = _gramasParaKg(e.peso);
+        // ★ v33k.2248: a IA estima em GRAMAS (é onde ela erra menos), e a
+        //   conversão passou a ser do backend, uma vez só, em `pesoKg`. Esta
+        //   tela convertia por conta própria e a conferência não convertia
+        //   nada: o mesmo número virava kg aqui e grama lá. Medido em
+        //   produção, 650 g de petisco saíram como 650 kg no add_item.
+        if (e.pesoKg) estado.dados.peso = String(e.pesoKg).replace('.', ',');
         if (e.comprimento) estado.dados.comprimento = String(e.comprimento);
         if (e.largura) estado.dados.largura = String(e.largura);
         if (e.altura) estado.dados.altura = String(e.altura);
@@ -1820,7 +1817,7 @@
       var e = sg;
       return caixaSugestao(campo,
         '<div style="font-size:13px;color:var(--lc-ink)">'
-        + (e.peso ? _gramasParaKg(e.peso) + ' kg' : 'peso não estimado')
+        + (e.pesoKg ? String(e.pesoKg).replace('.', ',') + ' kg' : 'peso não estimado')
         + (e.comprimento ? ' · ' + e.comprimento + ' x ' + (e.largura || '?') + ' x ' + (e.altura || '?') + ' cm' : '')
         + '</div>'
         + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:4px">'
