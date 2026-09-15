@@ -66,6 +66,8 @@
     dados: {},
     destinos: [],
     sugestoes: {},
+    // v33k.2488: o que a IA NAO conseguiu, por campo
+    recusados: {},
     enviando: false,
     envioErro: null,
     salvando: false,
@@ -279,6 +281,53 @@
       + ' style="width:' + largura + ';padding:5px 7px;border:1px solid var(--lc-border);border-radius:6px"></td>';
   }
 
+  // Vírgula, ponto e vírgula e quebra de linha. Os três aparecem em colagem de
+  // planilha, e nenhum deles é nome de valor de variação.
+  var SEPARADOR = /[,;\n\r\t]/;
+
+  // Guarda o que estiver escrito, separando pelos separadores acima. Devolve o
+  // foco à MESMA linha depois do redesenho, a menos que o disparo tenha sido a
+  // saída do campo (aí roubar o foco de volta impediria o próximo clique).
+  function guardarValores(indice, texto, opts) {
+    var v = variacoes()[indice];
+    if (!v) return;
+    var atuais = (v.valores || []).slice();
+    var novos = [];
+    var repetidos = [];
+    String(texto == null ? '' : texto).split(SEPARADOR).forEach(function (pedaco) {
+      var valor = pedaco.trim();
+      if (!valor) return;
+      // Repetido tanto contra o que já estava quanto contra o próprio lote: a
+      // pessoa cola "P, M, G, M" e o segundo M não pode virar chip.
+      if (atuais.indexOf(valor) >= 0 || novos.indexOf(valor) >= 0) {
+        if (repetidos.indexOf(valor) < 0) repetidos.push(valor);
+        return;
+      }
+      novos.push(valor);
+    });
+
+    if (!novos.length && !repetidos.length) return;   // só espaço: nada a fazer
+    if (novos.length) {
+      v.valores = atuais.concat(novos);
+      marcarSujo();
+    }
+    if (repetidos.length) {
+      toast(repetidos.length === 1
+        ? ('"' + repetidos[0] + '" já está na lista.')
+        : (repetidos.length + ' valores já estavam na lista: ' + repetidos.join(', ')));
+    }
+
+    var campo = document.querySelector('.lc-an-novo-valor[data-var="' + indice + '"]');
+    if (campo) campo.value = '';
+    desenharEtapa();
+    if (opts && opts.semFoco) return;
+    // ★ Depois do redesenho o elemento é OUTRO: procurar de novo pelo
+    //   `data-var` é o que devolve o cursor à linha certa. `desenharEtapa` é
+    //   síncrono nesta etapa, então o novo campo já existe aqui.
+    var depois = document.querySelector('.lc-an-novo-valor[data-var="' + indice + '"]');
+    if (depois) depois.focus();
+  }
+
   function sincronizarCombinacoes() {
     var atuais = combinacoes().map(rotuloCombinacao);
     if (!estado.dados.combinacoes || typeof estado.dados.combinacoes !== 'object') {
@@ -386,7 +435,7 @@
         + '<button class="lc-an-tirar-var" data-var="' + i + '" style="border:1px solid var(--lc-danger-soft);background:#fff;color:var(--lc-danger);border-radius:8px;padding:8px 12px;cursor:pointer;font-size:13px">Remover</button>'
         + '</div>'
         + '<div>' + chips + '</div>'
-        + '<input class="lc-an-novo-valor" data-var="' + i + '" placeholder="Digite um valor e pressione Enter" '
+        + '<input class="lc-an-novo-valor" data-var="' + i + '" placeholder="Digite os valores separados por vírgula, ou um por vez com Enter" '
         + 'style="width:100%;padding:8px 10px;border:1px dashed var(--lc-border-2);border-radius:8px;font-size:13px;margin-top:6px">'
         + '</div>';
     }).join('');
@@ -776,6 +825,75 @@
     return out;
   }
 
+  // Uma tentativa de sugestao automatica por canal. `{buscando}` enquanto vai,
+  // `{motivo}` se nao deu, e some do caminho quando deu (a categoria fica
+  // gravada em `dados.categoriasPorCanal` e o ramo nem e alcancado).
+  var catAuto = {};
+  // ════════════════════════════════════════════════════════════════
+  // ★★ v33k.2491: O INTERRUPTOR DA IA AUTOMATICA, E ONDE ELE MORA.
+  //   Ele pediu automatico em 15/09 e, quando perguntei onde guardar o
+  //   liga-desliga, escolheu preferencia de verdade por pessoa:
+  //   *"serve para as proximas tambem"*. Tabela `usuario_preferencias`.
+  //
+  //   ★ NASCE DESLIGADO PARA TODO MUNDO. Regra dele de 13/09: usuario novo
+  //     nao nasce com IA por padrao, porque isto GASTA TOKEN por canal e por
+  //     produto. Sem linha na tabela = padrao do codigo = off.
+  //
+  //   ★ `iaAuto` marca "ja rodei neste canal". Sem ela, cada redesenho da
+  //     etapa dispararia outra chamada paga — o mesmo cuidado da 2489 com a
+  //     categoria, e la o mutante provou que e necessario.
+  // ════════════════════════════════════════════════════════════════
+  var prefs = {};
+  var iaAuto = {};
+
+  async function carregarPrefs() {
+    try {
+      var r = await fetch(base() + '/api/preferencias', { headers: cabecalhos() });
+      var j = await r.json();
+      prefs = (j && j.preferencias) || {};
+    } catch (_) { prefs = {}; }   // falha aberta: sem preferencia, tudo desligado
+  }
+
+  async function gravarPref(chave, valor) {
+    prefs[chave] = valor;
+    try {
+      var r = await fetch(base() + '/api/preferencias', {
+        method: 'PUT',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, cabecalhos()),
+        body: JSON.stringify({ chave: chave, valor: valor }),
+      });
+      var j = await r.json();
+      // ★ gravacao recusada NAO vira silencio, e o motivo e de hoje: foi
+      //   escrita recusada com cara de sucesso que escondeu o apagao do ML
+      //   por um dia inteiro (v33k.2481).
+      if (!j || !j.ok) { avisar((j && j.erro) || 'Não consegui salvar a preferência.'); await carregarPrefs(); }
+    } catch (e) { avisar(e.message); await carregarPrefs(); }
+  }
+
+  async function sugerirCategoriaAuto(canal) {
+    var lojaId = lojaDoCanal(canal);
+    var titulo = String(estado.dados.nome || '').trim();
+    if (!lojaId || !titulo) { catAuto[canal] = { motivo: null }; return; }
+    try {
+      var r = await fetch(base() + '/api/marketplaces/loja/' + lojaId
+        + '/categorias/buscar?titulo=' + encodeURIComponent(titulo), { headers: cabecalhos() });
+      var j = await r.json();
+      var primeira = ((j && j.categorias) || [])[0];
+      if (!primeira) {
+        // ★ o motivo do canal, quando existe, vale mais que "nao achei": desde
+        //   a v33k.2479 ele diz coisas acionaveis, como loja nao conectada.
+        catAuto[canal] = { motivo: (j && j.motivo) || 'Não consegui sugerir uma categoria pelo título deste produto.' };
+        return;
+      }
+      estado.dados.categoriasPorCanal = estado.dados.categoriasPorCanal || {};
+      estado.dados.categoriasPorCanal[canal] = String(primeira.id || primeira.category_id || primeira.categoryId);
+      catAuto[canal] = { sugerida: primeira };
+      marcarSujo();
+    } catch (e) {
+      catAuto[canal] = { motivo: e.message };
+    }
+  }
+
   function lojaDoCanal(canal) {
     var d = estado.destinos.filter(function (x) { return x.canal === canal; })[0];
     return d ? d.lojaId : null;
@@ -830,13 +948,46 @@
       + '</div>'
       + '<div id="lcAnResultCat" style="margin-top:8px"></div>'
       + '<div style="font-size:12px;color:' + (cat ? 'var(--lc-primary)' : 'var(--lc-muted-2)') + ';margin-top:8px">'
-      + (cat ? 'Categoria escolhida: ' + esc(cat) : 'Sem categoria escolhida. Sem ela não existe lista de campos para conferir.')
+      + (cat ? ((catAuto[atual] && catAuto[atual].sugerida) ? 'Categoria sugerida (pode trocar acima): ' : 'Categoria escolhida: ') + esc(cat) : 'Sem categoria escolhida. Sem ela não existe lista de campos para conferir.')
       + '</div></div>';
 
     var ficha = cacheFichas[atual];
     var corpo;
     if (!cat) {
-      corpo = '<p style="font-size:13px;color:var(--lc-muted)">Escolha a categoria para ver os campos deste canal.</p>';
+      // ══════════════════════════════════════════════════════════════
+      // ★★ v33k.2489: A CATEGORIA SE SUGERE SOZINHA, E JA FICA ESCOLHIDA.
+      // ───────────────────────────────────────────────────────────═
+      // Pedido dele em 15/09: *"quero que sugira automaticamente a categoria e
+      // ja deixe por padrao selecionado"*. E a mesma regra que ele deu em
+      // 01/09 sobre os campos, escrita logo abaixo: botao que so tem um
+      // caminho e e obrigatorio para seguir nao e escolha, e um passo a mais.
+      //
+      // ★ NAO GASTA TOKEN, e por isso e automatico sem ressalva. Quem sugere
+      //   e o proprio marketplace: preditor do ML, `recomendarCategoria` do
+      //   TikTok, casamento na arvore da Shopee. A regra dele de 13/09 (o
+      //   padrao nunca e o caminho que gasta token) nao e tocada aqui.
+      //
+      // ★ UMA TENTATIVA POR CANAL, e a falha fica registrada. Sem isso, canal
+      //   que nao responde viraria laco de redesenho pedindo de novo.
+      //
+      // ★ E A ESCOLHA CONTINUA DELE: a tela diz que foi sugerida e a busca
+      //   segue ali em cima para trocar.
+      // ════════════════════════════════════════════════════════════════
+      var tentativa = catAuto[atual];
+      if (!tentativa && String(estado.dados.nome || '').trim()) {
+        catAuto[atual] = { buscando: true };
+        corpo = '<p style="font-size:13px;color:var(--lc-muted)">Procurando a categoria deste canal...</p>';
+        setTimeout(function () {
+          sugerirCategoriaAuto(atual).then(function () { desenharEtapa(); });
+        }, 0);
+      } else if (tentativa && tentativa.buscando) {
+        corpo = '<p style="font-size:13px;color:var(--lc-muted)">Procurando a categoria deste canal...</p>';
+      } else if (tentativa && tentativa.motivo) {
+        corpo = '<p style="font-size:13px;color:var(--lc-warn, #b45309)">' + esc(tentativa.motivo)
+          + '</p><p style="font-size:13px;color:var(--lc-muted)">Escolha a categoria acima para ver os campos deste canal.</p>';
+      } else {
+        corpo = '<p style="font-size:13px;color:var(--lc-muted)">Escolha a categoria para ver os campos deste canal.</p>';
+      }
     } else if (buscandoFicha) {
       corpo = '<p style="font-size:13px;color:var(--lc-muted)">Carregando os campos...</p>';
     } else if (!ficha) {
@@ -858,7 +1009,22 @@
     } else {
       var campos = ficha.campos || [];
       var pendentes = campos.filter(function (c) { return c.pendente; }).length;
-      corpo = '<div style="display:flex;justify-content:flex-end;margin-bottom:8px">'
+      // v33k.2491: roda sozinha, uma vez por canal, e so com o interruptor
+      //   ligado. As tres condicoes importam: sem `prefs` gasta token de quem
+      //   nao pediu, sem `iaAuto` gasta de novo a cada redesenho, e sem
+      //   `!sugestoes.atributos` atropela a sugestao que ja esta na tela.
+      if (prefs['ficha.iaAutomatica'] === true && !iaAuto[atual] && !estado.sugestoes.atributos) {
+        iaAuto[atual] = true;
+        setTimeout(function () {
+          sugerir('atributos', { campos: campos })
+            .catch(function (e) { avisar(e.message); })
+            .then(function () { desenharEtapa(); });
+        }, 0);
+      }
+      corpo = '<div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:8px">'
+        + '<label style="font-size:12px;color:var(--lc-muted-2);display:flex;align-items:center;gap:6px;cursor:pointer">'
+        + '<input type="checkbox" id="lcAnIaAuto"' + (prefs['ficha.iaAutomatica'] === true ? ' checked' : '') + '>'
+        + 'Preencher com IA automaticamente</label>'
         + '<button id="lcAnIaFicha" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px">Sugerir os campos com IA</button></div>'
         + (estado.sugestoes.atributos
@@ -869,6 +1035,7 @@
                   + '<span style="color:var(--lc-ink-2)">' + esc(nome) + '</span>'
                   + '<span style="color:var(--lc-ink);font-weight:700">' + esc(estado.sugestoes.atributos.valores[id]) + '</span></div>';
               }).join('')
+              + listaRecusadosIA(campos)
               + '<button id="lcAnUsarFicha" style="margin-top:8px;border:0;background:var(--lc-primary);color:var(--lc-primary-text);'
               + 'border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px;font-weight:700">Usar estes valores</button>'
               + '<button class="lc-an-descartar-ia" data-campo="atributos" style="margin-left:8px;border:1px solid var(--lc-border-2);'
@@ -1310,18 +1477,50 @@
       });
     });
 
+    // ══════════════════════════════════════════════════════════════════
+    // ★★ v33k.2480: VALOR DE VARIAÇÃO. VÍRGULA SEPARA, E O FOCO FICA NA LINHA.
+    // ─────────────────────────────────────────────────────────────────═
+    // PEDIDO DELE EM 15/09: "uma vírgula deixar ir salvando em vez de precisar
+    // ficar dando enter a cada variação, e ao dar o enter deveria continuar na
+    // linha e não precisar vim com o mouse e clicar novamente".
+    //
+    // ★ POR QUE O FOCO SUMIA: o Enter chamava `desenharEtapa()`, que refaz o
+    //   HTML do passo inteiro. O input em que ele estava digitando deixa de
+    //   existir; o novo é outro elemento, e nada devolvia o foco. Por isso o
+    //   mouse a cada valor. Um cadastro de 10 cores custava 10 cliques.
+    //
+    // ★ POR QUE A VÍRGULA NÃO FUNCIONAVA: o handler olhava só `Enter`, e
+    //   vírgula é caractere comum. "Preto, Branco, Azul" virava UM chip com
+    //   esse nome inteiro, e só na exportação alguem descobria.
+    //
+    // ★ COLAR TAMBÉM SEPARA. Lista de tamanhos sai de planilha, e o formato que
+    //   sai de planilha é exatamente "34, 35, 36". Aceitar digitação e recusar
+    //   colagem seria o mesmo campo com duas regras.
+    //
+    // ★ O QUE NÃO MUDOU: repetido continua recusado e continua avisando. Antes
+    //   o aviso era por valor; agora, num lote, ele diz QUANTOS e QUAIS, senão
+    //   colar 20 tamanhos dispararia 20 avisos.
+    // ══════════════════════════════════════════════════════════════════
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-novo-valor'), function (el) {
       el.addEventListener('keydown', function (ev) {
-        if (ev.key !== 'Enter') return;
+        // A vírgula fecha o valor igual ao Enter. `preventDefault` impede que
+        // ela ainda seja digitada no campo que acabou de ser esvaziado.
+        if (ev.key !== 'Enter' && ev.key !== ',') return;
         ev.preventDefault();
-        var valor = el.value.trim();
-        if (!valor) return;
-        var v = variacoes()[Number(el.dataset.var)];
-        if ((v.valores || []).indexOf(valor) >= 0) { toast('Esse valor já está na lista.'); return; }
-        v.valores = (v.valores || []).concat([valor]);
-        el.value = '';
-        marcarSujo();
-        desenharEtapa();
+        guardarValores(Number(el.dataset.var), el.value);
+      });
+      el.addEventListener('paste', function (ev) {
+        var colado = (ev.clipboardData || window.clipboardData);
+        var texto = colado ? colado.getData('text') : '';
+        if (!texto || !SEPARADOR.test(texto)) return;   // colagem de um valor só segue o caminho normal
+        ev.preventDefault();
+        guardarValores(Number(el.dataset.var), el.value + texto);
+      });
+      // Sair do campo com algo escrito não pode perder o que foi digitado: ele
+      // clica em "Adicionar variação" e o valor sumiria sem aviso.
+      el.addEventListener('blur', function () {
+        if (!el.value.trim()) return;
+        guardarValores(Number(el.dataset.var), el.value, { semFoco: true });
       });
     });
 
@@ -1458,6 +1657,9 @@
         }
         estado.dados[campo === 'titulo' ? 'nome' : campo] = valor;
         delete estado.sugestoes[campo];
+        // v33k.2488: aplicar a sugestao tira o aviso junto — ele fala da mesma
+        //   rodada da IA, e a rodada acabou.
+        delete estado.recusados[campo];
         marcarSujo();
         desenharEtapa();
       });
@@ -1495,9 +1697,18 @@
       });
     }
 
+    var chkIa = document.getElementById('lcAnIaAuto');
+    if (chkIa) {
+      chkIa.addEventListener('change', function () {
+        gravarPref('ficha.iaAutomatica', chkIa.checked).then(function () { desenharEtapa(); });
+      });
+    }
+
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-descartar-ia'), function (el) {
       el.addEventListener('click', function () {
         delete estado.sugestoes[el.dataset.campo];
+        // v33k.2488: descartar a sugestao descarta o aviso da mesma rodada.
+        delete estado.recusados[el.dataset.campo];
         desenharEtapa();
       });
     });
@@ -1506,6 +1717,9 @@
       el.addEventListener('click', function () {
         if (!estado.dados.categoriasPorCanal) estado.dados.categoriasPorCanal = {};
         estado.dados.categoriasPorCanal[estado.canalAba] = el.dataset.cat;
+        // v33k.2489: escolha a mao apaga a marca de "sugerida" e a tentativa,
+        // senao o rotulo continuaria dizendo que foi a maquina que escolheu.
+        delete catAuto[estado.canalAba];
         // Categoria nova, ficha velha não serve: os campos são os da categoria.
         // O `desenharEtapa` dispara a carga sozinho, porque a ficha some do
         // cache e o ramo de "sem ficha" busca.
@@ -1671,8 +1885,14 @@
       var j = await r.json();
       var lista = (j && j.categorias) || [];
       if (!lista.length) {
-        alvo.innerHTML = '<span style="font-size:12px;color:var(--lc-muted-2)">Nada encontrado'
-          + (j && j.motivo ? ': ' + esc(j.motivo) : '.') + '</span>';
+        // ★★ v33k.2479: LISTA VAZIA E FALHA DE CANAL SAO COISAS DIFERENTES.
+        //   "Nada encontrado: esta loja nao esta conectada" mandava a pessoa
+        //   procurar outra palavra para um problema que nenhuma palavra
+        //   resolve. Com motivo, a tela diz o motivo, em cor de aviso; sem
+        //   motivo, ai sim foi a busca que nao achou.
+        alvo.innerHTML = (j && j.motivo)
+          ? '<span style="font-size:12px;color:var(--lc-warn, #b45309)">' + esc(j.motivo) + '</span>'
+          : '<span style="font-size:12px;color:var(--lc-muted-2)">Nada encontrado. Tente outra palavra.</span>';
         return;
       }
       alvo.innerHTML = lista.slice(0, 12).map(function (c) {
@@ -1774,6 +1994,13 @@
     if (extra && extra.campos) corpo.campos = extra.campos;
     var r = await chamar('/' + estado.rascunhoId + '/sugerir', { metodo: 'POST', corpo: corpo });
     estado.sugestoes[campo] = r.sugestao;
+    // ★★ v33k.2488: A RECUSA TAMBEM E RESPOSTA.
+    //   A rota manda `recusados` desde sempre, e esta linha era a unica coisa
+    //   que faltava: o array chegava e era jogado fora aqui. Ele via 5 campos
+    //   preenchidos de 10 e nenhuma palavra sobre os outros 5 — metade da
+    //   queixa de 15/09 era essa, e nao o casamento.
+    //   Desde a v33k.2485 cada item vem como { id, valor, motivo }.
+    estado.recusados[campo] = Array.isArray(r.recusados) ? r.recusados : [];
     return r;
   }
 
@@ -1782,6 +2009,45 @@
       + 'style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
       + 'border-radius:8px;padding:5px 10px;cursor:pointer;font-size:12px;margin-left:8px">'
       + esc(rotulo || 'Sugerir com IA') + '</button>';
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2488: O QUE A IA NÃO CONSEGUIU, NA TELA.
+  // ─────────────────────────────────────────────────────────────────═
+  // "De 10 campos preenche uns 5" eram DUAS coisas: metade era o casador
+  // rigido (fechado nas 2485-2487) e metade era ESTA — os campos que
+  // sobravam vazios sem uma palavra de explicacao.
+  //
+  // ★ SEM ALARME. Isto e informacao, nao erro: a IA nao saber o material de
+  //   um produto e normal, e o campo continua editavel a mao logo abaixo. Por
+  //   isso cor de aviso e texto discreto, e nao vermelho.
+  //
+  // ★ DIZ O QUE ELA TENTOU. "Vidro" recusado num campo cuja lista tem
+  //   "Sintético, Couro" ensina a pessoa a corrigir em dois segundos; "campo
+  //   nao preenchido" nao ensina nada.
+  // ════════════════════════════════════════════════════════════════════
+  function listaRecusadosIA(campos) {
+    var lista = estado.recusados.atributos || [];
+    if (!lista.length) return '';
+    var nomeDe = function (id) {
+      var c = (campos || []).filter(function (x) { return String(x.id) === String(id); })[0];
+      return (c && c.nome) || id;
+    };
+    // ★ marca propria: a suite mede o texto DESTE bloco. Sem ela, "Material"
+    //   casa tambem com o campo do formulario logo abaixo, e um mutante que
+    //   trocava o nome pelo id cru escapou por causa disso.
+    return '<div data-lc="recusa-ia" style="margin-top:10px;padding-top:9px;border-top:1px solid var(--lc-border)">'
+      + '<div style="font-size:11px;font-weight:800;color:var(--lc-warn, #b45309);margin-bottom:5px">'
+      + lista.length + ' campo(s) a IA não conseguiu preencher</div>'
+      + lista.map(function (r) {
+        var id = (r && r.id) || String(r);
+        var motivo = (r && r.motivo) ? r.motivo : 'a IA não respondeu este campo';
+        return '<div style="font-size:12px;color:var(--lc-muted-2);padding:2px 0">'
+          + '<span style="color:var(--lc-ink-2);font-weight:600">' + esc(nomeDe(id)) + '</span>: '
+          + esc(motivo) + '</div>';
+      }).join('')
+      + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:5px">'
+      + 'Pode preencher à mão nos campos abaixo.</div></div>';
   }
 
   function caixaSugestao(campo, conteudo) {
@@ -1896,8 +2162,19 @@
   }
 
   async function abrir(rascunhoId) {
-    estado = { rascunhoId: null, etapa: 'produto', dados: {}, destinos: [], sugestoes: {}, enviando: false, envioErro: null, salvando: false, sujo: false, erro: null };
+    // ★ v33k.2488: `recusados` entra no reset junto com `sugestoes`. Duas
+    //   listas que nascem juntas e morrem juntas; esquecer uma faria a recusa
+    //   de um rascunho aparecer no proximo.
+    estado = { rascunhoId: null, etapa: 'produto', dados: {}, destinos: [], sugestoes: {}, recusados: {}, enviando: false, envioErro: null, salvando: false, sujo: false, erro: null };
     cacheFichas = {};
+    // ★★ v33k.2490: A TENTATIVA DE CATEGORIA TAMBEM ZERA, E ISSO FALTAVA.
+    //   A v33k.2489 dizia ter isso coberto pela assercao CS16, e a assercao
+    //   casava com a DECLARACAO `var catAuto = {}`, nao com o reset — que nao
+    //   existia. Na pratica: abrir um rascunho depois de outro herdava a
+    //   tentativa do anterior, e o segundo produto ficava sem sugestao de
+    //   categoria sem dizer por que.
+    catAuto = {};
+    iaAuto = {};    // v33k.2491: rascunho novo, a IA automatica roda de novo
 
     if (rascunhoId) {
       try {
@@ -1931,6 +2208,10 @@
 
     desenharEtapa();
     pintarStatus();
+    // v33k.2491: a preferencia chega depois e a etapa se redesenha com ela.
+    // Nao bloqueia a abertura: tela que espera preferencia para abrir fica
+    // branca quando o banco tossir.
+    carregarPrefs().then(function () { desenharEtapa(); });
   }
 
   async function listar() {
@@ -1948,6 +2229,15 @@
     // v33k.2230: a suíte que atravessa o caminho inteiro (tela -> produto ->
     // duplicação -> conferência) dispara a entrega por aqui, sem clicar.
     _entregar: entregarParaExportacao,
+    // v33k.2480: a suíte das variações dirige a tela de verdade em jsdom
+    // (digita, cola, sai do campo) e mede os chips e o foco. Asserção por
+    // regex nesta parte já deixou escapar mutante nesta mesma sessão.
+    _desenhar: desenharEtapa,
+    _guardarValores: guardarValores,
+    // v33k.2488: a suite que mede o aviso da IA precisa da ficha do canal sem
+    // ir a rede. Mesma porta do `_estado`.
+    _fichas: function () { return cacheFichas; },
+    _prefs: function () { return prefs; },
     ETAPAS: ETAPAS,
   };
 })();
