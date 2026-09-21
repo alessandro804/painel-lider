@@ -47,6 +47,18 @@
     { id: 'ficha', titulo: 'Ficha por canal' },
     { id: 'conferencia', titulo: 'Conferência e envio' },
   ];
+  // ★★ v33k.2637: O MODO DROP. O fornecedor cria o produto do catalogo do
+  //   Dropshipping por ESTA tela (pedido do Alessandro em 20/09: "abra o mesmo
+  //   modal e siga o mesmo fluxo de criacao de anuncio novo"). Sem Destinos,
+  //   Embalagem e Ficha: produto do Drop nao e anuncio de canal nenhum; quem
+  //   escolhe o canal e o droper, depois. A ultima etapa vira Disponibilizar.
+  //   O modo mora em `dados.modoDrop`, entao o rascunho reaberto continua Drop.
+  var ETAPAS_DROP = [
+    { id: 'produto', titulo: 'Produto' },
+    { id: 'fotos', titulo: 'Fotos' },
+    { id: 'drop', titulo: 'Disponibilizar' },
+  ];
+  function etapas() { return (estado && estado.dados && estado.dados.modoDrop) ? ETAPAS_DROP : ETAPAS; }
   // A que falta, declarada para a tela poder dizer o que vem, sem fingir aba
   // que não funciona.
   // Todas as etapas existem agora. A lista fica vazia de propósito, e o
@@ -508,6 +520,16 @@
   var LIMITE_ARQUIVO = 2 * 1024 * 1024;
 
   function regrasDeFoto() {
+    // ★ v33k.2637: no Drop nao ha destino, e a regra e a do pedido dele: foto
+    //   geral E foto por variacao, as duas ligadas por padrao, "pois
+    //   independentemente de onde o Droper for vender seus produtos estara ok".
+    //   12 e o teto que o catalogo do Drop guarda, nas duas.
+    //   Sob typeof: a qa_tela_anuncio_novo roda esta funcao recortada, sem o
+    //   `estado` do modulo (a mesma regra de "sempre sob typeof" do topo).
+    if (typeof estado !== 'undefined' && estado.dados && estado.dados.modoDrop) {
+      var tv = combinacoes().length > 0;
+      return { geralBloqueada: false, geralMax: 12, porVariacaoMax: tv ? 12 : 0, capaUnica: false, temVariacao: tv, canais: [], drop: true };
+    }
     var canais = canaisDosDestinos();
     if (!canais.length) return null;
     // ★★ SEM VARIAÇÃO, O MERCADO LIVRE USA A FOTO GERAL. Relato de 31/08:
@@ -536,6 +558,11 @@
   }
 
   function textoDasRegras(r) {
+    if (r.drop) {
+      return r.temVariacao
+        ? 'Fotos gerais (até 12) e fotos de cada variação (até 12 cada). O droper escolhe depois o que cada canal usa.'
+        : 'Produto sem variação: as fotos são gerais. Até 12.';
+    }
     if (r.geralBloqueada) {
       return 'Só Mercado Livre nos destinos, e o produto tem variações: ele publica a foto de cada '
         + 'variação, então a foto geral fica desligada. Até ' + r.porVariacaoMax + ' por variação.';
@@ -718,7 +745,8 @@
     // não tem para onde exportar.
     cacheLojas = (j.lojas || []).filter(function (l) {
       var mk = String(l.marketplace || '').toLowerCase();
-      return mk && mk !== 'pdv';
+      // v33k.2639: a loja Drop agrupa vendas de Drop: tambem nao e destino
+      return mk && mk !== 'pdv' && mk !== 'dropshipping';
     });
     return cacheLojas;
   }
@@ -1321,7 +1349,7 @@
   function desenharEtapa() {
     var alvo = document.getElementById('lcAnCorpo');
     if (!alvo) return;
-    if (estado.etapa === 'produto') alvo.innerHTML = etapaProduto();
+    if (estado.etapa === 'produto') alvo.innerHTML = (estado.dados.modoDrop ? avisoDrop() : '') + etapaProduto();
     else if (estado.etapa === 'fotos') alvo.innerHTML = etapaFotos();
     else if (estado.etapa === 'embalagem') alvo.innerHTML = etapaEmbalagem();
     else if (estado.etapa === 'destinos') {
@@ -1332,9 +1360,13 @@
             alvo.innerHTML = '<div class="lc-an-etapa"><p style="color:var(--lc-danger)">' + esc(e.message) + '</p></div>';
           });
       }
+    } else if (estado.etapa === 'drop') {
+      alvo.innerHTML = etapaDrop();
+      if (!empresasDrop) carregarEmpresasDrop().then(function () { if (estado.etapa === 'drop') desenharEtapa(); });
     } else if (estado.etapa === 'ficha') alvo.innerHTML = etapaFicha();
     else alvo.innerHTML = etapaConferencia();
     ligarCampos();
+    ligarCamposDrop();
     pintarPassos();
     pintarAcaoFinal();
     icones(alvo);
@@ -1343,6 +1375,11 @@
   function pintarAcaoFinal() {
     var el = document.getElementById('lcAnAcaoFinal');
     if (!el) return;
+    // v33k.2637: no Drop a etapa final tem o proprio botao; aqui fica so o aviso
+    if (estado.dados.modoDrop) {
+      el.innerHTML = '<span style="font-size:12px;color:var(--lc-muted-2)">Salvo sozinho a cada etapa</span>';
+      return;
+    }
     if (estado.etapa !== 'conferencia') {
       el.innerHTML = '<span style="font-size:12px;color:var(--lc-muted-2)">Salvo sozinho a cada etapa</span>';
       return;
@@ -1361,7 +1398,7 @@
   }
 
   function pintarPassos() {
-    ETAPAS.forEach(function (e) {
+    etapas().forEach(function (e) {
       var b = document.getElementById('lcAnPasso_' + e.id);
       if (!b) return;
       var ativo = e.id === estado.etapa;
@@ -2112,7 +2149,7 @@
   }
 
   function molde() {
-    var passos = ETAPAS.map(function (e) {
+    var passos = etapas().map(function (e) {
       return '<button id="lcAnPasso_' + e.id + '" data-etapa="' + e.id + '" class="lc-an-passo" '
         + 'style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:700">'
         + esc(e.titulo) + '</button>';
@@ -2161,7 +2198,7 @@
     }
   }
 
-  async function abrir(rascunhoId) {
+  async function abrir(rascunhoId, opts) {
     // ★ v33k.2488: `recusados` entra no reset junto com `sugestoes`. Duas
     //   listas que nascem juntas e morrem juntas; esquecer uma faria a recusa
     //   de um rascunho aparecer no proximo.
@@ -2175,6 +2212,10 @@
     //   categoria sem dizer por que.
     catAuto = {};
     iaAuto = {};    // v33k.2491: rascunho novo, a IA automatica roda de novo
+    empresasDrop = null;
+    // v33k.2637: rascunho NOVO aberto pelo fornecedor nasce no modo Drop; o
+    // reaberto traz o modo dentro dos proprios dados
+    if (opts && opts.modo === 'drop') estado.dados.modoDrop = true;
 
     if (rascunhoId) {
       try {
@@ -2185,7 +2226,7 @@
         // Rascunho salvo antes da v33k.2210 pode apontar para a etapa
         // 'variacoes', que deixou de existir: cai no produto, onde elas moram
         // agora, em vez de abrir numa etapa que não desenha nada.
-        estado.etapa = ETAPAS.some(function (e) { return e.id === r.rascunho.etapa; })
+        estado.etapa = etapas().some(function (e) { return e.id === r.rascunho.etapa; })
           ? r.rascunho.etapa : 'produto';
       } catch (e) {
         avisar('Não consegui abrir o rascunho: ' + e.message);
@@ -2219,6 +2260,153 @@
     return r.rascunhos || [];
   }
 
+  // ═══ v33k.2637: o modo Drop ═══════════════════════════════════════════
+  var empresasDrop = null;
+  async function carregarEmpresasDrop() {
+    try {
+      empresasDrop = (typeof window._dropCarregarEmpresasNfe === 'function') ? ((await window._dropCarregarEmpresasNfe()) || []) : [];
+    } catch (e) { empresasDrop = []; }
+    return empresasDrop;
+  }
+
+  function avisoDrop() {
+    return '<div style="background:var(--lc-primary-softer);border:1px solid var(--lc-primary-soft);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:var(--lc-primary-text);line-height:1.45">'
+      + 'Você está cadastrando um produto para os <b>dropers</b>. Os preços são o que <b>você recebe</b> por peça; a vitrine mostra ao droper já com a taxa da plataforma.</div>';
+  }
+
+  // O rascunho da tela vira o produto do catalogo do Drop. As dimensoes da
+  // tela tem nome livre (Cor, Tamanho, Voltagem, Modelo...); o catalogo guarda
+  // cor e tamanho. `atributos` leva o par nome e valor ORIGINAL de cada
+  // dimensao, para nao virar \"Cor: 110V\" quando o droper exportar.
+  function paraProdutoDrop() {
+    var d = estado.dados || {};
+    var cfg = d.drop || {};
+    var combos = combinacoes();
+    var achar = function (c, re) { var x = c.filter(function (a) { return re.test(String(a.nome || '').trim()); })[0]; return x ? x.valor : null; };
+    var variacoesDrop = combos.map(function (c) {
+      var info = (d.combinacoes || {})[rotuloCombinacao(c)] || {};
+      var cor = achar(c, /^cor$/i), tam = achar(c, /^tamanho$/i);
+      return {
+        cor: cor != null ? cor : c[0].valor,
+        tamanho: tam != null ? tam : (c[1] ? c[1].valor : ''),
+        nome: c.map(function (a) { return a.valor; }).join(' '),
+        sku: info.sku || '', ean: info.ean || '',
+        estoque: Number(info.estoque) || 0,
+        preco: Number(info.preco) || 0,
+        fotos: ((d.fotosPorGrupo || {})[c[0].valor] || []).slice(0, 12),
+        atributos: c.map(function (a) { return { nome: a.nome, valor: a.valor }; }),
+      };
+    });
+    var precos = variacoesDrop.map(function (v) { return v.preco; }).filter(function (x) { return x > 0; });
+    return {
+      titulo: String(d.nome || '').trim(),
+      descricao: d.descricao || '',
+      sku: d.sku || '', ean: d.ean || '',
+      fotos: (Array.isArray(d.fotos) ? d.fotos : []).slice(0, 12),
+      variacoes: variacoesDrop,
+      precoBase: combos.length ? (precos.length ? Math.min.apply(null, precos) : 0) : (Number(d.preco) || 0),
+      estoque: combos.length ? 0 : (Number(d.estoque) || 0),
+      tipoPessoa: cfg.tipoPessoa === 'PF' ? 'PF' : 'PJ',
+      nfeEmpresaId: cfg.nfeEmpresaId ? Number(cfg.nfeEmpresaId) : null,
+      ncm: String(cfg.ncm || '').replace(/\D/g, ''),
+      cfop: String(cfg.cfop || '').replace(/\D/g, ''),
+      origemMercadoria: cfg.origemMercadoria != null ? String(cfg.origemMercadoria) : '',
+      cest: String(cfg.cest || '').replace(/\D/g, ''),
+      // v33k.2638: veio de um produto que ele ja tem: o catalogo guarda o vinculo
+      produtoErpId: cfg.produtoErpId ? Number(cfg.produtoErpId) : null,
+    };
+  }
+
+  function validarDrop(p) {
+    if (!p.titulo) return 'Dê um nome ao produto, na etapa Produto.';
+    if (p.variacoes.length && p.variacoes.some(function (v) { return !(v.preco > 0); })) return 'Toda variação precisa de preço (o que você recebe por peça), na etapa Produto.';
+    if (!(p.precoBase > 0)) return 'Informe o preço, o que você recebe por peça, na etapa Produto.';
+    if (p.tipoPessoa === 'PJ') {
+      if (!p.nfeEmpresaId) return 'Escolha a empresa emitente da nota.';
+      if (p.ncm.length !== 8) return 'Informe o NCM com 8 dígitos.';
+      if (p.cfop.length !== 4) return 'Informe o CFOP com 4 dígitos.';
+      if (!/^[0-8]$/.test(p.origemMercadoria)) return 'Informe a origem da mercadoria (0 a 8).';
+    }
+    return '';
+  }
+
+  function etapaDrop() {
+    var d = estado.dados; var cfg = d.drop || (d.drop = {});
+    var p = paraProdutoDrop();
+    var nVar = p.variacoes.length;
+    var total = nVar ? p.variacoes.reduce(function (s, v) { return s + v.estoque; }, 0) : p.estoque;
+    var grupos = {}; p.variacoes.forEach(function (v) { grupos[v.atributos[0].valor] = v.fotos.length; });
+    var nFotos = p.fotos.length + Object.keys(grupos).reduce(function (s, k) { return s + grupos[k]; }, 0);
+    var pj = cfg.tipoPessoa !== 'PF';
+    var brl = function (v) { return 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ','); };
+    var linha = function (rot, val) { return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:13px"><span style="color:var(--lc-muted)">' + rot + '</span><b style="color:var(--lc-ink)">' + val + '</b></div>'; };
+    var campo = function (id, rot, dica) {
+      return '<label style="display:block;font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-top:10px">' + rot
+        + '<input data-drop-campo="' + id + '" value="' + esc(cfg[id] || '') + '" style="display:block;width:100%;margin-top:4px;padding:9px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px;box-sizing:border-box">'
+        + (dica ? '<span style="font-weight:400;color:var(--lc-muted);font-size:11.5px">' + dica + '</span>' : '') + '</label>';
+    };
+    var empresas = (empresasDrop || []).map(function (e) {
+      return '<option value="' + esc(e.id) + '"' + (String(cfg.nfeEmpresaId) === String(e.id) ? ' selected' : '') + '>' + esc(e.razao_social || e.nome || e.cnpj || ('Empresa ' + e.id)) + '</option>';
+    }).join('');
+    var radio = function (v, rot) {
+      return '<label style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer"><input type="radio" name="lcAnDropPessoa" data-drop-campo="tipoPessoa" value="' + v + '"' + ((v === 'PF') === !pj ? ' checked' : '') + '> ' + rot + '</label>';
+    };
+    return '<div class="lc-an-etapa">'
+      + '<h3 style="margin:0 0 6px;font-size:16px;color:var(--lc-ink)">Disponibilizar para os dropers</h3>'
+      + '<p style="margin:0 0 14px;font-size:13px;color:var(--lc-muted);line-height:1.45">O produto entra no catálogo do Dropshipping e aparece na vitrine. Cada droper escolhe depois em que canal vender.</p>'
+      + '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:8px 14px;margin-bottom:16px">'
+      +   linha('Produto', esc(p.titulo || 'sem nome'))
+      +   linha('Variações', nVar ? String(nVar) : 'sem variação')
+      +   linha('Você recebe', (nVar && p.variacoes.some(function (v) { return v.preco !== p.precoBase; }) ? 'a partir de ' : '') + brl(p.precoBase) + ' por peça')
+      +   linha('Estoque', String(total))
+      +   linha('Fotos', String(nFotos))
+      + '</div>'
+      + '<div style="font-size:13px;font-weight:700;color:var(--lc-ink-2);margin-bottom:6px">Nota fiscal</div>'
+      + '<div style="display:flex;gap:18px;flex-wrap:wrap">' + radio('PJ', 'Emito nota (PJ)') + radio('PF', 'Não emito nota (PF)') + '</div>'
+      + (pj ? '<label style="display:block;font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-top:10px">Empresa emitente'
+          + '<select data-drop-campo="nfeEmpresaId" style="display:block;width:100%;margin-top:4px;padding:9px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px">'
+          + '<option value="">' + (empresasDrop === null ? 'Carregando as empresas' : (empresas ? 'Escolha a empresa' : 'Nenhuma empresa emitente cadastrada')) + '</option>' + empresas + '</select></label>'
+          + campo('ncm', 'NCM', '8 dígitos') + campo('cfop', 'CFOP', '4 dígitos') + campo('origemMercadoria', 'Origem da mercadoria', 'de 0 a 8; 0 é nacional') + campo('cest', 'CEST', 'opcional')
+        : '<p style="font-size:12px;color:var(--lc-muted);margin-top:8px">Sem nota: o pedido segue com a sua declaração de conteúdo.</p>')
+      + '<div id="lcAnDropErro" style="display:none;margin-top:14px;background:var(--lc-danger-soft);color:var(--lc-danger);border-radius:8px;padding:10px 12px;font-size:13px"></div>'
+      + '<button id="lcAnDisponibilizar" style="margin-top:16px;width:100%;padding:12px;background:var(--lc-primary);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer">Disponibilizar para os dropers</button>'
+      + '</div>';
+  }
+
+  function ligarCamposDrop() {
+    if (!estado.dados.modoDrop || estado.etapa !== 'drop') return;
+    var cfg = estado.dados.drop || (estado.dados.drop = {});
+    Array.prototype.forEach.call(document.querySelectorAll('[data-drop-campo]'), function (el) {
+      var ev = (el.tagName === 'SELECT' || el.type === 'radio') ? 'change' : 'input';
+      el.addEventListener(ev, function () {
+        var campo = el.getAttribute('data-drop-campo');
+        if (el.type === 'radio') { if (!el.checked) return; cfg[campo] = el.value; marcarSujo(); desenharEtapa(); return; }
+        cfg[campo] = el.value; marcarSujo();
+      });
+    });
+    var b = document.getElementById('lcAnDisponibilizar');
+    if (b) b.addEventListener('click', function () { disponibilizarNoDrop(); });
+  }
+
+  async function disponibilizarNoDrop() {
+    if (estado.enviando) return;
+    var p = paraProdutoDrop();
+    var erro = validarDrop(p);
+    var box = document.getElementById('lcAnDropErro');
+    var mostrar = function (m) { if (box) { box.textContent = m; box.style.display = 'block'; } else avisar(m); };
+    if (erro) { mostrar(erro); return; }
+    if (typeof window._dropApi !== 'function') { mostrar('O módulo do Dropshipping não carregou. Recarregue a página.'); return; }
+    estado.enviando = true;
+    var r = null;
+    try { r = await window._dropApi('/produtos', { method: 'POST', body: p }); } catch (e) { r = null; } finally { estado.enviando = false; }
+    if (!r || !r.ok) { mostrar((r && r.data && r.data.erro) || 'Não consegui disponibilizar o produto.'); return; }
+    // o rascunho virou produto do catalogo: sai da lista de rascunhos
+    if (estado.rascunhoId) { try { await chamar('/' + estado.rascunhoId, { metodo: 'DELETE' }); } catch (e) { /* fica o rascunho; o produto ja existe */ } }
+    fechar();
+    toast('Produto disponível para os dropers.');
+    if (typeof window.renderDropProdutos === 'function') window.renderDropProdutos();
+  }
+
   window.lcAnuncioNovo = {
     abrir: abrir,
     listar: listar,
@@ -2239,5 +2427,10 @@
     _fichas: function () { return cacheFichas; },
     _prefs: function () { return prefs; },
     ETAPAS: ETAPAS,
+    // v33k.2637: o modo Drop, para a suite medir sem navegador
+    ETAPAS_DROP: ETAPAS_DROP,
+    _paraDrop: paraProdutoDrop,
+    _validarDrop: validarDrop,
+    _disponibilizar: disponibilizarNoDrop,
   };
 })();
