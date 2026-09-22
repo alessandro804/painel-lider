@@ -465,8 +465,9 @@
         + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Gerar EANs</button>'
         + '<button id="lcAnPrecoMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Preço para todas</button>'
-        + '<button id="lcAnPromoMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
-        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Promoção para todas</button>'
+        // v33k.2652: no Drop nao ha preco promocional (pedido dele em 22/09)
+        + (estado.dados.modoDrop ? '' : '<button id="lcAnPromoMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
+        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Promoção para todas</button>')
         + '<button id="lcAnEstoqueMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Estoque para todas</button>'
         + '</span></div>'
@@ -475,8 +476,9 @@
         + '<thead><tr style="background:#f8fafc"><th style="text-align:left;padding:8px 10px">Variação</th>'
         + '<th style="text-align:left;padding:8px 10px">SKU</th>'
         + '<th style="text-align:left;padding:8px 10px">Código de barras (EAN)</th>'
-        + '<th style="text-align:left;padding:8px 10px">Preço</th>'
-        + '<th style="text-align:left;padding:8px 10px">Promocional</th>'
+        + (estado.dados.modoDrop
+          ? '<th style="text-align:left;padding:8px 10px">Você recebe</th><th style="text-align:left;padding:8px 10px">Droper paga</th>'
+          : '<th style="text-align:left;padding:8px 10px">Preço</th><th style="text-align:left;padding:8px 10px">Promocional</th>')
         + '<th style="text-align:left;padding:8px 10px">Estoque</th></tr></thead><tbody>'
         + combos.map(function (c) {
           var chave = rotuloCombinacao(c);
@@ -485,7 +487,7 @@
             + _celulaCombo(chave, 'sku', linha.sku, '100%')
             + _celulaCombo(chave, 'ean', linha.ean, '150px')
             + _celulaCombo(chave, 'preco', linha.preco, '90px')
-            + _celulaCombo(chave, 'precoPromo', linha.precoPromo, '90px', 'vazio = sem promoção')
+            + (estado.dados.modoDrop ? _celulaDroper(chave, linha.preco) : _celulaCombo(chave, 'precoPromo', linha.precoPromo, '90px', 'vazio = sem promoção'))
             + _celulaCombo(chave, 'estoque', linha.estoque, '80px')
             + '</tr>';
         }).join('')
@@ -1367,6 +1369,7 @@
     else alvo.innerHTML = etapaConferencia();
     ligarCampos();
     ligarCamposDrop();
+    ligarPrecoDroper();   // v33k.2652
     pintarPassos();
     pintarAcaoFinal();
     icones(alvo);
@@ -2213,6 +2216,7 @@
     catAuto = {};
     iaAuto = {};    // v33k.2491: rascunho novo, a IA automatica roda de novo
     empresasDrop = null;
+    if (opts && opts.modo === 'drop') carregarTaxaDrop();   // v33k.2652
     // v33k.2637: rascunho NOVO aberto pelo fornecedor nasce no modo Drop; o
     // reaberto traz o modo dentro dos proprios dados
     if (opts && opts.modo === 'drop') estado.dados.modoDrop = true;
@@ -2271,7 +2275,62 @@
 
   function avisoDrop() {
     return '<div style="background:var(--lc-primary-softer);border:1px solid var(--lc-primary-soft);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:var(--lc-primary-text);line-height:1.45">'
-      + 'Você está cadastrando um produto para os <b>dropers</b>. Os preços são o que <b>você recebe</b> por peça; a vitrine mostra ao droper já com a taxa da plataforma.</div>';
+      + 'Você está cadastrando um produto para os <b>dropers</b>. Os preços são o que <b>você recebe</b> por peça; o droper paga esse valor com a comissão de ' + String(taxaDropAtual()).replace('.', ',') + '% embutida.</div>';
+  }
+
+  // ═══ v33k.2652: O PRECO NO DROP ═══════════════════════════════════════
+  // Pedido dele em 22/09: "mesmo com os precos preenchidos ficou zerado o valor
+  // a receber"; "nao tem sentido ter 2 precos ... pode ser apenas normal"; "deve
+  // mostrar qual o preco vai ficar para os dropers pagarem com os 10% de
+  // comissao embutido".
+  // ★ A grade guarda o preco como a pessoa digitou ("49,90"). Number("49,90") e
+  //   NaN: era o R$ 0,00. `numBR` le virgula decimal, ponto de milhar e o ponto
+  //   decimal de quem digita "49.90".
+  function numBR(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : 0;
+    var s = String(v == null ? '' : v).trim().replace(/\s|R\$/g, '');
+    if (!s) return 0;
+    if (s.indexOf(',') >= 0) s = s.replace(/\./g, '').replace(',', '.');
+    else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+    var n = parseFloat(s);
+    return isFinite(n) ? n : 0;
+  }
+  // A taxa vem do backend (a mesma conta da vitrine: preco x (1 + taxa)); ate
+  // chegar, vale a padrao da casa, 10%.
+  var taxaDrop = null;
+  function taxaDropAtual() { return taxaDrop == null ? 10 : taxaDrop; }
+  async function carregarTaxaDrop() {
+    try {
+      if (typeof window._dropApi !== 'function') return;
+      var r = await window._dropApi('/preco-drop?base=100');
+      if (r && r.ok && r.data && isFinite(Number(r.data.taxaPct))) {
+        taxaDrop = Number(r.data.taxaPct);
+        if (estado.dados && estado.dados.modoDrop && estado.etapa) desenharEtapa();
+      }
+    } catch (e) { /* fica a padrao */ }
+  }
+  function precoDroper(valor) {
+    var p = numBR(valor);
+    return p > 0 ? Math.round(p * (1 + taxaDropAtual() / 100) * 100) / 100 : 0;
+  }
+  function _brl(v) { return 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ','); }
+  function _celulaDroper(chave, preco) {
+    var d = precoDroper(preco);
+    return '<td style="padding:7px 10px;border-top:1px solid #f1f5f9;white-space:nowrap;font-weight:700;color:var(--lc-primary-text)">'
+      + '<span data-droper-chave="' + esc(chave) + '">' + (d ? _brl(d) : '-') + '</span></td>';
+  }
+  // Digitou o preco: a coluna do droper acompanha, sem redesenhar a grade
+  // (redesenhar tira o foco do campo).
+  function ligarPrecoDroper() {
+    if (!estado.dados || !estado.dados.modoDrop) return;
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-combo[data-campo="preco"]'), function (inp) {
+      inp.addEventListener('input', function () {
+        var chave = inp.getAttribute('data-chave');
+        Array.prototype.forEach.call(document.querySelectorAll('[data-droper-chave]'), function (el) {
+          if (el.getAttribute('data-droper-chave') === chave) { var d = precoDroper(inp.value); el.textContent = d ? _brl(d) : '-'; }
+        });
+      });
+    });
   }
 
   // O rascunho da tela vira o produto do catalogo do Drop. As dimensoes da
@@ -2291,8 +2350,8 @@
         tamanho: tam != null ? tam : (c[1] ? c[1].valor : ''),
         nome: c.map(function (a) { return a.valor; }).join(' '),
         sku: info.sku || '', ean: info.ean || '',
-        estoque: Number(info.estoque) || 0,
-        preco: Number(info.preco) || 0,
+        estoque: Math.round(numBR(info.estoque)),
+        preco: numBR(info.preco),   // v33k.2652: "49,90" e 49,90, nao zero
         fotos: ((d.fotosPorGrupo || {})[c[0].valor] || []).slice(0, 12),
         atributos: c.map(function (a) { return { nome: a.nome, valor: a.valor }; }),
       };
@@ -2304,8 +2363,8 @@
       sku: d.sku || '', ean: d.ean || '',
       fotos: (Array.isArray(d.fotos) ? d.fotos : []).slice(0, 12),
       variacoes: variacoesDrop,
-      precoBase: combos.length ? (precos.length ? Math.min.apply(null, precos) : 0) : (Number(d.preco) || 0),
-      estoque: combos.length ? 0 : (Number(d.estoque) || 0),
+      precoBase: combos.length ? (precos.length ? Math.min.apply(null, precos) : 0) : numBR(d.preco),
+      estoque: combos.length ? 0 : Math.round(numBR(d.estoque)),
       tipoPessoa: cfg.tipoPessoa === 'PF' ? 'PF' : 'PJ',
       nfeEmpresaId: cfg.nfeEmpresaId ? Number(cfg.nfeEmpresaId) : null,
       ncm: String(cfg.ncm || '').replace(/\D/g, ''),
@@ -2338,6 +2397,10 @@
     var grupos = {}; p.variacoes.forEach(function (v) { grupos[v.atributos[0].valor] = v.fotos.length; });
     var nFotos = p.fotos.length + Object.keys(grupos).reduce(function (s, k) { return s + grupos[k]; }, 0);
     var pj = cfg.tipoPessoa !== 'PF';
+    // v33k.2652: o CFOP ja vem no padrao de venda DENTRO do estado (o mesmo que a
+    // nota usa quando a classe fiscal nao diz outro): o Drop so liga fornecedor
+    // e droper da mesma regiao. Continua editavel.
+    if (pj && !cfg.cfop) { cfg.cfop = '5102'; marcarSujo(); }
     var brl = function (v) { return 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ','); };
     var linha = function (rot, val) { return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:13px"><span style="color:var(--lc-muted)">' + rot + '</span><b style="color:var(--lc-ink)">' + val + '</b></div>'; };
     var campo = function (id, rot, dica) {
@@ -2358,6 +2421,7 @@
       +   linha('Produto', esc(p.titulo || 'sem nome'))
       +   linha('Variações', nVar ? String(nVar) : 'sem variação')
       +   linha('Você recebe', (nVar && p.variacoes.some(function (v) { return v.preco !== p.precoBase; }) ? 'a partir de ' : '') + brl(p.precoBase) + ' por peça')
+      +   linha('O droper paga', (nVar && p.variacoes.some(function (v) { return v.preco !== p.precoBase; }) ? 'a partir de ' : '') + brl(precoDroper(p.precoBase)) + ' (comissão de ' + String(taxaDropAtual()).replace('.', ',') + '%)')   // v33k.2652
       +   linha('Estoque', String(total))
       +   linha('Fotos', String(nFotos))
       + '</div>'
@@ -2366,7 +2430,7 @@
       + (pj ? '<label style="display:block;font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-top:10px">Empresa emitente'
           + '<select data-drop-campo="nfeEmpresaId" style="display:block;width:100%;margin-top:4px;padding:9px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px">'
           + '<option value="">' + (empresasDrop === null ? 'Carregando as empresas' : (empresas ? 'Escolha a empresa' : 'Nenhuma empresa emitente cadastrada')) + '</option>' + empresas + '</select></label>'
-          + campo('ncm', 'NCM', '8 dígitos') + campo('cfop', 'CFOP', '4 dígitos') + campo('origemMercadoria', 'Origem da mercadoria', 'de 0 a 8; 0 é nacional') + campo('cest', 'CEST', 'opcional')
+          + campo('ncm', 'NCM', '8 dígitos') + campo('cfop', 'CFOP', '5102 é o padrão de venda dentro do estado: o Drop só liga fornecedor e droper da mesma região') + campo('origemMercadoria', 'Origem da mercadoria', 'de 0 a 8; 0 é nacional') + campo('cest', 'CEST', 'opcional')
         : '<p style="font-size:12px;color:var(--lc-muted);margin-top:8px">Sem nota: o pedido segue com a sua declaração de conteúdo.</p>')
       + '<div id="lcAnDropErro" style="display:none;margin-top:14px;background:var(--lc-danger-soft);color:var(--lc-danger);border-radius:8px;padding:10px 12px;font-size:13px"></div>'
       + '<button id="lcAnDisponibilizar" style="margin-top:16px;width:100%;padding:12px;background:var(--lc-primary);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer">Disponibilizar para os dropers</button>'
@@ -2430,6 +2494,7 @@
     // v33k.2637: o modo Drop, para a suite medir sem navegador
     ETAPAS_DROP: ETAPAS_DROP,
     _paraDrop: paraProdutoDrop,
+    _numBR: numBR, _precoDroper: precoDroper,   // v33k.2652
     _validarDrop: validarDrop,
     _disponibilizar: disponibilizarNoDrop,
   };
