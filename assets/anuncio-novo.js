@@ -579,13 +579,38 @@
       + (r.capaUnica ? 'A Shopee usa só a PRIMEIRA de cada variação, que é a capa dela.' : '');
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★★ v33k.2769: O CORTE ACONTECE NA SELEÇÃO, ANTES DE SUBIR
+  // ─────────────────────────────────────────────────────────────────────
+  // REGRA DELE EM 09/10: "caso ultrapasse o limite permitido de fotos mostra
+  // um aviso que apenas X fotos podem ser anexadas e deixe apenas a quantidade
+  // permitida ... se pode subir 9 fotos e o usuário sobe 20, você precisará
+  // pegar apenas as primeiras 9 fotos selecionadas e subir e as 11 demais
+  // ignorar".
+  //
+  // ★ O CORTE VEM PRIMEIRO, E É DA SELEÇÃO. A versão anterior subia uma a uma
+  //   até encher, então um arquivo de 3 MB no meio das nove liberava a décima
+  //   para entrar no lugar dele: a vaga era preenchida por uma foto que ele
+  //   não tinha escolhido para estar ali. Agora as primeiras N selecionadas
+  //   são as candidatas, e só; se uma delas passa de 2 MB, ela é recusada com
+  //   nome e tamanho, e a vaga NÃO é remendada com a décima primeira.
+  //
+  // ★★ E O AVISO NÃO PODE SER UM TOAST. Toast de três segundos para explicar
+  //   que 11 fotos ficaram de fora é o mesmo que não avisar. Esta função
+  //   DEVOLVE o que aconteceu e quem chamou mostra na tela, onde fica.
+  //
+  // devolve { urls, cortadas, recusados, limite, vagas }
+  // ═══════════════════════════════════════════════════════════════════════
   async function subirArquivos(arquivos, limite, atuais) {
-    var restam = limite - (atuais || []).length;
-    if (restam <= 0) { avisar('Este bloco já está no limite de fotos.'); return []; }
+    var vagas = limite - (atuais || []).length;
+    var todos = Array.prototype.slice.call(arquivos || []);
+    if (vagas <= 0) return { urls: [], cortadas: todos.length, recusados: [], limite: limite, vagas: 0 };
+    var candidatos = todos.slice(0, vagas);
+    var cortadas = todos.length - candidatos.length;
     var urls = [];
     var recusados = [];
-    for (var i = 0; i < arquivos.length && urls.length < restam; i++) {
-      var f = arquivos[i];
+    for (var i = 0; i < candidatos.length; i++) {
+      var f = candidatos[i];
       if (f.size > LIMITE_ARQUIVO) {
         recusados.push(f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)');
         continue;
@@ -603,13 +628,28 @@
       if (!j || !j.ok || !j.url) throw new Error((j && j.erro) || ('Falha ao subir ' + f.name));
       urls.push(j.url);
     }
-    if (recusados.length) {
-      avisar('Acima de 2 MB, não subiram: ' + recusados.join(', ') + '. Reduza e tente de novo.');
+    return { urls: urls, cortadas: cortadas, recusados: recusados, limite: limite, vagas: vagas };
+  }
+
+  // O aviso em palavras, a partir do que a subida devolveu. Fica numa função
+  // só porque os dois blocos (geral e variação) e a escolha de foto dizem a
+  // mesma coisa, e três textos parecidos divergem na primeira correção.
+  function textoDoCorte(r) {
+    if (!r) return '';
+    var p = [];
+    if (r.cortadas > 0) {
+      p.push(r.vagas > 0
+        ? ('Só ' + r.vagas + (r.vagas === 1 ? ' foto pode' : ' fotos podem') + ' ser anexada'
+          + (r.vagas === 1 ? '' : 's') + ' aqui, porque o limite do bloco é ' + r.limite + '. '
+          + 'Subi ' + (r.vagas === 1 ? 'a primeira' : 'as ' + r.vagas + ' primeiras') + ' que você escolheu e ignorei '
+          + r.cortadas + (r.cortadas === 1 ? ' foto.' : ' fotos.'))
+        : ('Este bloco já está no limite de ' + r.limite + ' fotos. Nenhuma das '
+          + r.cortadas + ' que você escolheu foi anexada.'));
     }
-    if (arquivos.length > restam) {
-      toast('Subi ' + urls.length + '. O limite deste bloco é ' + limite + '.');
+    if (r.recusados && r.recusados.length) {
+      p.push('Acima de 2 MB, não subiram: ' + r.recusados.join(', ') + '. Reduza e tente de novo.');
     }
-    return urls;
+    return p.join(' ');
   }
 
   // ★★ O PAINEL ESCONDE TODO `input[type=file]` NO CSS GLOBAL (linha 14024:
@@ -658,6 +698,321 @@
       }).join('') + '</div>';
   }
 
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // ★★★ v33k.2768: ADICIONAR FOTO PERGUNTA PRIMEIRO
+  // ───────────────────────────────────────────────────────────────────────
+  // PEDIDO DELE EM 09/10: "ao clicar em adicionar deverá aparecer as fotos que
+  // já temos atualmente para escolher uma e também poder subir uma a mais".
+  //
+  // O caminho antigo era um só: abrir o seletor de arquivos do computador. Num
+  // produto que chega PRONTO ao modal (produto do ERP, ou produto do Drop em
+  // edição) as fotos já estão todas ali dentro, e a pessoa tinha que achar o
+  // arquivo original no disco para repetir uma imagem que o cadastro já tem.
+  //
+  // ★ O ACERVO É O PRÓPRIO RASCUNHO: as fotos gerais e as de cada grupo de
+  //   variação. Nada de rede, nada de upload repetido: a URL já está no
+  //   storage, reaproveitar é apontar para a mesma.
+  // ★★ A FOTO QUE JÁ ESTÁ NESTE BLOCO NÃO APARECE para escolher. Ela não
+  //   acrescentaria nada e ainda gastaria uma vaga do limite do bloco.
+  function nomeDaPrimeiraDimensao() {
+    var p = (variacoes().filter(function (v) { return v.nome && (v.valores || []).length; }))[0];
+    return p ? p.nome : 'Variação';
+  }
+
+  function rotuloDoAlvo(alvo) {
+    return alvo === 'geral' ? 'Fotos do anúncio' : (nomeDaPrimeiraDimensao() + ': ' + alvo);
+  }
+
+  // A lista de fotos de um bloco, criando-a no rascunho se ainda não existe.
+  // Era local ao `ligarCampos`; subiu para o módulo porque a escolha de foto
+  // existente precisa da MESMA lista, e duas funções que calculam "onde mora a
+  // foto deste bloco" é como a foto vai para o lugar errado.
+  function listaDoAlvo(alvo) {
+    if (alvo === 'geral') {
+      if (!Array.isArray(estado.dados.fotos)) estado.dados.fotos = [];
+      return estado.dados.fotos;
+    }
+    // As fotos por variação moram em `fotosPorGrupo`, indexadas pelo VALOR
+    // da primeira dimensão ("Preto", "Azul"), e não pela combinação.
+    if (!estado.dados.fotosPorGrupo) estado.dados.fotosPorGrupo = {};
+    if (!Array.isArray(estado.dados.fotosPorGrupo[alvo])) estado.dados.fotosPorGrupo[alvo] = [];
+    return estado.dados.fotosPorGrupo[alvo];
+  }
+
+  function limiteDoAlvo(alvo, r) {
+    return alvo === 'geral' ? r.geralMax : r.porVariacaoMax;
+  }
+
+  // Toda foto que este cadastro já tem, de onde ela vem, sem repetir URL e sem
+  // as que já estão no bloco de destino.
+  function fotosJaNoModal(alvo) {
+    var d = estado.dados || {};
+    var vistos = {}, saida = [];
+    var por = d.fotosPorGrupo || {};
+    var junta = function (urls, de) {
+      (Array.isArray(urls) ? urls : []).forEach(function (u) {
+        if (!u || vistos[u]) return;
+        vistos[u] = 1;
+        saida.push({ url: u, de: de });
+      });
+    };
+    junta(d.fotos, 'Fotos do anúncio');
+    Object.keys(por).forEach(function (g) { junta(por[g], nomeDaPrimeiraDimensao() + ': ' + g); });
+    var atuais = listaDoAlvo(alvo);
+    return saida.filter(function (f) { return atuais.indexOf(f.url) < 0; });
+  }
+
+  // O upload, num lugar só: o seletor de arquivos do bloco e o da escolha
+  // chamam esta função. O registro em `fotosStorage` é o que a faxina de 72h
+  // usa para apagar foto de rascunho abandonado, e esquecer isso num dos dois
+  // caminhos deixaria lixo no storage para sempre.
+  async function adicionarArquivos(alvo, arquivos) {
+    var r = regrasDeFoto();
+    if (!r) return null;
+    var atuais = listaDoAlvo(alvo);
+    var res = await subirArquivos(arquivos, limiteDoAlvo(alvo, r), atuais);
+    if (res.urls.length) {
+      Array.prototype.push.apply(atuais, res.urls);
+      if (!Array.isArray(estado.dados.fotosStorage)) estado.dados.fotosStorage = [];
+      Array.prototype.push.apply(estado.dados.fotosStorage, res.urls);
+      marcarSujo();
+    }
+    return res;
+  }
+
+  function fecharEscolhaDeFoto() {
+    var o = document.getElementById('lcAnEscolhaFoto');
+    if (o && o.parentNode) o.parentNode.removeChild(o);
+  }
+
+  // ★ z-index 9100: o modal do anúncio está em 9000. Overlay de escolha por
+  //   baixo do modal que o abriu é overlay invisível.
+  function abrirEscolhaDeFoto(alvo) {
+    var r = regrasDeFoto();
+    if (!r) return;
+    var limite = limiteDoAlvo(alvo, r);
+    var atuais = listaDoAlvo(alvo);
+    if (atuais.length >= limite) { avisar('Este bloco já está no limite de ' + limite + ' fotos.'); return; }
+    avisoEscolha = '';   // v33k.2769: aviso de uma abertura nao vaza para a outra
+    fecharEscolhaDeFoto();
+    var div = document.createElement('div');
+    div.innerHTML = moldeEscolhaDeFoto(alvo, limite);
+    document.body.appendChild(div.firstChild);
+    ligarEscolhaDeFoto(alvo);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★★ v33k.2775: O ACERVO SAI AGRUPADO POR ORIGEM, AS GERAIS NA FRENTE.
+  // ─────────────────────────────────────────────────────────────────────
+  // PEDIDO DELE EM 09/10: *"ao colocar uma foto de variação precisamos que
+  // apareça a opção de colocar uma foto já existente das fotos gerais, para
+  // sermos econômicos nessa questão"*.
+  //
+  // ★ A OPÇÃO JÁ EXISTIA (v33k.2768) e as gerais já entravam no acervo. O que
+  //   faltava era ELA SE ANUNCIAR: a grade era uma parede única de miniaturas
+  //   com uma legenda de 10px embaixo de cada. Num produto com 12 gerais e
+  //   três cores são 48 quadradinhos indistinguíveis, e "pegar uma das
+  //   gerais" não é uma ação visível ali — é uma caça.
+  //
+  // ★★ E o que o impediu de VER a opção foi outro defeito, consertado na mesma
+  //   leva: o produto do ERP chegava sem foto nenhuma (a foto mora na COR, e
+  //   o montador lia `v.fotos`), então a escolha abria dizendo "este cadastro
+  //   ainda não tem outra foto para reaproveitar". Prateleira vazia.
+  //
+  // ★ A ORDEM DOS BOTÕES NÃO MUDA (gerais primeiro, depois cada cor, como o
+  //   `fotosJaNoModal` já devolve): a `qa_foto_existente_no_modal` mede essa
+  //   ordem, e mudá-la seria trocar um pedido de clareza por uma regressão.
+  //
+  // ★ "USAR TODAS" é a economia de clique, e só aparece quando ela existe:
+  //   grupo com mais de uma foto E mais de uma vaga. O corte é pelas vagas,
+  //   não pelo tamanho do grupo — encher além do limite é o que o
+  //   `subirArquivos` já se recusa a fazer do outro lado.
+  // ═══════════════════════════════════════════════════════════════════════
+  function gruposDoAcervo(alvo) {
+    var ordem = [], porDe = {};
+    fotosJaNoModal(alvo).forEach(function (f) {
+      if (!porDe[f.de]) { porDe[f.de] = []; ordem.push(f.de); }
+      porDe[f.de].push(f.url);
+    });
+    return ordem.map(function (de) { return { de: de, urls: porDe[de] }; });
+  }
+
+  function moldeEscolhaDeFoto(alvo, limite) {
+    var atuais = listaDoAlvo(alvo);
+    var grupos = gruposDoAcervo(alvo);
+    var cabem = limite - atuais.length;
+    var grade = grupos.length
+      ? grupos.map(function (g) {
+        var podeTodas = g.urls.length > 1 && cabem > 1;
+        var quantas = Math.min(g.urls.length, cabem);
+        return '<div style="margin-bottom:14px">'
+          + '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px">'
+          + '<span style="font-size:12px;font-weight:800;color:var(--lc-ink-2)">' + esc(g.de) + '</span>'
+          + '<span style="font-size:11px;color:var(--lc-muted-2)">' + g.urls.length + ' foto(s)</span>'
+          + (podeTodas
+            ? '<button type="button" class="lc-an-usar-grupo" data-de="' + esc(g.de) + '" '
+              + 'style="margin-left:auto;border:1px solid var(--lc-primary);background:#fff;color:var(--lc-primary);'
+              + 'border-radius:7px;padding:4px 10px;cursor:pointer;font-size:12px;font-weight:700">'
+              + 'Usar as ' + quantas + '</button>'
+            : '')
+          + '</div>'
+          + '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+          + g.urls.map(function (u) {
+            return '<button type="button" class="lc-an-usar-foto" data-url="' + esc(u) + '" '
+              + 'style="width:96px;border:1px solid var(--lc-border-2);background:#fff;border-radius:10px;'
+              + 'padding:6px;cursor:pointer;text-align:left" title="usar esta foto">'
+              + '<img src="' + esc(u) + '" style="width:100%;height:82px;object-fit:cover;border-radius:6px;display:block">'
+              + '</button>';
+          }).join('')
+          + '</div></div>';
+      }).join('')
+      : '<div style="border:1px dashed var(--lc-border-2);border-radius:10px;padding:14px;font-size:13px;color:var(--lc-muted-2)">'
+        + 'Este cadastro ainda não tem outra foto para reaproveitar. Suba um arquivo abaixo.</div>';
+
+    return '<div id="lcAnEscolhaFoto" style="position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9100;'
+      + 'display:flex;align-items:flex-start;justify-content:center;padding:26px;overflow:auto">'
+      + '<div style="background:#fff;border-radius:14px;width:min(620px,100%);box-shadow:0 20px 50px rgba(15,23,42,.3)">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--lc-border)">'
+      + '<div><div style="font-size:16px;font-weight:800;color:var(--lc-ink)">Adicionar foto</div>'
+      + '<div id="lcAnEscolhaConta" style="font-size:12px;color:var(--lc-muted-2);margin-top:2px">'
+      + esc(rotuloDoAlvo(alvo)) + ', ' + atuais.length + ' de ' + limite + '. Cabem mais ' + cabem + '.</div></div>'
+      + '<button id="lcAnEscolhaFechar" style="border:1px solid var(--lc-border-2);background:#fff;border-radius:8px;'
+      + 'padding:8px 14px;cursor:pointer;font-size:13px">Pronto</button>'
+      + '</div>'
+      + '<div id="lcAnEscolhaCorpo" style="padding:18px 20px;max-height:52vh;overflow:auto">'
+      + avisoDaEscolha()
+      + '<p style="margin:0 0 10px;font-size:13px;color:var(--lc-muted)">Clique numa foto que este cadastro já tem para usá-la aqui também, '
+      + 'ou suba arquivos novos. A mesma foto pode servir a mais de um bloco.</p>'
+      + grade
+      + '</div>'
+      + '<div style="padding:14px 20px;border-top:1px solid var(--lc-border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+      // ★★ v33k.2769: `multiple` SEMPRE. Era `limite - atuais.length > 1`, e
+      //   com uma vaga livre o seletor abria em modo de um arquivo: ele pedia
+      //   para subir em massa e o navegador nem deixava marcar o segundo. Agora
+      //   marca quantas quiser, e quem corta é o `subirArquivos`, pela regra
+      //   dele: as primeiras que couberem sobem, o resto fica de fora com aviso.
+      + botaoArquivo('escolha_' + alvo, true, 'Subir arquivos do computador')
+      + '<span style="font-size:12px;color:var(--lc-muted-2)">Dá para marcar várias de uma vez. Cada arquivo até 2 MB.</span>'
+      + '</div>'
+      + '</div></div>';
+  }
+
+  // ★ O aviso do corte mora no estado e é desenhado DENTRO da escolha, que é
+  //   onde a pessoa está olhando quando ele acontece. Some no próximo clique
+  //   que não tem nada a avisar.
+  var avisoEscolha = '';
+  function avisoDaEscolha() {
+    if (!avisoEscolha) return '';
+    return '<div id="lcAnEscolhaAviso" style="background:var(--lc-warn-soft,#fffbeb);'
+      + 'border:1px solid var(--lc-warn-border,#fde68a);color:var(--lc-warn-text,#92400e);'
+      + 'border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:13px;line-height:1.45">'
+      + esc(avisoEscolha) + '</div>';
+  }
+
+  function redesenharEscolhaDeFoto(alvo) {
+    var r = regrasDeFoto();
+    if (!r) { fecharEscolhaDeFoto(); return; }
+    var limite = limiteDoAlvo(alvo, r);
+    // Encheu o bloco: a escolha fecha sozinha, em vez de ficar aberta sem nada
+    // que a pessoa possa clicar.
+    if (listaDoAlvo(alvo).length >= limite) {
+      // ★ v33k.2769: encheu COM aviso para dar (fotos cortadas, arquivo
+      //   recusado) nao fecha calado: o aviso e a razao de a pessoa estar
+      //   olhando. Ela fecha no Pronto quando tiver lido.
+      if (avisoEscolha) { desenharEtapa(); redesenharCorpoDaEscolha(alvo, limite); return; }
+      fecharEscolhaDeFoto();
+      toast('Bloco completo, ' + limite + ' de ' + limite + '.');
+      desenharEtapa();
+      return;
+    }
+    redesenharCorpoDaEscolha(alvo, limite);
+    desenharEtapa();   // a tira do bloco, atrás, acompanha
+  }
+
+  function redesenharCorpoDaEscolha(alvo, limite) {
+    var o = document.getElementById('lcAnEscolhaFoto');
+    if (!o) return;
+    var div = document.createElement('div');
+    div.innerHTML = moldeEscolhaDeFoto(alvo, limite);
+    o.parentNode.replaceChild(div.firstChild, o);
+    ligarEscolhaDeFoto(alvo);
+  }
+
+  function ligarEscolhaDeFoto(alvo) {
+    var fechar = document.getElementById('lcAnEscolhaFechar');
+    if (fechar) fechar.addEventListener('click', function () { fecharEscolhaDeFoto(); desenharEtapa(); });
+
+    Array.prototype.forEach.call(document.querySelectorAll('#lcAnEscolhaFoto .lc-an-usar-foto'), function (b) {
+      b.addEventListener('click', function () {
+        var url = b.getAttribute('data-url');
+        var lista = listaDoAlvo(alvo);
+        // ★ Reaproveitar NÃO entra em `fotosStorage`: o arquivo não é novo, e
+        //   registrar de novo faria a faxina apagar uma foto que outro bloco
+        //   (ou o produto já salvo) ainda usa.
+        if (url && lista.indexOf(url) < 0) { lista.push(url); marcarSujo(); }
+        avisoEscolha = '';
+        redesenharEscolhaDeFoto(alvo);
+      });
+    });
+
+    // ★ v33k.2775: o grupo inteiro, até onde cabe. O corte é pelas VAGAS do
+    //   bloco e o aviso diz quantas ficaram de fora — a mesma regra dele de
+    //   09/10 para o upload (v33k.2769): leva as primeiras que couberem e diz
+    //   o que não foi, em vez de encher além do limite ou recusar tudo.
+    Array.prototype.forEach.call(document.querySelectorAll('#lcAnEscolhaFoto .lc-an-usar-grupo'), function (b) {
+      b.addEventListener('click', function () {
+        var r = regrasDeFoto();
+        if (!r) return;
+        var de = b.getAttribute('data-de');
+        var grupo = (gruposDoAcervo(alvo).filter(function (g) { return g.de === de; })[0] || {}).urls || [];
+        var lista = listaDoAlvo(alvo);
+        var vagas = limiteDoAlvo(alvo, r) - lista.length;
+        var entraram = 0;
+        grupo.forEach(function (u) {
+          if (entraram >= vagas) return;
+          if (!u || lista.indexOf(u) >= 0) return;
+          lista.push(u); entraram++;
+        });
+        var sobraram = grupo.length - entraram;
+        avisoEscolha = sobraram > 0
+          ? ('Entraram ' + entraram + ' de ' + grupo.length + ' foto(s) de "' + de + '". '
+            + 'As outras ' + sobraram + ' não couberam no limite de ' + limiteDoAlvo(alvo, r) + ' deste bloco.')
+          : '';
+        if (entraram) marcarSujo();
+        redesenharEscolhaDeFoto(alvo);
+      });
+    });
+
+    var inp = document.querySelector('#lcAnEscolhaFoto .lc-an-arquivo');
+    if (inp) {
+      inp.addEventListener('change', async function () {
+        var arquivos = Array.prototype.slice.call(inp.files || []);
+        if (!arquivos.length) return;
+        inp.disabled = true;
+        avisoEscolha = '';
+        if (arquivos.length > 1) toast('Subindo ' + arquivos.length + ' imagens\u2026');
+        try {
+          var res = await adicionarArquivos(alvo, arquivos);
+          avisoEscolha = textoDoCorte(res);   // v33k.2769: o corte fica escrito na tela
+        } catch (e) { avisoEscolha = e.message; }
+        inp.disabled = false;
+        redesenharEscolhaDeFoto(alvo);
+      });
+    }
+  }
+
+  // O botão que abre a escolha. Fica no lugar do seletor de arquivos cru: a
+  // subida de arquivo não saiu, mudou de porta (e agora é a segunda opção, não
+  // a única).
+  function botaoAdicionarFoto(alvo, temAlguma) {
+    return '<button type="button" class="lc-an-add-foto" data-alvo="' + esc(alvo) + '" '
+      + 'style="display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--lc-primary);'
+      + 'color:var(--lc-primary);background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;'
+      + 'font-size:13px;font-weight:700;margin-top:6px">'
+      + (temAlguma ? 'Adicionar mais' : 'Adicionar foto') + '</button>';
+  }
+
   function etapaFotos() {
     var r = regrasDeFoto();
     if (!r) {
@@ -676,7 +1031,7 @@
         + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:6px">'
         + 'Fotos do anúncio (' + geral.length + ' de ' + r.geralMax + ')</div>'
         + tirasDeFoto(geral, 'geral')
-        + botaoArquivo('geral', true, 'Escolher arquivos')
+        + botaoAdicionarFoto('geral', geral.length > 0)   // v33k.2768
         + '</div>';
 
     // ★★ v33k.2219: FOTO É POR VALOR DA PRIMEIRA DIMENSÃO, NÃO POR COMBINAÇÃO.
@@ -702,14 +1057,14 @@
             + esc(primeira.nome) + ': ' + esc(c)
             + ' <span style="font-weight:400;color:var(--lc-muted-2)">(' + fv.length + ' de ' + r.porVariacaoMax + ')</span></div>'
             + tirasDeFoto(fv, c)
-            + botaoArquivo(c, r.porVariacaoMax > 1, fv.length ? 'Adicionar mais' : 'Escolher arquivos')
+            + botaoAdicionarFoto(c, fv.length > 0)   // v33k.2768
             + '</div>';
         }).join('') + '</div>';
     }
 
     return '<div class="lc-an-etapa">'
       + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 12px">' + esc(textoDasRegras(r)) + '</p>'
-      + '<p style="font-size:12px;color:var(--lc-muted-2);margin:0 0 12px">Cada arquivo até 2 MB.</p>'
+      + '<p style="font-size:12px;color:var(--lc-muted-2);margin:0 0 12px">Em Adicionar você escolhe uma foto que o cadastro já tem ou sobe um arquivo novo, de até 2 MB.</p>'
       + blocoGeral + blocoVars + '</div>';
   }
 
@@ -859,6 +1214,91 @@
   // `{motivo}` se nao deu, e some do caminho quando deu (a categoria fica
   // gravada em `dados.categoriasPorCanal` e o ramo nem e alcancado).
   var catAuto = {};
+  // ════════════════════════════════════════════════════════════════════════
+  // ★★ v33k.2774: A CATEGORIA SE DIZ PELO NOME, NAO PELO CODIGO.
+  // ──────────────────────────────────────────────────────────────────────
+  // RELATO DELE EM 09/10: *"quando a categoria do produto e vinculado
+  // automaticamente com IA esta mostrando o codigo da categoria para a
+  // Shopee, e precisa de mostrar o nome"*.
+  //
+  // ★ A CAUSA: `dados.categoriasPorCanal` guarda o ID, que e o que a
+  //   exportacao precisa, e a tela imprimia esse mesmo ID. O NOME existia nas
+  //   duas pontas e era jogado fora nas duas: a sugestao automatica recebia
+  //   `{id, nome, caminho}` e guardava so o id; a escolha a mao desenhava a
+  //   trilha no botao e mandava so o `data-cat` adiante.
+  //
+  // ★ O ID CONTINUA SENDO A VERDADE. `categoriaNomePorCanal` e ROTULO: entra
+  //   junto quando se conhece, e some junto quando a categoria troca. Quem
+  //   exporta nunca le daqui — se lesse, um rotulo velho viraria categoria
+  //   errada no marketplace.
+  //
+  // ★ RASCUNHO ANTIGO (e qualquer categoria que chegou por outro caminho) tem
+  //   o id e nao tem o rotulo. Para esses, `/categorias/nomes?ids=` resolve —
+  //   a MESMA rota que a conferencia da exportacao usa desde a v33k.1872, em
+  //   vez de uma segunda montagem de caminho. Uma tentativa por canal, e
+  //   falha aberta: sem nome, a tela volta a mostrar o codigo, que e o que
+  //   mostrava antes.
+  // ════════════════════════════════════════════════════════════════════════
+  var catNomeBusca = {};
+
+  // O rotulo de uma categoria vinda da busca: a trilha inteira quando existe,
+  // senao a folha. A trilha e o que distingue cinco categorias chamadas "Tenis".
+  function rotuloDeCategoria(c) {
+    if (!c) return '';
+    var folha = String(c.nome || c.name || c.folha || '').trim();
+    var trilha = String(c.caminho || '').trim();
+    if (!trilha) return folha;
+    if (!folha) return trilha;
+    // o caminho do ML pode ser so o dominio, sem a folha no fim
+    return trilha === folha || trilha.slice(-folha.length) === folha
+      ? trilha : (trilha + ' > ' + folha);
+  }
+
+  function guardarNomeDaCategoria(canal, rotulo) {
+    if (!canal) return;
+    estado.dados.categoriaNomePorCanal = estado.dados.categoriaNomePorCanal || {};
+    if (rotulo) estado.dados.categoriaNomePorCanal[canal] = String(rotulo).slice(0, 240);
+    else delete estado.dados.categoriaNomePorCanal[canal];
+  }
+
+  function nomeDaCategoria(canal) {
+    return (estado.dados.categoriaNomePorCanal || {})[canal] || '';
+  }
+
+  // Resolve pelo id, uma vez por canal+id. Chamada de dentro do desenho: nao
+  // bloqueia, grava o rotulo e redesenha quando chega.
+  function resolverNomeDaCategoria(canal) {
+    var id = (estado.dados.categoriasPorCanal || {})[canal];
+    if (!id || nomeDaCategoria(canal)) return;
+    var chave = canal + ':' + id;
+    if (catNomeBusca[chave]) return;
+    catNomeBusca[chave] = true;
+    var lojaId = lojaDoCanal(canal);
+    if (!lojaId) return;
+    setTimeout(async function () {
+      try {
+        var r = await fetch(base() + '/api/marketplaces/loja/' + lojaId
+          + '/categorias/nomes?ids=' + encodeURIComponent(id), { headers: cabecalhos() });
+        var j = await r.json();
+        var achado = (j && j.nomes) ? j.nomes[String(id)] : null;
+        var rotulo = achado ? rotuloDeCategoria(achado) : '';
+        if (!rotulo) return;                       // falha aberta: segue o codigo
+        guardarNomeDaCategoria(canal, rotulo);
+        marcarSujo();
+        desenharEtapa();
+      } catch (_) { /* rotulo e enfeite: nunca derruba a etapa */ }
+    }, 0);
+  }
+
+  // O que a tela mostra: o nome na frente e o codigo discreto atras. O codigo
+  // fica porque ele o usa para conferir na Shopee, e tirar dado que ele usa
+  // para resolver um pedido de clareza seria trocar um incomodo por outro.
+  function textoDaCategoria(canal) {
+    var id = (estado.dados.categoriasPorCanal || {})[canal] || '';
+    if (!id) return '';
+    var nome = nomeDaCategoria(canal);
+    return nome ? (nome + ' (' + id + ')') : String(id);
+  }
   // ════════════════════════════════════════════════════════════════
   // ★★ v33k.2491: O INTERRUPTOR DA IA AUTOMATICA, E ONDE ELE MORA.
   //   Ele pediu automatico em 15/09 e, quando perguntei onde guardar o
@@ -917,6 +1357,9 @@
       }
       estado.dados.categoriasPorCanal = estado.dados.categoriasPorCanal || {};
       estado.dados.categoriasPorCanal[canal] = String(primeira.id || primeira.category_id || primeira.categoryId);
+      // v33k.2774: o nome vem na MESMA resposta. Guardar so o id era jogar
+      // fora o rotulo e depois imprimir o codigo na tela dele.
+      guardarNomeDaCategoria(canal, rotuloDeCategoria(primeira));
       catAuto[canal] = { sugerida: primeira };
       marcarSujo();
     } catch (e) {
@@ -969,6 +1412,9 @@
     }).join('');
 
     var cat = (estado.dados.categoriasPorCanal || {})[atual] || '';
+    // v33k.2774: categoria com id e sem rotulo (rascunho de antes desta leva,
+    // ou categoria que chegou por outro caminho) pede o nome uma vez.
+    if (cat) resolverNomeDaCategoria(atual);
     var busca = '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:14px;margin-bottom:14px">'
       + '<div style="font-size:12px;font-weight:700;color:var(--lc-ink-2);margin-bottom:6px">Categoria neste canal</div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
@@ -978,7 +1424,7 @@
       + '</div>'
       + '<div id="lcAnResultCat" style="margin-top:8px"></div>'
       + '<div style="font-size:12px;color:' + (cat ? 'var(--lc-primary)' : 'var(--lc-muted-2)') + ';margin-top:8px">'
-      + (cat ? ((catAuto[atual] && catAuto[atual].sugerida) ? 'Categoria sugerida (pode trocar acima): ' : 'Categoria escolhida: ') + esc(cat) : 'Sem categoria escolhida. Sem ela não existe lista de campos para conferir.')
+      + (cat ? ((catAuto[atual] && catAuto[atual].sugerida) ? 'Categoria sugerida (pode trocar acima): ' : 'Categoria escolhida: ') + esc(textoDaCategoria(atual)) : 'Sem categoria escolhida. Sem ela não existe lista de campos para conferir.')
       + '</div></div>';
 
     var ficha = cacheFichas[atual];
@@ -1136,12 +1582,14 @@
       var texto = dd.resultado === 'publicado' ? 'publicado'
         : (dd.resultado === 'recusado' ? ('recusado: ' + (dd.motivo || 'sem motivo informado')) : 'ainda não enviado');
       var cat = (d.categoriasPorCanal || {})[dd.canal];
+      // v33k.2774: aqui tambem era o codigo cru
+      var catTexto = cat ? textoDaCategoria(dd.canal) : '';
       return '<div style="border:1px solid var(--lc-border);border-radius:8px;padding:10px 12px;margin-bottom:8px">'
         + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">'
         + '<span style="font-size:13px;font-weight:700;color:var(--lc-ink)">' + esc(dd.nome) + '</span>'
         + '<span style="font-size:12px;color:' + cor + '">' + esc(texto) + '</span></div>'
         + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:3px">'
-        + (cat ? 'categoria ' + esc(cat) : 'sem categoria escolhida neste canal') + '</div></div>';
+        + (cat ? 'categoria ' + esc(catTexto) : 'sem categoria escolhida neste canal') + '</div></div>';
     }).join('');
 
     if (!estado.destinos.length) {
@@ -1169,6 +1617,8 @@
       //   não há de quem diferenciar, e o único efeito seria trocar o título
       //   que a pessoa acabou de escrever.
       + _blocoVariacaoAutomatica(qtd)
+      // v33k.2774: fora do bloco das variações, de propósito. Ver OPCOES_AUTO.
+      + _blocoAds()
       + (estado.envioErro
         ? '<div style="border:1px solid var(--lc-danger-soft);background:#fff;border-radius:8px;padding:10px 12px;margin:10px 0;font-size:13px;color:var(--lc-danger)">'
           + esc(estado.envioErro) + '</div>'
@@ -1184,12 +1634,49 @@
       + '</div></div>';
   }
 
+  // ★★ v33k.2774: `ativarAds` SAIU DAQUI, e a razão é o defeito que ele relatou.
+  // ────────────────────────────────────────────────────────────────────────
+  // RELATO DE 09/10: *"tem um select perguntando se o produto quer ser
+  // adicionado nos Ads após a exportação, mesmo com ele selecionado não está
+  // funcionando, o anúncio não está sendo ativado nos Ads"*.
+  //
+  // ★ A CAUSA, em duas linhas desta tela: as opções desta lista só valem com
+  //   2+ cópias (variar título entre cópias com uma só não quer dizer nada), e
+  //   `entregarParaExportacao` descartava a lista INTEIRA quando a quantidade
+  //   era 1 — o caso normal. Ativar nos Ads ia junto no descarte, e chegava na
+  //   exportação como `false`. Pior: o `false` DESMARCAVA o `dupAtivarAds` da
+  //   tela de exportação, que nasce marcado, e desligava o
+  //   `_ativarAdsPosExport`. Quem duplicava pela lista de Anúncios tinha Ads;
+  //   quem criava o anúncio aqui, nunca, e nada na tela dizia isso.
+  //
+  // ★ POR QUE NÃO ERA DESTA LISTA: ativar nos Ads não diferencia uma cópia da
+  //   outra — é o que fazer com o anúncio DEPOIS de publicado. Estava no lugar
+  //   errado, e o lugar errado é que produziu a regra errada. Agora tem bloco
+  //   próprio, sempre habilitado, e atravessa qualquer quantidade.
   var OPCOES_AUTO = [
     { id: 'variarTitulo', rotulo: 'Gerar um título diferente para cada cópia' },
     { id: 'variarDescricao', rotulo: 'Gerar uma descrição diferente para cada cópia' },
     { id: 'rotacionarFotos', rotulo: 'Rotacionar a ordem das fotos entre as cópias' },
-    { id: 'ativarAds', rotulo: 'Ativar no Ads depois de publicar' },
   ];
+
+  // Ads vive em `opcoesAuto.ativarAds`, o mesmo endereço de sempre: rascunho
+  // salvo antes desta leva continua sendo lido, e a exportação continua
+  // recebendo o mesmo nome de campo.
+  function adsLigado() {
+    return !!(estado.dados.opcoesAuto && estado.dados.opcoesAuto.ativarAds);
+  }
+
+  function _blocoAds() {
+    return '<div style="margin-top:18px;border:1px solid var(--lc-border);border-radius:10px;padding:14px">'
+      + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin-bottom:4px">DEPOIS DE PUBLICAR</div>'
+      + '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;color:var(--lc-ink-2);cursor:pointer">'
+      + '<input type="checkbox" class="lc-an-auto" data-op="ativarAds"' + (adsLigado() ? ' checked' : '') + '>'
+      + 'Ativar no Ads automaticamente (campanha na Shopee)</label>'
+      + '<div style="font-size:12px;color:var(--lc-muted-2);margin-top:4px">'
+      + 'Vale para qualquer quantidade de cópias. Cria a campanha com o ROAS do ACOS objetivo da loja, '
+      + 'e por enquanto só na Shopee: anúncio de outro canal é publicado e fica sem campanha.'
+      + '</div></div>';
+  }
 
   function _blocoVariacaoAutomatica(qtd) {
     var liberado = qtd > 1;
@@ -1322,6 +1809,8 @@
       }
 
       var _qtd = Math.max(1, parseInt(estado.dados.quantidadePorLoja, 10) || 1);
+      // As de VARIAÇÃO só valem com 2+ cópias; `ativarAds` não é uma delas e
+      // atravessa sempre (v33k.2774, ver OPCOES_AUTO).
       var _op = (_qtd > 1 && estado.dados.opcoesAuto) ? estado.dados.opcoesAuto : {};
       fechar();
       // ★ v33k.2221: vai com `auto`, então o modal de duplicar não aparece:
@@ -1332,7 +1821,7 @@
         variarTitulo: !!_op.variarTitulo,
         variarDescricao: !!_op.variarDescricao,
         rotacionarFotos: !!_op.rotacionarFotos,
-        ativarAds: !!_op.ativarAds,
+        ativarAds: adsLigado(),
       });
 
       // ★ v33k.2221: o `auto` acima já preenche quantidade, lojas e opções
@@ -1426,38 +1915,28 @@
       });
     });
 
-    function guardarFotos(alvo) {
-      if (alvo === 'geral') {
-        if (!Array.isArray(estado.dados.fotos)) estado.dados.fotos = [];
-        return estado.dados.fotos;
-      }
-      // As fotos por variação moram em `fotosPorGrupo`, indexadas pelo VALOR
-      // da primeira dimensão ("Preto", "Azul"), e não pela combinação.
-      if (!estado.dados.fotosPorGrupo) estado.dados.fotosPorGrupo = {};
-      if (!Array.isArray(estado.dados.fotosPorGrupo[alvo])) estado.dados.fotosPorGrupo[alvo] = [];
-      return estado.dados.fotosPorGrupo[alvo];
-    }
+    // v33k.2768: a lista do bloco subiu para o módulo (`listaDoAlvo`), porque a
+    // escolha de foto existente usa a mesma. Este nome fica como atalho local.
+    var guardarFotos = listaDoAlvo;
 
-    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-arquivo'), function (el) {
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-add-foto'), function (el) {
+      el.addEventListener('click', function () { abrirEscolhaDeFoto(el.dataset.alvo); });
+    });
+
+    // ★ v33k.2768: SÓ OS INPUTS DA ETAPA. A escolha de foto tem um input de
+    //   arquivo dela, fora do `lcAnCorpo`, e ela mesma o liga. Com a busca em
+    //   `document` os dois ganhariam o mesmo gancho e cada arquivo subiria
+    //   duas vezes.
+    var corpoEtapa = document.getElementById('lcAnCorpo');
+    Array.prototype.forEach.call((corpoEtapa || document).querySelectorAll('.lc-an-arquivo'), function (el) {
       el.addEventListener('change', async function () {
         var arquivos = Array.prototype.slice.call(el.files || []);
         if (!arquivos.length) return;
-        var r = regrasDeFoto();
-        if (!r) return;
-        var alvo = el.dataset.alvo;
-        var atuais = guardarFotos(alvo);
-        var limite = alvo === 'geral' ? r.geralMax : r.porVariacaoMax;
         el.disabled = true;
         try {
-          var urls = await subirArquivos(arquivos, limite, atuais);
-          if (urls.length) {
-            Array.prototype.push.apply(atuais, urls);
-            // As fotos que ESTA tela subiu ficam registradas: é por elas que a
-            // faxina de 72h sabe o que apagar se o rascunho for abandonado.
-            if (!Array.isArray(estado.dados.fotosStorage)) estado.dados.fotosStorage = [];
-            Array.prototype.push.apply(estado.dados.fotosStorage, urls);
-            marcarSujo();
-          }
+          var res = await adicionarArquivos(el.dataset.alvo, arquivos);
+          var msg = textoDoCorte(res);
+          if (msg) avisar(msg);   // v33k.2769: fora da escolha nao ha faixa, entao e aviso
         } catch (e) { avisar(e.message); }
         el.disabled = false;
         desenharEtapa();
@@ -1757,6 +2236,9 @@
       el.addEventListener('click', function () {
         if (!estado.dados.categoriasPorCanal) estado.dados.categoriasPorCanal = {};
         estado.dados.categoriasPorCanal[estado.canalAba] = el.dataset.cat;
+        // v33k.2774: o rotulo troca JUNTO com o id. Deixar o anterior mostraria
+        // o nome de uma categoria e o codigo de outra, que e pior que o codigo.
+        guardarNomeDaCategoria(estado.canalAba, el.dataset.catNome || '');
         // v33k.2489: escolha a mao apaga a marca de "sugerida" e a tentativa,
         // senao o rotulo continuaria dizendo que foi a maquina que escolheu.
         delete catAuto[estado.canalAba];
@@ -1941,7 +2423,10 @@
         // "Tênis", e só o caminho até elas diz qual é qual.
         var folha = c.nome || c.name || id;
         var trilha = c.caminho && c.caminho !== folha ? c.caminho : null;
+        // v33k.2774: o rotulo vai no proprio botao. Mandar so o id adiante era
+        // desenhar a trilha aqui e imprimir o codigo na linha de baixo.
         return '<button class="lc-an-escolher-cat" data-cat="' + esc(id) + '" '
+          + 'data-cat-nome="' + esc(rotuloDeCategoria(c)) + '" '
           + 'style="display:block;width:100%;text-align:left;border:1px solid var(--lc-border);background:#fff;'
           + 'border-radius:8px;padding:7px 10px;margin-bottom:5px;cursor:pointer;font-size:13px;color:var(--lc-ink)">'
           + (trilha
@@ -2151,6 +2636,14 @@
     desenharEtapa();
   }
 
+  // v33k.2768: o mesmo modal tem três trabalhos, e dizer "Criar anúncio" na
+  // edição de um produto do Drop é o tipo de rótulo que faz a pessoa fechar a
+  // tela com medo de ter criado outra coisa.
+  function tituloDoModal() {
+    if (!(estado.dados && estado.dados.modoDrop)) return 'Criar anúncio';
+    return editandoDrop() ? 'Editar produto do Dropshipping' : 'Novo produto do Dropshipping';
+  }
+
   function molde() {
     var passos = etapas().map(function (e) {
       return '<button id="lcAnPasso_' + e.id + '" data-etapa="' + e.id + '" class="lc-an-passo" '
@@ -2161,7 +2654,7 @@
     return '<div id="lcAnOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:26px;overflow:auto">'
       + '<div style="background:#fff;border-radius:14px;width:min(940px,100%);box-shadow:0 20px 50px rgba(15,23,42,.25)">'
       + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--lc-border)">'
-      + '<div><div style="font-size:17px;font-weight:800;color:var(--lc-ink)">Criar anúncio</div>'
+      + '<div><div style="font-size:17px;font-weight:800;color:var(--lc-ink)">' + tituloDoModal() + '</div>'
       + '<div id="lcAnStatus" style="font-size:12px;color:var(--lc-muted-2);margin-top:2px">Rascunho ainda não iniciado</div></div>'
       + '<button id="lcAnFechar" style="border:1px solid var(--lc-border-2);background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px">Fechar</button>'
       + '</div>'
@@ -2190,7 +2683,12 @@
 
   async function descartar() {
     if (!estado.rascunhoId) { fechar(); return; }
-    var sim = await confirmar('Descartar este rascunho? O que você digitou será apagado.');
+    // v33k.2768: na edição o que se descarta são as ALTERAÇÕES. Perguntar
+    // "descartar este rascunho" com o produto no catálogo deixa a dúvida de se
+    // o produto vai embora junto.
+    var sim = await confirmar(editandoDrop()
+      ? 'Descartar as alterações? O produto continua no catálogo como está hoje.'
+      : 'Descartar este rascunho? O que você digitou será apagado.');
     if (!sim) return;
     try {
       await chamar('/' + estado.rascunhoId, { metodo: 'DELETE' });
@@ -2214,6 +2712,7 @@
     //   tentativa do anterior, e o segundo produto ficava sem sugestao de
     //   categoria sem dizer por que.
     catAuto = {};
+    catNomeBusca = {};   // v33k.2774: rascunho novo, o rotulo se resolve de novo
     iaAuto = {};    // v33k.2491: rascunho novo, a IA automatica roda de novo
     empresasDrop = null;
     if (opts && opts.modo === 'drop') carregarTaxaDrop();   // v33k.2652
@@ -2237,6 +2736,12 @@
         return;
       }
     }
+
+    // ★ v33k.2768: rascunho REABERTO no modo Drop também precisa da taxa. A
+    //   edição entra SEMPRE por rascunho (sem `opts.modo`), então sem esta
+    //   linha a tela mostraria a comissão padrão de 10% mesmo quando a
+    //   plataforma cobra outra, e o "o droper paga" sairia errado.
+    if (!(opts && opts.modo === 'drop') && estado.dados && estado.dados.modoDrop) carregarTaxaDrop();
 
     var div = document.createElement('div');
     div.innerHTML = molde();
@@ -2273,9 +2778,37 @@
     return empresasDrop;
   }
 
+  // ★★★ v33k.2768: O MESMO MODAL EDITA.
+  // ───────────────────────────────────────────────────────────────────────
+  // PEDIDO DELE EM 09/10: "em Dropshipping ao editar um produto precisa abrir
+  // aquele mesmo modal que já abria anteriormente".
+  //
+  // Criar já abria aqui desde a v33k.2637. Editar caía num formulário à parte,
+  // desenhado dentro da página do Dropshipping, com foto por URL colada e sem
+  // foto por variação. Duas telas para o mesmo produto, e a de editar era a
+  // pior das duas.
+  //
+  // ★ O QUE DIZ QUE É EDIÇÃO é `dados.drop.editandoProdutoId`, gravado no
+  //   rascunho pelo painel. Mora nos DADOS, e não numa opção de abertura, pelo
+  //   mesmo motivo do `modoDrop`: rascunho reaberto continua sendo a edição
+  //   daquele produto.
+  // ★★ E É ELE QUE TROCA POST POR PUT. Sem isso, salvar a edição cadastraria um
+  //   SEGUNDO produto na vitrine, com o mesmo título, e o original ficaria lá.
+  function editandoDrop() {
+    var d = estado.dados || {};
+    var cfg = d.drop || {};
+    if (!d.modoDrop) return 0;
+    var id = Number(cfg.editandoProdutoId);
+    return (Number.isFinite(id) && id > 0) ? id : 0;
+  }
+
   function avisoDrop() {
+    var ed = editandoDrop();
     return '<div style="background:var(--lc-primary-softer);border:1px solid var(--lc-primary-soft);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:var(--lc-primary-text);line-height:1.45">'
-      + 'Você está cadastrando um produto para os <b>dropers</b>. Os preços são o que <b>você recebe</b> por peça; o droper paga esse valor com a comissão de ' + String(taxaDropAtual()).replace('.', ',') + '% embutida.</div>';
+      + (ed
+        ? 'Você está <b>editando</b> um produto que já está no catálogo do Dropshipping. '
+        : 'Você está cadastrando um produto para os <b>dropers</b>. ')
+      + 'Os preços são o que <b>você recebe</b> por peça; o droper paga esse valor com a comissão de ' + String(taxaDropAtual()).replace('.', ',') + '% embutida.</div>';
   }
 
   // ═══ v33k.2652: O PRECO NO DROP ═══════════════════════════════════════
@@ -2360,6 +2893,24 @@
     return {
       titulo: String(d.nome || '').trim(),
       descricao: d.descricao || '',
+      // ★★ v33k.2774: A MARCA E OS TERMOS DE BUSCA ATRAVESSAM O DROP.
+      // ──────────────────────────────────────────────────────────────────
+      // RELATO DELE EM 09/10: *"mesmo estando preenchido a marca, os termos de
+      // busca no produto de dropshipping, ao criar um novo anúncio esses dados
+      // chegam incompletos no painel do dropper"*.
+      //
+      // ★ A CAUSA ERA AQUI, e era simples: a tela tem os dois campos (Marca e
+      //   Termos de busca, etapa Produto) e este montador não os mandava. O
+      //   fornecedor preenchia, o catálogo do Drop nunca recebia, e o painel
+      //   do droper abria o rascunho sem eles — sem erro em lugar nenhum,
+      //   porque ninguém pediu um dado que ninguém mandou.
+      //
+      // ★ OS DOIS VÃO ATÉ A PONTA: coluna no catálogo (`marca`,
+      //   `termos_busca`), de volta no `dados-para-duplicar`, e daí para o
+      //   rascunho do droper. Mandar daqui e parar no banco só trocaria o
+      //   lugar onde o dado morre.
+      marca: String(d.marca || '').trim(),
+      termosBusca: String(d.palavrasChave || '').trim(),
       sku: d.sku || '', ean: d.ean || '',
       fotos: (Array.isArray(d.fotos) ? d.fotos : []).slice(0, 12),
       variacoes: variacoesDrop,
@@ -2373,12 +2924,34 @@
       cest: String(cfg.cest || '').replace(/\D/g, ''),
       // v33k.2638: veio de um produto que ele ja tem: o catalogo guarda o vinculo
       produtoErpId: cfg.produtoErpId ? Number(cfg.produtoErpId) : null,
+      // ★★ v33k.2768: VIAJAM DE IDA E VOLTA SEM PASSAR PELA TELA. O modal não
+      //   tem campo para "pausado" nem para o guia de tamanhos, e a validação
+      //   do catálogo preenche `ativo: true` e `guia_tamanhos: null` quando o
+      //   corpo não fala deles. Editar um produto PAUSADO o republicaria na
+      //   vitrine, e editar qualquer produto apagaria o guia que o droper usa
+      //   para exportar. O backend também passou a ignorar campo ausente na
+      //   edição; os dois lados, porque o lado que esquecer estraga sozinho.
+      ...(cfg.ativo != null ? { ativo: !!cfg.ativo } : {}),
+      ...(cfg.guiaTamanhos != null ? { guiaTamanhos: cfg.guiaTamanhos } : {}),
     };
   }
 
   function validarDrop(p) {
     if (!p.titulo) return 'Dê um nome ao produto, na etapa Produto.';
-    if (p.variacoes.length && p.variacoes.some(function (v) { return !(v.preco > 0); })) return 'Toda variação precisa de preço (o que você recebe por peça), na etapa Produto.';
+    // ★★ v33k.2768: A LINHA SEM PREÇO É DITA PELO NOME.
+    //   A mensagem antiga era "toda variação precisa de preço" e mandava a pessoa
+    //   procurar qual numa grade de 20 linhas. E ela passou a aparecer mais
+    //   desde que EDITAR entra por aqui: a grade do modal é o cruzamento de
+    //   todas as dimensões, e um produto gravado com a grade INCOMPLETA (Azul
+    //   só no 37, por exemplo) reabre com a linha que faltava, em branco. Não
+    //   preencho por conta própria: isso acrescentaria ao produto uma variação
+    //   que o fornecedor nunca cadastrou. Digo QUAL linha e ele decide.
+    var semPreco = p.variacoes.filter(function (v) { return !(v.preco > 0); });
+    if (p.variacoes.length && semPreco.length) {
+      return 'Falta o preço de ' + semPreco.slice(0, 3).map(function (v) { return '"' + (v.nome || v.cor) + '"'; }).join(', ')
+        + (semPreco.length > 3 ? ' e mais ' + (semPreco.length - 3) : '')
+        + '. O preço é o que você recebe por peça, e fica na etapa Produto.';
+    }
     if (!(p.precoBase > 0)) return 'Informe o preço, o que você recebe por peça, na etapa Produto.';
     if (p.tipoPessoa === 'PJ') {
       if (!p.nfeEmpresaId) return 'Escolha a empresa emitente da nota.';
@@ -2414,9 +2987,14 @@
     var radio = function (v, rot) {
       return '<label style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer"><input type="radio" name="lcAnDropPessoa" data-drop-campo="tipoPessoa" value="' + v + '"' + ((v === 'PF') === !pj ? ' checked' : '') + '> ' + rot + '</label>';
     };
+    var ed = editandoDrop();   // v33k.2768
     return '<div class="lc-an-etapa">'
-      + '<h3 style="margin:0 0 6px;font-size:16px;color:var(--lc-ink)">Disponibilizar para os dropers</h3>'
-      + '<p style="margin:0 0 14px;font-size:13px;color:var(--lc-muted);line-height:1.45">O produto entra no catálogo do Dropshipping e aparece na vitrine. Cada droper escolhe depois em que canal vender.</p>'
+      + '<h3 style="margin:0 0 6px;font-size:16px;color:var(--lc-ink)">' + (ed ? 'Salvar as alterações' : 'Disponibilizar para os dropers') + '</h3>'
+      + '<p style="margin:0 0 14px;font-size:13px;color:var(--lc-muted);line-height:1.45">'
+      + (ed
+        ? 'As alterações valem para o produto que já está no catálogo. Os anúncios que os dropers já criaram a partir dele continuam como estão.'
+        : 'O produto entra no catálogo do Dropshipping e aparece na vitrine. Cada droper escolhe depois em que canal vender.')
+      + '</p>'
       + '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:8px 14px;margin-bottom:16px">'
       +   linha('Produto', esc(p.titulo || 'sem nome'))
       +   linha('Variações', nVar ? String(nVar) : 'sem variação')
@@ -2433,7 +3011,9 @@
           + campo('ncm', 'NCM', '8 dígitos') + campo('cfop', 'CFOP', '5102 é o padrão de venda dentro do estado: o Drop só liga fornecedor e droper da mesma região') + campo('origemMercadoria', 'Origem da mercadoria', 'de 0 a 8; 0 é nacional') + campo('cest', 'CEST', 'opcional')
         : '<p style="font-size:12px;color:var(--lc-muted);margin-top:8px">Sem nota: o pedido segue com a sua declaração de conteúdo.</p>')
       + '<div id="lcAnDropErro" style="display:none;margin-top:14px;background:var(--lc-danger-soft);color:var(--lc-danger);border-radius:8px;padding:10px 12px;font-size:13px"></div>'
-      + '<button id="lcAnDisponibilizar" style="margin-top:16px;width:100%;padding:12px;background:var(--lc-primary);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer">Disponibilizar para os dropers</button>'
+      + '<button id="lcAnDisponibilizar"' + (estado.enviando ? ' disabled' : '')
+      + ' style="margin-top:16px;width:100%;padding:12px;background:var(--lc-primary);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;'
+      + (estado.enviando ? 'opacity:.65;cursor:default' : 'cursor:pointer') + '">' + rotuloDisponibilizar(ed) + '</button>'
       + '</div>';
   }
 
@@ -2452,6 +3032,39 @@
     if (b) b.addEventListener('click', function () { disponibilizarNoDrop(); });
   }
 
+  // ★ v33k.2784: um rotulo so, usado no desenho E na trava, para os dois nunca
+  //   discordarem. O desenho le `estado.enviando` porque um redesenho no meio
+  //   da gravacao refaria o botao solto e desfaria a trava.
+  function rotuloDisponibilizar(ed) {
+    if (estado.enviando) return ed ? 'Salvando...' : 'Disponibilizando...';
+    return ed ? 'Salvar alterações' : 'Disponibilizar para os dropers';
+  }
+
+  // ★ v33k.2784: a trava TEM de aparecer. Botao que nao responde e identico a
+  //   botao que nao pegou, e e exatamente isso que faz a pessoa clicar de novo.
+  function travarBotaoDrop(ed) {
+    var b = document.getElementById('lcAnDisponibilizar');
+    if (!b) return;
+    b.disabled = !!estado.enviando;
+    b.style.opacity = estado.enviando ? '.65' : '';
+    b.style.cursor = estado.enviando ? 'default' : 'pointer';
+    b.textContent = rotuloDisponibilizar(ed);
+  }
+
+  // ★★★★★ v33k.2784: A TRAVA SO CAI JUNTO COM O MODAL.
+  //   `estado.enviando` voltava a false num `finally`, isto e, no instante em
+  //   que o POST respondeu. So que o modal ainda NAO fechou: falta apagar o
+  //   rascunho, que e outra ida a rede. Nessa janela a tela ficava IDENTICA
+  //   (mesmo botao, mesmo texto, habilitado) e o segundo clique de quem achou
+  //   que o primeiro nao pegou mandava OUTRO POST /produtos, que vira outro
+  //   produto no catalogo: `drop_produtos` nao tem indice que recuse.
+  //   ★★ MEDIDO em jsdom, POST de 300 ms e rascunho de 900 ms:
+  //        2o clique em t+120 ms  (durante o POST)      -> 1 produto
+  //        2o clique em t+500 ms  (apagando o rascunho) -> 2 PRODUTOS
+  //        2o clique em t+1400 ms (modal ja fechado)    -> 1 produto
+  //   ★ O caminho de sempre (`entregarParaExportacao`) ja fazia certo: marca a
+  //     bandeira, redesenha, e o botao vira "Preparando...". O modo Drop copiou
+  //     a bandeira e nao copiou o retorno visual.
   async function disponibilizarNoDrop() {
     if (estado.enviando) return;
     var p = paraProdutoDrop();
@@ -2460,15 +3073,36 @@
     var mostrar = function (m) { if (box) { box.textContent = m; box.style.display = 'block'; } else avisar(m); };
     if (erro) { mostrar(erro); return; }
     if (typeof window._dropApi !== 'function') { mostrar('O módulo do Dropshipping não carregou. Recarregue a página.'); return; }
+    // ★ v33k.2768: o mesmo botão cadastra ou salva. O id vem do rascunho.
+    var ed = editandoDrop();
     estado.enviando = true;
+    travarBotaoDrop(ed);
     var r = null;
-    try { r = await window._dropApi('/produtos', { method: 'POST', body: p }); } catch (e) { r = null; } finally { estado.enviando = false; }
-    if (!r || !r.ok) { mostrar((r && r.data && r.data.erro) || 'Não consegui disponibilizar o produto.'); return; }
-    // o rascunho virou produto do catalogo: sai da lista de rascunhos
-    if (estado.rascunhoId) { try { await chamar('/' + estado.rascunhoId, { metodo: 'DELETE' }); } catch (e) { /* fica o rascunho; o produto ja existe */ } }
+    try {
+      r = ed
+        ? await window._dropApi('/produtos/' + ed, { method: 'PUT', body: p })
+        : await window._dropApi('/produtos', { method: 'POST', body: p });
+    } catch (e) { r = null; }
+    if (!r || !r.ok) {
+      // ★ SO o erro devolve o botao. Quando da certo o caminho acaba em
+      //   `fechar()`, e e ate la que a trava precisa durar.
+      estado.enviando = false;
+      travarBotaoDrop(ed);
+      mostrar((r && r.data && r.data.erro) || (ed ? 'Não consegui salvar as alterações.' : 'Não consegui disponibilizar o produto.'));
+      return;
+    }
+    // o rascunho cumpriu o papel (virou produto, ou salvou a edição): sai da lista
+    if (estado.rascunhoId) { try { await chamar('/' + estado.rascunhoId, { metodo: 'DELETE' }); } catch (e) { /* fica o rascunho; o produto ja esta gravado */ } }
     fechar();
-    toast('Produto disponível para os dropers.');
+    estado.enviando = false;
+    toast(ed ? 'Produto atualizado.' : 'Produto disponível para os dropers.');
     if (typeof window.renderDropProdutos === 'function') window.renderDropProdutos();
+    // ★ v33k.2786: subir o preço NÃO vale hoje. O backend devolve o que ficou
+    //   agendado e a tela DIZ, no mesmo instante, que o preço de agora continua
+    //   valendo e quando o novo entra. Salvar em silêncio faria o fornecedor
+    //   achar que o preço mudou e vender duas semanas na conta errada.
+    var ag = r && r.data && r.data.mudancaAgendada;
+    if (ag && typeof window._dropAvisoDoAgendamento === 'function') window._dropAvisoDoAgendamento(ag);
   }
 
   window.lcAnuncioNovo = {
@@ -2497,5 +3131,19 @@
     _numBR: numBR, _precoDroper: precoDroper,   // v33k.2652
     _validarDrop: validarDrop,
     _disponibilizar: disponibilizarNoDrop,
+    // v33k.2768: a suite mede a edicao e a escolha de foto sem navegador
+    _editandoDrop: editandoDrop,
+    _tituloDoModal: tituloDoModal,
+    _fotosJaNoModal: fotosJaNoModal,
+    _listaDoAlvo: listaDoAlvo,
+    _abrirEscolhaDeFoto: abrirEscolhaDeFoto,
+    _gruposDoAcervo: gruposDoAcervo,        // v33k.2775
+    _subirArquivos: subirArquivos,          // v33k.2769
+    _textoDoCorte: textoDoCorte,
+    // v33k.2774: a suite mede o rotulo da categoria e o Ads sem navegador
+    _textoDaCategoria: textoDaCategoria,
+    _rotuloDeCategoria: rotuloDeCategoria,
+    _adsLigado: adsLigado,
+    OPCOES_AUTO: OPCOES_AUTO,
   };
 })();
