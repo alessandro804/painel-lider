@@ -27,6 +27,33 @@
 (function () {
   'use strict';
 
+  // ★★★★★ v33k.2800: ESTE ARQUIVO DIZ DE QUE LEVA ELE É.
+  // ─────────────────────────────────────────────────────────────────────────
+  // O BUG DE 11/10 NASCEU AQUI, e não no código: o painel pede este arquivo
+  // com `?v=` + a versão dele (cache-busting desde sempre), mas o `?v=` só
+  // engana o cache do NAVEGADOR. Se os bytes no servidor são velhos, o
+  // GitHub Pages serve os velhos e o painel não tem como saber.
+  //
+  // Foi o que aconteceu: o painel estava na v33k.2799 e este arquivo, no ar,
+  // era de ANTES da v33k.2768. Sem a v33k.2768 não existe
+  // `editandoProdutoId`, então "editar" abria em modo CRIAÇÃO, o botão dizia
+  // "Disponibilizar para os dropers" e salvar fazia POST: produto DUPLICADO
+  // na vitrine do Drop Vip, com o original intacto do lado. Nenhum erro na
+  // tela, nenhum erro no log. Um dia inteiro de caça para achar um arquivo
+  // que não subiu.
+  //
+  // ★ O SELO NÃO CONSERTA O ESQUECIMENTO, ELE O TORNA VISÍVEL. O painel
+  //   compara o que PEDIU com o que RECEBEU e avisa. Divergência de selo é
+  //   sintoma, não diagnóstico: pode ser arquivo velho no servidor (o caso
+  //   dele) ou deploy no meio do caminho (painel novo, assets ainda não).
+  //   Nos dois a conduta é a mesma, subir este arquivo.
+  //
+  // ★★ E A EDIÇÃO DO DROP PASSA A SER BARRADA quando este arquivo é velho
+  //   demais para ela, lá no painel (`_dropEditarProduto`). O aviso avisa; o
+  //   que impede a duplicação é a trava. Ver o comentário de lá.
+  var LEVA = 'v33k.2832-a-conferencia-mostra-a-composicao';
+  window.LC_ANUNCIO_NOVO_LEVA = LEVA;
+
   var API = '/api/anuncio-rascunhos';
   var ETAPAS = [
     // ★★ v33k.2210: VARIAÇÕES DEIXOU DE SER ETAPA. Pedido de 31/08: a escolha
@@ -2989,7 +3016,10 @@
     };
     var ed = editandoDrop();   // v33k.2768
     return '<div class="lc-an-etapa">'
-      + '<h3 style="margin:0 0 6px;font-size:16px;color:var(--lc-ink)">' + (ed ? 'Salvar as alterações' : 'Disponibilizar para os dropers') + '</h3>'
+      // ★ v33k.2800: o titulo da etapa acompanha o botao. Titulo dizendo
+      //   "Salvar as alterações" com o botao dizendo "Atualizar" seriam dois
+      //   nomes para a mesma acao na mesma tela.
+      + '<h3 style="margin:0 0 6px;font-size:16px;color:var(--lc-ink)">' + (ed ? 'Atualizar o produto' : 'Disponibilizar para os dropers') + '</h3>'
       + '<p style="margin:0 0 14px;font-size:13px;color:var(--lc-muted);line-height:1.45">'
       + (ed
         ? 'As alterações valem para o produto que já está no catálogo. Os anúncios que os dropers já criaram a partir dele continuam como estão.'
@@ -3035,9 +3065,13 @@
   // ★ v33k.2784: um rotulo so, usado no desenho E na trava, para os dois nunca
   //   discordarem. O desenho le `estado.enviando` porque um redesenho no meio
   //   da gravacao refaria o botao solto e desfaria a trava.
+  // ★ v33k.2800: EDITANDO, O BOTÃO DIZ "ATUALIZAR". Pedido dele em 11/10:
+  //   "deveria ser outro nome no botão, mais simples de atualizar". Vale só
+  //   para a edição; criar continua "Disponibilizar para os dropers", porque
+  //   é o que a ação faz e o nome comprido ali é informação, não enfeite.
   function rotuloDisponibilizar(ed) {
-    if (estado.enviando) return ed ? 'Salvando...' : 'Disponibilizando...';
-    return ed ? 'Salvar alterações' : 'Disponibilizar para os dropers';
+    if (estado.enviando) return ed ? 'Atualizando...' : 'Disponibilizando...';
+    return ed ? 'Atualizar' : 'Disponibilizar para os dropers';
   }
 
   // ★ v33k.2784: a trava TEM de aparecer. Botao que nao responde e identico a
@@ -3103,6 +3137,18 @@
     //   achar que o preço mudou e vender duas semanas na conta errada.
     var ag = r && r.data && r.data.mudancaAgendada;
     if (ag && typeof window._dropAvisoDoAgendamento === 'function') window._dropAvisoDoAgendamento(ag);
+    // ★★★★ v33k.2800: E QUANDO O AUMENTO **NÃO** AGENDOU, A TELA TAMBÉM DIZ.
+    //   Era o buraco de 11/10: ele subiu o preço, a mudança não foi agendada
+    //   (a tabela da v33k.2786 ainda não existia no banco dele) e o preço
+    //   entrou valendo na hora. A tela disse "Produto atualizado." e mais
+    //   nada. Silêncio na falha é pior do que erro na tela: ele passou a
+    //   achar que a regra dos 15 dias estava quebrada no código, quando o
+    //   código tinha desistido de agendar por falta de tabela.
+    //   Os dois ramos são exclusivos no backend, por isso um `else` seria
+    //   mentira de intenção: se um dia os dois vierem, as duas coisas
+    //   aconteceram e as duas precisam ser ditas.
+    var sem = r && r.data && r.data.aumentoSemAgendamento;
+    if (sem && typeof window._dropAvisoSemAgendamento === 'function') window._dropAvisoSemAgendamento(sem);
   }
 
   window.lcAnuncioNovo = {
