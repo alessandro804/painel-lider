@@ -58,7 +58,16 @@
   //   viaja em TODA entrega: declarar a leva atual e verdade, nao enfeite.
   //   ★ Nada mais mudou aqui. Se ele subir o painel e esquecer este arquivo, o
   //     banner do superadmin volta a aparecer — que e exatamente o servico dele.
-  var LEVA = 'v33k.2853-o-numero-do-pedido-que-nao-se-confunde';
+  // ★★★★★ v33k.2860: O SELO FICOU PARADO NA 2854 DE NOVO, e por CINCO levas
+  //   (2855 a 2859, a frente inteira de e-mail e login). Eu carimbei os sete
+  //   lugares que a minha lista dizia e este nao estava nela — a conta certa e
+  //   OITO, e o oitavo e este arquivo. A `qa_selo_do_arquivo_solto` (S2)
+  //   reprovou e foi ela que contou; o zip intocado da 2854 passava porque la
+  //   painel e arquivo solto estavam na MESMA leva, que e justamente o que S2
+  //   cobra. ★ A comparacao no painel e de string exata contra
+  //   `_DIAG_VERSAO_PAINEL`, entao "quase igual" nao existe: ou e a mesma
+  //   leva, ou o superadmin ve a tarja.
+  var LEVA = 'v33k.2869-o-pedido-que-nao-chegava';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
