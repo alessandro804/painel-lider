@@ -51,7 +51,14 @@
   // ★★ E A EDIÇÃO DO DROP PASSA A SER BARRADA quando este arquivo é velho
   //   demais para ela, lá no painel (`_dropEditarProduto`). O aviso avisa; o
   //   que impede a duplicação é a trava. Ver o comentário de lá.
-  var LEVA = 'v33k.2832-a-conferencia-mostra-a-composicao';
+  // ★★★★ v33k.2850: O SELO ESTAVA PARADO NA 2832, dezoito levas atras, e a
+  //   `qa_selo_do_arquivo_solto` (S2) estava VERMELHA por isso ANTES desta leva
+  //   — conferido rodando a suite contra o zip intocado. O selo so quer dizer
+  //   "de que leva e o arquivo que o servidor esta servindo", e este arquivo
+  //   viaja em TODA entrega: declarar a leva atual e verdade, nao enfeite.
+  //   ★ Nada mais mudou aqui. Se ele subir o painel e esquecer este arquivo, o
+  //     banner do superadmin volta a aparecer — que e exatamente o servico dele.
+  var LEVA = 'v33k.2853-o-numero-do-pedido-que-nao-se-confunde';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
