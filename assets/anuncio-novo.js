@@ -67,7 +67,7 @@
   //   cobra. ★ A comparacao no painel e de string exata contra
   //   `_DIAG_VERSAO_PAINEL`, entao "quase igual" nao existe: ou e a mesma
   //   leva, ou o superadmin ve a tarja.
-  var LEVA = 'v33k.2999-o-que-o-ml-escreve-nao-volta';
+  var LEVA = 'v33k.3010-o-que-a-categoria-recusa';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
