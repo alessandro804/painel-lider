@@ -67,7 +67,15 @@
   //   cobra. ★ A comparacao no painel e de string exata contra
   //   `_DIAG_VERSAO_PAINEL`, entao "quase igual" nao existe: ou e a mesma
   //   leva, ou o superadmin ve a tarja.
-  var LEVA = 'v33k.3010-o-que-a-categoria-recusa';
+  // ★★★★★ v33k.3038: E FICOU PARADO DE NOVO, pela TERCEIRA vez, agora por SEIS
+  //   levas (3033 a 3037). A `qa_selo_do_arquivo_solto` (S2) estava VERMELHA no
+  //   zip entregue, conferido rodando a suite contra ele intocado:
+  //   `solto=3032 painel=3037`. Os dois avisos acima dizem exatamente isto, e
+  //   mesmo assim aconteceu — o que significa que o problema nao e falta de
+  //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
+  //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
+  //   e so quando alguem a roda.
+  var LEVA = 'v33k.3047-o-fecho-da-tela';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -1395,7 +1403,7 @@
       if (!primeira) {
         // ★ o motivo do canal, quando existe, vale mais que "nao achei": desde
         //   a v33k.2479 ele diz coisas acionaveis, como loja nao conectada.
-        catAuto[canal] = { motivo: (j && j.motivo) || 'Não consegui sugerir uma categoria pelo título deste produto.' };
+        catAuto[canal] = { motivo: (j && j.motivo) || 'Não foi possível sugerir uma categoria pelo título deste produto.' };
         return;
       }
       estado.dados.categoriasPorCanal = estado.dados.categoriasPorCanal || {};
