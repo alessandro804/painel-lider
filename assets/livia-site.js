@@ -1,5 +1,9 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   livia-site.js  ·  A LIVIA EM QUALQUER PAGINA DO SITE  (v33k.3163)
+   livia-site.js  ·  O QUE TODA PAGINA DO SITE EXECUTA  (v33k.3175)
+   ───────────────────────────────────────────────────────────────────────
+   DUAS COISAS, nesta ordem: o MENU DO CELULAR e a LIVIA. Entraram no
+   mesmo arquivo porque ele e o unico script que as 15 paginas carregam,
+   e o porque de cada uma esta no comeco da sua propria funcao.
    ───────────────────────────────────────────────────────────────────────
    Saiu de dentro do index.html nesta leva, quando as paginas de recurso
    comecaram. Ate aqui existia uma pagina so, e ele cabia la dentro.
@@ -26,6 +30,75 @@
      lista, paragrafo) viram marcacao. Na ordem inversa, uma resposta com
      um sinal de menor dentro vira markup na pagina.
    ══════════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════
+   ★★★★★ O MENU DO CELULAR  (v33k.3175)
+   ───────────────────────────────────────────────────────────────────────
+   ★★★★ POR QUE ELE MORA NESTE ARQUIVO, que é o da Lívia. Porque este é o
+     ÚNICO script que as 15 páginas carregam: a home, a página-índice de
+     recursos e as 14 páginas de funcionalidade. Arquivo novo em assets/
+     seria um quarto arquivo para subir à mão e uma tag <script> para
+     acrescentar em 15 páginas — e a página que ficasse para trás numa
+     leva perderia o menu no celular sem ninguém notar, que é exatamente
+     o defeito que acabou de ser consertado.
+
+   ★★★ É UMA FUNÇÃO SEPARADA, DE PROPÓSITO, e vem ANTES da Lívia. A da
+     Lívia começa com `if (!form) return` para a página sem caixa de
+     pergunta sair cedo; menu dentro dela morreria nesse return no dia em
+     que uma página sem chat existir. São duas coisas no mesmo arquivo,
+     não uma coisa só.
+
+   ★★ O MESMO VOCABULÁRIO DA FOLHA DA LÍVIA, logo abaixo: Escape fecha,
+     clique fora fecha, e o estado é uma classe no elemento, não uma
+     variável que a tela tem de adivinhar. Padrão que já existe na casa.
+
+   ★ E FECHA AO TOCAR NUM LINK, que é o detalhe sem o qual o menu fica
+     errado na home: ali metade dos itens é âncora da mesma página
+     (#integracoes, #precos), a página rola por baixo e o painel ficaria
+     aberto tapando justamente o que a pessoa foi ver.
+   ══════════════════════════════════════════════════════════════════════ */
+(function(){
+  'use strict';
+
+  var cabeca = document.getElementById('topo');
+  var botao  = document.getElementById('menuBtn');
+  var menu   = cabeca && cabeca.querySelector('.nav');
+  if (!cabeca || !botao || !menu) return;
+
+  var aberto = false;
+
+  function marcar(){
+    cabeca.classList.toggle('menu-aberto', aberto);
+    botao.setAttribute('aria-expanded', aberto ? 'true' : 'false');
+  }
+  function abrir(){  if (!aberto){ aberto = true;  marcar(); } }
+  function fechar(){ if (aberto){  aberto = false; marcar(); } }
+
+  botao.addEventListener('click', function(ev){
+    ev.stopPropagation();
+    if (aberto) fechar(); else abrir();
+  });
+
+  /* Clique dentro do painel não fecha por si: quem fecha é o link, logo
+     abaixo. Sem este `stopPropagation`, o clique subiria até o document
+     e o fechamento de "clique fora" dispararia no clique de dentro. */
+  menu.addEventListener('click', function(ev){ ev.stopPropagation(); });
+
+  Array.prototype.slice.call(menu.querySelectorAll('a')).forEach(function(a){
+    a.addEventListener('click', fechar);
+  });
+
+  document.addEventListener('click', fechar);
+  document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') fechar(); });
+
+  /* ★ Girar o aparelho ou abrir o teclado muda a largura. Passando de
+     1040px o painel volta a ser a barra do desktop pelo CSS, e a classe
+     ficaria pendurada: ao voltar para o retrato, o menu reapareceria
+     aberto sozinho. */
+  window.addEventListener('resize', function(){
+    if (window.innerWidth > 1040) fechar();
+  });
+})();
+
 (function(){
   'use strict';
 
