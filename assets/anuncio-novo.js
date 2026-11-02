@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3243-o-que-sobrava-era-um-numero';
+  var LEVA = 'v33k.3248-a-vitrine-nao-espera-interruptor';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -1678,10 +1678,13 @@
       + ' style="margin-top:14px;border:0;background:' + (podeEnviar ? 'var(--lc-primary)' : 'var(--lc-border-2)')
       + ';color:var(--lc-primary-text);border-radius:8px;padding:11px 20px;'
       + (podeEnviar ? 'cursor:pointer' : 'cursor:not-allowed') + ';font-size:14px;font-weight:700">'
-      + (estado.enviando ? 'Preparando...' : 'Continuar para a exportação') + '</button>'
+      + (estado.enviando ? 'Preparando...' : _rotuloAcaoFinal()) + '</button>'
       + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:8px">'
-      + 'Esta tela não publica. Ela cria o produto e leva você para a tela de exportação de sempre, '
-      + 'onde você confere anúncio por anúncio antes de qualquer coisa sair daqui.'
+      + (_rotuloAcaoFinal() === 'Próximo produto'
+          ? 'Esta tela não publica. Ela guarda este produto e abre o próximo da sua lista. '
+            + 'A exportação acontece no fim, com todos juntos.'
+          : 'Esta tela não publica. Ela cria o produto e leva você para a tela de exportação de sempre, '
+            + 'onde você confere anúncio por anúncio antes de qualquer coisa sair daqui.')
       + '</div></div>';
   }
 
@@ -1855,6 +1858,38 @@
         throw new Error('Criei o produto (id ' + produtoIdBanco + ') mas ele ainda não apareceu na lista. '
           + 'Recarregue a tela de Anúncios e duplique a partir dele.');
       }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // ★★★★★ v33k.3247: O GANCHO DA FILA DE CRIAÇÃO EM MASSA.
+      // ───────────────────────────────────────────────────────────────────
+      //   Pedido dele em 02/11: criar em massa abre esta tela produto por
+      //   produto, e *"quando realmente chegar no ultimo ai sim fica o botao
+      //   continuar para exportacao e vai pra revisao humana normalmente com
+      //   todos os anuncios"*.
+      //
+      // ★★★★★ ESTA TELA NÃO SABE O QUE VEM DEPOIS, e isso é de propósito.
+      //   Ela entrega o id do produto que acabou de criar, e QUEM MONTOU A
+      //   FILA decide: abrir o próximo rascunho, ou abrir a conferência do
+      //   lote com todos. Se a decisão morasse aqui, esta tela precisaria
+      //   conhecer o Drop, o abridor do lote e a ordem da fila, e a mesma
+      //   decisão passaria a ter dois donos.
+      // ★ O nome do abridor não aparece nem em comentário, de propósito: a
+      //   `EN22d` varre o arquivo inteiro para provar que esta tela não o
+      //   conhece, e ela está certa em não abrir exceção para comentário.
+      //
+      // ★★★ O PRODUTO JÁ ESTÁ NO CACHE quando o gancho roda: é o bloco acima
+      //   que o põe em `produtosErp`, e é de lá que a conferência do lote vai
+      //   ler os N produtos no fim. Chamar o gancho antes disso entregaria
+      //   uma lista de ids que o modal do lote não acharia.
+      // ═══════════════════════════════════════════════════════════════════
+      var _fila = (typeof window !== 'undefined') ? window.lcAnuncioNovoFila : null;
+      if (_fila && typeof _fila.aoAvancar === 'function') {
+        fechar();
+        await _fila.aoAvancar(produtoIdBanco);
+        estado.enviando = false;
+        return;
+      }
+
       if (typeof window.abrirDuplicarAnuncio !== 'function') {
         throw new Error('A tela de exportação não está disponível nesta versão do painel.');
       }
@@ -2690,9 +2725,29 @@
   // v33k.2768: o mesmo modal tem três trabalhos, e dizer "Criar anúncio" na
   // edição de um produto do Drop é o tipo de rótulo que faz a pessoa fechar a
   // tela com medo de ter criado outra coisa.
+  // ★★★ v33k.3247: A CONTAGEM DA FILA ENTRA NO TITULO.
+  //   Pedido dele em 02/11: *"com uma contagem que aquele modal e o 1/X"*.
+  //   Sai como "(1 de 5)", que e como ele le a contagem no resto do painel.
+  // ★ Sem fila, o titulo e exatamente o de antes: a `qa_drop_editar_pelo_modal`
+  //   compara por IGUALDADE com 'Editar produto do Dropshipping'.
+  function _sufixoDaFila() {
+    var fila = (typeof window !== 'undefined') ? window.lcAnuncioNovoFila : null;
+    if (!fila || !(fila.total > 1)) return '';
+    return ' (' + fila.n + ' de ' + fila.total + ')';
+  }
   function tituloDoModal() {
-    if (!(estado.dados && estado.dados.modoDrop)) return 'Criar anúncio';
-    return editandoDrop() ? 'Editar produto do Dropshipping' : 'Novo produto do Dropshipping';
+    var sufixo = _sufixoDaFila();
+    if (!(estado.dados && estado.dados.modoDrop)) return 'Criar anúncio' + sufixo;
+    return (editandoDrop() ? 'Editar produto do Dropshipping' : 'Novo produto do Dropshipping') + sufixo;
+  }
+
+  // ★★★★ v33k.3247: na fila, o botao final leva para o PROXIMO produto, e so
+  //   no ultimo ele volta a dizer "Continuar para a exportacao" - que e onde
+  //   todos os anuncios vao juntos para a revisao humana.
+  function _rotuloAcaoFinal() {
+    var fila = (typeof window !== 'undefined') ? window.lcAnuncioNovoFila : null;
+    if (fila && fila.total > 1 && fila.n < fila.total) return 'Próximo produto';
+    return 'Continuar para a exportação';
   }
 
   function molde() {
