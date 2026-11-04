@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3264-o-lapis-e-a-imagem';
+  var LEVA = 'v33k.3270-o-f5-nao-leva-o-trabalho';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -1391,6 +1391,49 @@
     } catch (e) { avisar(e.message); await carregarPrefs(); }
   }
 
+  // ════════════════════════════════════════════════════════════════
+  // ★★★★★ v33k.3269: OS VALORES ENTRAM SOZINHOS, NOS CAMPOS VAZIOS.
+  // ────────────────────────────────────────────────────────────────
+  // PEDIDO DELE EM 04/11: *"a categoria e atributos automaticamente sem
+  // precisar de clicar no botao para gerar"*.
+  //
+  // ★★★★★ A CATEGORIA JA ERA AUTOMATICA (2489) e os CAMPOS dela tambem
+  //   (2219, quando ele disse *"nao precisa de existir esse botao"*). O que
+  //   sobrou foram os VALORES: mesmo com o interruptor ligado, o automatico
+  //   so enchia a CAIXA DE SUGESTAO, e ainda pedia "Usar estes valores". Ou
+  //   seja: o botao que a 2219 tirou de um lugar continuou no outro.
+  //
+  // ★★★★ SO OS VAZIOS, NUNCA POR CIMA. Esta e a diferenca entre o automatico
+  //   e o botao: o botao e um pedido explicito e sobrescreve; o automatico
+  //   entra por baixo. Automatico que apaga o que a pessoa digitou nao e
+  //   ajuda, e perda de trabalho, e ela so descobre no anuncio publicado.
+  //
+  // ★★★ E A FUNCAO E UMA SO, usada pelos dois caminhos. Enquanto fossem duas,
+  //   a proxima correcao entraria num e nao no outro.
+  // ════════════════════════════════════════════════════════════════
+  function aplicarSugestaoAtributos(opts) {
+    var soVazios = !!(opts && opts.soVazios);
+    var vals = (estado.sugestoes.atributos || {}).valores || {};
+    var ids = Object.keys(vals);
+    if (!ids.length) { delete estado.sugestoes.atributos; return 0; }
+    if (!estado.dados.atributosPorCanal) estado.dados.atributosPorCanal = {};
+    var canal = estado.canalAba;
+    if (!estado.dados.atributosPorCanal[canal]) estado.dados.atributosPorCanal[canal] = {};
+    var alvo = estado.dados.atributosPorCanal[canal];
+    var postos = 0;
+    ids.forEach(function (id) {
+      if (soVazios) {
+        var atual = alvo[id];
+        if (atual != null && String(atual).trim() !== '') return;   // dele, fica
+      }
+      alvo[id] = vals[id];
+      postos++;
+    });
+    delete estado.sugestoes.atributos;
+    if (postos) marcarSujo();
+    return postos;
+  }
+
   async function sugerirCategoriaAuto(canal) {
     var lojaId = lojaDoCanal(canal);
     var titulo = String(estado.dados.nome || '').trim();
@@ -1540,17 +1583,54 @@
       //   ligado. As tres condicoes importam: sem `prefs` gasta token de quem
       //   nao pediu, sem `iaAuto` gasta de novo a cada redesenho, e sem
       //   `!sugestoes.atributos` atropela a sugestao que ja esta na tela.
-      if (prefs['ficha.iaAutomatica'] === true && !iaAuto[atual] && !estado.sugestoes.atributos) {
+      // ════════════════════════════════════════════════════════════════
+      // ★★★★★ v33k.3269: LIGADO POR PADRAO, MAS SO QUANDO HA O QUE PREENCHER.
+      // ────────────────────────────────────────────────────────────────
+      // Ele pediu em 04/11 que os atributos fossem preenchidos *"sem precisar
+      // de clicar no botao para gerar"*. E o comentario no topo deste modulo
+      // diz o contrario, e com razao de peso: *"nao nasce com IA por padrao,
+      // porque isto GASTA TOKEN por canal e por produto"*.
+      //
+      // ★★★★★ AS DUAS COISAS SAO VERDADE, E ELE DISSE AS DUAS. Em 30/10:
+      //   *"devemos otimizar para nao gastar tanto assim"*. Em 04/11:
+      //   automatico. Ligar por padrao e so isso seria obedecer a ultima e
+      //   ignorar a outra.
+      //
+      // ★★★★ ENTAO O QUE MUDOU NAO FOI SO O PADRAO, FOI O GATILHO: a chamada
+      //   so sai quando EXISTE campo obrigatorio em branco. Antes, com o
+      //   interruptor ligado, ela saia em TODO canal de TODO produto, mesmo
+      //   com a ficha inteira preenchida — token gasto para confirmar o que
+      //   ja estava la. Agora ela nao sai nesse caso, e o padrao ligado fica
+      //   mais barato do que o interruptor ligado era antes.
+      //
+      // ★★★ E O PADRAO MORA NO SERVIDOR, nao aqui. O cabecalho da rota de
+      //   preferencias e explicito: *"o GET devolve TODAS as chaves
+      //   conhecidas, ja com os padroes ... se a tela soubesse, seriam duas
+      //   verdades sobre o mesmo padrao"*. A primeira escrita desta leva
+      //   virou o padrao AQUI, com `!== false`, e teria nascido INERTE: a
+      //   chave chega `false` do servidor, entao `!== false` dava falso e
+      //   nada ligava — sem um erro em lugar nenhum. O padrao virou em
+      //   `src/util/preferencias.js`, e aqui so se LE o valor.
+      // ★★ `=== true` tambem e a falha fechada certa: se a leitura das
+      //   preferencias cair, `prefs` fica `{}` e nada e gasto sem saber.
+      // ════════════════════════════════════════════════════════════════
+      var _iaLigada = prefs['ficha.iaAutomatica'] === true;
+      if (_iaLigada && pendentes > 0 && !iaAuto[atual] && !estado.sugestoes.atributos) {
         iaAuto[atual] = true;
         setTimeout(function () {
           sugerir('atributos', { campos: campos })
             .catch(function (e) { avisar(e.message); })
-            .then(function () { desenharEtapa(); });
+            .then(function () {
+              // ★ e aqui ela ENTRA, em vez de so aparecer numa caixa. Os
+              //   campos que ele ja preencheu ficam como estao.
+              try { aplicarSugestaoAtributos({ soVazios: true }); } catch (e) {}
+              desenharEtapa();
+            });
         }, 0);
       }
       corpo = '<div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:8px">'
         + '<label style="font-size:12px;color:var(--lc-muted-2);display:flex;align-items:center;gap:6px;cursor:pointer">'
-        + '<input type="checkbox" id="lcAnIaAuto"' + (prefs['ficha.iaAutomatica'] === true ? ' checked' : '') + '>'
+        + '<input type="checkbox" id="lcAnIaAuto"' + (_iaLigada ? ' checked' : '') + '>'
         + 'Preencher com IA automaticamente</label>'
         + '<button id="lcAnIaFicha" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px">Sugerir os campos com IA</button></div>'
@@ -2291,13 +2371,11 @@
     var usarFicha = document.getElementById('lcAnUsarFicha');
     if (usarFicha) {
       usarFicha.addEventListener('click', function () {
-        var vals = (estado.sugestoes.atributos || {}).valores || {};
-        if (!estado.dados.atributosPorCanal) estado.dados.atributosPorCanal = {};
-        var canal = estado.canalAba;
-        if (!estado.dados.atributosPorCanal[canal]) estado.dados.atributosPorCanal[canal] = {};
-        Object.keys(vals).forEach(function (id) { estado.dados.atributosPorCanal[canal][id] = vals[id]; });
-        delete estado.sugestoes.atributos;
-        marcarSujo();
+        // ★ v33k.3269: a mesma funcao do automatico, com a UNICA diferenca
+        //   que separa os dois: o botao e pedido explicito e sobrescreve; o
+        //   automatico entra so nos vazios. Enquanto eram duas copias da
+        //   mesma conta, a proxima correcao entraria numa e nao na outra.
+        aplicarSugestaoAtributos({ soVazios: false });
         desenharEtapa();
       });
     }
