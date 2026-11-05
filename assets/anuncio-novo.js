@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3273-a-conta-tem-porta-de-saida';
+  var LEVA = 'v33k.3284-o-qr-na-primeira-vez';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -3067,7 +3067,13 @@
         tamanho: tam != null ? tam : (c[1] ? c[1].valor : ''),
         nome: c.map(function (a) { return a.valor; }).join(' '),
         sku: info.sku || '', ean: info.ean || '',
-        estoque: Math.round(numBR(info.estoque)),
+        // ★★★★ v33k.3278: CELULA VAZIA VIAJA COMO `null`, nao como zero. O
+        //   `numBR(undefined)` e 0, entao ate aqui a tela APAGAVA a diferenca
+        //   entre "o fornecedor nao preencheu" e "o fornecedor pos zero" antes
+        //   de o backend ter chance de guardar as duas. Com a diferenca de pe,
+        //   o vinculo escreve o zero de verdade e pula so a ausencia.
+        estoque: (info.estoque == null || String(info.estoque).trim() === '')
+          ? null : Math.round(numBR(info.estoque)),
         preco: numBR(info.preco),   // v33k.2652: "49,90" e 49,90, nao zero
         fotos: ((d.fotosPorGrupo || {})[c[0].valor] || []).slice(0, 12),
         atributos: c.map(function (a) { return { nome: a.nome, valor: a.valor }; }),
