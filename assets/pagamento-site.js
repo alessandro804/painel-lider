@@ -4,7 +4,7 @@
    Serve /dropshipping/ e /agencia/. As duas cobram implementacao do
    mesmo jeito, entao o formulario e um so.
 
-   ★★★★ O PIX ESTA LIGADO (v33k.3301). O formulario pede o QR Code a
+   ★★★★ O PIX ESTA LIGADO (v33k.3294). O formulario pede o QR Code a
      `/api/site/cobranca`, que devolve a imagem e o copia e cola. O VALOR
      NAO VAI DAQUI: a rota le o preco da tabela dela a partir do nome da
      oferta, porque esta pagina e publica e qualquer pessoa consegue
@@ -29,7 +29,7 @@
 (function () {
   'use strict';
 
-  var LIGADO   = true;   /* v33k.3301: o Pix esta de pe */
+  var LIGADO   = true;   /* v33k.3294: o Pix esta de pe */
   var ENDERECO = 'https://api.painel.lidercommerce.com.br/api/site/cobranca';
   var ZAP      = '5537991960195';
 
