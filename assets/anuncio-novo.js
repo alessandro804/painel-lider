@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3502-a-lista-de-separacao-numa-folha-so';
+  var LEVA = 'v33k.3505-a-reclamacao-que-se-acha';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -2570,6 +2570,17 @@
         { headers: cabecalhos() });
       var j = await r.json();
       var lista = (j && j.categorias) || [];
+      if (!lista.length && j && j.passos && j.passos.length) {
+        // ★ v33k.3504: o mesmo passo a passo da conferencia. Duas telas
+        //   consomem a mesma rota; instruir numa e calar na outra seria a
+        //   segunda verdade que este sistema ja pagou caro para nao ter.
+        alvo.innerHTML = '<div style="background:#fffbeb;border:1px solid #fde68a;'
+          + 'border-radius:10px;padding:11px 13px;font-size:12px;color:#92400e;line-height:1.55">'
+          + '<b style="display:block;margin-bottom:6px">O que fazer</b><ol style="margin:0;padding-left:17px">'
+          + j.passos.map(function (t) { return '<li style="margin-bottom:5px">' + esc(t) + '</li>'; }).join('')
+          + '</ol></div>';
+        return;
+      }
       if (!lista.length) {
         // ★★ v33k.2479: LISTA VAZIA E FALHA DE CANAL SAO COISAS DIFERENTES.
         //   "Nada encontrado: esta loja nao esta conectada" mandava a pessoa
@@ -2581,7 +2592,20 @@
           : '<span style="font-size:12px;color:var(--lc-muted-2)">Nada encontrado. Tente outra palavra.</span>';
         return;
       }
-      alvo.innerHTML = lista.slice(0, 12).map(function (c) {
+      // ★★★★ v33k.3503: A MESMA ETIQUETA DA CONFERÊNCIA, PELO MESMO MOTIVO.
+      //   Quando NENHUMA das devolvidas tem a palavra digitada no caminho, a
+      //   busca avisa em `aproximado` e manda a frase em `motivo`. Sem isto,
+      //   a tela desenharia a troca do dicionário com cara de acerto, que foi
+      //   a foto de 19/11 na Shein (toalha e câmera respondendo por `tenis`).
+      //   Duas telas consomem a mesma rota; calar numa delas seria a segunda
+      //   verdade de sempre.
+      var aviso = '';
+      if (j && j.aproximado && j.motivo) {
+        aviso = '<div style="font-size:11.5px;color:#b45309;background:#fffbeb;'
+          + 'border:1px solid #fde68a;border-radius:8px;padding:7px 9px;margin-bottom:7px">'
+          + esc(j.motivo) + '</div>';
+      }
+      alvo.innerHTML = aviso + lista.slice(0, 12).map(function (c) {
         var id = c.id || c.category_id || c.categoryId;
         // A TRILHA é o que distingue: cinco categorias podem se chamar
         // "Tênis", e só o caminho até elas diz qual é qual.
