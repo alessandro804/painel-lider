@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3522-o-anuncio-nasce-na-temu';
+  var LEVA = 'v33k.3524-a-temu-em-beta';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -1194,7 +1194,7 @@
       if (!porCanal[c]) porCanal[c] = [];
       porCanal[c].push(l);
     });
-    var NOMES = { shopee: 'Shopee', mercadolivre: 'Mercado Livre', tiktok: 'TikTok Shop', shein: 'Shein' };
+    var NOMES = { shopee: 'Shopee', mercadolivre: 'Mercado Livre', tiktok: 'TikTok Shop', shein: 'Shein', temu: 'Temu' };
     // ★ v33k.2219: as logos que o painel já usa, no mesmo caminho. Pedido de
     //   01/09: "em destino preciso que tenha a logo de cada marketplace na
     //   frente do nome e uma barra de pesquisa".
@@ -1491,7 +1491,7 @@
       return '<div class="lc-an-etapa"><p style="color:var(--lc-muted)">'
         + 'Escolha os destinos primeiro. A ficha depende de quais canais você vai publicar.</p></div>';
     }
-    var NOMES = { shopee: 'Shopee', mercadolivre: 'Mercado Livre', tiktok: 'TikTok Shop', shein: 'Shein' };
+    var NOMES = { shopee: 'Shopee', mercadolivre: 'Mercado Livre', tiktok: 'TikTok Shop', shein: 'Shein', temu: 'Temu' };
     var atual = estado.canalAba && canais.indexOf(estado.canalAba) >= 0 ? estado.canalAba : canais[0];
     estado.canalAba = atual;
 
