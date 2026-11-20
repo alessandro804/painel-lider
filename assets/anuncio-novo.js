@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3513-o-modelo-que-nao-baixava';
+  var LEVA = 'v33k.3515-a-revisao-um-por-um';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -1759,12 +1759,29 @@
       + ';color:var(--lc-primary-text);border-radius:8px;padding:11px 20px;'
       + (podeEnviar ? 'cursor:pointer' : 'cursor:not-allowed') + ';font-size:14px;font-weight:700">'
       + (estado.enviando ? 'Preparando...' : _rotuloAcaoFinal()) + '</button>'
+      // ★★★★ v33k.3515: a segunda saida, do lado da primeira. Ela NAO aparece
+      //   no meio de uma fila: num lote, a decisao de exportar ou nao e uma so,
+      //   no fim, e oferece-la em cada produto faria o lote sair metade
+      //   exportado e metade nao, sem ninguem ter pedido isso.
+      // ★★★ Dentro de uma FILA este botão não aparece em momento nenhum, nem no
+      //   último: num lote a decisão de exportar ou não é uma só, tomada no fim,
+      //   e oferecê-la por produto faria o lote sair metade exportado e metade
+      //   não, sem ninguém ter pedido isso.
+      + ((typeof window !== 'undefined' && window.lcAnuncioNovoFila)
+        ? ''
+        : '<button id="lcAnSoSalvar"' + (podeEnviar ? '' : ' disabled')
+          + ' style="margin-top:14px;margin-left:10px;border:1px solid var(--lc-border-2);background:#fff;'
+          + 'color:var(--lc-ink-2);border-radius:8px;padding:11px 20px;'
+          + (podeEnviar ? 'cursor:pointer' : 'cursor:not-allowed') + ';font-size:14px;font-weight:700">'
+          + 'Salvar só no sistema</button>')
       + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:8px">'
       + (_rotuloAcaoFinal() === 'Próximo produto'
           ? 'Esta tela não publica. Ela guarda este produto e abre o próximo da sua lista. '
             + 'A exportação acontece no fim, com todos juntos.'
-          : 'Esta tela não publica. Ela cria o produto e leva você para a tela de exportação de sempre, '
-            + 'onde você confere anúncio por anúncio antes de qualquer coisa sair daqui.')
+          : 'Esta tela não publica. <b>Continuar para a exportação</b> cria o produto e leva você para a '
+            + 'tela de exportação de sempre, onde você confere anúncio por anúncio antes de qualquer coisa '
+            + 'sair daqui. <b>Salvar só no sistema</b> guarda o produto aqui e para por aí, sem anúncio '
+            + 'em canal nenhum: é o caminho de quem vende na loja física ou em site próprio.')
       + '</div></div>';
   }
 
@@ -1874,7 +1891,31 @@
   // ★ O QUE ESTA TELA AINDA FAZ: cria o produto interno pela rota de sempre,
   //   marca as lojas escolhidas e preenche a quantidade. Daí em diante, quem
   //   manda é o fluxo antigo.
-  async function entregarParaExportacao() {
+  // ════════════════════════════════════════════════════════════════
+  // ★★★★★ v33k.3515: SALVAR SO NO SISTEMA, SEM EXPORTAR PARA CANAL NENHUM.
+  // ────────────────────────────────────────────────────────────────
+  // PEDIDO DELE EM 19/11 23:01: *"precisamos ajustar para usuario criar o
+  // anuncio internamente um so por exemplo e poder salvar ele ai para ficar so
+  // algo interno nao necessitadamente exportado para alguma lei pois ele pode
+  // usar para o seu PDV ou para site ou alguma outra finalidade"*.
+  //
+  // ★★★★★ O CAMINHO JA EXISTIA INTEIRO, FALTAVA A PORTA. Esta funcao sempre
+  //   fez duas coisas em sequencia: CRIA o produto interno
+  //   (`garantirProdutoInterno`) e DEPOIS leva para a exportacao. Quem queria
+  //   so a primeira metade nao tinha como parar no meio, e a tela obrigava a
+  //   passar pela escolha de loja para guardar um produto que ia ser vendido
+  //   no balcao.
+  //
+  // ★★★ ENTAO A OPCAO E UM PARAMETRO, e nao uma funcao nova: duas funcoes
+  //   que criam produto seriam duas regras de criacao a envelhecer juntas, e a
+  //   primeira diferenca entre elas apareceria como "pelo botao X o produto
+  //   nasce diferente do botao Y".
+  //
+  // ★★ E O PRODUTO NASCE IGUAL NOS DOIS CAMINHOS: mesmo rascunho, mesma
+  //   criacao, mesmo cache. O que muda e so o que acontece DEPOIS.
+  // ════════════════════════════════════════════════════════════════
+  async function entregarParaExportacao(opcoes) {
+    var soSalvar = !!(opcoes && opcoes.soSalvar === true);
     estado.enviando = true;
     estado.envioErro = null;
     desenharEtapa();
@@ -1962,6 +2003,20 @@
       //   ler os N produtos no fim. Chamar o gancho antes disso entregaria
       //   uma lista de ids que o modal do lote não acharia.
       // ═══════════════════════════════════════════════════════════════════
+      // ★★★★★ A SAIDA DE QUEM SO QUER GUARDAR. O produto ja foi criado e ja
+      //   esta no cache do painel (o bloco acima garante isso), entao aqui e
+      //   so parar. A fila, quando existe, continua mandando: num lote, cada
+      //   produto e guardado e o proximo abre; a decisao de exportar ou nao e
+      //   tomada uma vez, no fim do lote, e nao produto a produto.
+      if (soSalvar && !(typeof window !== 'undefined' && window.lcAnuncioNovoFila)) {
+        fechar();
+        if (typeof window !== 'undefined' && typeof window.showToast === 'function') {
+          window.showToast('Produto salvo no sistema. Ele esta em Anuncios, sem anuncio vinculado.');
+        }
+        estado.enviando = false;
+        return;
+      }
+
       var _fila = (typeof window !== 'undefined') ? window.lcAnuncioNovoFila : null;
       if (_fila && typeof _fila.aoAvancar === 'function') {
         fechar();
@@ -2303,7 +2358,13 @@
     });
 
     var enviar = document.getElementById('lcAnEnviar');
-    if (enviar && !enviar.disabled) enviar.addEventListener('click', entregarParaExportacao);
+    if (enviar && !enviar.disabled) {
+      enviar.addEventListener('click', function () { entregarParaExportacao(); });
+    }
+    var soSalvar = document.getElementById('lcAnSoSalvar');
+    if (soSalvar && !soSalvar.disabled) {
+      soSalvar.addEventListener('click', function () { entregarParaExportacao({ soSalvar: true }); });
+    }
 
     // ── IA ──────────────────────────────────────────────────────────────
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-ia'), function (el) {
@@ -2846,9 +2907,20 @@
   // ★★★★ v33k.3247: na fila, o botao final leva para o PROXIMO produto, e so
   //   no ultimo ele volta a dizer "Continuar para a exportacao" - que e onde
   //   todos os anuncios vao juntos para a revisao humana.
+  // ★★★★ v33k.3515: QUEM MONTA A FILA DECIDE O QUE O ÚLTIMO BOTÃO PROMETE.
+  //   A fila do Drop sempre termina na exportação, então para ela o rótulo
+  //   continua exatamente o de antes. A fila da PLANILHA termina numa
+  //   pergunta (salvar só aqui ou exportar), e um botão dizendo "Continuar
+  //   para a exportação" antes de a pessoa ter escolhido prometeria o que
+  //   talvez não aconteça.
+  //
+  //   ★★★ E A ESCOLHA DO RÓTULO MORA NA FILA, não aqui: é a mesma regra que o
+  //     comentário da fila do Drop já escreveu, de que a decisão do que vem
+  //     depois não é da tela de criação.
   function _rotuloAcaoFinal() {
     var fila = (typeof window !== 'undefined') ? window.lcAnuncioNovoFila : null;
     if (fila && fila.total > 1 && fila.n < fila.total) return 'Próximo produto';
+    if (fila && fila.rotuloFinal) return String(fila.rotuloFinal);
     return 'Continuar para a exportação';
   }
 
