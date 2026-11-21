@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3540-o-produto-sobe-para-o-nuvemshop';
+  var LEVA = 'v33k.3541-a-fabrica-conhece-a-nuvemshop';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
