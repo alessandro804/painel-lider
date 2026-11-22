@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3557-o-prazo-de-envio-da-loja';
+  var LEVA = 'v33k.3559-o-preco-de-venda-do-custo';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -1728,28 +1728,33 @@
     }
 
     var podeEnviar = estado.destinos.length && d.nome && !estado.enviando;
-    var qtd = estado.dados.quantidadePorLoja || 1;
     return '<div class="lc-an-etapa">'
       + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin-bottom:8px">O ANÚNCIO</div>'
       + resumo
       + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin:18px 0 8px">PARA ONDE VAI</div>'
       + destinos
-      + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin:18px 0 8px">QUANTOS ANÚNCIOS EM CADA LOJA</div>'
-      + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-      + '<input id="lcAnQtd" type="number" min="1" max="50" value="' + esc(qtd) + '" '
-      + 'style="width:90px;padding:8px 10px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px">'
-      + '<span style="font-size:13px;color:var(--lc-muted)">em cada uma das '
-      + estado.destinos.length + ' loja(s), ou seja ' + (qtd * estado.destinos.length) + ' anúncio(s) no total.</span>'
-      + '</div>'
-      // ★★ v33k.2221: AS OPÇÕES DE VARIAÇÃO AUTOMÁTICA VÊM PARA CÁ.
-      //   Pedido de 01/09: elas moravam num modal que aparecia DEPOIS, pedindo
-      //   de novo o que esta tela já perguntou. Ficam cinzas com 1 cópia,
-      //   porque variar existe para diferenciar cópias ENTRE SI: com uma só,
-      //   não há de quem diferenciar, e o único efeito seria trocar o título
-      //   que a pessoa acabou de escrever.
-      + _blocoVariacaoAutomatica(qtd)
-      // v33k.2774: fora do bloco das variações, de propósito. Ver OPCOES_AUTO.
-      + _blocoAds()
+      // ═════════════════════════════════════════════════════════════════
+      // ★★★★★ v33k.3558: QUANTIDADE, VARIAÇÕES E ADS SAÍRAM DAQUI.
+      // ─────────────────────────────────────────────────────────────────
+      // PEDIDO DELE EM 22/11: *"não precisa de ter a opção de Quantos
+      // anúncios em cada loja, Variações automáticas, Depois de publicar
+      // ativar nos Ads, já que esses dados são perguntados no modal do
+      // final"*.
+      //
+      // ★★★★★ E ELE ESTÁ CERTO SOBRE O ESTADO DE HOJE: as três perguntas
+      //   existiam NOS DOIS lugares. A v33k.2221 as trouxe para cá em
+      //   01/09 justamente para não perguntar duas vezes, mas o modal
+      //   continuou perguntando, e quem passa por aqui respondia tudo
+      //   duas vezes, com a segunda resposta valendo.
+      //
+      // ★★★★ A CASA DELAS PASSA A SER O MODAL, e por um motivo que a etapa
+      //   não tem como atender: o modal é o único ponto por onde passam OS
+      //   DOIS caminhos, o de um produto e o do lote. Pergunta que mora só
+      //   aqui não alcança o lote; pergunta que mora nos dois diverge.
+      //
+      // ★★★ O QUE ESTA ETAPA CONTINUA FAZENDO: conferir o que foi
+      //   cadastrado e para onde vai. Ela confere, o modal decide quantos.
+      // ═════════════════════════════════════════════════════════════════
       + (estado.envioErro
         ? '<div style="border:1px solid var(--lc-danger-soft);background:#fff;border-radius:8px;padding:10px 12px;margin:10px 0;font-size:13px;color:var(--lc-danger)">'
           + esc(estado.envioErro) + '</div>'
@@ -1785,70 +1790,18 @@
       + '</div></div>';
   }
 
-  // ★★ v33k.2774: `ativarAds` SAIU DAQUI, e a razão é o defeito que ele relatou.
-  // ────────────────────────────────────────────────────────────────────────
-  // RELATO DE 09/10: *"tem um select perguntando se o produto quer ser
-  // adicionado nos Ads após a exportação, mesmo com ele selecionado não está
-  // funcionando, o anúncio não está sendo ativado nos Ads"*.
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★★★★ v33k.3558: `OPCOES_AUTO`, `adsLigado`, `_blocoAds` e
+  //   `_blocoVariacaoAutomatica` SAÍRAM INTEIROS.
+  // ───────────────────────────────────────────────────────────────────────
+  //   Com os três blocos fora da etapa de conferência (ver o comentário lá),
+  //   estas quatro peças ficaram sem quem as chamasse. Deixar função órfã no
+  //   arquivo é deixar a próxima pessoa achar que a tela ainda pergunta isso.
   //
-  // ★ A CAUSA, em duas linhas desta tela: as opções desta lista só valem com
-  //   2+ cópias (variar título entre cópias com uma só não quer dizer nada), e
-  //   `entregarParaExportacao` descartava a lista INTEIRA quando a quantidade
-  //   era 1 — o caso normal. Ativar nos Ads ia junto no descarte, e chegava na
-  //   exportação como `false`. Pior: o `false` DESMARCAVA o `dupAtivarAds` da
-  //   tela de exportação, que nasce marcado, e desligava o
-  //   `_ativarAdsPosExport`. Quem duplicava pela lista de Anúncios tinha Ads;
-  //   quem criava o anúncio aqui, nunca, e nada na tela dizia isso.
-  //
-  // ★ POR QUE NÃO ERA DESTA LISTA: ativar nos Ads não diferencia uma cópia da
-  //   outra — é o que fazer com o anúncio DEPOIS de publicado. Estava no lugar
-  //   errado, e o lugar errado é que produziu a regra errada. Agora tem bloco
-  //   próprio, sempre habilitado, e atravessa qualquer quantidade.
-  var OPCOES_AUTO = [
-    { id: 'variarTitulo', rotulo: 'Gerar um título diferente para cada cópia' },
-    { id: 'variarDescricao', rotulo: 'Gerar uma descrição diferente para cada cópia' },
-    { id: 'rotacionarFotos', rotulo: 'Rotacionar a ordem das fotos entre as cópias' },
-  ];
-
-  // Ads vive em `opcoesAuto.ativarAds`, o mesmo endereço de sempre: rascunho
-  // salvo antes desta leva continua sendo lido, e a exportação continua
-  // recebendo o mesmo nome de campo.
-  function adsLigado() {
-    return !!(estado.dados.opcoesAuto && estado.dados.opcoesAuto.ativarAds);
-  }
-
-  function _blocoAds() {
-    return '<div style="margin-top:18px;border:1px solid var(--lc-border);border-radius:10px;padding:14px">'
-      + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin-bottom:4px">DEPOIS DE PUBLICAR</div>'
-      + '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;color:var(--lc-ink-2);cursor:pointer">'
-      + '<input type="checkbox" class="lc-an-auto" data-op="ativarAds"' + (adsLigado() ? ' checked' : '') + '>'
-      + 'Ativar no Ads automaticamente (campanha na Shopee)</label>'
-      + '<div style="font-size:12px;color:var(--lc-muted-2);margin-top:4px">'
-      + 'Vale para qualquer quantidade de cópias. Cria a campanha com o ROAS do ACOS objetivo da loja, '
-      + 'e por enquanto só na Shopee: anúncio de outro canal é publicado e fica sem campanha.'
-      + '</div></div>';
-  }
-
-  function _blocoVariacaoAutomatica(qtd) {
-    var liberado = qtd > 1;
-    var op = estado.dados.opcoesAuto || {};
-    return '<div style="margin-top:18px;border:1px solid var(--lc-border);border-radius:10px;padding:14px;'
-      + (liberado ? '' : 'opacity:.55') + '">'
-      + '<div style="font-size:12px;font-weight:800;color:var(--lc-ink-2);margin-bottom:4px">VARIAÇÕES AUTOMÁTICAS</div>'
-      + '<div style="font-size:12px;color:var(--lc-muted-2);margin-bottom:10px">'
-      + (liberado
-        ? 'Cada cópia sai diferente das outras, para não competirem entre si.'
-        : 'Disponível a partir de 2 cópias por loja. Com uma só, não há de quem diferenciar.')
-      + '</div>'
-      + OPCOES_AUTO.map(function (o) {
-        return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;'
-          + 'color:var(--lc-ink-2);cursor:' + (liberado ? 'pointer' : 'not-allowed') + '">'
-          + '<input type="checkbox" class="lc-an-auto" data-op="' + o.id + '"'
-          + (op[o.id] && liberado ? ' checked' : '') + (liberado ? '' : ' disabled') + '>'
-          + esc(o.rotulo) + '</label>';
-      }).join('')
-      + '</div>';
-  }
+  // ★★★★ `estado.dados.opcoesAuto` CONTINUA NO RASCUNHO e não foi apagado de
+  //   propósito: rascunho salvo antes desta leva não pode virar erro de
+  //   leitura. Ele simplesmente deixa de ser lido na entrega.
+  // ═══════════════════════════════════════════════════════════════════════
 
   async function garantirProdutoInterno() {
     if (estado.dados.produtoIdCriado) return estado.dados.produtoIdCriado;
@@ -2020,7 +1973,16 @@
       var _fila = (typeof window !== 'undefined') ? window.lcAnuncioNovoFila : null;
       if (_fila && typeof _fila.aoAvancar === 'function') {
         fechar();
-        await _fila.aoAvancar(produtoIdBanco);
+        // ★★★★★ v33k.3558: AS LOJAS VÃO JUNTO DO ID, e sem elas o pedido de
+        //   22/11 não tinha como ser atendido. O modal do fim precisa mostrar
+        //   "as lojas que você já escolheu", e quem as escolheu foi a etapa
+        //   Destinos, aqui dentro. O gancho da fila só levava o id do produto,
+        //   então o modal chegava sem saber para onde nada ia e perguntava de
+        //   novo. Era esta a *"bagunça"* que ele descreveu.
+        // ★★ Segundo argumento, e não um objeto no lugar do primeiro: as duas
+        //   filas que usam este gancho (a do Drop e a da planilha) continuam
+        //   recebendo o id na mesma posição.
+        await _fila.aoAvancar(produtoIdBanco, estado.destinos.map(function (dd) { return dd.lojaId; }));
         estado.enviando = false;
         return;
       }
@@ -2029,26 +1991,28 @@
         throw new Error('A tela de exportação não está disponível nesta versão do painel.');
       }
 
-      var _qtd = Math.max(1, parseInt(estado.dados.quantidadePorLoja, 10) || 1);
-      // As de VARIAÇÃO só valem com 2+ cópias; `ativarAds` não é uma delas e
-      // atravessa sempre (v33k.2774, ver OPCOES_AUTO).
-      var _op = (_qtd > 1 && estado.dados.opcoesAuto) ? estado.dados.opcoesAuto : {};
       fechar();
-      // ★ v33k.2221: vai com `auto`, então o modal de duplicar não aparece:
-      //   quantidade, lojas e opções já foram perguntadas aqui.
+      // ═══════════════════════════════════════════════════════════════════
+      // ★★★★★ v33k.3558: AGORA O MODAL APARECE TAMBÉM PARA UM PRODUTO SÓ.
+      // ───────────────────────────────────────────────────────────────────
+      //   Até aqui, um produto só ia com `qtd` e opções preenchidas e o modal
+      //   NÃO aparecia: disparava direto. Era coerente enquanto esta etapa
+      //   perguntava a quantidade. Ela não pergunta mais (pedido de 22/11), e
+      //   seguir direto passaria a exportar sempre UMA cópia por loja, sem
+      //   ninguém ter escolhido isso e sem lugar nenhum onde escolher.
+      //
+      // ★★★★ ENTÃO O MODAL É A PERGUNTA, NOS DOIS CAMINHOS. Um produto e o
+      //   lote param no mesmo lugar, com as mesmas lojas travadas e o mesmo
+      //   campo de cópias. Antes, o lote parava e o individual não: a mesma
+      //   decisão tinha dois comportamentos conforme quantos produtos havia.
+      //
+      // ★★★ `lojas` é o que a etapa Destinos escolheu, e `modoCriacao` diz ao
+      //   modal que elas estão fechadas. A escolha de loja é lá, uma vez.
+      // ═══════════════════════════════════════════════════════════════════
       window.abrirDuplicarAnuncio(local.id, {
-        qtd: _qtd,
         lojas: estado.destinos.map(function (dd) { return dd.lojaId; }),
-        variarTitulo: !!_op.variarTitulo,
-        variarDescricao: !!_op.variarDescricao,
-        rotacionarFotos: !!_op.rotacionarFotos,
-        ativarAds: adsLigado(),
+        modoCriacao: true,
       });
-
-      // ★ v33k.2221: o `auto` acima já preenche quantidade, lojas e opções
-      //   dentro do próprio modal, antes de disparar. O ajuste por `setTimeout`
-      //   que existia aqui saiu: era uma segunda escrita nos mesmos campos,
-      //   correndo contra a primeira.
     } catch (e) {
       estado.envioErro = e.message;
       estado.enviando = false;
@@ -2313,24 +2277,6 @@
         desenharEtapa();
       });
     });
-
-    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-auto'), function (el) {
-      el.addEventListener('change', function () {
-        if (!estado.dados.opcoesAuto) estado.dados.opcoesAuto = {};
-        estado.dados.opcoesAuto[el.dataset.op] = el.checked;
-        marcarSujo();
-      });
-    });
-
-    var campoQtd = document.getElementById('lcAnQtd');
-    if (campoQtd) {
-      campoQtd.addEventListener('input', function () {
-        var n = Math.max(1, Math.min(50, parseInt(campoQtd.value, 10) || 1));
-        estado.dados.quantidadePorLoja = n;
-        marcarSujo();
-      });
-      campoQtd.addEventListener('change', function () { desenharEtapa(); });
-    }
 
     var buscaCat = document.getElementById('lcAnBuscaCat');
     if (buscaCat) {
@@ -3445,10 +3391,11 @@
     _gruposDoAcervo: gruposDoAcervo,        // v33k.2775
     _subirArquivos: subirArquivos,          // v33k.2769
     _textoDoCorte: textoDoCorte,
-    // v33k.2774: a suite mede o rotulo da categoria e o Ads sem navegador
+    // v33k.2774: a suite mede o rotulo da categoria sem navegador
+    // v33k.3558: `_adsLigado` e `OPCOES_AUTO` sairam junto com os blocos que
+    //   esta etapa deixou de desenhar. Export de peca que nao existe mais e
+    //   ReferenceError no carregamento do arquivo, nao aviso.
     _textoDaCategoria: textoDaCategoria,
     _rotuloDeCategoria: rotuloDeCategoria,
-    _adsLigado: adsLigado,
-    OPCOES_AUTO: OPCOES_AUTO,
   };
 })();
