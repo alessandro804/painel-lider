@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3559-o-preco-de-venda-do-custo';
+  var LEVA = 'v33k.3561-o-preenchimento-e-automatico';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -96,6 +96,20 @@
     { id: 'fotos', titulo: 'Fotos' },
     { id: 'embalagem', titulo: 'Embalagem' },
     { id: 'ficha', titulo: 'Ficha por canal' },
+    // ═══════════════════════════════════════════════════════════════════
+    // ★★★★★ v33k.3560: PREÇOS VEM DEPOIS DA FICHA, e a ordem é o pedido.
+    // ───────────────────────────────────────────────────────────────────
+    // Ele disse em 22/11: *"puxa da categoria, logo devido a isso deve ficar
+    // após a aba de categoria e atributos"*. O motivo é o Mercado Livre: a
+    // comissão de lá depende da CATEGORIA, e categoria é o que a etapa
+    // anterior resolve. Preço antes da categoria seria preço com a comissão
+    // de outra coisa.
+    //
+    // ★★★★ E DEPOIS DE DESTINOS pelo mesmo tipo de razão: cada canal tem a
+    //   taxa dele, e sem saber para onde o anúncio vai não há quantos preços
+    //   calcular. Era o que ele queria dizer com *"colocar as tabelas de
+    //   preços depois da seleção do Marketplace que vai vender"*.
+    { id: 'precos', titulo: 'Preços' },
     { id: 'conferencia', titulo: 'Conferência e envio' },
   ];
   // ★★ v33k.2637: O MODO DROP. O fornecedor cria o produto do catalogo do
@@ -131,6 +145,11 @@
     sugestoes: {},
     // v33k.2488: o que a IA NAO conseguiu, por campo
     recusados: {},
+    // v33k.3561: a estimativa de peso e medidas roda UMA vez por rascunho, e
+    //   sozinha. Declaradas aqui porque `undefined` funcionaria por acidente
+    //   e quem le o estado nao saberia que elas existem.
+    estimouEmbalagem: false,
+    estimandoEmbalagem: false,
     enviando: false,
     envioErro: null,
     salvando: false,
@@ -1124,9 +1143,40 @@
     return '<div class="lc-an-etapa">'
       + '<p style="font-size:13px;color:var(--lc-muted);margin:0 0 14px">Peso e medidas da caixa fechada. '
       + 'Nenhum marketplace pede isso como atributo de categoria, e é o dado que mais falta no catálogo hoje.</p>'
-      + '<div style="display:flex;justify-content:flex-end;margin-bottom:8px">'
-      + botaoIA('embalagem', 'Estimar com IA') + '</div>'
-      + sugestaoDoCampo('embalagem')
+      // ★★★★★ v33k.3561: SEM BOTAO AQUI TAMBEM. Ele disse *"nao quero que
+      //   exista nenhum botão de gerar atributos, peso, tamanho também"*. A
+      //   estimativa roda sozinha ao entrar na etapa e entra nos campos
+      //   vazios; o que ele digitou fica.
+      // ★★★ E ela vale DUAS vezes: o peso e as medidas sao o dado que mais
+      //   falta no catalogo, e a partir desta leva eles tambem preenchem os
+      //   campos de medida da ficha de cada canal, em vez de a IA ser
+      //   proibida de chutar e o campo ficar vazio.
+      + (estado.estimandoEmbalagem
+        ? '<p style="font-size:12px;color:var(--lc-muted-2);margin:0 0 10px">Estimando o peso e as medidas...</p>'
+        : '')
+      // ═══════════════════════════════════════════════════════════════════
+      // ★★★★★ O AVISO DO RISCO DO PESO FICA, e agora ele e MAIS necessario.
+      // ───────────────────────────────────────────────────────────────────
+      //   Este aviso vivia na caixa de sugestao, e a caixa saiu nesta leva.
+      //   Mas ele nao e enfeite da caixa: e aviso de DINHEIRO. Peso declarado
+      //   a menos faz o frete ser cobrado a menos em TODA venda daquele
+      //   anuncio, e quem paga a diferenca e ele.
+      //
+      // ★★★★★ E COM A ESTIMATIVA ENTRANDO SOZINHA O RISCO SUBIU, nao desceu:
+      //   antes a pessoa clicava em "Usar esta estimativa" e lia o aviso no
+      //   caminho; agora o numero aparece no campo sem ela ter pedido. Tirar
+      //   o aviso junto com a caixa seria trocar um clique informado por um
+      //   numero silencioso.
+      //
+      // ★★★ E ELE SO APARECE QUANDO HOUVE ESTIMATIVA. Aviso que aparece
+      //   sempre deixa de ser lido, e quem digitou o peso da balanca nao tem
+      //   o que conferir.
+      + (estado.estimouEmbalagem && !estado.estimandoEmbalagem
+        ? '<div style="background:var(--lc-amber-bg,#fffbeb);border:1px solid var(--lc-amber-border,#fde68a);'
+          + 'border-radius:10px;padding:10px 12px;margin:0 0 14px;font-size:12px;color:var(--lc-amber-ink,#92400e)">'
+          + 'Estimativa automática. Peso a menos faz o frete ser cobrado a menos em toda venda, '
+          + 'então confira na balança antes de publicar.</div>'
+        : '')
       // ★ v33k.2231: PESO EM QUILOS, como o marketplace pede.
       //   A tela pedia gramas e a exportação manda o número direto para o
       //   campo "Peso do Pacote (kg)": 500 g viravam 500 kg na conferência.
@@ -1411,6 +1461,53 @@
   // ★★★ E A FUNCAO E UMA SO, usada pelos dois caminhos. Enquanto fossem duas,
   //   a proxima correcao entraria num e nao no outro.
   // ════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★★★★ v33k.3561: O QUE UM CANAL JA RESPONDEU VIRA CONTEXTO NO SEGUINTE.
+  // ───────────────────────────────────────────────────────────────────────
+  //   Com o preenchimento automatico em todo canal, um anuncio em quatro
+  //   marketplaces sao quatro chamadas. Ele aprovou o custo disso em 22/11,
+  //   mas custo aprovado nao e motivo para desperdicio.
+  //
+  // ★★★★★ E O GANHO AQUI NAO E ECONOMIA, E ACERTO. O cabecalho do
+  //   `anuncio-ia.js` traz o caso medido em 16/10, no MESMO anuncio:
+  //
+  //       Salto            = Chunky     (veio do texto)
+  //       Altura do salto  = Plano      (veio da IA)    <- contradiz
+  //
+  //   A IA recebia so os campos que FALTAVAM e nunca os que as camadas
+  //   anteriores ja tinham resolvido. Pedir que alguem complete metade de uma
+  //   ficha sem ver a outra metade e depois cobrar coerencia e defeito do
+  //   pedido, nao de quem responde.
+  //
+  // ★★★★ AQUI A OUTRA METADE SAO OS OUTROS CANAIS. "Material: Trancado"
+  //   respondido na Shopee e verdade sobre o produto quando a vez e da Shein,
+  //   e mandar junto faz a segunda resposta nascer coerente com a primeira.
+  //
+  // ★★★ TETO DE 25 e valores curtos, como o backend ja corta: e contexto,
+  //   nao pode virar o prompt.
+  // ═══════════════════════════════════════════════════════════════════════
+  function jaPreenchidosDosOutrosCanais(canalAtual) {
+    var saida = [];
+    var vistos = {};
+    var porCanal = estado.dados.atributosPorCanal || {};
+    Object.keys(porCanal).forEach(function (canal) {
+      if (canal === canalAtual) return;
+      var ficha = cacheFichas[canal];
+      var nomeDe = {};
+      ((ficha && ficha.campos) || []).forEach(function (c) { nomeDe[String(c.id)] = c.nome || c.id; });
+      Object.keys(porCanal[canal] || {}).forEach(function (id) {
+        var valor = porCanal[canal][id];
+        if (valor == null || String(valor).trim() === '') return;
+        var nome = nomeDe[String(id)] || String(id);
+        var chave = String(nome).toLowerCase();
+        if (vistos[chave]) return;
+        vistos[chave] = true;
+        saida.push({ nome: String(nome).slice(0, 60), valor: String(valor).slice(0, 60) });
+      });
+    });
+    return saida.slice(0, 25);
+  }
+
   function aplicarSugestaoAtributos(opts) {
     var soVazios = !!(opts && opts.soVazios);
     var vals = (estado.sugestoes.atributos || {}).valores || {};
@@ -1432,6 +1529,39 @@
     delete estado.sugestoes.atributos;
     if (postos) marcarSujo();
     return postos;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★★★★ v33k.3561: A ESTIMATIVA DE EMBALAGEM ENTRA SOZINHA.
+  // ───────────────────────────────────────────────────────────────────────
+  //   Era um botao que enchia uma caixa e um segundo botao para aplicar. Ele
+  //   mandou os dois sairem em 22/11. Esta funcao e o que o segundo botao
+  //   fazia, agora chamada direto pelo automatico.
+  //
+  // ★★★★ `soVazios` E A DIFERENCA entre automatico e botao, e e a mesma
+  //   regra dos atributos: o botao era pedido explicito e sobrescrevia; o
+  //   automatico entra por baixo. Automatico que apaga o que a pessoa digitou
+  //   nao e ajuda, e ela so descobre no anuncio publicado.
+  //
+  // ★★★ v33k.2248 CONTINUA VALENDO AQUI: a IA estima em GRAMAS, onde ela erra
+  //   menos, e a conversao e do backend, uma vez so, em `pesoKg`. Converter
+  //   de novo aqui foi o defeito que mandou 650 g de petisco como 650 kg para
+  //   a Shopee.
+  // ═══════════════════════════════════════════════════════════════════════
+  function aplicarEmbalagem(opts) {
+    var soVazios = !!(opts && opts.soVazios);
+    var e = estado.sugestoes.embalagem || {};
+    var por = function (chave, valor) {
+      if (valor == null || valor === '') return;
+      if (soVazios && numBR(estado.dados[chave])) return;   // dele, fica
+      estado.dados[chave] = String(valor).replace('.', ',');
+    };
+    por('peso', e.pesoKg);
+    por('comprimento', e.comprimento);
+    por('largura', e.largura);
+    por('altura', e.altura);
+    delete estado.sugestoes.embalagem;
+    marcarSujo();
   }
 
   async function sugerirCategoriaAuto(canal) {
@@ -1579,75 +1709,52 @@
     } else {
       var campos = ficha.campos || [];
       var pendentes = campos.filter(function (c) { return c.pendente; }).length;
-      // v33k.2491: roda sozinha, uma vez por canal, e so com o interruptor
-      //   ligado. As tres condicoes importam: sem `prefs` gasta token de quem
-      //   nao pediu, sem `iaAuto` gasta de novo a cada redesenho, e sem
-      //   `!sugestoes.atributos` atropela a sugestao que ja esta na tela.
-      // ════════════════════════════════════════════════════════════════
-      // ★★★★★ v33k.3269: LIGADO POR PADRAO, MAS SO QUANDO HA O QUE PREENCHER.
-      // ────────────────────────────────────────────────────────────────
-      // Ele pediu em 04/11 que os atributos fossem preenchidos *"sem precisar
-      // de clicar no botao para gerar"*. E o comentario no topo deste modulo
-      // diz o contrario, e com razao de peso: *"nao nasce com IA por padrao,
-      // porque isto GASTA TOKEN por canal e por produto"*.
+      // ═══════════════════════════════════════════════════════════════
+      // A HISTORIA DESTE GATILHO, QUE JA MUDOU TRES VEZES
+      // ───────────────────────────────────────────────────────────────
+      //   v33k.2491: nasceu atras de um interruptor, desligado por padrao,
+      //     porque GASTA TOKEN por canal e por produto (regra dele de 13/09:
+      //     *"o padrao e sempre o caminho que nao gasta token"*).
+      //   v33k.3269: ele pediu em 04/11 *"sem precisar de clicar no botao
+      //     para gerar"*, e o padrao virou ligado. Para nao brigar com a
+      //     regra dele de 30/10 (*"otimizar para nao gastar tanto"*), o
+      //     gatilho apertou: so disparava com campo OBRIGATORIO em branco.
+      //   v33k.3561 (esta): o aperto era o defeito. No print dele de 22/11 a
+      //     ficha dizia *"Nenhum campo obrigatorio em branco neste canal"* e
+      //     tinha tres campos vazios; com `pendentes` em zero, o automatico
+      //     nunca ia rodar. Ele pediu entao *"100% automatico"*, e o gatilho
+      //     passou a ser QUALQUER campo em branco.
       //
-      // ★★★★★ AS DUAS COISAS SAO VERDADE, E ELE DISSE AS DUAS. Em 30/10:
-      //   *"devemos otimizar para nao gastar tanto assim"*. Em 04/11:
-      //   automatico. Ligar por padrao e so isso seria obedecer a ultima e
-      //   ignorar a outra.
-      //
-      // ★★★★ ENTAO O QUE MUDOU NAO FOI SO O PADRAO, FOI O GATILHO: a chamada
-      //   so sai quando EXISTE campo obrigatorio em branco. Antes, com o
-      //   interruptor ligado, ela saia em TODO canal de TODO produto, mesmo
-      //   com a ficha inteira preenchida — token gasto para confirmar o que
-      //   ja estava la. Agora ela nao sai nesse caso, e o padrao ligado fica
-      //   mais barato do que o interruptor ligado era antes.
-      //
-      // ★★★ E O PADRAO MORA NO SERVIDOR, nao aqui. O cabecalho da rota de
-      //   preferencias e explicito: *"o GET devolve TODAS as chaves
-      //   conhecidas, ja com os padroes ... se a tela soubesse, seriam duas
-      //   verdades sobre o mesmo padrao"*. A primeira escrita desta leva
-      //   virou o padrao AQUI, com `!== false`, e teria nascido INERTE: a
-      //   chave chega `false` do servidor, entao `!== false` dava falso e
-      //   nada ligava — sem um erro em lugar nenhum. O padrao virou em
-      //   `src/util/preferencias.js`, e aqui so se LE o valor.
-      // ★★ `=== true` tambem e a falha fechada certa: se a leitura das
-      //   preferencias cair, `prefs` fica `{}` e nada e gasto sem saber.
-      // ════════════════════════════════════════════════════════════════
-      var _iaLigada = prefs['ficha.iaAutomatica'] === true;
-      if (_iaLigada && pendentes > 0 && !iaAuto[atual] && !estado.sugestoes.atributos) {
+      // ★★★ O QUE SOBROU DE ECONOMIA, e nao e pouco: uma chamada por canal,
+      //   uma vez so (`iaAuto[atual]`), e nenhuma quando a ficha esta cheia.
+      //   Ficha cheia nao tem campo em branco.
+      // ═══════════════════════════════════════════════════════════════
+      var _emBranco = campos.filter(function (c) {
+        var v = ((estado.dados.atributosPorCanal || {})[atual] || {})[c.id];
+        if (v == null) v = c.valor;
+        return v == null || String(v).trim() === '';
+      }).length;
+      if (_emBranco > 0 && !iaAuto[atual]) {
         iaAuto[atual] = true;
         setTimeout(function () {
-          sugerir('atributos', { campos: campos })
+          sugerir('atributos', { campos: campos, jaPreenchidos: jaPreenchidosDosOutrosCanais(atual) })
             .catch(function (e) { avisar(e.message); })
             .then(function () {
-              // ★ e aqui ela ENTRA, em vez de so aparecer numa caixa. Os
-              //   campos que ele ja preencheu ficam como estao.
+              // ★★★ ENTRA DIRETO, e so nos vazios. O que ele digitou fica.
+              //   Automatico que apaga o que a pessoa escreveu nao e ajuda.
               try { aplicarSugestaoAtributos({ soVazios: true }); } catch (e) {}
               desenharEtapa();
             });
         }, 0);
       }
-      corpo = '<div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:8px">'
-        + '<label style="font-size:12px;color:var(--lc-muted-2);display:flex;align-items:center;gap:6px;cursor:pointer">'
-        + '<input type="checkbox" id="lcAnIaAuto"' + (_iaLigada ? ' checked' : '') + '>'
-        + 'Preencher com IA automaticamente</label>'
-        + '<button id="lcAnIaFicha" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
-        + 'border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px">Sugerir os campos com IA</button></div>'
-        + (estado.sugestoes.atributos
-          ? caixaSugestao('atributos',
-              Object.keys(estado.sugestoes.atributos.valores || {}).map(function (id) {
-                var nome = (campos.filter(function (c) { return String(c.id) === String(id); })[0] || {}).nome || id;
-                return '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:5px 0;font-size:13px">'
-                  + '<span style="color:var(--lc-ink-2)">' + esc(nome) + '</span>'
-                  + '<span style="color:var(--lc-ink);font-weight:700">' + esc(estado.sugestoes.atributos.valores[id]) + '</span></div>';
-              }).join('')
-              + listaRecusadosIA(campos)
-              + '<button id="lcAnUsarFicha" style="margin-top:8px;border:0;background:var(--lc-primary);color:var(--lc-primary-text);'
-              + 'border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px;font-weight:700">Usar estes valores</button>'
-              + '<button class="lc-an-descartar-ia" data-campo="atributos" style="margin-left:8px;border:1px solid var(--lc-border-2);'
-              + 'background:#fff;color:var(--lc-ink-2);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px">Descartar</button>')
-          : '')
+      corpo = ''
+        // ★ v33k.3561: a lista do que a IA nao conseguiu continua, fora da
+        //   caixa que saiu. Ela e informacao util ("Vidro recusado num campo
+        //   cuja lista tem Sintetico, Couro" ensina a corrigir em dois
+        //   segundos), e some junto com a caixa seria perder o que a 2488
+        //   acrescentou de proposito.
+        + (estado.recusados.atributos && estado.recusados.atributos.length
+          ? '<div style="margin-bottom:12px">' + listaRecusadosIA(campos) + '</div>' : '')
         + '<div style="font-size:12px;color:' + (pendentes ? 'var(--lc-danger)' : 'var(--lc-primary)') + ';margin-bottom:10px">'
         + (pendentes
           ? pendentes + ' campo(s) que o marketplace exige ainda em branco. Você pode enviar assim, e a recusa fica registrada no rascunho.'
@@ -1690,6 +1797,272 @@
   //   deduz o que dá (v33k.1871) e carimba o dono pelo escopo. Insert direto
   //   daqui pularia os três.
   // ═════════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
+  // A ETAPA DE PREÇOS (v33k.3560)
+  // ───────────────────────────────────────────────────────────────────────
+  // PEDIDO DELE EM 22/11: *"preciso que tenha um local para a gente preencher
+  // o custo do produto e assim automaticamente gerar o valor de venda com base
+  // no custo ... o usuário poder colocar o percentual ou arrastar a bolinha na
+  // reta ... o percentual de 20% deverá ser padrão, e deverá preencher o campo
+  // em promoção e somar um valor acima para o preço de venda em 30%"*, e
+  // *"cada marketplace selecionado gera seus valores de venda e promoção com
+  // base na calculadora. Uma tabela de preço por canal, mais simplificado e
+  // fácil de entendimento e organizado"*.
+  //
+  // ★★★★★ UM CUSTO, VÁRIOS PREÇOS. É esta a forma da tela, e ela vem da
+  //   resposta dele: o custo é *"por variação, todas as variações ficam com o
+  //   mesmo valor"*, e o preço é por canal. Então em cima fica UM campo de
+  //   custo e UMA barra de margem; embaixo, uma linha por canal, cada uma com
+  //   a taxa dela e o preço que sai dela.
+  //
+  // ★★★★ A CONTA NÃO MORA AQUI. Ela é `window.lcPrecoDoCanal`, no painel, e
+  //   tem uma irmã idêntica no backend que a `qa_a_conta_do_preco_e_a_mesma_
+  //   nos_dois_lados` confere centavo a centavo. Esta função desenha e lê
+  //   campo; quem calcula é uma só.
+  // ═════════════════════════════════════════════════════════════════════════
+  function canaisDosDestinos() {
+    var vistos = {};
+    var saida = [];
+    (estado.destinos || []).forEach(function (d) {
+      var c = String(d.canal || '').toLowerCase();
+      if (!c || vistos[c]) return;
+      vistos[c] = true;
+      saida.push(c);
+    });
+    return saida;
+  }
+
+  async function carregarTabelaDePreco() {
+    try {
+      var r = await fetch(base() + '/api/preco-de-venda/tabela', { headers: cabecalhos() });
+      var j = await r.json();
+      if (j && j.ok) {
+        window.lcPrecoGuardarTabela(j.canais || null);
+        // ★ a configuração gravada entra no rascunho só se ele ainda não tem
+        //   uma: rascunho reaberto manda sobre o padrão da conta.
+        if (!estado.dados.precoConfig) estado.dados.precoConfig = j.config || null;
+      }
+    } catch (e) { /* a etapa mostra o aviso de tabela não carregada */ }
+  }
+
+  function precoConfigAtual() {
+    var c = estado.dados.precoConfig || {};
+    // a margem vive à parte, porque é o que a barra mexe o tempo todo
+    if (estado.dados.precoMargem != null) c = Object.assign({}, c, { margem: estado.dados.precoMargem });
+    return c;
+  }
+
+  function custoAtual() {
+    // ★★★ NO DROP O CUSTO JÁ VEM PREENCHIDO. Escolha dele em 22/11:
+    //   *"editável, já vem preenchido com o preço, mas podemos deixar o
+    //   usuário editar também se ele quiser"*. O que o droper paga ao
+    //   fornecedor É o custo dele.
+    if (estado.dados.custoProduto != null && String(estado.dados.custoProduto) !== '') {
+      return numBR(estado.dados.custoProduto);
+    }
+    return 0;
+  }
+
+  function _precoLinhaCanal(canal, r) {
+    var logo = (typeof window.LC_MKT_TAG === 'function') ? window.LC_MKT_TAG(canal, { nome: false }) : '';
+    var nome = (typeof window.lcMarketplaceRotulo === 'function') ? window.lcMarketplaceRotulo(canal) : canal;
+    var cfg = precoConfigAtual();
+    var taxa = ((cfg.taxas || {})[canal]) || {};
+    var campo = function (qual, valor, sufixo, largura) {
+      return '<input class="lc-an-taxa" data-canal="' + esc(canal) + '" data-qual="' + qual + '" '
+        + 'value="' + esc(valor == null ? '' : valor) + '" placeholder="' + esc(sufixo) + '" '
+        + 'style="width:' + largura + ';padding:6px 8px;border:1px solid var(--lc-border-2);'
+        + 'border-radius:7px;font-size:12.5px;text-align:right">';
+    };
+    if (!r || !r.ok) {
+      return '<tr><td style="padding:9px 10px;border-top:1px solid #f1f5f9">'
+        + '<span style="display:inline-flex;align-items:center;gap:7px">' + logo
+        + '<b style="font-size:13px">' + esc(nome) + '</b></span></td>'
+        // ★ regra dele de 21/11: o que É falha sai em vermelho, e sozinho na
+        //   sua caixa, para não ser lido como instrução.
+        + '<td colspan="4" style="padding:9px 10px;border-top:1px solid #f1f5f9;'
+        + 'font-size:12.5px;color:var(--lc-danger)">'
+        + esc((r && r.motivo) || 'Sem preço para este canal.') + '</td></tr>';
+    }
+    var corMargem = r.lucro >= 0 ? 'var(--lc-primary-text)' : 'var(--lc-danger)';
+    return '<tr>'
+      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9">'
+      +   '<span style="display:inline-flex;align-items:center;gap:7px">' + logo
+      +   '<b style="font-size:13px">' + esc(nome) + '</b></span>'
+      +   (r.taxaDaPessoa ? '<div style="font-size:10.5px;color:var(--lc-muted-2);margin-top:2px">taxa que você informou</div>' : '')
+      + '</td>'
+      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9;white-space:nowrap">'
+      +   campo('pct', taxa.pct, String(r.faixaPct), '62px') + ' <span style="font-size:12px;color:var(--lc-muted-2)">%</span> + '
+      +   campo('fixo', taxa.fixo, String(r.faixaFixo), '70px')
+      + '</td>'
+      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9;font-size:14px;font-weight:800;color:var(--lc-ink)">'
+      +   _brl(r.precoCheio) + '</td>'
+      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9;font-size:14px;font-weight:800;color:var(--lc-primary-text)">'
+      +   _brl(r.precoPromo) + '</td>'
+      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9;font-size:12.5px;color:' + corMargem + '">'
+      +   _brl(r.lucro) + ' <span style="color:var(--lc-muted-2)">(' + String(r.margemReal).replace('.', ',') + '%)</span></td>'
+      + '</tr>';
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // ONDE OS PREÇOS CALCULADOS FICAM, E POR QUE NÃO NA MATRIZ DE VARIAÇÕES
+  // ───────────────────────────────────────────────────────────────────────
+  // ★★★★★ A MATRIZ TEM UM PREÇO POR VARIAÇÃO; AGORA SÃO VÁRIOS, UM POR CANAL.
+  //   Guardar o preço de cinco canais dentro de uma coluna que cabe um não é
+  //   possível, e escolher um deles para a matriz seria escolher qual canal
+  //   mente. Então os preços calculados moram em `dados.precosPorCanal`, e a
+  //   matriz continua sendo o que sempre foi: o preço de quem não usa a
+  //   calculadora.
+  //
+  // ★★★★ QUEM GANHA QUANDO OS DOIS EXISTEM: o preço por canal. É o que ele
+  //   pediu (*"cada marketplace selecionado gera seus valores de venda e
+  //   promoção"*), e quem informou um custo está dizendo que quer a conta. A
+  //   matriz volta a mandar no momento em que o custo é apagado.
+  //
+  // ★★★ E O CUSTO VAI JUNTO, por variação, com todas no mesmo valor, que foi
+  //   a resposta dele. É esse custo que o backend grava no custo da variação
+  //   interna, para a tela de Lucro parar de ter venda sem custo.
+  // ═════════════════════════════════════════════════════════════════════════
+  function guardarPrecosCalculados(precos) {
+    var mapa = {};
+    Object.keys(precos || {}).forEach(function (canal) {
+      var r = precos[canal];
+      if (!r || !r.ok) return;
+      mapa[canal] = {
+        preco: r.precoCheio,
+        precoPromo: r.precoPromo,
+        margemReal: r.margemReal,
+        taxaPct: r.faixaPct,
+        taxaFixo: r.faixaFixo,
+        lucro: r.lucro,
+      };
+    });
+    estado.dados.precosPorCanal = Object.keys(mapa).length ? mapa : null;
+    estado.dados.custoCalculado = custoAtual() || null;
+  }
+
+  // ★★★ A CONFIGURAÇÃO VAI PARA A CONTA DELE, e não só para o rascunho.
+  //   Pedido de 22/11: *"digitamos uma vez e deixamos como padrão sempre para
+  //   aquele usuário"*. O rascunho guarda o que vale NESTE anúncio; a
+  //   preferência guarda o que vale no PRÓXIMO.
+  // ★★ Com atraso, porque cada tecla digitada dispararia uma gravação. E sem
+  //   travar nada: se a gravação falhar, o anúncio corrente segue com os
+  //   números certos e o próximo é que começa com os antigos.
+  // ★★★ v33k.3561: PELO `gravarPref`, e não por um `fetch` próprio.
+  //   A v33k.3560 escreveu a chamada à mão aqui, e com isso havia duas
+  //   gravações de preferência no arquivo: uma que avisa quando o banco
+  //   recusa e outra que engole. A que engole é a que a v33k.2481 proibiu,
+  //   com motivo medido: escrita recusada com cara de sucesso escondeu um
+  //   apagão do Mercado Livre por um dia inteiro.
+  //   ★ O `gravarPref` tinha ficado órfão quando o interruptor da IA saiu da
+  //     tela nesta leva. Usar o que já existe resolve as duas coisas.
+  var _gravarCfgTimer = null;
+  function gravarConfigDePreco() {
+    if (_gravarCfgTimer) clearTimeout(_gravarCfgTimer);
+    _gravarCfgTimer = setTimeout(function () {
+      _gravarCfgTimer = null;
+      var cfg = Object.assign({}, estado.dados.precoConfig || {});
+      if (estado.dados.precoMargem != null) cfg.margem = estado.dados.precoMargem;
+      gravarPref('preco.config', cfg);
+    }, 900);
+  }
+
+  function etapaPrecos() {
+    var canais = canaisDosDestinos();
+    if (!canais.length) {
+      return '<div class="lc-an-etapa"><p style="font-size:13px;color:var(--lc-muted)">'
+        + 'Escolha pelo menos uma loja na etapa Destinos para ver os preços de cada canal.</p></div>';
+    }
+    if (typeof window.lcPrecoTabelaCarregada !== 'function' || !window.lcPrecoTabelaCarregada()) {
+      return '<div class="lc-an-etapa"><p style="font-size:13px;color:var(--lc-muted)">'
+        + 'Carregando as taxas de cada canal...</p></div>';
+    }
+    var cfg = precoConfigAtual();
+    var custo = custoAtual();
+    var margem = (cfg.margem == null) ? 20 : Number(cfg.margem);
+    var precos = window.lcPrecosPorCanal(canais, { custo: custo, margem: margem, config: cfg });
+
+    var linhas = canais.map(function (c) { return _precoLinhaCanal(c, precos[c]); }).join('');
+
+    var temCusto = custo > 0;
+    return '<div class="lc-an-etapa">'
+      // ── o custo e a margem ──────────────────────────────────────────
+      + '<div style="border:1px solid var(--lc-border);border-radius:10px;padding:14px;margin-bottom:16px">'
+      +   '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">'
+      +     '<label style="flex:1;min-width:170px;font-size:12px;font-weight:700;color:var(--lc-ink-2)">'
+      +       'Quanto este produto custa para você'
+      +       '<input id="lcAnCusto" inputmode="decimal" value="' + esc(estado.dados.custoProduto == null ? '' : estado.dados.custoProduto) + '" '
+      +       'placeholder="0,00" style="display:block;width:100%;margin-top:5px;padding:10px;'
+      +       'border:1px solid var(--lc-border-2);border-radius:8px;font-size:15px;font-weight:700;box-sizing:border-box">'
+      +     '</label>'
+      +     '<label style="width:120px;font-size:12px;font-weight:700;color:var(--lc-ink-2)">Margem'
+      +       '<input id="lcAnMargem" inputmode="decimal" value="' + esc(String(margem).replace('.', ',')) + '" '
+      +       'style="display:block;width:100%;margin-top:5px;padding:10px;border:1px solid var(--lc-border-2);'
+      +       'border-radius:8px;font-size:15px;font-weight:700;box-sizing:border-box;text-align:right">'
+      +     '</label>'
+      +   '</div>'
+      +   '<input id="lcAnMargemBarra" type="range" min="' + window.LC_PRECO_MARGEM_MIN + '" max="' + window.LC_PRECO_MARGEM_MAX + '" '
+      +   'step="0.5" value="' + esc(String(margem)) + '" style="width:100%;margin-top:14px;accent-color:var(--lc-primary)">'
+      +   '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--lc-muted-2);margin-top:2px">'
+      +     '<span>' + window.LC_PRECO_MARGEM_MIN + '%</span><span>0%</span><span>+' + window.LC_PRECO_MARGEM_MAX + '%</span></div>'
+      +   '<div style="font-size:12px;color:var(--lc-muted-2);margin-top:10px">'
+      +     'A margem é o que sobra depois da taxa do canal e do imposto, sobre o preço em promoção. '
+      +     'O preço de venda sai ' + esc(String(cfg.acrescimoCheio == null ? 30 : cfg.acrescimoCheio)) + '% acima dele.'
+      +   '</div>'
+      + '</div>'
+      // ── a tabela por canal ──────────────────────────────────────────
+      + (temCusto
+        ? '<div style="border:1px solid var(--lc-border);border-radius:10px;overflow:hidden;margin-bottom:16px">'
+          + '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+          + '<thead><tr style="background:#f8fafc">'
+          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">CANAL</th>'
+          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">TAXA DO CANAL</th>'
+          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">PREÇO DE VENDA</th>'
+          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">EM PROMOÇÃO</th>'
+          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">SOBRA</th>'
+          + '</tr></thead><tbody id="lcAnPrecoCorpo">' + linhas + '</tbody></table></div>'
+        : '<div style="border:1px dashed var(--lc-border-2);border-radius:10px;padding:16px;margin-bottom:16px;'
+          + 'font-size:13px;color:var(--lc-muted)">Informe o custo acima e os preços de cada canal aparecem aqui.</div>')
+      // ── os números que ficam gravados ───────────────────────────────
+      + _blocoNumerosDaConta(cfg)
+      + '</div>';
+  }
+
+  // ★★★ Imposto, frete, custo fixo e arredondamento: ele digita uma vez e o
+  //   sistema guarda como padrão dele (*"digitamos uma vez e deixamos como
+  //   padrão sempre para aquele usuário e ele edita se necessário"*). Ficam
+  //   num bloco recolhido porque são números que não se mexe todo dia.
+  function _blocoNumerosDaConta(cfg) {
+    var n = function (id, rotulo, valor, dica) {
+      return '<label style="flex:1;min-width:140px;font-size:12px;color:var(--lc-ink-2)">' + rotulo
+        + '<input id="' + id + '" class="lc-an-preco-cfg" inputmode="decimal" value="' + esc(valor == null ? '' : String(valor).replace('.', ',')) + '" '
+        + 'style="display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid var(--lc-border-2);'
+        + 'border-radius:8px;font-size:13px;box-sizing:border-box">'
+        + (dica ? '<span style="display:block;font-size:11px;color:var(--lc-muted-2);margin-top:3px">' + dica + '</span>' : '')
+        + '</label>';
+    };
+    return '<details style="border:1px solid var(--lc-border);border-radius:10px;padding:0 14px">'
+      + '<summary style="cursor:pointer;padding:12px 0;font-size:12px;font-weight:800;color:var(--lc-ink-2)">'
+      + 'OS SEUS NÚMEROS, QUE VALEM PARA TODOS OS ANÚNCIOS</summary>'
+      + '<div style="display:flex;gap:12px;flex-wrap:wrap;padding-bottom:14px">'
+      +   n('lcAnImposto', 'Imposto (%)', cfg.imposto, 'Sua alíquota. No Simples costuma ficar entre 4% e 12%.')
+      +   n('lcAnFrete', 'Frete por venda (R$)', cfg.frete, 'O que sobra para você pagar do envio.')
+      +   n('lcAnCustoFixo', 'Custo fixo por venda (R$)', cfg.custoFixo, 'Embalagem, deslocamento, o que for por pedido.')
+      +   n('lcAnAcrescimo', 'Preço de venda acima da promoção (%)', cfg.acrescimoCheio, 'O padrão é 30%.')
+      + '</div>'
+      + '<div style="padding-bottom:14px">'
+      +   '<label style="font-size:12px;color:var(--lc-ink-2)">Arredondamento'
+      +     '<select id="lcAnArredondar" style="display:block;margin-top:4px;padding:8px 10px;'
+      +     'border:1px solid var(--lc-border-2);border-radius:8px;font-size:13px">'
+      +     '<option value="noventa"' + (cfg.arredondar === 'nenhum' ? '' : ' selected') + '>Terminar em ,90, sempre para cima</option>'
+      +     '<option value="nenhum"' + (cfg.arredondar === 'nenhum' ? ' selected' : '') + '>Não arredondar</option>'
+      +     '</select></label>'
+      + '</div>'
+      + '<div style="font-size:11.5px;color:var(--lc-muted-2);padding-bottom:14px">'
+      + 'Estes números ficam guardados e já vêm preenchidos no próximo anúncio.</div>'
+      + '</details>';
+  }
+
   function etapaConferencia() {
     var d = estado.dados;
     var linha = function (rot, val) {
@@ -1815,6 +2188,53 @@
       throw new Error(((j && j.erro) || 'Não consegui criar o produto interno.') + det);
     }
     estado.dados.produtoIdCriado = j.produto.id;
+    // ═══════════════════════════════════════════════════════════════════════
+    // ★★★★★ v33k.3560: O CUSTO NASCE JUNTO COM O PRODUTO.
+    // ───────────────────────────────────────────────────────────────────────
+    //   Pedido dele em 22/11: *"ao preencher aqui já atualiza no preço de
+    //   custo e ele nasce junto com o anúncio preenchido para quando for
+    //   gerar relatórios já estar preenchido esse dado"*.
+    //
+    // ★★★★★ E ISSO FECHA UM BURACO MEDIDO. O cabeçalho do
+    //   `util/custo-variacao.js` traz os números de 30/08: *"965 de 1.000
+    //   linhas de venda sem custo; nada gravado há 59 dias"*. O custo nunca
+    //   era preenchido porque preencher era um trabalho à parte, depois,
+    //   numa tela que ninguém abria. Aqui ele é digitado no momento em que a
+    //   pessoa já está pensando em preço.
+    //
+    // ★★★★ PELA ROTA QUE JÁ EXISTE, e não por uma gravação nova. A
+    //   `POST /api/lucro/custos-variacao` tem a regra inteira: resolve o
+    //   dono, recusa linha sem identidade, colapsa SKU repetido e RECUSA o
+    //   lote quando dois SKUs iguais trazem custos diferentes. Gravar por
+    //   fora seria reescrever tudo isso pior.
+    //
+    // ★★★ NÃO TRAVA A CRIAÇÃO. Se o custo não gravar, o produto já está
+    //   criado e o anúncio segue; o custo é um dado de relatório, não um
+    //   pré-requisito de publicação. O aviso fica no log, nunca na frente
+    //   dele, porque operação que deu certo não sai com erro na tela.
+    // ═══════════════════════════════════════════════════════════════════════
+    try {
+      var _custo = numBR(estado.dados.custoProduto);
+      if (_custo > 0) {
+        var _vars = (j.produto.variacoes || []).filter(function (v) { return v && v.sku; });
+        if (_vars.length) {
+          var _res = await fetch(base() + '/api/lucro/custos-variacao', {
+            method: 'POST', headers: cabecalhos(),
+            body: JSON.stringify({
+              custos: _vars.map(function (v) {
+                return { produto_id: j.produto.id, sku: v.sku, custo: _custo };
+              }),
+            }),
+          });
+          var _jc = await _res.json().catch(function () { return null; });
+          if (!_jc || !_jc.ok) {
+            console.warn('[criação] o custo não foi gravado: ' + ((_jc && _jc.erro) || 'sem resposta'));
+          }
+        }
+      }
+    } catch (eC) {
+      console.warn('[criação] o custo não foi gravado: ' + eC.message);
+    }
     // v33k.2230: guarda a resposta INTEIRA para entrar no cache do painel
     // (ver `entregarParaExportacao`). Fica fora do que vai ao rascunho.
     estado._produtoCriado = j.produto;
@@ -2027,7 +2447,10 @@
     if (!alvo) return;
     if (estado.etapa === 'produto') alvo.innerHTML = (estado.dados.modoDrop ? avisoDrop() : '') + etapaProduto();
     else if (estado.etapa === 'fotos') alvo.innerHTML = etapaFotos();
-    else if (estado.etapa === 'embalagem') alvo.innerHTML = etapaEmbalagem();
+    else if (estado.etapa === 'embalagem') {
+      alvo.innerHTML = etapaEmbalagem();
+      estimarEmbalagemSozinho();
+    }
     else if (estado.etapa === 'destinos') {
       alvo.innerHTML = etapaDestinos();
       if (!cacheLojas) {
@@ -2040,6 +2463,17 @@
       alvo.innerHTML = etapaDrop();
       if (!empresasDrop) carregarEmpresasDrop().then(function () { if (estado.etapa === 'drop') desenharEtapa(); });
     } else if (estado.etapa === 'ficha') alvo.innerHTML = etapaFicha();
+    else if (estado.etapa === 'precos') {
+      alvo.innerHTML = etapaPrecos();
+      // ★ a tabela de taxas vem do backend, uma vez por sessão da tela. Sem
+      //   ela o painel não tem número nenhum para calcular, e é de propósito:
+      //   tabela escrita na tela seria a quarta cópia da da Shopee.
+      if (typeof window.lcPrecoTabelaCarregada === 'function' && !window.lcPrecoTabelaCarregada()) {
+        carregarTabelaDePreco().then(function () {
+          if (estado.etapa === 'precos') desenharEtapa();
+        });
+      }
+    }
     else alvo.innerHTML = etapaConferencia();
     ligarCampos();
     ligarCamposDrop();
@@ -2270,6 +2704,106 @@
       });
     });
 
+    // ══════════════════════════════════════════════════════════════════
+    // A ETAPA DE PREÇOS (v33k.3560)
+    // ──────────────────────────────────────────────────────────────────
+    // ★★★★ A BARRA NÃO REDESENHA A ETAPA, e isso não é otimização: redesenhar
+    //   o HTML a cada pixel tira o foco do elemento que está sendo arrastado,
+    //   e o arrasto MORRE na primeira troca. Era assim que a barra do Drop se
+    //   comportava antes de a v33k.3176 consertar a dela. Aqui a barra
+    //   repinta só a tabela e o número da margem.
+    // ★★★ E o custo redesenha, porque mudar o custo troca a tabela inteira de
+    //   estado (de "informe o custo" para a tabela com os canais).
+    // ══════════════════════════════════════════════════════════════════
+    var _precoRepintar = function () {
+      var canais = canaisDosDestinos();
+      var corpo = document.getElementById('lcAnPrecoCorpo');
+      if (!corpo || !canais.length) return;
+      var cfg = precoConfigAtual();
+      var custo = custoAtual();
+      if (!(custo > 0)) { desenharEtapa(); return; }
+      var margem = (cfg.margem == null) ? 20 : Number(cfg.margem);
+      var precos = window.lcPrecosPorCanal(canais, { custo: custo, margem: margem, config: cfg });
+      corpo.innerHTML = canais.map(function (c) { return _precoLinhaCanal(c, precos[c]); }).join('');
+      guardarPrecosCalculados(precos);
+      icones(corpo);
+    };
+
+    var campoCusto = document.getElementById('lcAnCusto');
+    if (campoCusto) {
+      campoCusto.addEventListener('input', function () {
+        estado.dados.custoProduto = campoCusto.value;
+        marcarSujo();
+        _precoRepintar();
+      });
+      campoCusto.addEventListener('change', function () { desenharEtapa(); });
+    }
+
+    var campoMargem = document.getElementById('lcAnMargem');
+    var barraMargem = document.getElementById('lcAnMargemBarra');
+    var _porMargem = function (valor, moverBarra) {
+      var m = Math.max(window.LC_PRECO_MARGEM_MIN,
+        Math.min(window.LC_PRECO_MARGEM_MAX, numBR(valor)));
+      estado.dados.precoMargem = m;
+      if (moverBarra && barraMargem) barraMargem.value = String(m);
+      if (!moverBarra && campoMargem) campoMargem.value = String(m).replace('.', ',');
+      marcarSujo();
+      _precoRepintar();
+    };
+    if (barraMargem) {
+      barraMargem.addEventListener('input', function () { _porMargem(barraMargem.value, false); });
+    }
+    if (campoMargem) {
+      campoMargem.addEventListener('input', function () { _porMargem(campoMargem.value, true); });
+    }
+
+    // ★ a taxa de cada canal: campo vazio volta a valer a tabela do sistema
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-taxa'), function (el) {
+      el.addEventListener('input', function () {
+        var cfg = Object.assign({}, estado.dados.precoConfig || {});
+        cfg.taxas = Object.assign({}, cfg.taxas || {});
+        var canal = el.dataset.canal;
+        var atual = Object.assign({}, cfg.taxas[canal] || {});
+        var v = String(el.value || '').trim();
+        if (v === '') delete atual[el.dataset.qual];
+        else atual[el.dataset.qual] = numBR(v);
+        if (atual.pct == null && atual.fixo == null) delete cfg.taxas[canal];
+        else cfg.taxas[canal] = atual;
+        estado.dados.precoConfig = cfg;
+        marcarSujo();
+        gravarConfigDePreco();
+        _precoRepintar();
+      });
+    });
+
+    // ★ imposto, frete, custo fixo e acréscimo: os números da conta dele
+    var _cfgCampos = { lcAnImposto: 'imposto', lcAnFrete: 'frete',
+      lcAnCustoFixo: 'custoFixo', lcAnAcrescimo: 'acrescimoCheio' };
+    Object.keys(_cfgCampos).forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('input', function () {
+        var cfg = Object.assign({}, estado.dados.precoConfig || {});
+        cfg[_cfgCampos[id]] = String(el.value || '').trim() === '' ? null : numBR(el.value);
+        estado.dados.precoConfig = cfg;
+        marcarSujo();
+        gravarConfigDePreco();
+        _precoRepintar();
+      });
+    });
+
+    var arred = document.getElementById('lcAnArredondar');
+    if (arred) {
+      arred.addEventListener('change', function () {
+        var cfg = Object.assign({}, estado.dados.precoConfig || {});
+        cfg.arredondar = arred.value;
+        estado.dados.precoConfig = cfg;
+        marcarSujo();
+        gravarConfigDePreco();
+        _precoRepintar();
+      });
+    }
+
     // ── ficha por canal ─────────────────────────────────────────────────
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-aba'), function (el) {
       el.addEventListener('click', function () {
@@ -2323,17 +2857,9 @@
       });
     });
 
-    var iaFicha = document.getElementById('lcAnIaFicha');
-    if (iaFicha) {
-      iaFicha.addEventListener('click', async function () {
-        var f = cacheFichas[estado.canalAba];
-        if (!f || !(f.campos || []).length) { avisar('Carregue os campos deste canal primeiro.'); return; }
-        iaFicha.textContent = 'Pensando...';
-        iaFicha.disabled = true;
-        try { await sugerir('atributos', { campos: f.campos }); desenharEtapa(); }
-        catch (e) { avisar(e.message); iaFicha.textContent = 'Sugerir os campos com IA'; iaFicha.disabled = false; }
-      });
-    }
+    // ★ v33k.3561: o botao "Sugerir os campos com IA" saiu da tela, e o
+    //   listener dele saiu junto. Listener de elemento que nao existe mais e
+    //   codigo que a proxima pessoa le como funcionalidade viva.
 
     // ★ É AQUI, e só aqui, que sugestão vira dado.
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-usar'), function (el) {
@@ -2357,42 +2883,9 @@
       });
     });
 
-    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-usar-embalagem'), function (el) {
-      el.addEventListener('click', function () {
-        var e = estado.sugestoes.embalagem || {};
-        // ★ v33k.2248: a IA estima em GRAMAS (é onde ela erra menos), e a
-        //   conversão passou a ser do backend, uma vez só, em `pesoKg`. Esta
-        //   tela convertia por conta própria e a conferência não convertia
-        //   nada: o mesmo número virava kg aqui e grama lá. Medido em
-        //   produção, 650 g de petisco saíram como 650 kg no add_item.
-        if (e.pesoKg) estado.dados.peso = String(e.pesoKg).replace('.', ',');
-        if (e.comprimento) estado.dados.comprimento = String(e.comprimento);
-        if (e.largura) estado.dados.largura = String(e.largura);
-        if (e.altura) estado.dados.altura = String(e.altura);
-        delete estado.sugestoes.embalagem;
-        marcarSujo();
-        desenharEtapa();
-      });
-    });
-
-    var usarFicha = document.getElementById('lcAnUsarFicha');
-    if (usarFicha) {
-      usarFicha.addEventListener('click', function () {
-        // ★ v33k.3269: a mesma funcao do automatico, com a UNICA diferenca
-        //   que separa os dois: o botao e pedido explicito e sobrescreve; o
-        //   automatico entra so nos vazios. Enquanto eram duas copias da
-        //   mesma conta, a proxima correcao entraria numa e nao na outra.
-        aplicarSugestaoAtributos({ soVazios: false });
-        desenharEtapa();
-      });
-    }
-
-    var chkIa = document.getElementById('lcAnIaAuto');
-    if (chkIa) {
-      chkIa.addEventListener('change', function () {
-        gravarPref('ficha.iaAutomatica', chkIa.checked).then(function () { desenharEtapa(); });
-      });
-    }
+    // ★ v33k.3561: "Usar estes valores" e "Preencher com IA automaticamente"
+    //   sairam da tela com a caixa de sugestao. O preenchimento entra direto,
+    //   e nao ha mais o que ligar nem o que confirmar.
 
     Array.prototype.forEach.call(document.querySelectorAll('.lc-an-descartar-ia'), function (el) {
       el.addEventListener('click', function () {
@@ -2712,6 +3205,9 @@
     if (!estado.rascunhoId) throw new Error('Salve o rascunho antes de pedir sugestão.');
     var corpo = { campo: campo };
     if (extra && extra.campos) corpo.campos = extra.campos;
+    // v33k.3561: o que os outros canais ja responderam, para a ficha deste
+    // nao contradizer a do vizinho sobre o mesmo produto.
+    if (extra && extra.jaPreenchidos && extra.jaPreenchidos.length) corpo.jaPreenchidos = extra.jaPreenchidos;
     var r = await chamar('/' + estado.rascunhoId + '/sugerir', { metodo: 'POST', corpo: corpo });
     estado.sugestoes[campo] = r.sugestao;
     // ★★ v33k.2488: A RECUSA TAMBEM E RESPOSTA.
@@ -2722,6 +3218,43 @@
     //   Desde a v33k.2485 cada item vem como { id, valor, motivo }.
     estado.recusados[campo] = Array.isArray(r.recusados) ? r.recusados : [];
     return r;
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // ★★★★★ v33k.3561: O PESO E AS MEDIDAS SE ESTIMAM SOZINHOS.
+  // ───────────────────────────────────────────────────────────────────────
+  // PEDIDO DELE EM 22/11: *"não quero que exista nenhum botão de gerar
+  // atributos, peso, tamanho também, deve ser sempre preenchido com IA esses
+  // dados e se o usuário quiser alterar ele que altere"*.
+  //
+  // ★★★★ SO QUANDO FALTA ALGUMA DELAS, e uma vez por rascunho. Ficha cheia
+  //   nao dispara nada: token gasto para confirmar o que ja esta la foi
+  //   justamente o que a v33k.3269 tirou do caminho dos atributos.
+  //
+  // ★★★ E SO NOS VAZIOS. Quem digitou 0,650 kg nao perde o numero dele
+  //   porque a IA achou que eram 700 g. A regra e a mesma dos atributos.
+  //
+  // ★★ FALHA EM SILENCIO. Nao estimar peso nao e erro: a etapa continua
+  //   editavel e a pessoa preenche. Alarme vermelho aqui seria assustar com
+  //   uma coisa que nao quebrou nada, contra a regra dele de 02/11.
+  // ═════════════════════════════════════════════════════════════════════════
+  function estimarEmbalagemSozinho() {
+    var d = estado.dados;
+    var falta = !numBR(d.peso) || !numBR(d.comprimento) || !numBR(d.largura) || !numBR(d.altura);
+    if (!falta || estado.estimouEmbalagem || estado.estimandoEmbalagem) return;
+    if (!String(d.nome || '').trim()) return;   // sem nome a IA nao tem do que partir
+    estado.estimouEmbalagem = true;
+    estado.estimandoEmbalagem = true;
+    desenharEtapa();
+    sugerir('embalagem')
+      .then(function () {
+        try { aplicarEmbalagem({ soVazios: true }); } catch (e) {}
+      })
+      .catch(function () { /* a etapa continua editavel a mao */ })
+      .then(function () {
+        estado.estimandoEmbalagem = false;
+        if (estado.etapa === 'embalagem') desenharEtapa();
+      });
   }
 
   function botaoIA(campo, rotulo) {
@@ -2799,20 +3332,10 @@
         + 'style="margin-left:8px;border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px">Descartar</button>');
     }
-    if (campo === 'embalagem') {
-      var e = sg;
-      return caixaSugestao(campo,
-        '<div style="font-size:13px;color:var(--lc-ink)">'
-        + (e.pesoKg ? String(e.pesoKg).replace('.', ',') + ' kg' : 'peso não estimado')
-        + (e.comprimento ? ' · ' + e.comprimento + ' x ' + (e.largura || '?') + ' x ' + (e.altura || '?') + ' cm' : '')
-        + '</div>'
-        + '<div style="font-size:11px;color:var(--lc-muted-2);margin-top:4px">'
-        + 'Estimativa. Peso a menos faz o frete ser cobrado a menos em toda venda, então confira antes de usar.</div>'
-        + '<button class="lc-an-usar-embalagem" style="margin-top:8px;border:0;background:var(--lc-primary);color:var(--lc-primary-text);'
-        + 'border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px;font-weight:700">Usar esta estimativa</button>'
-        + '<button class="lc-an-descartar-ia" data-campo="embalagem" style="margin-left:8px;border:1px solid var(--lc-border-2);'
-        + 'background:#fff;color:var(--lc-ink-2);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px">Descartar</button>');
-    }
+    // ★ v33k.3561: o ramo da embalagem saiu junto com o botao. A estimativa
+    //   entra sozinha nos campos vazios (ver `estimarEmbalagemSozinho`), e
+    //   nao ha mais caixa para confirmar. Ramo que ninguem mais chama e
+    //   funcionalidade viva aos olhos de quem le depois.
     if (campo === 'palavrasChave') {
       var termos = (sg.termos || []).join(', ');
       return caixaSugestao(campo,
@@ -2929,7 +3452,10 @@
     // ★ v33k.2488: `recusados` entra no reset junto com `sugestoes`. Duas
     //   listas que nascem juntas e morrem juntas; esquecer uma faria a recusa
     //   de um rascunho aparecer no proximo.
-    estado = { rascunhoId: null, etapa: 'produto', dados: {}, destinos: [], sugestoes: {}, recusados: {}, enviando: false, envioErro: null, salvando: false, sujo: false, erro: null };
+    estado = { rascunhoId: null, etapa: 'produto', dados: {}, destinos: [], sugestoes: {}, recusados: {},
+      // v33k.3561: anuncio novo estima de novo. A flag nao pode atravessar.
+      estimouEmbalagem: false, estimandoEmbalagem: false,
+      enviando: false, envioErro: null, salvando: false, sujo: false, erro: null };
     cacheFichas = {};
     // ★★ v33k.2490: A TENTATIVA DE CATEGORIA TAMBEM ZERA, E ISSO FALTAVA.
     //   A v33k.2489 dizia ter isso coberto pela assercao CS16, e a assercao
