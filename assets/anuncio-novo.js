@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3561-o-preenchimento-e-automatico';
+  var LEVA = 'v33k.3565-nada-passa-sabendo-que-vai-travar';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -123,7 +123,50 @@
     { id: 'fotos', titulo: 'Fotos' },
     { id: 'drop', titulo: 'Disponibilizar' },
   ];
-  function etapas() { return (estado && estado.dados && estado.dados.modoDrop) ? ETAPAS_DROP : ETAPAS; }
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★★★★ v33k.3564: AS LOJAS SE ESCOLHEM UMA VEZ POR FILA.
+  // ───────────────────────────────────────────────────────────────────────
+  // PEDIDO DELE EM 22/11: *"no primeiro anúncio selecionei Shopee, Mercado
+  // Livre, Shein e Tik Tok em lojas que iria exportar, ao chegar no produto
+  // número 2 deveria já estar pré selecionado as mesmas lojas anteriores,
+  // melhor, na verdade poderia sumir essa subpágina, aparecer apenas no
+  // anúncio número 1, as lojas que selecionar aqui já fica padrão para os
+  // demais anúncios"*.
+  //
+  // ★★★★★ E ERA PIOR QUE REPETICAO: no print dele o segundo anuncio tinha SO
+  //   a Shopee, porque a escolha do primeiro nao atravessava. Ele acertava as
+  //   quatro lojas, os precos e a ficha dos quatro canais no produto 1, e o
+  //   produto 2 comecava do zero com uma loja so. A mesma queixa de 22/11 ja
+  //   tinha sido feita sobre o modal do fim do fluxo (*"fica bagunça
+  //   selecionarmos algumas lojas e definirmos os preços e depois no modal
+  //   pedir para selecionar lojas novamente"*), e a v33k.3558 consertou la.
+  //   Esta e a mesma regra, um passo antes.
+  //
+  // ★★★★ A ETAPA SOME, E NAO E UMA PORTA TRANCADA: a escolha dele de 22/11 foi
+  //   *"um link para reabrir"*, entao a linha herdada tras um "Trocar lojas"
+  //   que devolve a etapa, so naquele anuncio.
+  //
+  // ★★★ `_destinosHerdados()` e o unico lugar que decide: etapas, linha da
+  //   tela e aplicacao leem daqui. Tres leitores com tres contas seria a
+  //   divergencia que esta frente ja pagou caro.
+  // ═══════════════════════════════════════════════════════════════════════
+  function _filaAtual() {
+    return (typeof window !== 'undefined') ? window.lcAnuncioNovoFila : null;
+  }
+  function _destinosHerdados() {
+    var f = _filaAtual();
+    if (!f || !(f.n > 1)) return null;
+    var d = f.destinosPadrao;
+    return (Array.isArray(d) && d.length) ? d : null;
+  }
+  function _escondeDestinos() {
+    return !!_destinosHerdados() && !estado._mostrarDestinos;
+  }
+  function etapas() {
+    if (estado && estado.dados && estado.dados.modoDrop) return ETAPAS_DROP;
+    if (!_escondeDestinos()) return ETAPAS;
+    return ETAPAS.filter(function (e) { return e.id !== 'destinos'; });
+  }
   // A que falta, declarada para a tela poder dizer o que vem, sem fingir aba
   // que não funciona.
   // Todas as etapas existem agora. A lista fica vazia de propósito, e o
@@ -533,11 +576,29 @@
         + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Montar SKUs</button>'
         + '<button id="lcAnEanMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Gerar EANs</button>'
-        + '<button id="lcAnPrecoMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
-        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Preço para todas</button>'
-        // v33k.2652: no Drop nao ha preco promocional (pedido dele em 22/09)
-        + (estado.dados.modoDrop ? '' : '<button id="lcAnPromoMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
-        + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Promoção para todas</button>')
+        // ═══════════════════════════════════════════════════════════════
+        // ★★★★★ v33k.3564: O PRECO SAIU DAQUI, E COM ELE OS DOIS BOTOES.
+        // ───────────────────────────────────────────────────────────────
+        // PEDIDO DELE EM 22/11: *"aqui ainda está com a coluna de preço sem
+        // necessidade"*, olhando esta tabela.
+        //
+        // ★★★★★ E ELE ESTA CERTO POR CONSTRUCAO: desde a v33k.3560 o preco de
+        //   venda nasce na etapa Precos, por CANAL, a partir do custo e da
+        //   margem. Na resposta 4 dele daquele pedido: *"Por variação, todas
+        //   as variações ficam com o mesmo valor"*. Duas telas para o mesmo
+        //   numero e a pessoa preencher uma e a outra valer — que e a frase
+        //   que este arquivo ja usou para tirar o `lcAnPreco` do ramo com
+        //   variacao.
+        //
+        // ★★★★ O DROP CONTINUA COM AS DUAS COLUNAS DELE ("Voce recebe" e
+        //   "Droper paga"), porque la nao ha etapa de Precos: o preco do Drop
+        //   sai do fator do fornecedor, e aquelas colunas mostram as duas
+        //   pontas do mesmo numero. Nao e preco de venda por variacao.
+        // ═══════════════════════════════════════════════════════════════
+        + (estado.dados.modoDrop
+          ? '<button id="lcAnPrecoMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
+            + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Preço para todas</button>'
+          : '')
         + '<button id="lcAnEstoqueMassa" style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);'
         + 'border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px">Estoque para todas</button>'
         + '</span></div>'
@@ -548,7 +609,7 @@
         + '<th style="text-align:left;padding:8px 10px">Código de barras (EAN)</th>'
         + (estado.dados.modoDrop
           ? '<th style="text-align:left;padding:8px 10px">Você recebe</th><th style="text-align:left;padding:8px 10px">Droper paga</th>'
-          : '<th style="text-align:left;padding:8px 10px">Preço</th><th style="text-align:left;padding:8px 10px">Promocional</th>')
+          : '')
         + '<th style="text-align:left;padding:8px 10px">Estoque</th></tr></thead><tbody>'
         + combos.map(function (c) {
           var chave = rotuloCombinacao(c);
@@ -556,8 +617,11 @@
           return '<tr><td style="padding:7px 10px;border-top:1px solid #f1f5f9">' + esc(chave) + '</td>'
             + _celulaCombo(chave, 'sku', linha.sku, '100%')
             + _celulaCombo(chave, 'ean', linha.ean, '150px')
-            + _celulaCombo(chave, 'preco', linha.preco, '90px')
-            + (estado.dados.modoDrop ? _celulaDroper(chave, linha.preco) : _celulaCombo(chave, 'precoPromo', linha.precoPromo, '90px', 'vazio = sem promoção'))
+            // ★ v33k.3564: so o Drop tem preco por variacao aqui. Fora dele o
+            //   numero vem da etapa Precos, por canal.
+            + (estado.dados.modoDrop
+              ? _celulaCombo(chave, 'preco', linha.preco, '90px') + _celulaDroper(chave, linha.preco)
+              : '')
             + _celulaCombo(chave, 'estoque', linha.estoque, '80px')
             + '</tr>';
         }).join('')
@@ -1569,8 +1633,13 @@
     var titulo = String(estado.dados.nome || '').trim();
     if (!lojaId || !titulo) { catAuto[canal] = { motivo: null }; return; }
     try {
+      // ★★★ v33k.3563: a descricao vai junto. Onde o canal recomenda por
+      //   titulo (TikTok), um titulo de marketplace e adjetivo de busca em
+      //   volta de uma palavra util, e a descricao diz o que o produto e.
+      var desc = String(estado.dados.descricao || '').replace(/<[^>]*>/g, ' ').trim().slice(0, 600);
       var r = await fetch(base() + '/api/marketplaces/loja/' + lojaId
-        + '/categorias/buscar?titulo=' + encodeURIComponent(titulo), { headers: cabecalhos() });
+        + '/categorias/buscar?titulo=' + encodeURIComponent(titulo)
+        + (desc ? '&descricao=' + encodeURIComponent(desc) : ''), { headers: cabecalhos() });
       var j = await r.json();
       var primeira = ((j && j.categorias) || [])[0];
       if (!primeira) {
@@ -1584,7 +1653,16 @@
       // v33k.2774: o nome vem na MESMA resposta. Guardar so o id era jogar
       // fora o rotulo e depois imprimir o codigo na tela dele.
       guardarNomeDaCategoria(canal, rotuloDeCategoria(primeira));
-      catAuto[canal] = { sugerida: primeira };
+      // ★★★★ v33k.3563: as ALTERNATIVAS viajam junto, e o aviso de quando a
+      //   sugestao do canal nao bate com o titulo. Ver `confirmadaPeloTexto`
+      //   no `categoria-busca`: com a lista de uma categoria so, a tela nao
+      //   tinha o que oferecer quando o canal errava, e foi o print de 22/11
+      //   (Chinelo de Dedo classificado como Aneis no TikTok).
+      catAuto[canal] = {
+        sugerida: primeira,
+        outras: ((j && j.categorias) || []).slice(1, 6),
+        confereComOTitulo: (j && j.confirmadaPeloTexto !== false),
+      };
       marcarSujo();
     } catch (e) {
       catAuto[canal] = { motivo: e.message };
@@ -1649,7 +1727,50 @@
       + '<div id="lcAnResultCat" style="margin-top:8px"></div>'
       + '<div style="font-size:12px;color:' + (cat ? 'var(--lc-primary)' : 'var(--lc-muted-2)') + ';margin-top:8px">'
       + (cat ? ((catAuto[atual] && catAuto[atual].sugerida) ? 'Categoria sugerida (pode trocar acima): ' : 'Categoria escolhida: ') + esc(textoDaCategoria(atual)) : 'Sem categoria escolhida. Sem ela não existe lista de campos para conferir.')
-      + '</div></div>';
+      + '</div>'
+      // ═══════════════════════════════════════════════════════════════════
+      // ★★★★★ v33k.3563: QUANDO A SUGESTAO DO CANAL NAO BATE COM O TITULO.
+      // ───────────────────────────────────────────────────────────────────
+      // PRINT DELE DE 22/11: *"Chinelo de Dedo Feminino Bico Quadrado Macio
+      // Confortável Premium Original Com Detalhes"* foi para **Anéis** no
+      // TikTok. Nos outros tres canais saiu certo.
+      //
+      // ★★★★★ QUEM ERROU FOI O CANAL, e o palpite e deles. O que estava na
+      //   nossa mao e nao era feito: DIZER que o palpite nao bate com o
+      //   titulo, e deixar as alternativas a um clique. Ate esta leva a lista
+      //   chegava aqui com UM item — o erro — porque a busca retornava cedo
+      //   quando havia sugestao do canal.
+      //
+      // ★★★★ AVISO AMBAR, NAO VERMELHO. A regra dele de 02/11 e de 21/11: o
+      //   que nao e falha nunca sai em vermelho, e isto pode ser legitimo
+      //   (titulo que nao casa com nome de categoria nenhuma). O anuncio
+      //   segue; ele decide.
+      // ═══════════════════════════════════════════════════════════════════
+      + (function () {
+        var ca = catAuto[atual];
+        if (!cat || !ca || !ca.sugerida || ca.confereComOTitulo !== false) return '';
+        var outras = (ca.outras || []).slice(0, 4);
+        return '<div data-lc="cat-nao-bate" style="margin-top:10px;background:var(--lc-amber-bg,#fffbeb);'
+          + 'border:1px solid var(--lc-amber-border,#fde68a);border-radius:10px;padding:10px 12px;'
+          + 'font-size:12px;color:var(--lc-amber-ink,#92400e)">'
+          + 'Esta categoria veio do próprio canal, e as palavras do título não levam a ela. '
+          + 'Vale conferir antes de seguir.'
+          + (outras.length
+            ? '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
+              + outras.map(function (o) {
+                var _cheio = rotuloDeCategoria(o);
+                var _curto = String(o.nome || o.name || _cheio);
+                return '<button class="lc-an-escolher-cat" data-cat="' + esc(String(o.id))
+                  + '" data-cat-nome="' + esc(_cheio) + '" title="' + esc(_cheio) + '" '
+                  + 'style="border:1px solid var(--lc-amber-border,#fde68a);background:#fff;'
+                  + 'color:var(--lc-ink-2);border-radius:8px;padding:5px 10px;cursor:pointer;'
+                  + 'font-size:12px">' + esc(_curto) + '</button>';
+              }).join('')
+              + '</div>'
+            : '')
+          + '</div>';
+      })()
+      + '</div>';
 
     var ficha = cacheFichas[atual];
     var corpo;
@@ -1753,8 +1874,10 @@
         //   cuja lista tem Sintetico, Couro" ensina a corrigir em dois
         //   segundos), e some junto com a caixa seria perder o que a 2488
         //   acrescentou de proposito.
-        + (estado.recusados.atributos && estado.recusados.atributos.length
-          ? '<div style="margin-bottom:12px">' + listaRecusadosIA(campos) + '</div>' : '')
+        + (function () {
+          var _r = listaRecusadosIA(campos);
+          return _r ? '<div style="margin-bottom:12px">' + _r + '</div>' : '';
+        })()
         + '<div style="font-size:12px;color:' + (pendentes ? 'var(--lc-danger)' : 'var(--lc-primary)') + ';margin-bottom:10px">'
         + (pendentes
           ? pendentes + ' campo(s) que o marketplace exige ainda em branco. Você pode enviar assim, e a recusa fica registrada no rascunho.'
@@ -2402,6 +2525,15 @@
         // ★★ Segundo argumento, e não um objeto no lugar do primeiro: as duas
         //   filas que usam este gancho (a do Drop e a da planilha) continuam
         //   recebendo o id na mesma posição.
+        // ★★★★ v33k.3564: o primeiro da fila deixa as lojas escolhidas como
+        //   padrao dos proximos. Grava sempre, e nao so no primeiro: se ele
+        //   abrir "Trocar lojas" no meio da fila, a escolha nova vale dali
+        //   para a frente, que e como a pessoa espera que uma troca funcione.
+        try {
+          _fila.destinosPadrao = estado.destinos.map(function (dd) {
+            return { lojaId: dd.lojaId, canal: dd.canal, nome: dd.nome };
+          });
+        } catch (e) {}
         await _fila.aoAvancar(produtoIdBanco, estado.destinos.map(function (dd) { return dd.lojaId; }));
         estado.enviando = false;
         return;
@@ -2910,6 +3042,32 @@
         // O `desenharEtapa` dispara a carga sozinho, porque a ficha some do
         // cache e o ramo de "sem ficha" busca.
         delete cacheFichas[estado.canalAba];
+        // ═══════════════════════════════════════════════════════════════
+        // ★★★★★ v33k.3562: CATEGORIA NOVA, PREENCHIMENTO NOVO.
+        // ───────────────────────────────────────────────────────────────
+        // PRINT DELE DE 22/11: *"Coloquei a mão a categoria para corrigir e
+        // não foi preenchido automaticamente os campos de atributos"*.
+        //
+        // ★★★★★ TRES LINHAS FALTAVAM, E AS TRES SAO A MESMA IDEIA. A ficha
+        //   era apagada do cache (acima) e recarregada certinho, mas:
+        //     · `iaAuto[canal]` continuava marcado, e ele e justamente a
+        //       guarda de "ja preenchi este canal, nao gaste token de novo".
+        //       Com a categoria trocada, o canal e outro assunto.
+        //     · os ATRIBUTOS da categoria antiga continuavam guardados. Os
+        //       ids sao da categoria, entao eles nao valem na nova: ficariam
+        //       invisiveis na tela (a ficha nova nao tem esses campos) e
+        //       viajariam para a exportacao como atributo que a categoria
+        //       nao tem, que e recusa do canal sem ninguem entender.
+        //     · e a lista do que a IA nao conseguiu falava da ficha antiga.
+        //
+        // ★★★★ A REVISAO HUMANA JA FAZIA ISSO HA MUITO (`emAbrirCategoria`
+        //   zera `linha.atributos[mkt]` ao trocar a categoria). Duas telas
+        //   para a mesma regra, e so uma a cumpria.
+        // ═══════════════════════════════════════════════════════════════
+        delete iaAuto[estado.canalAba];
+        if (estado.dados.atributosPorCanal) delete estado.dados.atributosPorCanal[estado.canalAba];
+        if (estado.recusados) delete estado.recusados.atributos;
+        if (estado.recusadosPorCanal) delete estado.recusadosPorCanal[estado.canalAba];
         marcarSujo();
         desenharEtapa();
       });
@@ -2974,13 +3132,10 @@
       });
     }
 
-    var promoMassa = document.getElementById('lcAnPromoMassa');
-    if (promoMassa) {
-      promoMassa.addEventListener('click', function () {
-        _massa('Preço promocional para TODAS (vazio tira a promoção):', '', 'precoPromo', false,
-          function (v) { return String(v == null ? '' : v).trim() || ' '; });
-      });
-    }
+    // ★ v33k.3564: o botao "Promoção para todas" saiu da tela com a coluna
+    //   dele. O preco promocional vem da etapa Precos, por canal, desde a
+    //   v33k.3560, e o listener de elemento que nao existe mais e codigo que
+    //   a proxima pessoa le como funcionalidade viva.
 
     // ★ EAN é gerado, não digitado: cada variação precisa do SEU. O gerador é
     //   o mesmo determinístico do painel quando ele está disponível.
@@ -3217,6 +3372,12 @@
     //   queixa de 15/09 era essa, e nao o casamento.
     //   Desde a v33k.2485 cada item vem como { id, valor, motivo }.
     estado.recusados[campo] = Array.isArray(r.recusados) ? r.recusados : [];
+    // ★ v33k.3562: e a recusa de atributo fica endereçada ao canal que a
+    //   gerou. A chave única continua, porque outros pontos a leem.
+    if (campo === 'atributos') {
+      estado.recusadosPorCanal = estado.recusadosPorCanal || {};
+      estado.recusadosPorCanal[estado.canalAba] = estado.recusados[campo];
+    }
     return r;
   }
 
@@ -3279,8 +3440,26 @@
   //   "Sintético, Couro" ensina a pessoa a corrigir em dois segundos; "campo
   //   nao preenchido" nao ensina nada.
   // ════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════
+  // ★★★★★ v33k.3562: A RECUSA E DE UM CANAL, E ESTAVA NUMA GAVETA SO.
+  // ───────────────────────────────────────────────────────────────────────
+  //   `estado.recusados.atributos` e uma chave unica, e a ficha tem uma aba
+  //   por canal. Trocar da Shopee para a Shein mostrava, na Shein, a lista do
+  //   que a IA nao conseguiu NA SHOPEE — e com os nomes sem resolver, porque
+  //   os ids de atributo sao da categoria daquele canal e nao casam com os
+  //   campos deste. A pessoa lia um id cru num aviso sobre o canal errado.
+  //
+  // ★★★★ ISTO SO FICOU VISIVEL NA v33k.3561, quando a lista saiu da caixa de
+  //   sugestao e passou a ficar na tela: antes ela aparecia junto da caixa, e
+  //   a caixa so existia no canal que acabara de responder.
+  // ═══════════════════════════════════════════════════════════════════════
   function listaRecusadosIA(campos) {
-    var lista = estado.recusados.atributos || [];
+    // ★ UMA GAVETA SO PARA ESTA LISTA, e e a por canal. A primeira escrita
+    //   desta leva deixou a gaveta unica como reserva, com um `_recusadosDe`
+    //   para saber de quem ela era: duas verdades sobre o mesmo dado, que e
+    //   exatamente o que esta frente ja pagou caro. A `qa_recusa_da_ia_aparece`
+    //   apontou isso na mesma hora.
+    var lista = (estado.recusadosPorCanal || {})[estado.canalAba] || [];
     if (!lista.length) return '';
     var nomeDe = function (id) {
       var c = (campos || []).filter(function (x) { return String(x.id) === String(id); })[0];
@@ -3367,6 +3546,36 @@
     if (!fila || !(fila.total > 1)) return '';
     return ' (' + fila.n + ' de ' + fila.total + ')';
   }
+  // ★★★ v33k.3564: a linha que diz de onde vieram as lojas, e o caminho de
+  //   volta. Sem ela a etapa sumiria sem explicacao, e quem abrisse o segundo
+  //   anuncio nao saberia para onde ele vai.
+  function _linhaLojasHerdadas() {
+    var alvo = document.getElementById('lcAnLojasHerdadas');
+    if (!alvo) return;
+    var h = _destinosHerdados();
+    if (!h || estado._mostrarDestinos) { alvo.innerHTML = ''; return; }
+    var nomes = estado.destinos.map(function (d) { return d.nome; }).filter(Boolean);
+    alvo.innerHTML = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
+      + 'padding:9px 22px;background:var(--lc-soft,#f8fafc);border-bottom:1px solid #f1f5f9;'
+      + 'font-size:12px;color:var(--lc-muted-2)">'
+      + '<span>Vai para as mesmas lojas do primeiro anúncio: '
+      + '<b style="color:var(--lc-ink-2)">' + esc(nomes.join(', ') || '(nenhuma)') + '</b></span>'
+      + '<button id="lcAnTrocarLojas" style="border:1px solid var(--lc-border-2);background:#fff;'
+      + 'color:var(--lc-ink-2);border-radius:8px;padding:4px 10px;cursor:pointer;font-size:12px">'
+      + 'Trocar lojas</button></div>';
+    var b = document.getElementById('lcAnTrocarLojas');
+    if (b) {
+      b.addEventListener('click', function () {
+        // ★ so neste anuncio: a etapa volta, a pessoa escolhe, e o que ela
+        //   escolher vira o padrao dos proximos quando este avancar.
+        estado._mostrarDestinos = true;
+        estado.etapa = 'destinos';
+        _repintarBarra();
+        desenharEtapa();
+      });
+    }
+  }
+
   function tituloDoModal() {
     var sufixo = _sufixoDaFila();
     if (!(estado.dados && estado.dados.modoDrop)) return 'Criar anúncio' + sufixo;
@@ -3393,12 +3602,33 @@
     return 'Continuar para a exportação';
   }
 
-  function molde() {
-    var passos = etapas().map(function (e) {
+  // ★ v33k.3564: os botoes da barra saem daqui, e nao de dentro do `molde`,
+  //   porque a barra passou a MUDAR durante a vida do modal: "Trocar lojas"
+  //   faz a etapa Destinos voltar. Duas montagens do mesmo HTML divergiriam
+  //   na proxima vez que alguem mexesse numa delas.
+  function _htmlDosPassos() {
+    return etapas().map(function (e) {
       return '<button id="lcAnPasso_' + e.id + '" data-etapa="' + e.id + '" class="lc-an-passo" '
         + 'style="border:1px solid var(--lc-border-2);background:#fff;color:var(--lc-ink-2);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:700">'
         + esc(e.titulo) + '</button>';
     }).join('');
+  }
+
+  function _ligarPassos() {
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-passo'), function (b) {
+      b.addEventListener('click', function () { irPara(b.dataset.etapa); });
+    });
+  }
+
+  function _repintarBarra() {
+    var barra = document.getElementById('lcAnPassos');
+    if (barra) { barra.innerHTML = _htmlDosPassos(); _ligarPassos(); }
+    _linhaLojasHerdadas();
+    pintarPassos();
+  }
+
+  function molde() {
+    var passos = _htmlDosPassos();
 
     return '<div id="lcAnOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:26px;overflow:auto">'
       + '<div style="background:#fff;border-radius:14px;width:min(940px,100%);box-shadow:0 20px 50px rgba(15,23,42,.25)">'
@@ -3407,7 +3637,8 @@
       + '<div id="lcAnStatus" style="font-size:12px;color:var(--lc-muted-2);margin-top:2px">Rascunho ainda não iniciado</div></div>'
       + '<button id="lcAnFechar" style="border:1px solid var(--lc-border-2);background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px">Fechar</button>'
       + '</div>'
-      + '<div style="display:flex;gap:8px;flex-wrap:wrap;padding:14px 22px;border-bottom:1px solid #f1f5f9">' + passos + '</div>'
+      + '<div id="lcAnPassos" style="display:flex;gap:8px;flex-wrap:wrap;padding:14px 22px;border-bottom:1px solid #f1f5f9">' + passos + '</div>'
+      + '<div id="lcAnLojasHerdadas"></div>'
       + '<div id="lcAnCorpo" style="padding:22px;max-height:60vh;overflow:auto"></div>'
       + '<div style="padding:16px 22px;border-top:1px solid var(--lc-border);display:flex;justify-content:space-between;align-items:center;gap:12px">'
       + '<div style="font-size:12px;color:var(--lc-muted-2)">'
@@ -3478,6 +3709,14 @@
         estado.rascunhoId = r.rascunho.id;
         estado.dados = r.rascunho.dados || {};
         estado.destinos = Array.isArray(r.rascunho.destinos) ? r.rascunho.destinos : [];
+        // ★★★★ v33k.3564: do segundo anuncio da fila em diante, as lojas sao
+        //   as do primeiro. So quando o rascunho nao traz nenhuma: rascunho
+        //   com destino proprio e escolha que alguem ja fez, e sobrescrever
+        //   seria decidir por ele.
+        if (!estado.destinos.length) {
+          var _h = _destinosHerdados();
+          if (_h) estado.destinos = _h.map(function (d) { return Object.assign({}, d, { resultado: 'pendente' }); });
+        }
         // Rascunho salvo antes da v33k.2210 pode apontar para a etapa
         // 'variacoes', que deixou de existir: cai no produto, onde elas moram
         // agora, em vez de abrir numa etapa que não desenha nada.
@@ -3504,9 +3743,8 @@
       fechar();
     });
     document.getElementById('lcAnDescartar').addEventListener('click', descartar);
-    Array.prototype.forEach.call(document.querySelectorAll('.lc-an-passo'), function (b) {
-      b.addEventListener('click', function () { irPara(b.dataset.etapa); });
-    });
+    _ligarPassos();
+    _linhaLojasHerdadas();
 
     desenharEtapa();
     pintarStatus();
