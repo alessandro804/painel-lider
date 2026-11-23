@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3566-perguntar-antes-de-criar';
+  var LEVA = 'v33k.3571-a-cobranca-tem-fim';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -1991,40 +1991,59 @@
     var nome = (typeof window.lcMarketplaceRotulo === 'function') ? window.lcMarketplaceRotulo(canal) : canal;
     var cfg = precoConfigAtual();
     var taxa = ((cfg.taxas || {})[canal]) || {};
-    var campo = function (qual, valor, sufixo, largura) {
+    // ═══════════════════════════════════════════════════════════════════
+    // ★★★★★ v33k.3567: DEIXOU DE SER TABELA, PORQUE NO CELULAR ELA SUMIA.
+    // ───────────────────────────────────────────────────────────────────
+    // PRINT DELE DE 22/11, no celular: a etapa Preços mostrava CANAL e TAXA
+    // DO CANAL e mais nada. *"no front do mobile não ficou mostrando o valor
+    // de venda e o valor promocional"*.
+    //
+    // ★★★★★ E ERAM O MOTIVO DA ETAPA EXISTIR. Eram cinco colunas de `<table>`
+    //   dentro de um contêiner com `overflow:hidden`. Os dois campos de taxa
+    //   têm largura fixa e não encolhem, então as três colunas de dinheiro
+    //   eram empurradas para fora e cortadas. Não havia nem rolagem lateral:
+    //   elas simplesmente não estavam na tela.
+    //
+    // ★★★★ AGORA É UM GRID, e o celular o empilha (ver `.lc-anp-*` no CSS do
+    //   painel): cada canal vira um bloco com os três números lado a lado e
+    //   rótulo em cima de cada um. Rolagem lateral seria o conserto errado —
+    //   arrastar para ver o preço é pior do que não ter a tabela.
+    // ═══════════════════════════════════════════════════════════════════
+    var campo = function (qual, valor, sufixo) {
       return '<input class="lc-an-taxa" data-canal="' + esc(canal) + '" data-qual="' + qual + '" '
-        + 'value="' + esc(valor == null ? '' : valor) + '" placeholder="' + esc(sufixo) + '" '
-        + 'style="width:' + largura + ';padding:6px 8px;border:1px solid var(--lc-border-2);'
-        + 'border-radius:7px;font-size:12.5px;text-align:right">';
+        + 'inputmode="decimal" value="' + esc(valor == null ? '' : valor) + '" placeholder="' + esc(sufixo) + '">';
     };
+    var cabecaDoCanal = '<div><span class="lc-anp-canal">' + logo + esc(nome) + '</span>'
+      + (r && r.ok && r.taxaDaPessoa ? '<div class="lc-anp-nota">taxa que você informou</div>' : '')
+      + '</div>';
     if (!r || !r.ok) {
-      return '<tr><td style="padding:9px 10px;border-top:1px solid #f1f5f9">'
-        + '<span style="display:inline-flex;align-items:center;gap:7px">' + logo
-        + '<b style="font-size:13px">' + esc(nome) + '</b></span></td>'
-        // ★ regra dele de 21/11: o que É falha sai em vermelho, e sozinho na
-        //   sua caixa, para não ser lido como instrução.
-        + '<td colspan="4" style="padding:9px 10px;border-top:1px solid #f1f5f9;'
-        + 'font-size:12.5px;color:var(--lc-danger)">'
-        + esc((r && r.motivo) || 'Sem preço para este canal.') + '</td></tr>';
+      // ★ regra dele de 21/11: o que É falha sai em vermelho, e sozinho na
+      //   sua caixa, para não ser lido como instrução.
+      return '<div class="lc-anp-linha">' + cabecaDoCanal
+        + '<div class="lc-anp-erro">' + esc((r && r.motivo) || 'Sem preço para este canal.') + '</div></div>';
     }
-    var corMargem = r.lucro >= 0 ? 'var(--lc-primary-text)' : 'var(--lc-danger)';
-    return '<tr>'
-      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9">'
-      +   '<span style="display:inline-flex;align-items:center;gap:7px">' + logo
-      +   '<b style="font-size:13px">' + esc(nome) + '</b></span>'
-      +   (r.taxaDaPessoa ? '<div style="font-size:10.5px;color:var(--lc-muted-2);margin-top:2px">taxa que você informou</div>' : '')
-      + '</td>'
-      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9;white-space:nowrap">'
-      +   campo('pct', taxa.pct, String(r.faixaPct), '62px') + ' <span style="font-size:12px;color:var(--lc-muted-2)">%</span> + '
-      +   campo('fixo', taxa.fixo, String(r.faixaFixo), '70px')
-      + '</td>'
-      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9;font-size:14px;font-weight:800;color:var(--lc-ink)">'
-      +   _brl(r.precoCheio) + '</td>'
-      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9;font-size:14px;font-weight:800;color:var(--lc-primary-text)">'
-      +   _brl(r.precoPromo) + '</td>'
-      + '<td style="padding:9px 10px;border-top:1px solid #f1f5f9;font-size:12.5px;color:' + corMargem + '">'
-      +   _brl(r.lucro) + ' <span style="color:var(--lc-muted-2)">(' + String(r.margemReal).replace('.', ',') + '%)</span></td>'
-      + '</tr>';
+    return '<div class="lc-anp-linha">'
+      + cabecaDoCanal
+      + '<div class="lc-anp-taxa">'
+      +   campo('pct', taxa.pct, String(r.faixaPct))
+      +   '<span style="font-size:12px;color:var(--lc-muted-2)">%</span>'
+      +   '<span style="font-size:12px;color:var(--lc-muted-2)">+</span>'
+      +   campo('fixo', taxa.fixo, String(r.faixaFixo))
+      + '</div>'
+      // ★ `.lc-anp-nums` e os rótulos só viram bloco no celular; no desktop o
+      //   `display:contents` devolve os três para as colunas da grade, e os
+      //   rótulos somem porque o cabeçalho os cobre.
+      + '<div class="lc-anp-nums">'
+      +   '<div><span class="lc-anp-rot">PREÇO DE VENDA</span>'
+      +     '<div class="lc-anp-num lc-anp-venda">' + _brl(r.precoCheio) + '</div></div>'
+      +   '<div><span class="lc-anp-rot">EM PROMOÇÃO</span>'
+      +     '<div class="lc-anp-num lc-anp-promo">' + _brl(r.precoPromo) + '</div></div>'
+      +   '<div><span class="lc-anp-rot">SOBRA</span>'
+      +     '<div class="lc-anp-sobra" style="color:' + (r.lucro >= 0 ? 'var(--lc-primary-text)' : 'var(--lc-danger)') + '">'
+      +       _brl(r.lucro) + ' <span style="color:var(--lc-muted-2);font-weight:400">('
+      +       String(r.margemReal).replace('.', ',') + '%)</span></div></div>'
+      + '</div>'
+      + '</div>';
   }
 
   // ═════════════════════════════════════════════════════════════════════════
@@ -2135,15 +2154,10 @@
       + '</div>'
       // ── a tabela por canal ──────────────────────────────────────────
       + (temCusto
-        ? '<div style="border:1px solid var(--lc-border);border-radius:10px;overflow:hidden;margin-bottom:16px">'
-          + '<table style="width:100%;border-collapse:collapse;font-size:13px">'
-          + '<thead><tr style="background:#f8fafc">'
-          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">CANAL</th>'
-          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">TAXA DO CANAL</th>'
-          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">PREÇO DE VENDA</th>'
-          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">EM PROMOÇÃO</th>'
-          +   '<th style="text-align:left;padding:9px 10px;font-size:11.5px;color:var(--lc-ink-2)">SOBRA</th>'
-          + '</tr></thead><tbody id="lcAnPrecoCorpo">' + linhas + '</tbody></table></div>'
+        ? '<div class="lc-anp-tab">'
+          + '<div class="lc-anp-cab"><span>CANAL</span><span>TAXA DO CANAL</span>'
+          +   '<span>PREÇO DE VENDA</span><span>EM PROMOÇÃO</span><span>SOBRA</span></div>'
+          + '<div id="lcAnPrecoCorpo">' + linhas + '</div></div>'
         : '<div style="border:1px dashed var(--lc-border-2);border-radius:10px;padding:16px;margin-bottom:16px;'
           + 'font-size:13px;color:var(--lc-muted)">Informe o custo acima e os preços de cada canal aparecem aqui.</div>')
       // ── os números que ficam gravados ───────────────────────────────
