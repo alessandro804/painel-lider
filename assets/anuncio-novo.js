@@ -75,7 +75,7 @@
   //   aviso, e que o `qa_carimbos_coerentes` confere SETE carimbos e este e o
   //   OITAVO, fora da lista dele. Enquanto a lista nao for oito, so a S2 pega,
   //   e so quando alguem a roda.
-  var LEVA = 'v33k.3657-a-receita-e-a-venda-real';
+  var LEVA = 'v33k.3659-o-preco-com-e-sem-nota';
   window.LC_ANUNCIO_NOVO_LEVA = LEVA;
 
   var API = '/api/anuncio-rascunhos';
@@ -3925,6 +3925,15 @@
       fotos: (Array.isArray(d.fotos) ? d.fotos : []).slice(0, 12),
       variacoes: variacoesDrop,
       precoBase: combos.length ? (precos.length ? Math.min.apply(null, precos) : 0) : numBR(d.preco),
+      // ★★★★ v33k.3659: O SEGUNDO PRECO, O DE QUEM VENDE SEM NOTA.
+      //   Pedido dele em 27/11. Vazio quer dizer "nao vendo sem nota", e e o
+      //   estado de todo produto que ja existe, entao a string vazia TEM de
+      //   viajar como string vazia: mandar 0 apagaria o preco de quem ja
+      //   preencheu, e mandar `undefined` faria o servidor nao saber se o
+      //   fornecedor limpou o campo ou se o cliente e antigo (regra da 2768).
+      //   ★ So existe em PJ: produto PF nunca emite nota, entao nele nao ha
+      //     dois modos para escolher e o campo nem aparece.
+      precoBaseSemNf: (cfg.tipoPessoa === 'PF') ? '' : String(cfg.precoBaseSemNf == null ? '' : cfg.precoBaseSemNf),
       estoque: combos.length ? 0 : Math.round(numBR(d.estoque)),
       tipoPessoa: cfg.tipoPessoa === 'PF' ? 'PF' : 'PJ',
       nfeEmpresaId: cfg.nfeEmpresaId ? Number(cfg.nfeEmpresaId) : null,
@@ -3964,6 +3973,17 @@
     }
     if (!(p.precoBase > 0)) return 'Informe o preço, o que você recebe por peça, na etapa Produto.';
     if (p.tipoPessoa === 'PJ') {
+      // ★★★ v33k.3659: o preco sem nota tem de ser MENOR que o com nota. A
+      //   razao do pedido dele e que o imposto encarece o com nota; um sem
+      //   nota mais caro inverteria o sentido e faria o Dropper escolher o
+      //   modo errado achando que economiza. O servidor recusa igual; aqui a
+      //   pessoa descobre antes de salvar.
+      var _semNf = numBR(p.precoBaseSemNf);
+      if (String(p.precoBaseSemNf || '').trim() !== '' && _semNf > 0 && _semNf >= p.precoBase) {
+        return 'O preço sem nota precisa ser menor que o preço com nota, que é de '
+          + 'R$ ' + Number(p.precoBase).toFixed(2).replace('.', ',')
+          + '. Para não vender sem nota, deixe o campo vazio.';
+      }
       if (!p.nfeEmpresaId) return 'Escolha a empresa emitente da nota.';
       if (p.ncm.length !== 8) return 'Informe o NCM com 8 dígitos.';
       if (p.cfop.length !== 4) return 'Informe o CFOP com 4 dígitos.';
@@ -4022,6 +4042,22 @@
           + '<select data-drop-campo="nfeEmpresaId" style="display:block;width:100%;margin-top:4px;padding:9px;border:1px solid var(--lc-border-2);border-radius:8px;font-size:14px">'
           + '<option value="">' + (empresasDrop === null ? 'Carregando as empresas' : (empresas ? 'Escolha a empresa' : 'Nenhuma empresa emitente cadastrada')) + '</option>' + empresas + '</select></label>'
           + campo('ncm', 'NCM', '8 dígitos') + campo('cfop', 'CFOP', '5102 é o padrão de venda dentro do estado: o Drop só liga fornecedor e droper da mesma região') + campo('origemMercadoria', 'Origem da mercadoria', 'de 0 a 8; 0 é nacional') + campo('cest', 'CEST', 'opcional')
+          // ★★★★ v33k.3659: O PRECO DE QUEM VENDE SEM NOTA, pedido dele em
+          //   27/11. Fica aqui, dentro de "Nota fiscal", porque e dela que ele
+          //   fala: o preco de cima inclui o imposto, este nao.
+          //   ★★ SO EM PJ. Produto PF nunca emite nota, entao nele nao existem
+          //     dois modos e o campo nao aparece.
+          //   ★ VAZIO E UM VALOR: quer dizer "nao vendo sem nota", e e o estado
+          //     de todo produto que ja existe. Por isso nao ha padrao nem
+          //     placeholder com numero.
+          + campo('precoBaseSemNf', 'Preço sem nota (opcional)',
+              'O que você recebe por peça quando o Dropper vende sem nota. Precisa ser menor que o de cima. Deixe vazio para vender só com nota.')
+          + (cfg.precoBaseSemNf != null && String(cfg.precoBaseSemNf).trim() !== ''
+            ? '<div style="margin-top:6px;background:var(--lc-surface-2);border:1px solid var(--lc-border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--lc-ink-2)">'
+              + 'Sem nota, o droper paga <b>' + brl(precoDroper(numBR(cfg.precoBaseSemNf))) + '</b> por peça. '
+              + 'Os pedidos desse modo não geram nota fiscal sua para o Dropper.'
+              + '</div>'
+            : '')
         : '<p style="font-size:12px;color:var(--lc-muted);margin-top:8px">Sem nota: o pedido segue com a sua declaração de conteúdo.</p>')
       + '<div id="lcAnDropErro" style="display:none;margin-top:14px;background:var(--lc-danger-soft);color:var(--lc-danger);border-radius:8px;padding:10px 12px;font-size:13px"></div>'
       + '<button id="lcAnDisponibilizar"' + (estado.enviando ? ' disabled' : '')
@@ -4040,6 +4076,13 @@
         if (el.type === 'radio') { if (!el.checked) return; cfg[campo] = el.value; marcarSujo(); desenharEtapa(); return; }
         cfg[campo] = el.value; marcarSujo();
       });
+      // ★ v33k.3659: o preco sem nota tem previa embaixo ("o droper paga X"),
+      //   e previa que nao acompanha o campo e previa que mente. Redesenha ao
+      //   sair do campo, e nao a cada tecla: redesenhar enquanto digita tiraria
+      //   o foco do proprio campo.
+      if (el.getAttribute('data-drop-campo') === 'precoBaseSemNf') {
+        el.addEventListener('change', function () { desenharEtapa(); });
+      }
     });
     var b = document.getElementById('lcAnDisponibilizar');
     if (b) b.addEventListener('click', function () { disponibilizarNoDrop(); });
